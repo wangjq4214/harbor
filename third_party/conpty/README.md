@@ -10,7 +10,7 @@ Source and MIT license: [microsoft/terminal](https://github.com/microsoft/termin
 - ABI declarations are copied from the same package to `conpty.h`.
 - License to retain in distributions: [LICENSE](LICENSE).
 
-Run `./scripts/fetch_conpty.ps1` after cloning to restore the ignored runtime
+Run `./scripts/setup/fetch_conpty.ps1` after cloning to restore the ignored runtime
 binaries from the hash-checked package; `-PackagePath <path>` uses an already
 downloaded package. Subsequent Cargo builds are offline and use these local
 files. To update, change both the version

@@ -25,10 +25,10 @@ Run only in a dedicated Harbor test session, from the repository root. These fix
 ### Neovim
 
 ```cmd
-nvim --clean -n -i NONE -S scripts/verify_modern_sgr_neovim.lua
+nvim --clean -n -i NONE -S scripts/terminal/verify_modern_sgr_neovim.lua
 ```
 
-The [Lua fixture](../scripts/verify_modern_sgr_neovim.lua) explicitly enables `termguicolors`, creates red/green `undercurl` with `sp=#ff5050/#50ff50`, blue double, yellow dotted, magenta dashed highlights, and an ERROR diagnostic using `DiagnosticUnderlineError`. It uses a scratch buffer, no swap or shada writes. No terminal identity/terminfo override or forced underline capability option is set. This establishes **configured highlighting**, not an independent automatic-detection claim or proof of which probe Neovim used.
+The [Lua fixture](../scripts/terminal/verify_modern_sgr_neovim.lua) explicitly enables `termguicolors`, creates red/green `undercurl` with `sp=#ff5050/#50ff50`, blue double, yellow dotted, magenta dashed highlights, and an ERROR diagnostic using `DiagnosticUnderlineError`. It uses a scratch buffer, no swap or shada writes. No terminal identity/terminfo override or forced underline capability option is set. This establishes **configured highlighting**, not an independent automatic-detection claim or proof of which probe Neovim used.
 
 1. Expected: distinct red/green curves, independent special color, double/dotted/dashed patterns, continuous styled spaces and complete wide CJK coverage. Observed: all appeared in the actual Harbor window. **PASS**.
 2. Edit line 7, leave insert mode and request Ctrl-L redraw. Observed: appended ` EDITED T0003` survives redraw and resizing; highlight rows remain intact. **PASS**. The accepted edit/redraw used native Neovim's local RPC key injection, not a claim of physical keyboard/IME acceptance.
@@ -40,10 +40,10 @@ For deterministic automation, the accepted run added `--listen \\.\pipe\harbor-s
 ### Integrated synthetic VT and original-text copy
 
 ```cmd
-pwsh -NoLogo -NoProfile -File scripts/verify_modern_sgr_windows.ps1
+pwsh -NoLogo -NoProfile -File scripts/terminal/verify_modern_sgr_windows.ps1
 ```
 
-The [PowerShell fixture](../scripts/verify_modern_sgr_windows.ps1) clears only that dedicated test terminal.
+The [PowerShell fixture](../scripts/terminal/verify_modern_sgr_windows.ps1) clears only that dedicated test terminal.
 
 - Expected: all five styles over spaces and both occupied CJK cells, overline coexistence, RGB and indexed colors, inverse with explicit underline color unchanged, `24` off/re-enable retaining color and `59` restoring foreground following. Observed: distinct patterns, requested colors and ordinary OFF text. **PASS**.
 - Expected: HIDDEN and LINKHIDE expose no hidden glyph, styled underline, overline, strike or hyperlink fallback; backgrounds and width remain. Observed: hidden spans are blank, reveal text and non-space fallback are visible. **PASS**.
@@ -61,8 +61,8 @@ Automation caveats: background WM_CHAR text was ineffective; background modifier
 | `cargo test --workspace` | Final combined tree: 2310 passed, 0 failed, 5 ignored | PASS; ignored manual tests are NOT RUN |
 | `cargo clippy --all-targets --all-features -- -D warnings` | Exit 0; non-fatal incremental-cache access-denied note, no lint failure | PASS |
 | `cargo fmt --check` | Exit 0 | PASS |
-| `python scripts/check_docs.py` | Exit 0 | PASS |
-| `python scripts/checklist_summary.py` | Exit 0; inventory, not an acceptance score | PASS |
+| `python scripts/docs/check_docs.py` | Exit 0 | PASS |
+| `python scripts/docs/checklist_summary.py` | Exit 0; inventory, not an acceptance score | PASS |
 | `git diff --check` | Exit 0 | PASS |
 
 Final gates are refreshed after test authoring/formatting and documentation updates. Raw logs/screenshots are retained locally under `target/t0003-evidence/`, not committed or used as local-only links; this summary and checked-in fixtures/tests are self-contained. Artifacts include workspace/GPU/clippy/fmt/docs logs, before-fix status failure, copy equality, clean/edited/narrow/restored/exit Neovim captures and synthetic/shell captures.

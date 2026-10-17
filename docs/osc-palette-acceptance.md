@@ -8,7 +8,7 @@ This record covers [spec 0019](../.grimoire/spec/0019-osc4-osc104-palette.md) an
 - Base revision: `4f720937477ecaa3080ab038dcfa0012745d6eed`, with uncommitted palette changes.
 - Executed production scope: `crates/harbor-config/src/color.rs`, terminal OSC routing/color/palette handlers, screen color state, and the existing coherent update/renderer consumers.
 - Test scope: new `crates/harbor-terminal/src/palette_tests.rs`, handler tests in `parser/osc_palette.rs`, and GPU readback in `render/decoration_tests.rs`.
-- Runtime probe: `scripts/verify_osc_palette_windows.ps1`, **OSC palette probe v1**.
+- Runtime probe: `scripts/terminal/verify_osc_palette_windows.ps1`, **OSC palette probe v1**.
 - Final runtime executable: debug Harbor 0.1.0; SHA-256 `8148B57377DD4835140122811BF5B87E6626B83E327720838E0B10571B3C3E03`.
 - Executed probe SHA-256: `BD2E7878108CC78672BE2B90DD473DF9E3EDA61FA90691E54CFFAC39586E3BA3`.
 - Existing user edits to grimoire context/spec/ADR were present before implementation; they are not unrelated production changes or a claim of committed evidence.
@@ -46,7 +46,7 @@ The palette remains fixed-size, with ANSI slots authoritative in `normal`/`brigh
 Build from the repository root with `cargo build -p harbor`, launch `target/debug/harbor.exe`, and run in its dedicated CMD session:
 
 ```cmd
-pwsh -NoProfile -File scripts\verify_osc_palette_windows.ps1 -ReportPath "%TEMP%\harbor-osc-palette-v1-final.json" -PhaseSeconds 20
+pwsh -NoProfile -File scripts\terminal\verify_osc_palette_windows.ps1 -ReportPath "%TEMP%\harbor-osc-palette-v1-final.json" -PhaseSeconds 20
 ```
 
 The probe uses raw, unechoed console input and VT output, checks CPR before palette acceptance, captures complete application-visible replies, displays samples once, then changes only palette entries. It restores console modes and the startup indexed palette on completion. The following expected and observed values matched exactly; escape spelling below is Rust byte-string notation rather than printed terminal text.
@@ -82,8 +82,8 @@ Raw JSON, window-phase screenshots and command logs remain local, with no local-
 | `cargo test --workspace` | PASS: 2320 passed, 0 failed, 5 existing ignored; existing ignored manual/performance/platform tests and one illustrative parser doctest remain excluded |
 | `cargo test -p harbor-terminal --no-default-features --lib` | PASS: 675 tests, one existing ignored throughput probe |
 | `cargo test -p harbor-terminal --lib osc_palette -- --nocapture` | PASS: 10 tests including the actual GPU readback; no palette test ignored |
-| `python scripts/check_docs.py` | PASS |
-| `python scripts/checklist_summary.py` | PASS: inventory 843 checked / 156 open / 999 total; inventory only, not acceptance |
+| `python scripts/docs/check_docs.py` | PASS |
+| `python scripts/docs/checklist_summary.py` | PASS: inventory 843 checked / 156 open / 999 total; inventory only, not acceptance |
 | Integrated inline review and spec check | No confirmed production blocker in the inspected combined changes; requirements mapped to the evidence above |
 | Native OSC palette probe v1 | PASS: 9 application-visible checks, plus SET/selective/full-reset presentation observations |
 

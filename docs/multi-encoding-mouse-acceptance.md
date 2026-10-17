@@ -48,12 +48,12 @@ Final integrated check results are recorded below after all source/test edits. I
 | `cargo clippy --all-targets --all-features -- -D warnings` | PASS |
 | `cargo test --workspace` | PASS — 2384 passed, 0 failed, 10 ignored across test binaries/doctests |
 | `cargo test -p harbor-terminal --no-default-features --lib mouse` | PASS — 16 passed, 0 failed |
-| `python scripts/check_docs.py` | PASS |
-| `python scripts/checklist_summary.py` | PASS — 855 checked / 144 open / 999 total; inventory only, not runtime acceptance |
+| `python scripts/docs/check_docs.py` | PASS |
+| `python scripts/docs/checklist_summary.py` | PASS — 855 checked / 144 open / 999 total; inventory only, not runtime acceptance |
 
 ### Probe-only follow-up checks
 
-The interactive probe and its usage guide were added after the Rust implementation gates above; no Rust production code changed in this follow-up. `python -B -m unittest discover -s scripts/tests -p 'test_verify_mouse_windows.py' -q` passes 24 portable protocol/logging/cleanup tests on Python 3.12.10; native console I/O is mocked. `python -B scripts/verify_mouse_windows.py --help`, `python scripts/check_docs.py`, `python scripts/checklist_summary.py`, and `git diff --check` also pass. These checks do not establish physical mouse or native application acceptance.
+The interactive probe and its usage guide were added after the Rust implementation gates above; no Rust production code changed in this follow-up. `python -B -m unittest discover -s scripts/tests -p 'test_verify_mouse_windows.py' -q` passes 24 portable protocol/logging/cleanup tests on Python 3.12.10; native console I/O is mocked. `python -B scripts/terminal/verify_mouse_windows.py --help`, `python scripts/docs/check_docs.py`, `python scripts/docs/checklist_summary.py`, and `git diff --check` also pass. These checks do not establish physical mouse or native application acceptance.
 
 ## Native Windows scenarios — NOT RUN
 
@@ -68,7 +68,7 @@ These are required application acceptance gaps, not automated passes. No applica
 
 ### Runtime handoff
 
-Use [`scripts/verify_mouse_windows.py`](../scripts/verify_mouse_windows.py) as the application-side VT byte probe; [run instructions and verdict limits](mouse-probe.md) describe mode menus, expected bytes and JSONL logs. Its Python/mock tests verify the probe, not a native Harbor mouse session. Creating the probe does not change the NOT RUN outcomes above.
+Use [`scripts/terminal/verify_mouse_windows.py`](../scripts/terminal/verify_mouse_windows.py) as the application-side VT byte probe; [run instructions and verdict limits](mouse-probe.md) describe mode menus, expected bytes and JSONL logs. Its Python/mock tests verify the probe, not a native Harbor mouse session. Creating the probe does not change the NOT RUN outcomes above.
 
 Build and launch the current dirty-tree Harbor executable. Record exact build/profile, OS, app/probe version and whether it reads classic Console mouse records or VT-input bytes (`ENABLE_VIRTUAL_TERMINAL_INPUT` for a Windows byte probe). Exercise the named scenarios with application mode output through ConPTY, not direct calls into the encoder. Record raw expected/observed bytes, pointer position/geometry, physical device and scale, encoding switches and capture/local behavior. Distinguish line-wheel, pixel-wheel and dual-axis input; if the device cannot generate a required unit/axis, retain NOT RUN for that device path. Then append scoped PASS/FAIL evidence bound to that executable revision.
 

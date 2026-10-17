@@ -95,7 +95,7 @@ Exercise every default and override through real command sources: consumed UI ch
 - **Registry tests:** Unique stable IDs, unique default chords, correct palette visibility, deterministic ID-to-typed-command conversion, and complete expected default table.
 - **Widget routing tests:** Consumed action stops focused delivery; pass-through action continues the same event; unmatched chords remain unchanged; key-up and IME do not invoke commands.
 - **Application integration tests:** FIFO ordering, one execution per source, existing tab focus policy, paste gate/confirmation behavior, primary versus alternate screen scrolling, copy clipboard effects, and PTY byte capture for consumed versus passed-through chords.
-- **Documentation checks:** Update `config.example.toml`, the P6 roadmap pointer, and keyboard-mode/validation guidance only where executable evidence exists; run `scripts/check_docs.py`.
+- **Documentation checks:** Update `config.example.toml`, the P6 roadmap pointer, and keyboard-mode/validation guidance only where executable evidence exists; run `scripts/docs/check_docs.py`.
 - **Manual Windows test:** Start Harbor with defaults and with a valid override; exercise tabs, selection copy, Ctrl+C interrupt, paste confirmation, primary/alternate screen scrolling, invalid override diagnostics, `nvim`, and `tmux`. Confirm consumed UI chords never appear as terminal input.
 
 ## Out of Scope

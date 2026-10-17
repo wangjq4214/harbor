@@ -153,7 +153,7 @@ if (!$AcceptSyntheticClipboardReplacement) {
 if (![Environment]::Is64BitProcess -or $PSVersionTable.PSEdition -ne 'Desktop') {
     throw 'Run 64-bit Windows PowerShell powershell.exe -NoProfile -STA -File ...'
 }
-$root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if (!$Binary) { $Binary = Join-Path $root 'target\debug\harbor.exe' }
 $Binary = [IO.Path]::GetFullPath($Binary)
 if (!(Test-Path $Binary)) { throw 'Build harbor.exe first (cargo build --bin harbor).' }

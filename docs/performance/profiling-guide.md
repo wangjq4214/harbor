@@ -24,9 +24,9 @@ The `dhat` Cargo profile retains symbols and line tables. Exit after the intende
 Analyze it with:
 
 ```bash
-python scripts/dhat_analyze.py dhat-heap.json
-python scripts/dhat_drill.py dhat-heap.json
-python scripts/dhat_drill.py dhat-heap.json render_frame
+python scripts/profiling/dhat_analyze.py dhat-heap.json
+python scripts/profiling/dhat_drill.py dhat-heap.json
+python scripts/profiling/dhat_drill.py dhat-heap.json render_frame
 ```
 
 Interactive viewer: <https://nnethercote.github.io/dh_view/dh_view.html>

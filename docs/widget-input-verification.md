@@ -18,8 +18,8 @@ Commands ran from the repository root after production fixes and formatting:
 | `cargo test --locked -p harbor-widget --all-features --lib --quiet` | PASS; 561 tests |
 | `cargo clippy --locked --all-targets --all-features -- -D warnings` | PASS |
 | `cargo fmt --all --check` | PASS |
-| `python scripts/check_docs.py` | PASS |
-| `python scripts/checklist_summary.py` | PASS; inventory only, not product acceptance |
+| `python scripts/docs/check_docs.py` | PASS |
+| `python scripts/docs/checklist_summary.py` | PASS; inventory only, not product acceptance |
 | `git diff --check` | PASS |
 
 Incremental-cache finalization emitted Windows access-denied notes for existing build-cache directories. Commands still completed successfully; these notes are not converted into product failures or silently claimed absent.

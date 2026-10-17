@@ -72,8 +72,8 @@ The native font item is deliberately scoped to Windows DirectWrite font-resource
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
-python scripts/check_docs.py
-python scripts/checklist_summary.py
+python scripts/docs/check_docs.py
+python scripts/docs/checklist_summary.py
 ```
 
 ## Out of Scope

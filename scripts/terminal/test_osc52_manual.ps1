@@ -288,7 +288,7 @@ if ($SelfTest) {
 
 if ($env:OS -ne 'Windows_NT' -or $PSVersionTable.PSEdition -ne 'Desktop' -or
     [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') {
-    throw 'Use Windows PowerShell: powershell.exe -NoProfile -STA -File scripts/test_osc52_manual.ps1 ...'
+    throw 'Use Windows PowerShell: powershell.exe -NoProfile -STA -File scripts/terminal/test_osc52_manual.ps1 ...'
 }
 if (!$Policy) { throw 'Specify -Policy allow, deny, or confirm matching Harbor startup settings.' }
 if (!$AcceptSyntheticClipboardReplacement) {
@@ -316,7 +316,7 @@ $rows = New-Object 'System.Collections.Generic.List[object]'
 $baseline = 'OSC52 synthetic baseline'
 $seed = $null
 $exitCode = 2
-if (!$ReportPath) { $ReportPath = Join-Path $PSScriptRoot "..\target\osc52-manual-$Policy-$Suite.json" }
+if (!$ReportPath) { $ReportPath = Join-Path $PSScriptRoot "..\..\target\osc52-manual-$Policy-$Suite.json" }
 $ReportPath = [IO.Path]::GetFullPath($ReportPath)
 if (Test-Path $ReportPath) { throw 'Report already exists; choose a new -ReportPath rather than overwriting prior evidence.' }
 $reportDirectory = [IO.Path]::GetDirectoryName($ReportPath)

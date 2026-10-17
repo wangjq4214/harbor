@@ -1,7 +1,7 @@
 """Drill into specific allocation owners in dhat-heap.json.
 
 Usage:
-    python scripts/dhat_drill.py [path-to-dhat-heap.json] [owner...]
+    python scripts/profiling/dhat_drill.py [path-to-dhat-heap.json] [owner...]
 
 Without owners, prints the top four harbor owners by total bytes.
 With owner substrings, prints the top allocation sites for each matching

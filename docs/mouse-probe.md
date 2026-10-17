@@ -1,6 +1,6 @@
 # Windows VT mouse byte probe
 
-[`scripts/verify_mouse_windows.py`](../scripts/verify_mouse_windows.py) is a Python standard-library-only interactive probe. Run it **inside the Harbor executable you want to validate**, using Python 3.10 or newer. It requests terminal modes through application output and reads application-visible bytes with Win32 `ReadFile` and `ENABLE_VIRTUAL_TERMINAL_INPUT` (input code page 65001). It does not call Harbor's encoder directly.
+[`scripts/terminal/verify_mouse_windows.py`](../scripts/terminal/verify_mouse_windows.py) is a Python standard-library-only interactive probe. Run it **inside the Harbor executable you want to validate**, using Python 3.10 or newer. It requests terminal modes through application output and reads application-visible bytes with Win32 `ReadFile` and `ENABLE_VIRTUAL_TERMINAL_INPUT` (input code page 65001). It does not call Harbor's encoder directly.
 
 This is an application-side observation **after Console/ConPTY processing**, not a tap of Harbor's input pipe. The backend can consume queries, translate encodings, or lose information. Record the actual session's backend/version separately; a failure at this boundary alone does not identify which component failed. Probe tests and native acceptance remain separate in the [multi-encoding evidence record](multi-encoding-mouse-acceptance.md).
 
@@ -9,7 +9,7 @@ This is an application-side observation **after Console/ConPTY processing**, not
 In a new Harbor terminal, change to the repository root and run:
 
 ```powershell
-python .\scripts\verify_mouse_windows.py --label "Harbor debug build; device=...; DPI=...; ConPTY/backend=..."
+python .\scripts\terminal\verify_mouse_windows.py --label "Harbor debug build; device=...; DPI=...; ConPTY/backend=..."
 ```
 
 Do not redirect stdin/stdout or pipe the probe through another command. The default is SGR cell encoding (`1006`) and click/wheel tracking (`1000`). Wait until mode replies finish (or time out) before clicking or switching modes. The display shows `Modes confirmed=True` only if all requested replies match.
@@ -65,7 +65,7 @@ Each mode change automatically queries all seven supported flags and unsupported
 For a stricter stationary cell-click test, use:
 
 ```powershell
-python .\scripts\verify_mouse_windows.py --encoding legacy --expect-position 3 2 --label "stationary left click at cell (3,2); build/device/DPI=..."
+python .\scripts\terminal\verify_mouse_windows.py --encoding legacy --expect-position 3 2 --label "stationary left click at cell (3,2); build/device/DPI=..."
 ```
 
 `--expect-position` checks **every** report, including release/wheel/motion. Do not use this fixed expectation while dragging, moving, or switching to pixel coordinates. `--duration 30` exits after 30 seconds; the default waits for quit. A normal exit code means the probe completed, not that every scenario passed.
@@ -93,7 +93,7 @@ Attach the log plus human-recorded expected/observed actions, device, DPI, actua
 
 ```powershell
 python -m unittest discover -s scripts/tests -p 'test_verify_mouse_windows.py' -v
-python scripts/verify_mouse_windows.py --help
+python scripts/terminal/verify_mouse_windows.py --help
 ```
 
 The portable tests cover exact decoding, byte-stream splits, embedded menu-like payloads, UTF-8 boundaries, malformed input, query state/timeouts, tracking and encoding fallback, scoped verdicts, JSONL summary, exclusive log creation, setup failure and console restoration contracts. Console I/O is mocked; these checks do not exercise a physical Windows mouse session through Harbor.

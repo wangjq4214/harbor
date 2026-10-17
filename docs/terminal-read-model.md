@@ -60,8 +60,8 @@ Executed from repository root over the combined formatted implementation:
 | `cargo test --workspace -q` | PASS — all active workspace tests; existing ignored/manual tests remain ignored. Compiler emitted non-fatal incremental-cache access-denied notes for harbor-text/config. |
 | `cargo clippy --all-targets --all-features -- -D warnings` | PASS. |
 | `cargo fmt --all -- --check`, `git diff --check` | PASS. |
-| `python scripts/checklist_summary.py` | PASS — 855 done / 144 open existing protocol checklist items; not a new global acceptance claim. |
-| `python scripts/check_docs.py` | PASS on the final tree. Initially failed on four retired-ticket links in ignored plans `0025`, `0026`, `0028`, `0030`; the user authorized repair, and those links now point to surviving contracts/preserved acceptance in the ticket-set READMEs. |
+| `python scripts/docs/checklist_summary.py` | PASS — 855 done / 144 open existing protocol checklist items; not a new global acceptance claim. |
+| `python scripts/docs/check_docs.py` | PASS on the final tree. Initially failed on four retired-ticket links in ignored plans `0025`, `0026`, `0028`, `0030`; the user authorized repair, and those links now point to surviving contracts/preserved acceptance in the ticket-set READMEs. |
 | Same `check_docs` validator restricted to this evidence, T0001, ticket-set README and local plan 0034 | PASS — language and local links. |
 
 Inline code-risk review and intent/acceptance audit covered the complete tracked diff, both new source files, affected mutation producers, resize preparation/commit, alternate ownership and renderer update callers. No confirmed blocker remains. The generation field is intentionally excluded from existing `NormalBuf` storage/content equality, preserving deterministic comparison of independent detached resize preparations; read validity never uses that equality.

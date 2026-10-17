@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'windows_package_version.ps1')
-$root = Split-Path -Parent $PSScriptRoot
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $authoring = Join-Path $root 'installer/windows'
 $toolDirectory = Join-Path $root 'target/wix'
 $work = $null

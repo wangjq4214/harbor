@@ -65,8 +65,8 @@ Run or account honestly for:
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
-python scripts/check_docs.py
-python scripts/checklist_summary.py
+python scripts/docs/check_docs.py
+python scripts/docs/checklist_summary.py
 ```
 
 Use PASS / FAIL / NOT RUN / BLOCKED for actual checks. Missing Windows/GPU capabilities do not turn skipped runtime checks into passes. Update behavior/support documentation only for implemented and evidenced scope.

@@ -60,8 +60,8 @@ Run from the repository root. In Bash/Git Bash, the WARP command below sets the 
 | `cargo clippy --all-targets --all-features -- -D warnings` | Strict lint gate completes | Exit 0 | PASS |
 | `cargo test --workspace` | Combined-tree regression gate completes | 2396 passed, 0 failed, 10 ignored, including doctests | PASS for executed cases only |
 | `cargo check -p harbor-terminal --no-default-features` | GPU-independent build remains valid | Exit 0, no warnings after renderer-only helper gating | PASS |
-| `python scripts/check_docs.py` | Documentation language/local targets valid | Exit 0; language and local-link checks passed | PASS |
-| `python scripts/checklist_summary.py` | Protocol inventory computes | Exit 0; 855 done, 144 open, 999 total (inventory, not acceptance) | PASS |
+| `python scripts/docs/check_docs.py` | Documentation language/local targets valid | Exit 0; language and local-link checks passed | PASS |
+| `python scripts/docs/checklist_summary.py` | Protocol inventory computes | Exit 0; 855 done, 144 open, 999 total (inventory, not acceptance) | PASS |
 | `git diff --check` | No diff whitespace errors | Exit 0 over the combined diff | PASS |
 
 The commands were rerun after behavioral fixes and formatting. Cargo emitted access-denied notes about finalizing some pre-existing incremental-cache directories; compilation and recorded commands still completed. These notes indicate lost cache reuse, not a substitute for a failed build. An added renderer-only helper warning in the headless check was corrected and that check rerun cleanly.

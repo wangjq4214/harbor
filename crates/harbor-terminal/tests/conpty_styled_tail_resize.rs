@@ -251,7 +251,7 @@ impl LiveCmd {
 fn actual_conceal_overline_script_preserves_end_prompt_and_live_editing() {
     let mut live = LiveCmd::new(29);
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../scripts/verify_conceal_overline_windows.ps1")
+        .join("../../scripts/terminal/verify_conceal_overline_windows.ps1")
         .canonicalize()
         .expect("actual repository conceal/overline script");
     live.run_powershell(
@@ -279,7 +279,7 @@ fn actual_script_long_ascii_and_cjk_pending_commands_survive_scroll_and_resize()
     for payload in ["a".repeat(1000), "a界".repeat(100)] {
         let mut live = LiveCmd::new(29);
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../scripts/verify_conceal_overline_windows.ps1")
+            .join("../../scripts/terminal/verify_conceal_overline_windows.ps1")
             .canonicalize()
             .unwrap();
         live.run_powershell(
