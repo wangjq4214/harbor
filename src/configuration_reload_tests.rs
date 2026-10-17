@@ -293,7 +293,7 @@ fn background_opacity_reload_updates_existing_sessions_and_future_policy() {
     for (source, alpha) in [
         ("[colors]\nbackground_opacity = 0.8", 0.8),
         ("[colors]\nbackground = '#1E1E2E40'", 64.0 / 255.0),
-        ("", 0.6),
+        ("", 0.85),
     ] {
         std::fs::write(&path, source).unwrap();
         let loaded = harbor_config::load_candidate_from_path(&path);

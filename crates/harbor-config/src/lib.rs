@@ -19,7 +19,7 @@ pub const FONT_SIZE: f32 = 24.0;
 pub const DEFAULT_UI_FONT_SIZE: f32 = 12.0;
 pub const TEXT_PADDING: f32 = 16.0;
 /// Built-in terminal background (Catppuccin Mocha Base), not the window backdrop tint.
-pub const BACKGROUND: [f32; 4] = [30.0 / 255.0, 30.0 / 255.0, 46.0 / 255.0, 0.6];
+pub const BACKGROUND: [f32; 4] = [30.0 / 255.0, 30.0 / 255.0, 46.0 / 255.0, 0.85];
 /// Built-in terminal selection highlight (Catppuccin Mocha Rosewater).
 pub const SELECTION_COLOR: [f32; 4] = [245.0 / 255.0, 224.0 / 255.0, 220.0 / 255.0, 0.4];
 pub const BLINK_INTERVAL_MS: u64 = 530;

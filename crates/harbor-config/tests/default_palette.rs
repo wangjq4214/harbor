@@ -8,7 +8,7 @@ fn default_terminal_palette_is_catppuccin_mocha_with_more_opaque_background() {
     let background = palette.background.components();
     let base = "#1E1E2E".parse::<Rgba>().unwrap().components();
     assert_eq!(background[..3], base[..3]);
-    assert_eq!(background[3], 0.6);
+    assert_eq!(background[3], 0.85);
     assert_eq!(palette.cursor, "#F5E0DCCC".parse::<Rgba>().unwrap());
     assert_eq!(palette.selection, "#F5E0DC66".parse::<Rgba>().unwrap());
     assert_eq!(palette.background.components(), harbor_config::BACKGROUND);
