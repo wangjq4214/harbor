@@ -640,6 +640,14 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 ### Application Command Dispatcher
 - **Definition:** Single command path for shortcuts/buttons/menus/future palette. Shortcuts synchronously return Command Outcome; only consumed commands enter scoped FIFO for later Host-owned execution. Not a pub/sub bus.
 
+### Command Palette
+- **Definition:** Application-owned searchable presentation of implemented, palette-visible Application Commands through the existing registry and dispatcher. Current unavailability disables an action with a reason rather than forwarding palette input to the PTY; execution revalidates availability and respects the resulting action's focus destination. See [ADR 0069](./adr/0069-command-palette-source-aware-availability-and-focus.md).
+- **Relationships:**
+  - belongs to Application UI Composition
+  - depends on Application Command Registry
+  - communicates with Application Command Dispatcher
+  - references Widget Text Input
+
 ### Application Keybindings
 - **Definition:** Structured TOML command tables with `bindings` records carrying explicit modifiers and key. Omission retains defaults; an empty array unbinds. Matched available commands get first refusal before terminal input. Invalid overrides, including the superseded string-array format, reject the entire override set without discarding other valid startup settings. See [ADR 0041](./adr/0041-structured-keybinding-configuration.md).
 - **Relationships:**
