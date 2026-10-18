@@ -493,21 +493,21 @@ impl ActiveSession {
     ) -> crate::tab_coordinator::TabDrainOutcome {
         let mut result = crate::tab_coordinator::TabDrainOutcome::default();
         for request in self.workspace_ui.drain_actions() {
-            if self.paste.is_active() {
-                break;
-            }
             let palette_generation = match request.source {
                 harbor_app::command::CommandSource::Palette { generation, .. } => Some(generation),
                 harbor_app::command::CommandSource::Direct => None,
             };
             if palette_generation.is_some() {
                 // Admission rechecks Host-owned context and disposes only the source editor.
-                if let Err(reason) = self.tabs.take_palette_request(request) {
+                if let Err(reason) = self
+                    .tabs
+                    .take_palette_request(request, self.paste.is_active())
+                {
                     self.workspace_ui.report_palette_result(
                         request.command,
                         Err(&format!("Rejected: {reason}")),
                     );
-                    if !self.workspace_ui.palette_is_open() {
+                    if !self.workspace_ui.palette_is_open() && !self.paste.is_active() {
                         Self::merge_wait(
                             &mut result.wait,
                             self.main_host
@@ -518,6 +518,12 @@ impl ActiveSession {
                     Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     continue;
                 }
+            }
+            if self.paste.is_active() {
+                continue;
+            }
+            if palette_generation.is_some() {
+                Self::merge_wait(&mut result.wait, self.main_host.clear_focus().wait);
             }
             match request.command {
                 AppCommand::OpenCommandPalette => {
@@ -539,7 +545,12 @@ impl ActiveSession {
                 | AppCommand::SearchChanged
                 | AppCommand::SearchNext
                 | AppCommand::SearchPrevious => {
-                    let focus = self.tabs.dispatch_search_command(request.command);
+                    let outcome = self.tabs.dispatch_search_command(request.command);
+                    let focus = outcome.focus_for_source(request.source, &self.workspace_ui);
+                    if palette_generation.is_some() {
+                        self.workspace_ui
+                            .report_palette_completion(request.command, outcome.completion);
+                    }
                     Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     if let Some(focus) = focus {
                         Self::merge_wait(
@@ -604,66 +615,92 @@ impl ActiveSession {
                         break;
                     }
                 }
-                AppCommand::Copy | AppCommand::CopyOrInterrupt => {
-                    let copy_outcome = self.tabs.active_terminal().and_then(|terminal| {
-                        terminal
-                            .lock()
-                            .ok()
-                            .map(|mut terminal| terminal.command_copy_selection())
-                    });
-                    if let Some(outcome) = copy_outcome {
-                        if let Some(text) = outcome.clipboard_text {
-                            Self::merge_wait(
-                                &mut result.wait,
-                                self.main_host.write_clipboard(text).wait,
-                            );
-                        }
-                        if outcome.release_pointer.is_some() {
-                            Self::merge_wait(
-                                &mut result.wait,
-                                self.main_host.cancel_active_input_ownership().wait,
-                            );
-                        }
-                        if outcome.redraw {
-                            Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
-                        }
+                AppCommand::Copy
+                | AppCommand::CopyOrInterrupt
+                | AppCommand::PageUp
+                | AppCommand::PageDown
+                | AppCommand::ScrollToTop
+                | AppCommand::ScrollToBottom => {
+                    use harbor_app::command::CommandCompletion;
+                    let completion = self
+                        .tabs
+                        .dispatch_terminal_command(request.command)
+                        .and_then(|outcome| {
+                            let completion = if let Some(text) = outcome.clipboard_text {
+                                self.main_host
+                                    .write_clipboard_checked(text)
+                                    .map(|effect| {
+                                        Self::merge_wait(&mut result.wait, effect.wait);
+                                        CommandCompletion::Applied
+                                    })
+                                    .map_err(|error| {
+                                        tracing::warn!(?error, "failed to copy terminal selection");
+                                        "Failed: clipboard write unavailable"
+                                    })
+                            } else {
+                                Ok(if outcome.redraw {
+                                    CommandCompletion::Applied
+                                } else {
+                                    CommandCompletion::Unchanged
+                                })
+                            };
+                            if outcome.release_pointer.is_some() {
+                                Self::merge_wait(
+                                    &mut result.wait,
+                                    self.main_host.cancel_active_input_ownership().wait,
+                                );
+                            }
+                            if outcome.redraw {
+                                Self::merge_wait(
+                                    &mut result.wait,
+                                    self.main_host.request_frame().wait,
+                                );
+                            }
+                            completion
+                        });
+                    if palette_generation.is_some() {
+                        self.workspace_ui
+                            .report_palette_completion(request.command, completion);
+                        Self::merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                        Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     }
                 }
                 AppCommand::Paste => {
                     let active_terminal = self.tabs.active_terminal();
-                    let outcome = self.paste.paste_from_clipboard(
-                        event_loop,
-                        &mut self.main_host,
-                        active_terminal.as_ref(),
-                    );
-                    Self::merge_wait(&mut result.wait, outcome.wait);
-                }
-                AppCommand::PageUp
-                | AppCommand::PageDown
-                | AppCommand::ScrollToTop
-                | AppCommand::ScrollToBottom => {
-                    let scroll_outcome = self.tabs.active_terminal().and_then(|terminal| {
-                        terminal
-                            .lock()
-                            .ok()
-                            .map(|mut terminal| match request.command {
-                                AppCommand::PageUp => terminal.command_page_up(),
-                                AppCommand::PageDown => terminal.command_page_down(),
-                                AppCommand::ScrollToTop => terminal.command_scroll_to_top(),
-                                AppCommand::ScrollToBottom => terminal.command_scroll_to_bottom(),
-                                _ => unreachable!("matched scroll command"),
-                            })
-                    });
-                    if let Some(outcome) = scroll_outcome {
-                        if outcome.release_pointer.is_some() {
-                            Self::merge_wait(
-                                &mut result.wait,
-                                self.main_host.cancel_active_input_ownership().wait,
-                            );
-                        }
-                        if outcome.redraw {
-                            Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
-                        }
+                    if palette_generation.is_some() {
+                        // Establish the main-window fallback before opening a secondary window.
+                        // Never refocus the main window over a pending confirmation.
+                        Self::merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                    }
+                    let completion = self
+                        .paste
+                        .paste_from_clipboard(
+                            event_loop,
+                            &mut self.main_host,
+                            active_terminal.as_ref(),
+                            palette_generation.is_some(),
+                        )
+                        .map(|(outcome, completion)| {
+                            Self::merge_wait(&mut result.wait, outcome.wait);
+                            completion
+                        });
+                    if let Err(reason) = completion {
+                        tracing::warn!(%reason, "clipboard paste rejected or failed");
+                    }
+                    if palette_generation.is_some() {
+                        self.workspace_ui
+                            .report_palette_completion(request.command, completion);
+                        Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     }
                 }
             }
@@ -846,8 +883,13 @@ impl ActiveSession {
                 PasteEventOutcome::Handled {
                     request_redraw,
                     wait,
+                    palette_completion,
                 } => {
                     let mut wait = wait;
+                    if let Some(completion) = palette_completion {
+                        self.workspace_ui
+                            .report_palette_completion(AppCommand::Paste, completion);
+                    }
                     if request_redraw {
                         Self::merge_wait(&mut wait, self.main_host.request_frame().wait);
                     }
@@ -903,6 +945,15 @@ impl ActiveSession {
         }
 
         let outcome = self.main_host.handle_window_event(&event);
+        if matches!(&event, WindowEvent::Focused(false)) && self.workspace_ui.cancel_palette() {
+            // Native focus loss expires a queued selection, not just preedit/clipboard delivery.
+            Self::merge_wait(
+                &mut wait,
+                self.main_host
+                    .request_focus(&self.workspace_ui.terminal_focus())
+                    .wait,
+            );
+        }
         Self::merge_wait(&mut wait, outcome.wait);
         if !outcome.external_input.is_empty() {
             // Main terminal bridges consume input in-tree; queued events indicate a broken root contract.

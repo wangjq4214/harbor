@@ -14,6 +14,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use harbor_app::command::CommandCompletion;
 use harbor_app::confirmation::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
 use harbor_terminal::{InputModes, PasteDisposition, Terminal};
@@ -152,6 +153,7 @@ pub(crate) enum PasteEventOutcome {
     Handled {
         request_redraw: bool,
         wait: Option<ControlFlowEffect>,
+        palette_completion: Option<Result<CommandCompletion, &'static str>>,
     },
     Fatal {
         error: FrameError,
@@ -163,6 +165,8 @@ pub(crate) enum PasteEventOutcome {
 pub(crate) struct PasteController {
     window: Option<ConfirmationWindow>,
     input_gate: Arc<AtomicBool>,
+    // Completion origin only; confirmation retains the existing current-target policy.
+    palette_invocation: bool,
 }
 
 impl PasteController {
@@ -170,6 +174,7 @@ impl PasteController {
         Self {
             window: None,
             input_gate,
+            palette_invocation: false,
         }
     }
 
@@ -196,25 +201,19 @@ impl PasteController {
 
         match &result {
             DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
-                if let DialogOutcome::Confirmed(_) = &result
-                    && let Some(active_terminal) = active_terminal
-                    && let Ok(mut terminal) = active_terminal.lock()
-                {
-                    let input_modes = terminal.drain_and_snapshot().input_modes;
-                    if let Err(error) = write_confirmation_outcome(&result, input_modes, |bytes| {
-                        terminal.write_pty(bytes)
-                    }) {
-                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
-                    }
-                }
+                let completion = complete_paste_confirmation(&result, active_terminal);
+                let palette_completion =
+                    std::mem::take(&mut self.palette_invocation).then_some(completion);
                 self.input_gate.store(false, Ordering::Release);
                 PasteEventOutcome::Handled {
                     request_redraw: true,
                     wait,
+                    palette_completion,
                 }
             }
             DialogOutcome::Fatal(error) => {
                 self.input_gate.store(false, Ordering::Release);
+                self.palette_invocation = false;
                 PasteEventOutcome::Fatal {
                     error: error.clone(),
                     wait,
@@ -223,6 +222,7 @@ impl PasteController {
             DialogOutcome::None => PasteEventOutcome::Handled {
                 request_redraw: false,
                 wait,
+                palette_completion: None,
             },
         }
     }
@@ -250,52 +250,87 @@ impl PasteController {
         event_loop: &ActiveEventLoop,
         main_host: &mut WinitWindowHost,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
-    ) -> HostIdleOutcome {
-        let raw_text =
-            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
-                Ok(text) => text,
-                Err(error) => {
-                    tracing::warn!(error = %error, "failed to read clipboard text");
-                    return HostIdleOutcome::default();
-                }
-            };
-
-        let confirmation = {
-            let Some(active_terminal) = active_terminal else {
-                tracing::warn!("no active terminal for clipboard paste");
-                return HostIdleOutcome::default();
-            };
-            let Ok(mut terminal) = active_terminal.lock() else {
-                tracing::warn!("terminal lock unavailable for clipboard paste");
-                return HostIdleOutcome::default();
-            };
-            let input_modes = terminal.drain_and_snapshot().input_modes;
-
-            match PasteDisposition::decide(input_modes, &raw_text) {
-                PasteDisposition::SendDirect => {
-                    if let Err(error) =
-                        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref())
-                    {
-                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
-                    }
-                    return HostIdleOutcome::default();
-                }
-                PasteDisposition::Confirm { raw_text } => {
-                    match ConfirmationWindow::new(raw_text, event_loop, main_host) {
-                        Ok(confirmation) => confirmation,
-                        Err(error) => {
-                            tracing::warn!(error = %format_args!("{error:#}"), "failed to create confirmation window");
-                            return HostIdleOutcome::default();
-                        }
-                    }
-                }
+        palette_invocation: bool,
+    ) -> Result<(HostIdleOutcome, CommandCompletion), &'static str> {
+        if self.is_active() {
+            return Err("Rejected: paste confirmation is active");
+        }
+        let raw_text = arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.get_text())
+            .map_err(|error| {
+                tracing::warn!(error = %error, "failed to read clipboard text");
+                "Failed: clipboard text unavailable"
+            })?;
+        match prepare_paste(active_terminal, &raw_text)? {
+            PasteDisposition::SendDirect => Ok((
+                HostIdleOutcome::default(),
+                if raw_text.is_empty() {
+                    CommandCompletion::Unchanged
+                } else {
+                    CommandCompletion::Applied
+                },
+            )),
+            PasteDisposition::Confirm { raw_text } => {
+                let confirmation = ConfirmationWindow::new(raw_text, event_loop, main_host).map_err(|error| {
+                    tracing::warn!(error = %format_args!("{error:#}"), "failed to create confirmation window");
+                    "Failed: could not open paste confirmation"
+                })?;
+                self.window = Some(confirmation);
+                self.input_gate.store(true, Ordering::Release);
+                self.palette_invocation = palette_invocation;
+                Ok((
+                    main_host.cancel_active_input_ownership(),
+                    CommandCompletion::PendingConfirmation,
+                ))
             }
-        };
-
-        self.window = Some(confirmation);
-        self.input_gate.store(true, Ordering::Release);
-        main_host.cancel_active_input_ownership()
+        }
     }
+}
+
+/// The production decision/write seam: confirmation never writes bytes before approval.
+fn prepare_paste(
+    active_terminal: Option<&Arc<Mutex<Terminal>>>,
+    raw_text: &str,
+) -> Result<PasteDisposition, &'static str> {
+    let terminal = active_terminal.ok_or("Rejected: no active terminal for paste")?;
+    let mut terminal = terminal
+        .lock()
+        .map_err(|_| "Failed: terminal lock unavailable for paste")?;
+    let input_modes = terminal.drain_and_snapshot().input_modes;
+    let disposition = PasteDisposition::decide(input_modes, raw_text);
+    if matches!(disposition, PasteDisposition::SendDirect) {
+        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref()).map_err(|error| {
+            tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
+            "Failed: could not write clipboard paste"
+        })?;
+    }
+    Ok(disposition)
+}
+
+/// Finish the same Host write path at approval time; no target or input modes are captured.
+fn complete_paste_confirmation(
+    outcome: &DialogOutcome,
+    active_terminal: Option<&Arc<Mutex<Terminal>>>,
+) -> Result<CommandCompletion, &'static str> {
+    let DialogOutcome::Confirmed(raw_text) = outcome else {
+        return Err("Cancelled: paste was not confirmed");
+    };
+    let terminal = active_terminal.ok_or("Rejected: no active terminal for confirmed paste")?;
+    let mut terminal = terminal
+        .lock()
+        .map_err(|_| "Failed: terminal lock unavailable for confirmed paste")?;
+    let modes = terminal.drain_and_snapshot().input_modes;
+    write_confirmation_outcome(outcome, modes, |bytes| terminal.write_pty(bytes)).map_err(
+        |error| {
+            tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
+            "Failed: could not write confirmed paste"
+        },
+    )?;
+    Ok(if raw_text.is_empty() {
+        CommandCompletion::Unchanged
+    } else {
+        CommandCompletion::Applied
+    })
 }
 
 // ── ConfirmationWindow ──────────────────────────────────────────────────────
@@ -517,6 +552,10 @@ impl ConfirmationWindow {
 }
 
 // ── Confirmation widget tree ────────────────────────────────────────────────
+
+#[cfg(test)]
+#[path = "paste_command_tests.rs"]
+mod paste_command_tests;
 
 #[cfg(test)]
 mod tests {

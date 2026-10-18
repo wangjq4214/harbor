@@ -111,7 +111,6 @@ fn palette_filters_navigates_and_executes_one_real_tab_reduction_without_pty_inp
     open(&controller, &mut runtime);
     assert!(painted(&runtime).contains("Reload configuration"));
     assert!(painted(&runtime).contains("No other tab"));
-    assert!(!painted(&runtime).contains("terminal.paste"));
     tap(&mut runtime, Key::ArrowDown);
     assert_eq!(
         controller
@@ -133,7 +132,7 @@ fn palette_filters_navigates_and_executes_one_real_tab_reduction_without_pty_inp
     let request = take_one(&controller);
     assert!(matches!(request.source, CommandSource::Palette { .. }));
     controller
-        .take_palette_request(request, &tabs.snapshots())
+        .take_palette_request(request, &tabs, false)
         .unwrap();
     let AppCommand::Tab(command) = request.command else {
         panic!("tab request")
@@ -151,7 +150,7 @@ fn palette_filters_navigates_and_executes_one_real_tab_reduction_without_pty_inp
     assert_eq!(tabs.snapshots().len(), 2);
     assert!(
         controller
-            .take_palette_request(request, &tabs.snapshots())
+            .take_palette_request(request, &tabs, false)
             .is_err()
     );
     controller
@@ -358,7 +357,7 @@ fn palette_rechecks_host_context_disposes_stale_requests_and_preserves_new_edito
         .unwrap(); // authoritative context changes before drain
     assert!(
         controller
-            .take_palette_request(request, &tabs.snapshots())
+            .take_palette_request(request, &tabs, false)
             .unwrap_err()
             .contains("changed")
     );
@@ -372,7 +371,7 @@ fn palette_rechecks_host_context_disposes_stale_requests_and_preserves_new_edito
     let new_editor = input(&controller);
     assert!(
         controller
-            .take_palette_request(request, &tabs.snapshots())
+            .take_palette_request(request, &tabs, false)
             .is_err()
     );
     assert!(
@@ -476,7 +475,7 @@ fn palette_tab_navigation_numeric_bounds_and_final_close_use_existing_model_sema
         tap(&mut runtime, Key::Enter);
         let request = take_one(&controller);
         controller
-            .take_palette_request(request, &tabs.snapshots())
+            .take_palette_request(request, &tabs, false)
             .unwrap();
         let AppCommand::Tab(command) = request.command else {
             panic!("tab")
@@ -495,7 +494,8 @@ fn palette_tab_navigation_numeric_bounds_and_final_close_use_existing_model_sema
     assert!(
         command_availability(
             AppCommand::Tab(TabCommand::Numeric(TabIndex::from_valid_u8(9))),
-            &tabs.snapshots()
+            &tabs.snapshots(),
+            crate::command::CommandContext::default(),
         )
         .is_err()
     );
@@ -584,3 +584,6 @@ fn palette_native_ime_confirmation_and_close_gestures_do_not_replay_into_termina
     );
     assert_eq!(&*bytes.lock().unwrap(), b"z");
 }
+
+#[path = "palette_terminal_tests.rs"]
+mod terminal_actions;

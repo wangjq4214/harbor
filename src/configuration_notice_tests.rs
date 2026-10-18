@@ -466,7 +466,7 @@ fn palette_reload_fifo_applies_once_and_rejected_candidate_keeps_effective_bindi
         let request = actions[0];
         assert_eq!(request.command, AppCommand::ReloadConfiguration);
         assert!(matches!(request.source, CommandSource::Palette { .. }));
-        ui.take_palette_request(request, &tabs.snapshots()).unwrap();
+        ui.take_palette_request(request, &tabs, false).unwrap();
         let previous = effective.clone();
         let result = reload_configuration_from_path(
             Some(file.path()),
@@ -492,7 +492,7 @@ fn palette_reload_fifo_applies_once_and_rejected_candidate_keeps_effective_bindi
             );
             ui.report_palette_result(request.command, Err("Failed: conflicting bindings"));
         }
-        assert!(ui.take_palette_request(request, &tabs.snapshots()).is_err());
+        assert!(ui.take_palette_request(request, &tabs, false).is_err());
         runtime.request_focus(&ui.terminal_focus());
         runtime.update(Instant::now());
         runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {

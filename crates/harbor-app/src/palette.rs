@@ -1,10 +1,10 @@
 //! Application-owned command discovery and the reusable editor's palette consumer.
 use super::*;
 use crate::command::{
-    CommandDescriptor, CommandSource, command_availability, command_registry,
-    palette_command_supported,
+    CommandCompletion, CommandContext, CommandDescriptor, CommandSource, command_availability,
+    command_registry, palette_command_supported,
 };
-use crate::tab_manager::{TabId, TabSnapshot};
+use crate::tab_manager::{TabId, TabManager, TabSnapshot};
 use harbor_widget::{
     Alignment, Column, ConstrainedBox, KeyChord,
     widgets::{align::Align, text_label::TextLabel},
@@ -19,13 +19,35 @@ pub(super) struct PaletteState {
     pub pending: bool,
 }
 
+// Retained by the editor's Fiber, not application state. Root replacement must
+// expire a submitted selection while preserving ordinary query-state ownership.
+struct PaletteEditorLifetime {
+    controller: WorkspaceUiController,
+    generation: u64,
+}
+
+impl Drop for PaletteEditorLifetime {
+    fn drop(&mut self) {
+        let pending = self
+            .controller
+            .store
+            .state()
+            .read()
+            .palette
+            .as_ref()
+            .is_some_and(|palette| palette.generation == self.generation && palette.pending);
+        if pending {
+            self.controller.close_palette(self.generation);
+        }
+    }
+}
+
 fn candidates(query: &str) -> Vec<CommandDescriptor> {
     let query = query.to_lowercase();
     command_registry()
         .into_iter()
         .filter(|entry| {
             entry.palette_visible
-                && palette_command_supported(entry.command)
                 && (entry.id.to_lowercase().contains(&query)
                     || entry.label.to_lowercase().contains(&query))
         })
@@ -36,11 +58,12 @@ fn availability(
     command: AppCommand,
     target: Option<TabId>,
     snapshots: &[TabSnapshot],
+    context: CommandContext,
 ) -> Result<(), &'static str> {
     if snapshots.iter().find(|tab| tab.active).map(|tab| tab.id) != target {
         return Err("Active terminal changed; reopen the palette");
     }
-    command_availability(command, snapshots)
+    command_availability(command, snapshots, context)
 }
 
 fn chord_label(chord: KeyChord) -> String {
@@ -79,6 +102,35 @@ fn binding_label(bindings: &ResolvedKeybindings, command: AppCommand) -> String 
 }
 
 impl WorkspaceUiController {
+    fn palette_context(&self) -> CommandContext {
+        let tabs = self.tabs.state.read();
+        let state = self.store.state().read();
+        CommandContext {
+            alternate_screen: tabs
+                .active_bridge
+                .as_ref()
+                .is_some_and(|bridge| bridge.is_alt_screen()),
+            search_open: state.search.open
+                && state.search.source
+                    == tabs
+                        .snapshots
+                        .iter()
+                        .find(|tab| tab.active)
+                        .map(|tab| tab.id),
+        }
+    }
+
+    /// A focus loss invalidates queued selections as well as the editor's transient input.
+    pub fn cancel_palette(&self) -> bool {
+        let generation = self
+            .store
+            .state()
+            .read()
+            .palette
+            .as_ref()
+            .map(|palette| palette.generation);
+        generation.is_some_and(|generation| self.close_palette(generation))
+    }
     pub fn palette_is_open(&self) -> bool {
         self.store.state().read().palette.is_some()
     }
@@ -126,7 +178,7 @@ impl WorkspaceUiController {
     pub fn validate_palette_request(
         &self,
         request: AppCommandRequest,
-        snapshots: &[TabSnapshot],
+        tabs: &TabManager,
     ) -> Result<(), &'static str> {
         let CommandSource::Palette { generation, target } = request.source else {
             return Ok(());
@@ -139,7 +191,17 @@ impl WorkspaceUiController {
         if !palette_command_supported(request.command) {
             return Err("Command not yet integrated");
         }
-        availability(request.command, target, snapshots)
+        availability(
+            request.command,
+            target,
+            &tabs.snapshots(),
+            CommandContext {
+                alternate_screen: tabs
+                    .active_bridge()
+                    .is_some_and(|bridge| bridge.is_alt_screen()),
+                search_open: state.search.open && state.search.source == target,
+            },
+        )
     }
 
     /// One-shot admission used by the Host and window-independent integration checks.
@@ -147,9 +209,14 @@ impl WorkspaceUiController {
     pub fn take_palette_request(
         &self,
         request: AppCommandRequest,
-        snapshots: &[TabSnapshot],
+        tabs: &TabManager,
+        input_blocked: bool,
     ) -> Result<(), &'static str> {
-        let result = self.validate_palette_request(request, snapshots);
+        let result = if input_blocked {
+            Err("Paste confirmation is active")
+        } else {
+            self.validate_palette_request(request, tabs)
+        };
         if let CommandSource::Palette { generation, .. } = request.source {
             self.close_palette(generation);
         }
@@ -157,13 +224,23 @@ impl WorkspaceUiController {
     }
 
     pub fn report_palette_result(&self, command: AppCommand, result: Result<(), &str>) {
+        self.report_palette_completion(command, result.map(|()| CommandCompletion::Applied));
+    }
+
+    pub fn report_palette_completion(
+        &self,
+        command: AppCommand,
+        result: Result<CommandCompletion, &str>,
+    ) {
         let label = command_registry()
             .into_iter()
             .find(|entry| entry.command == command)
             .map(|entry| entry.label)
             .unwrap_or("Command");
         let message = match result {
-            Ok(()) => format!("Executed: {label}"),
+            Ok(CommandCompletion::Applied) => format!("Executed: {label}"),
+            Ok(CommandCompletion::Unchanged) => format!("No change: {label}"),
+            Ok(CommandCompletion::PendingConfirmation) => format!("Awaiting confirmation: {label}"),
             Err(reason) => format!("{label}: {reason}"),
         };
         // Separate source: command completion cannot erase a reload/resource failure.
@@ -215,7 +292,12 @@ impl WorkspaceUiController {
             return;
         };
         let snapshots = self.tabs.state.read().snapshots.clone();
-        let availability = availability(entry.command, palette.target, &snapshots);
+        let availability = availability(
+            entry.command,
+            palette.target,
+            &snapshots,
+            self.palette_context(),
+        );
         if let Err(reason) = availability {
             self.report_palette_result(entry.command, Err(&format!("Rejected: {reason}")));
             return;
@@ -264,10 +346,22 @@ pub(super) fn palette_panel(
                 AppCommand::CloseCommandPalette(generation),
             ))
         });
+    let editor_owner = controller.clone();
+    let input = move |cx: &mut BuildCx| {
+        cx.use_state(|| {
+            std::rc::Rc::new(PaletteEditorLifetime {
+                controller: editor_owner.clone(),
+                generation,
+            })
+        });
+        input.build(cx)
+    };
     let entries = candidates(&palette.input.text());
     let snapshots = controller.tabs.state.read().snapshots.clone();
     let foreground = cx.theme().button.normal.foreground;
-    let mut content = Column::new().gap(4.0).child(input.build(cx));
+    let mut content = Column::new().gap(4.0).child(View::deferred(
+        input.keyed(format!("palette-editor-{generation}")),
+    ));
     if entries.is_empty() {
         content = content.child(
             TextLabel::new("No matching commands")
@@ -278,7 +372,13 @@ pub(super) fn palette_panel(
         // Keep the selected row visible without giving keyboard focus to a second editor/list.
         let start = palette.selected.saturating_sub(4);
         for (index, entry) in entries.iter().enumerate().skip(start).take(5) {
-            let reason = availability(entry.command, palette.target, &snapshots).err();
+            let reason = availability(
+                entry.command,
+                palette.target,
+                &snapshots,
+                controller.palette_context(),
+            )
+            .err();
             let label = format!(
                 "{}{}    {}",
                 if index == palette.selected {
@@ -289,12 +389,9 @@ pub(super) fn palette_panel(
                 entry.label,
                 binding_label(bindings, entry.command)
             );
-            let detail = format!(
-                "{}{}",
-                entry.id,
-                reason
-                    .map(|reason| format!(" — {reason}"))
-                    .unwrap_or_default()
+            let detail = reason.map_or_else(
+                || entry.id.to_owned(),
+                |reason| format!("{reason} — {}", entry.id),
             );
             let row = Column::new()
                 .child(TextLabel::new(label).color(foreground).ellipsis().build(cx))
@@ -341,5 +438,6 @@ pub(super) fn palette_panel(
                 )
                 .build(cx),
         )
+        .keyed("command-palette")
         .build(cx)
 }

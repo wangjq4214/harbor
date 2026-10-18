@@ -151,6 +151,29 @@ pub struct SearchTick {
     pub changed: bool,
 }
 
+pub struct SearchCommandOutcome {
+    pub focus: Option<harbor_widget::FocusHandle>,
+    pub completion: Result<crate::command::CommandCompletion, &'static str>,
+}
+
+impl SearchCommandOutcome {
+    /// Direct match navigation preserves focus; palette teardown needs a live destination.
+    pub fn focus_for_source(
+        &self,
+        source: crate::command::CommandSource,
+        ui: &crate::workspace::WorkspaceUiController,
+    ) -> Option<harbor_widget::FocusHandle> {
+        self.focus.or_else(|| match source {
+            crate::command::CommandSource::Direct => None,
+            crate::command::CommandSource::Palette { .. } => Some(if ui.search_query().is_some() {
+                ui.search_focus()
+            } else {
+                ui.terminal_focus()
+            }),
+        })
+    }
+}
+
 impl TabManager {
     /// Shared typed host execution path, also exercised by headless routing tests.
     pub fn dispatch_search_command(
@@ -158,18 +181,39 @@ impl TabManager {
         command: crate::command::AppCommand,
         ui: &crate::workspace::WorkspaceUiController,
     ) -> Option<harbor_widget::FocusHandle> {
-        use crate::command::AppCommand;
-        match command {
+        self.execute_search_command(command, ui).focus
+    }
+
+    /// Completion records actual reduction rather than merely dispatching a request.
+    pub fn execute_search_command(
+        &mut self,
+        command: crate::command::AppCommand,
+        ui: &crate::workspace::WorkspaceUiController,
+    ) -> SearchCommandOutcome {
+        use crate::command::{AppCommand, CommandCompletion};
+        let (focus, completion) = match command {
             AppCommand::SearchOpen => {
-                if let Some(source) = self.active_id() {
-                    ui.open_search(source);
-                }
-                Some(ui.search_focus())
+                let Some(source) = self.active_id() else {
+                    return SearchCommandOutcome {
+                        focus: None,
+                        completion: Err("No active terminal"),
+                    };
+                };
+                ui.open_search(source);
+                (Some(ui.search_focus()), CommandCompletion::Applied)
             }
             AppCommand::SearchClose => {
+                let open = ui.search_query().is_some();
                 self.cancel_search();
                 ui.close_search();
-                Some(ui.terminal_focus())
+                (
+                    Some(ui.terminal_focus()),
+                    if open {
+                        CommandCompletion::Applied
+                    } else {
+                        CommandCompletion::Unchanged
+                    },
+                )
             }
             AppCommand::SearchChanged => {
                 if let Some((source, query)) = ui.search_query()
@@ -177,14 +221,30 @@ impl TabManager {
                 {
                     self.set_search_query(&query);
                 }
-                None
+                (None, CommandCompletion::Applied)
             }
             AppCommand::SearchNext | AppCommand::SearchPrevious => {
-                self.navigate_search(command == AppCommand::SearchPrevious);
+                let changed = self.navigate_search(command == AppCommand::SearchPrevious);
                 ui.publish_search_status(self.search_status());
-                None
+                (
+                    None,
+                    if changed {
+                        CommandCompletion::Applied
+                    } else {
+                        CommandCompletion::Unchanged
+                    },
+                )
             }
-            _ => None,
+            _ => {
+                return SearchCommandOutcome {
+                    focus: None,
+                    completion: Err("Not a search operation"),
+                };
+            }
+        };
+        SearchCommandOutcome {
+            focus,
+            completion: Ok(completion),
         }
     }
 

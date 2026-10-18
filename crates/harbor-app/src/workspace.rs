@@ -132,6 +132,7 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
                         .child(card),
                 ),
         )
+        .keyed("session-search")
         .build(cx)
 }
 

@@ -410,17 +410,25 @@ impl TabCoordinator {
     pub(crate) fn take_palette_request(
         &self,
         request: harbor_app::command::AppCommandRequest,
+        input_blocked: bool,
     ) -> Result<(), &'static str> {
         self.workspace_ui
-            .take_palette_request(request, &self.tabs.snapshots())
+            .take_palette_request(request, &self.tabs, input_blocked)
+    }
+
+    pub(crate) fn dispatch_terminal_command(
+        &self,
+        command: harbor_app::command::AppCommand,
+    ) -> Result<harbor_terminal::TerminalEventOutcome, &'static str> {
+        self.tabs.dispatch_terminal_command(command)
     }
 
     pub(crate) fn dispatch_search_command(
         &mut self,
         command: harbor_app::command::AppCommand,
-    ) -> Option<harbor_widget::FocusHandle> {
+    ) -> harbor_app::SearchCommandOutcome {
         self.tabs
-            .dispatch_search_command(command, &self.workspace_ui)
+            .execute_search_command(command, &self.workspace_ui)
     }
 
     pub(crate) fn advance_search(&mut self) -> (bool, bool) {

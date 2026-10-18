@@ -77,6 +77,14 @@ impl AppCommandRequest {
     }
 }
 
+/// Execution evidence, never inferred from FIFO insertion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandCompletion {
+    Applied,
+    Unchanged,
+    PendingConfirmation,
+}
+
 /// Discoverable metadata for one configurable command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandDescriptor {
@@ -456,12 +464,18 @@ fn parse_key(token: &str) -> Result<Key, &'static str> {
     }
 }
 
-/// The delivered palette increment; registry visibility is not changed for later consumers.
+/// Whether a command is discoverable; internal and hidden intents are never admitted.
 pub fn palette_command_supported(command: AppCommand) -> bool {
-    matches!(
-        command,
-        AppCommand::Tab(_) | AppCommand::ReloadConfiguration
-    )
+    command_registry()
+        .iter()
+        .any(|entry| entry.palette_visible && entry.command == command)
+}
+
+/// Current execution facts, separate from source-specific shortcut consumption.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CommandContext {
+    pub alternate_screen: bool,
+    pub search_open: bool,
 }
 
 /// Shared availability facts used by palette presentation and authoritative Host revalidation.
@@ -469,6 +483,7 @@ pub fn palette_command_supported(command: AppCommand) -> bool {
 pub fn command_availability(
     command: AppCommand,
     snapshots: &[crate::tab_manager::TabSnapshot],
+    context: CommandContext,
 ) -> Result<(), &'static str> {
     let active = snapshots.iter().find(|tab| tab.active);
     match command {
@@ -494,7 +509,25 @@ pub fn command_availability(
             Err("No other tab")
         }
         AppCommand::Tab(_) => active.map(|_| ()).ok_or("No active terminal"),
-        _ => Err("Not yet integrated with the command palette"),
+        AppCommand::PageUp
+        | AppCommand::PageDown
+        | AppCommand::ScrollToTop
+        | AppCommand::ScrollToBottom => {
+            active.ok_or("No active terminal")?;
+            if context.alternate_screen {
+                Err("Scrolling is unavailable in the alternate screen")
+            } else {
+                Ok(())
+            }
+        }
+        AppCommand::SearchClose | AppCommand::SearchNext | AppCommand::SearchPrevious => {
+            active.ok_or("No active terminal")?;
+            context.search_open.then_some(()).ok_or("Search is closed")
+        }
+        AppCommand::Copy | AppCommand::Paste | AppCommand::SearchOpen => {
+            active.map(|_| ()).ok_or("No active terminal")
+        }
+        _ => Err("Command is not available in the palette"),
     }
 }
 
