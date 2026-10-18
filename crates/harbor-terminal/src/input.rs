@@ -394,6 +394,122 @@ mod tests {
     }
 
     #[test]
+    fn cursor_and_home_end_keys_follow_xterm_modes_and_modifier_encoding() {
+        // xterm-256color's kcu*1/khome/kend describe smkx (?1h) mode.
+        let keys: &[(TerminalKey, &[u8], &[u8], &[u8], &[u8])] = &[
+            (
+                TerminalKey::ArrowUp,
+                b"\x1b[A",
+                b"\x1bOA",
+                b"\x1b[1;2A",
+                b"\x1b[1;5A",
+            ),
+            (
+                TerminalKey::ArrowDown,
+                b"\x1b[B",
+                b"\x1bOB",
+                b"\x1b[1;2B",
+                b"\x1b[1;5B",
+            ),
+            (
+                TerminalKey::ArrowRight,
+                b"\x1b[C",
+                b"\x1bOC",
+                b"\x1b[1;2C",
+                b"\x1b[1;5C",
+            ),
+            (
+                TerminalKey::ArrowLeft,
+                b"\x1b[D",
+                b"\x1bOD",
+                b"\x1b[1;2D",
+                b"\x1b[1;5D",
+            ),
+            (
+                TerminalKey::Home,
+                b"\x1b[H",
+                b"\x1bOH",
+                b"\x1b[1;2H",
+                b"\x1b[1;5H",
+            ),
+            (
+                TerminalKey::End,
+                b"\x1b[F",
+                b"\x1bOF",
+                b"\x1b[1;2F",
+                b"\x1b[1;5F",
+            ),
+        ];
+        for application_cursor in [false, true] {
+            let modes = InputModes {
+                application_cursor,
+                ..InputModes::default()
+            };
+            for &(key, normal, application, shift, ctrl) in keys {
+                for (modifiers, expected) in [
+                    (
+                        TerminalModifiers::default(),
+                        if application_cursor {
+                            application
+                        } else {
+                            normal
+                        },
+                    ),
+                    (
+                        TerminalModifiers {
+                            shift: true,
+                            ..TerminalModifiers::default()
+                        },
+                        shift,
+                    ),
+                    (
+                        TerminalModifiers {
+                            ctrl: true,
+                            ..TerminalModifiers::default()
+                        },
+                        ctrl,
+                    ),
+                ] {
+                    assert_eq!(
+                        encode(&key_down(key, modifiers), modes),
+                        Some(expected.to_vec()),
+                        "{key:?}, {modes:?}, {modifiers:?}"
+                    );
+                }
+            }
+            for (modifiers, expected) in [
+                (
+                    TerminalModifiers {
+                        alt: true,
+                        ..TerminalModifiers::default()
+                    },
+                    b"\x1b[1;3H".as_slice(),
+                ),
+                (
+                    TerminalModifiers {
+                        ctrl: true,
+                        alt: true,
+                        ..TerminalModifiers::default()
+                    },
+                    b"\x1b[1;7H",
+                ),
+                (
+                    TerminalModifiers {
+                        meta: true,
+                        ..TerminalModifiers::default()
+                    },
+                    b"\x1b[1;9H",
+                ),
+            ] {
+                assert_eq!(
+                    encode(&key_down(TerminalKey::Home, modifiers), modes),
+                    Some(expected.to_vec())
+                );
+            }
+        }
+    }
+
+    #[test]
     fn should_encode_sgr_button_press_and_release_but_not_motion_in_button_mode() {
         // Arrange
         let modes = InputModes {

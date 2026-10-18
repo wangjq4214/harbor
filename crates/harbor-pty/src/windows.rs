@@ -525,6 +525,16 @@ fn shell_display_name(program: &OsStr) -> String {
 
 /// Quotes one argv element according to the Windows CommandLineToArgvW rules.
 fn append_windows_argument(output: &mut Vec<u16>, argument: &[u16]) {
+    // WSL parses its own command line and treats even quoted options as commands.
+    // Leave simple argv elements bare; retain CRT escaping when quoting is needed.
+    if !argument.is_empty()
+        && !argument
+            .iter()
+            .any(|&unit| matches!(unit, 9 | 10 | 13 | 32 | 34))
+    {
+        output.extend_from_slice(argument);
+        return;
+    }
     output.push(b'"' as u16);
     let mut backslashes = 0;
     for &unit in argument {
@@ -1018,7 +1028,7 @@ mod tests {
 
         assert_eq!(
             line,
-            "\"C:\\Program Files\\PowerShell\\pwsh.exe\" \"-NoLogo\" \"a b\" \"say \\\\\\\"hi\\\\\\\"\""
+            "\"C:\\Program Files\\PowerShell\\pwsh.exe\" -NoLogo \"a b\" \"say \\\\\\\"hi\\\\\\\"\""
         );
     }
     #[test]
@@ -1032,13 +1042,35 @@ mod tests {
     }
 
     #[test]
+    fn simple_wsl_options_stay_bare_but_empty_and_spaced_arguments_are_quoted() {
+        let encoded = shell_command_line(
+            OsStr::new("wsl.exe"),
+            &[
+                "-d",
+                "Ubuntu",
+                "--exec",
+                "printf",
+                "",
+                "a b",
+                "\t",
+                r"C:\path\",
+            ]
+            .map(str::to_owned),
+        );
+        assert_eq!(
+            String::from_utf16(&encoded[..encoded.len() - 1]).unwrap(),
+            "wsl.exe -d Ubuntu --exec printf \"\" \"a b\" \"\t\" C:\\path\\"
+        );
+    }
+
+    #[test]
     fn trailing_backslashes_are_doubled_before_closing_quote() {
         let mut encoded = Vec::new();
         append_windows_argument(
             &mut encoded,
-            &r"C:\path\".encode_utf16().collect::<Vec<_>>(),
+            &r"C:\a path\".encode_utf16().collect::<Vec<_>>(),
         );
-        assert_eq!(String::from_utf16(&encoded).unwrap(), "\"C:\\path\\\\\"");
+        assert_eq!(String::from_utf16(&encoded).unwrap(), "\"C:\\a path\\\\\"");
     }
 
     #[test]
