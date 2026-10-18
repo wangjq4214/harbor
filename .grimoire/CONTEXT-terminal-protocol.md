@@ -33,13 +33,13 @@ Protocol concepts belonging to Terminal. Linked ADRs define detailed validation/
 - **Synonyms:** Request Status String
 
 ### XTGETTCAP
-- **Definition:** A VT terminfo-capability query where an application sends `DCS + q Pt ST` with `Pt` as semicolon-separated hex-encoded capability names, and Harbor replies `DCS 1 + r Pt ST` listing hex-encoded `name=value` entries (or name-only booleans) for its registry-backed capabilities (`TN` = `xterm-256color`, `RGB` = `8/8/8`, `u8` = UTF-8 boolean, `Su` = styled-underline boolean) or `DCS 0 + r ST` when none match.
+- **Definition:** A VT terminfo-capability query where an application sends `DCS + q Pt ST` with `Pt` as semicolon-separated hex-encoded capability names, and Harbor replies `DCS 1 + r Pt ST` listing hex-encoded `name=value` entries (or name-only booleans) for its registry-backed capabilities (`TN` = `xterm-256color`, `RGB` = `8/8/8`, `Co`/`colors` = numeric 256, `U8` = numeric 1 preferring Unicode line drawing in UTF-8 locales, legacy `u8` = name-only UTF-8 boolean, `Su` = styled-underline boolean) or `DCS 0 + r ST` when none match.
 - **Synonyms:** Terminal Capability Query, tcap query
 - **Relationships:**
   - depends on TerminalReply
 
 ### Terminfo Capability Declaration
-- **Definition:** Private compile-time XTGETTCAP name/value registry; the supported values are defined once under XTGETTCAP.
+- **Definition:** Harbor's private compile-time XTGETTCAP name/value registry, not a terminfo database installed on the host or remote system. Capability names are case-sensitive. Harbor's legacy lowercase `u8` name-only boolean is distinct from ncurses' extended numeric `U8`, which controls Unicode versus ACS line drawing in UTF-8 locales, not general UTF-8 support; see [ncurses user_caps(5)](https://invisible-island.net/ncurses/man/user_caps.5.html). The currently supported values are defined under XTGETTCAP.
 
 ### CPR
 - **Definition:** A VT control sequence reply containing the current line and column coordinates of the terminal cursor.

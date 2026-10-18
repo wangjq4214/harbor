@@ -57,6 +57,7 @@ A fixture completing does not establish visual or end-to-end acceptance.
 
 | Area | Scripts / guidance |
 | --- | --- |
+| Capability negotiation | `terminal/verify_capabilities.py` (POSIX tty in WSL/SSH); live ConPTY host and usage below |
 | Resize and reflow | `terminal/resize_reflow_workload.ps1` |
 | Unicode and emoji | `terminal/verify_unicode_windows.ps1`, `terminal/verify_color_emoji_windows.ps1` |
 | SGR decorations | `terminal/verify_underlines_windows.ps1`, `terminal/verify_conceal_overline_windows.ps1`, `terminal/verify_modern_sgr_windows.ps1`, `terminal/verify_modern_sgr_neovim.lua` |
@@ -64,6 +65,35 @@ A fixture completing does not establish visual or end-to-end acceptance.
 | OSC palette | `terminal/verify_osc_palette_windows.ps1` |
 | OSC 52 clipboard | `terminal/test_osc52_manual.ps1` (manual-assisted), `terminal/verify_osc52_windows.ps1` (GUI automation); both require clipboard-replacement consent for runtime checks |
 | Terminal search | `terminal/verify_terminal_search_windows.ps1` |
+
+## Capability Negotiation Across ConPTY, WSL and SSH
+
+[`verify_capabilities.py`](terminal/verify_capabilities.py) requires a POSIX tty (WSL or a remote system), Python 3 with curses, and the current TERM's terminfo entry. It records exact expected/observed query bytes, environment/terminfo, per-case PASS/FAIL/NOT RUN and optional cursor/Home/End input. `--vim` runs a clean Vim process, checks its actual key decoder and resulting cursor movement, and does not force escape-key mappings. Use only a disposable tab: the probe changes cursor/mode state. Vim/Neovim visual rendering, physical key routing and SSH are not established by a passing byte probe.
+
+The [GPU-free live host](../crates/harbor-terminal/examples/capability_probe_host.rs) launches a **real Windows ConPTY** session and supplies structured `TerminalEvent` keys at the probe's readiness markers. It uses the normal reply-writing path and has a 300-second deadline. Restore the pinned ConPTY runtime before building; the PTY build script stages it beside example executables too.
+
+PowerShell, from the repository root (adjust distribution and guest repository path):
+
+```powershell
+$guestRepo = '/mnt/d/workspaces/harbor'
+$probe = "$guestRepo/scripts/terminal/verify_capabilities.py"
+$reports = "$guestRepo/target/capabilities"
+
+# Outer Harbor identity, exact query replies and normal/application-mode keys.
+cargo run -p harbor-terminal --example capability_probe_host -- wsl.exe -d Ubuntu --exec python3 $probe --path Windows-ConPTY-WSL-Ubuntu --keys --vim --output "$reports/wsl.json"
+
+# Isolated tmux server with no user configuration; do not override its inner TERM.
+$workload = "python3 '$probe' --layer tmux --path Windows-ConPTY-WSL-Ubuntu-tmux-clean --keys --vim --output '$reports/tmux.json'"
+cargo run -p harbor-terminal --example capability_probe_host -- wsl.exe -d Ubuntu --exec tmux -L "harbor-capabilities-$PID" -f /dev/null new-session $workload
+```
+
+A Git Bash invocation additionally needs `MSYS_NO_PATHCONV=1` to preserve `/mnt/...` and `/dev/null` arguments. Use a fresh tmux socket name for each run; the isolated server exits when its sole workload exits. If the host is interrupted before that point, explicitly stop only that named server with `tmux -L NAME kill-server` in the guest. Do not use a global tmux kill command.
+
+The `harbor` layer checks Harbor's exact bytes; the `tmux` layer checks DSR/CPR and keys against **inner** terminfo. It captures other replies/timeouts for diagnosis without asserting that tmux must return Harbor's DA/TN or forward DCS. Such unasserted observations are NOT RUN, not capability passes. The report's overall PASS means its asserted subset passed, not that NOT RUN cases were accepted. Compare the two JSON reports; an inner Home/End of `CSI 1~/4~` is valid when declared by tmux terminfo.
+
+For SSH, first authorize/provision a specific endpoint and place the probe there through your normal trusted process. Use a real allocated remote tty (`ssh -t`), observe TERM/locale/terminfo there, and run the same probe with a named full transport chain and explicit output path. `--keys --timeout 5` allows manual key input; automated `--vim` needs the live host's readiness-key injection. Noninteractive automated SSH should use `BatchMode=yes` and a bounded `ConnectTimeout`, with known host keys/authentication already configured. No fixture installs packages, copies credentials, changes remote configuration, or opens an SSH connection itself. Repeat with `--layer tmux` inside remote tmux. Until actually run, record SSH/tmux-over-SSH as NOT RUN; local tmux is not a substitute.
+
+Generated reports belong under `target/capabilities/` or another explicitly selected output directory, not tracked documentation. Retain them with the source revision/build, bundled ConPTY version and complete transport chain when handing off evidence. The old validation report/checklist paths and checklist-summary script were retired; current documentation checking is `python scripts/docs/check_docs.py`.
 
 ## Adding Scripts
 

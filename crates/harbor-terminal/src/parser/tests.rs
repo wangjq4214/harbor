@@ -1628,6 +1628,58 @@ fn xtgettcap_reports_supported_string_capabilities() {
 }
 
 #[test]
+fn xtgettcap_reports_numeric_capabilities_as_hex_encoded_decimal() {
+    for (name, payload) in [
+        ("Co", b"436F=323536".as_slice()),
+        ("colors", b"636F6C6F7273=323536"),
+        ("U8", b"5538=31"),
+    ] {
+        let reply = replies_for(&xtgettcap(&[name]));
+        let mut expected = b"\x1bP1+r".to_vec();
+        expected.extend_from_slice(payload);
+        expected.extend_from_slice(b"\x1b\\");
+        assert_eq!(reply, expected, "{name}");
+        assert_xtgettcap_round_trip(&reply, 1, payload);
+    }
+}
+
+#[test]
+fn xtgettcap_preserves_numeric_boolean_types_aliases_and_case() {
+    let request = xtgettcap(&["co", "Co", "colors", "U8", "u8", "COLORS", "Su", "U8"]);
+    let payload = b"436F=323536;636F6C6F7273=323536;5538=31;7538;5375;5538=31";
+    let reply = replies_for(&request);
+    assert_xtgettcap_round_trip(&reply, 1, payload);
+    for split in 0..=request.len() {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, &request[..split]);
+        feed(&mut parser, &mut screen, &request[split..]);
+        assert_eq!(screen.drain_replies(), reply, "split at {split}");
+    }
+}
+#[test]
+fn unsupported_identity_and_extension_queries_stay_silent_without_side_effects() {
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    feed(&mut parser, &mut screen, b"seed\x1b[3;7H");
+    for query in [
+        b"\x1b[=c".as_slice(), // Tertiary DA.
+        b"\x1b[>q",
+        b"\x1b[>0q",                   // XTVERSION: no Kitty/xterm version claim.
+        b"\x1b[?u",                    // Kitty keyboard protocol query.
+        b"\x1b_Gi=194,a=q;AAAA\x1b\\", // Kitty graphics query.
+        b"\x1bPtmux;\x1b\x1b[c\x1b\\", // No passthrough wrapper.
+    ] {
+        feed(&mut parser, &mut screen, query);
+        assert!(screen.drain_replies().is_empty(), "query {query:?}");
+        assert_eq!((screen.cursor_y(), screen.cursor_x()), (2, 6));
+        assert!(screen.row_text(0).starts_with("seed"));
+    }
+    feed(&mut parser, &mut screen, b"\x1b[5n");
+    assert_eq!(screen.drain_replies(), b"\x1b[0n");
+}
+
+#[test]
 fn xtgettcap_reports_boolean_capability_by_name_only() {
     let reply = replies_for(&xtgettcap(&["u8"]));
     assert_eq!(reply, b"\x1bP1+r7538\x1b\\");

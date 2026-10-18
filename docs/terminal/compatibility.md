@@ -8,7 +8,7 @@ Compatibility depends on the complete application, transport, parser, renderer a
 
 The [Windows environment builder](../../crates/harbor-pty/src/windows.rs) sets `TERM=xterm-256color` for spawned children and rejects a configured TERM override to another value, including case-insensitive environment-name handling. That identity is a compatibility baseline, not a claim of full xterm behavior or an exhaustive terminfo implementation.
 
-The [XTGETTCAP registry](../../crates/harbor-terminal/src/parser/xtgettcap.rs) currently answers only `TN`, `RGB`, lowercase `u8` and `Su`. It does not install a terminfo database on the host/remote machine. `Co/colors` and uppercase `U8` are not advertised. Lowercase `u8` has a known ncurses naming collision; do not use it as generic ncurses capability proof. [DA replies](vt.md#queries-and-replies) are fixed conservative protocol identities, not the Cargo package version.
+The [XTGETTCAP registry](../../crates/harbor-terminal/src/parser/xtgettcap.rs) answers `TN=xterm-256color`, `RGB=8/8/8`, numeric `Co/colors=256` and `U8=1`, and name-only booleans lowercase `u8` and `Su`. Numeric values are hex-encoded decimal text: `Co` replies with `436F=323536`, `U8` with `5538=31`. Uppercase `U8` prefers Unicode line drawing over ACS in UTF-8 locales ([ncurses user_caps(5)](https://invisible-island.net/ncurses/man/user_caps.5.html)); it is not a generic UTF-8 boolean. Legacy lowercase `u8` remains distinct and has a known ncurses naming collision. The registry does not install a terminfo database on the host/remote machine. [DA replies](vt.md#queries-and-replies) are fixed conservative protocol identities, not the Cargo package version.
 
 Practical rules:
 
@@ -17,6 +17,17 @@ Practical rules:
 - Explicit true-color or underline configuration in an application can exercise rendering, but does not prove automatic feature discovery worked. Record overrides when reporting a result.
 - Inside tmux, TERM normally describes tmux's virtual terminal, not Harbor. Do not overwrite it globally with the outer terminal name. Diagnose the outer and inner declarations separately.
 - Environment values inside WSL/SSH/tmux may differ from the initial Windows child environment. Observe them at the failing layer rather than assuming inheritance.
+
+### Cursor keys and Home/End
+
+The [input encoder](../../crates/harbor-terminal/src/input.rs) sends these unmodified keys according to DECCKM (`?1`), independently of numeric keypad mode:
+
+| Keys | Normal (`?1l`) | Application (`?1h`) |
+| --- | --- | --- |
+| Up / Down / Right / Left | `CSI A/B/C/D` | `SS3 A/B/C/D` |
+| Home / End | `CSI H/F` | `SS3 H/F` |
+
+Here `SS3` is `ESC O`. The standard `xterm-256color` entry's `kcuu1/kcud1/kcuf1/kcub1/khome/kend` describe application mode, selected by `smkx` (`CSI ?1h ESC =`) and cleared by `rmkx` (`CSI ?1l ESC >`). Comparing its `khome=ESC OH` with Harbor's normal-mode `ESC [H` without entering `smkx` is not a mismatch. Modified keys use `CSI 1;M final` in either mode (Shift 2, Alt 3, Ctrl 5; combined modifiers add their bits). Inside tmux the inner terminfo may instead specify Home/End as `CSI 1~/4~`; tmux translates the outer input. Do not force the outer bytes or TERM on the inner application.
 
 ## ConPTY is an active layer
 
@@ -39,6 +50,8 @@ For mouse/input diagnosis, distinguish Windows applications reading classic cons
 | Native Unix Harbor process | The [Unix PTY source](../../crates/harbor-pty/src/unix.rs) rejects shell spawning as unimplemented. | A future backend and target-specific build/runtime acceptance; headless tests do not supply either. |
 
 Do not infer tmux compatibility from XTGETTCAP alone: tmux itself does not emit that query, and nested applications may encounter filtering or unsupported passthrough wrappers.
+
+For bounded exact-byte queries, terminfo-key comparison and clean Vim movement checks, use the [capability negotiation probe and live ConPTY host](../../scripts/README.md#capability-negotiation-across-conpty-wsl-and-ssh). Its outer and tmux-inner results are separate; captured-but-unasserted replies and unexecuted SSH paths are not compatibility passes.
 
 ## Troubleshooting by boundary
 

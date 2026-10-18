@@ -2411,6 +2411,52 @@ where
 }
 
 #[test]
+fn queued_capability_queries_reach_the_reply_writer_with_exact_bytes() {
+    let queries = b"\x1b[c\x1b[>c\x1b[5n\x1b[6n\x1b[?6n\x1b[?1$p\x1bP$qm\x1b\\\x1bP+q544E;436F;636F6C6F7273;5538;7538\x1b\\";
+    let (mut terminal, written, wake_rx) = terminal_with_io(std::io::Cursor::new(queries));
+    wait_for_pty_wake(&wake_rx);
+    terminal.drain_pty();
+    assert_eq!(
+        written.lock().unwrap().as_slice(),
+        b"\x1b[?62;6;17;22;28c\x1b[>1;1;0c\x1b[0n\x1b[1;1R\x1b[?1;1R\x1b[?1;2$y\x1bP1$r0m\x1b\\\x1bP1+r544E=787465726D2D323536636F6C6F72;436F=323536;636F6C6F7273=323536;5538=31;7538\x1b\\"
+    );
+}
+
+#[test]
+fn queued_smkx_rmkx_select_terminfo_cursor_home_and_end_encoding_before_input() {
+    for (sequence, expected) in [
+        (
+            b"\x1b[?1h\x1b=".as_slice(),
+            b"\x1bOA\x1bOB\x1bOC\x1bOD\x1bOH\x1bOF".as_slice(),
+        ),
+        (
+            b"\x1b[?1h\x1b=\x1b[?1l\x1b>",
+            b"\x1b[A\x1b[B\x1b[C\x1b[D\x1b[H\x1b[F",
+        ),
+    ] {
+        let (mut terminal, written, wake_rx) = terminal_with_io(std::io::Cursor::new(sequence));
+        wait_for_pty_wake(&wake_rx);
+        // Do not explicitly drain: pending mode changes must precede input encoding.
+        for key in [
+            TerminalKey::ArrowUp,
+            TerminalKey::ArrowDown,
+            TerminalKey::ArrowRight,
+            TerminalKey::ArrowLeft,
+            TerminalKey::Home,
+            TerminalKey::End,
+        ] {
+            terminal
+                .handle_event(TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {
+                    key,
+                    modifiers: TerminalModifiers::default(),
+                }))
+                .unwrap();
+        }
+        assert_eq!(written.lock().unwrap().as_slice(), expected);
+    }
+}
+
+#[test]
 fn resize_rejects_active_reader_without_interrupt_capability() {
     let output = b"L00:abcdefgh\r\nL01:ijklmnop\r\nL02:qrstuvwx".to_vec();
     let (completed_tx, completed_rx) = std::sync::mpsc::channel();

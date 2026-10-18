@@ -4,9 +4,8 @@
 //! skipped and the remaining names are still answered. This deliberately
 //! returns more data than xterm, which stops at the first unrecognized name.
 //!
-//! Planned follow-ups: advertise `Co`/`colors` (`256`) and uppercase `U8`
-//! (the ncurses/tmux UTF-8 boolean); extract a shared bounded DCS collector
-//! once a third DCS query family arrives.
+//! Numeric capabilities use hex-encoded decimal values, not name-only booleans.
+//! A shared bounded DCS collector can be extracted once a third query family arrives.
 
 use crate::screen::Screen;
 use harbor_parser::Params;
@@ -23,6 +22,8 @@ pub(super) enum CapabilityValue {
     Bool,
     /// String capability: advertised as `name=value`.
     Str(&'static [u8]),
+    /// Numeric capability: advertised as a hex-encoded decimal `name=value`.
+    Number(u16),
 }
 
 /// Compile-time terminfo capability registry for XTGETTCAP replies.
@@ -34,6 +35,10 @@ fn lookup(name: &[u8]) -> Option<CapabilityValue> {
     match name {
         b"TN" => Some(CapabilityValue::Str(b"xterm-256color")),
         b"RGB" => Some(CapabilityValue::Str(b"8/8/8")),
+        b"Co" | b"colors" => Some(CapabilityValue::Number(256)),
+        // Prefer Unicode line drawing in UTF-8 locales (ncurses user_caps(5)),
+        // not a general UTF-8 flag and not an alias of the legacy lowercase u8.
+        b"U8" => Some(CapabilityValue::Number(1)),
         b"u8" | b"Su" => Some(CapabilityValue::Bool),
         _ => None,
     }
@@ -111,9 +116,16 @@ fn build_reply(pt: &[u8]) -> Vec<u8> {
             frame.push(b';');
         }
         append_hex(&mut frame, &name);
-        if let CapabilityValue::Str(value) = value {
-            frame.push(b'=');
-            append_hex(&mut frame, value);
+        match value {
+            CapabilityValue::Bool => {}
+            CapabilityValue::Str(value) => {
+                frame.push(b'=');
+                append_hex(&mut frame, value);
+            }
+            CapabilityValue::Number(value) => {
+                frame.push(b'=');
+                append_hex(&mut frame, value.to_string().as_bytes());
+            }
         }
         // Later names cannot make a growing reply fit. Drop the whole reply,
         // not an accepted prefix, accounting for the two-byte ST terminator.
@@ -190,6 +202,11 @@ mod tests {
     fn registry_resolves_only_evidence_backed_capabilities() {
         assert_eq!(lookup(b"TN"), Some(CapabilityValue::Str(b"xterm-256color")));
         assert_eq!(lookup(b"RGB"), Some(CapabilityValue::Str(b"8/8/8")));
+        assert_eq!(lookup(b"Co"), Some(CapabilityValue::Number(256)));
+        assert_eq!(lookup(b"colors"), Some(CapabilityValue::Number(256)));
+        assert_eq!(lookup(b"U8"), Some(CapabilityValue::Number(1)));
+        assert_eq!(lookup(b"co"), None);
+        assert_eq!(lookup(b"COLORS"), None);
         assert_eq!(lookup(b"u8"), Some(CapabilityValue::Bool));
         assert_eq!(lookup(b"Su"), Some(CapabilityValue::Bool));
         assert_eq!(lookup(b"su"), None);
@@ -411,16 +428,18 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn replies_match_ordered_entries_with_duplicates_and_malformed_names(
-            choices in proptest::collection::vec(0usize..9, 0..=32)
+            choices in proptest::collection::vec(0usize..13, 0..=16)
         ) {
-            let names: [&[u8]; 9] = [
+            let names: [&[u8]; 13] = [
                 b"544E", b"544e", b"524742", b"7538", b"5375",
+                b"436F", b"636F6C6F7273", b"5538", b"5538",
                 b"544", b"Z4", b"", b"7878",
             ];
-            let entries: [&[u8]; 5] = [
+            let entries: [&[u8]; 9] = [
                 b"544E=787465726D2D323536636F6C6F72",
                 b"544E=787465726D2D323536636F6C6F72",
                 b"524742=382F382F38", b"7538", b"5375",
+                b"436F=323536", b"636F6C6F7273=323536", b"5538=31", b"5538=31",
             ];
             let payload = choices.iter().map(|&i| names[i]).collect::<Vec<_>>().join(&b';');
             let found = choices.iter().filter_map(|&i| entries.get(i).copied()).collect::<Vec<_>>();

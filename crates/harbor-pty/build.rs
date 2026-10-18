@@ -39,7 +39,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ancestors()
         .nth(3)
         .ok_or("invalid OUT_DIR")?;
-    for executable_dir in [profile.to_path_buf(), profile.join("deps")] {
+    for executable_dir in [
+        profile.to_path_buf(),
+        profile.join("deps"),
+        profile.join("examples"),
+    ] {
         let runtime = executable_dir.join("conpty");
         copy_if_changed(
             &source.join(arch).join("conpty.dll"),
