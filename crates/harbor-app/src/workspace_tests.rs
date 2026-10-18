@@ -2016,3 +2016,6 @@ fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_
     runtime.complete_clipboard(request.id, Ok("wrong session".into()));
     assert_eq!(controller.search_query().unwrap().1, "");
 }
+
+#[path = "palette_tests.rs"]
+mod palette_tests;

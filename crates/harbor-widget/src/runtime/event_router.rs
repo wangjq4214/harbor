@@ -18,6 +18,7 @@ use std::any::Any;
 struct ConsumedShortcut {
     key: Key,
     action: Option<(FiberId, Box<dyn Any>)>,
+    editor: Option<FiberId>,
 }
 
 /// Owns input state and routes UI events through capture → target → bubble.
@@ -61,6 +62,7 @@ impl EventRouter {
     pub(crate) fn cancel_shortcut_actions(&mut self) {
         for shortcut in &mut self.consumed_shortcuts {
             shortcut.action = None;
+            shortcut.editor = None;
         }
     }
 
@@ -210,6 +212,12 @@ impl EventRouter {
                     .iter()
                     .find(|shortcut| shortcut.key == KeyChord::new(*key, Default::default()).key)
                 {
+                    if let Some(editor) = shortcut.editor
+                        && self.focused_event_target(arena) == Some(editor)
+                        && arena.contains(editor)
+                    {
+                        return self.route_to_single(arena, editor, event);
+                    }
                     // Preserve the original action across a binding rebuild. A
                     // lifecycle cancellation keeps ownership but never replays it.
                     if let Some((source, action)) = &shortcut.action {
@@ -276,6 +284,7 @@ impl EventRouter {
                         self.consumed_shortcuts.push(ConsumedShortcut {
                             key: KeyChord::new(*key, Default::default()).key,
                             action: Some((source, action)),
+                            editor: None,
                         });
                         let focus_visibility_changed = self.input.focused.is_some()
                             && !self.input.focus_visible()
@@ -375,6 +384,16 @@ impl EventRouter {
     }
 
     pub(crate) fn finish_event(&mut self, arena: &FiberArena, mut ctx: EventCtx) -> bool {
+        if let Some((key, editor)) = ctx.take_consumed_key() {
+            let key = KeyChord::new(key, Default::default()).key;
+            if !self.consumed_shortcuts.iter().any(|press| press.key == key) {
+                self.consumed_shortcuts.push(ConsumedShortcut {
+                    key,
+                    action: None,
+                    editor,
+                });
+            }
+        }
         if let Some(request) = ctx.take_editor_clipboard()
             && let Some(target) = ctx.current_fiber()
         {
@@ -467,6 +486,9 @@ impl EventRouter {
         self.input.focused = next;
         self.input.focus_visible = next_visible;
         if previous != next {
+            for press in &mut self.consumed_shortcuts {
+                press.editor = None;
+            }
             self.last_focus_scope = next.and_then(|target| Self::focus_scope_for(arena, target));
             let notified = self.notify_focus_transition(arena, previous, next, next_visible);
             notified | self.ensure_focus_visible(arena)

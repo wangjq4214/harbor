@@ -51,6 +51,7 @@ pub enum ConfigurationNoticeSource {
     Observation,
     Resource,
     Operation,
+    Command,
 }
 
 #[derive(Clone, Default)]

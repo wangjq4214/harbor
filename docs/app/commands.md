@@ -8,6 +8,7 @@ Shortcuts use exact simultaneous modifiers, not multi-stroke sequences. These ar
 
 | Command ID | Built-in shortcut | Meaning / context |
 | --- | --- | --- |
+| `app.command-palette` | Ctrl+Shift+P | Open/focus the tabs/reload command palette (partial delivery) |
 | `app.reload-configuration` | Ctrl+Shift+R | Strict reload of the retained configuration path; independent of watcher |
 | `app.new-tab` | Ctrl+T | Create/activate a new session |
 | `app.close-active-tab` | Ctrl+W | Close active session; final tab requests window closure |
@@ -35,6 +36,14 @@ Shortcuts use exact simultaneous modifiers, not multi-stroke sequences. These ar
 | `terminal.search-close` | None globally | Close/cancel search, restore terminal focus |
 
 Search commands consume their shortcuts even if no search or match is available; unbind them to allow those keys through. Escape in the query field closes search (or first cancels IME composition); Enter/Shift+Enter navigate. There is **no global Escape binding**.
+
+## Command palette increment
+
+The current palette integrates configuration reload and tab creation, closing, next/previous navigation and numeric selection (1–9). Type a case-insensitive substring of a label or command ID; Up/Down selects, Enter invokes once, and Escape closes (first cancelling active composition). No matches cannot execute. Unavailable rows show a reason, and invocation rechecks the active target before Host execution.
+
+Rows show accepted **effective** bindings, including alternatives and unbound commands. The opener's stable configurable ID is `app.command-palette`; its overrides use the same grammar below. Query editing and clipboard/undo shortcuts belong to the reusable text field, not the terminal. Closing returns to terminal interaction; tab actions target the resulting active terminal, and final-tab close retains window-close behavior. Execution, rejection and failure feedback are distinct; reload errors remain visible.
+
+Terminal copy/paste/scroll/search commands are **not yet integrated into the palette** (T0002); their existing shortcuts still work outside it. Native Windows focus/IME acceptance remains T0003 work. This is not the full visible command catalog, profiles/panes/appearance delivery, or completion of issue #156. See [focused evidence and remaining checks](../verification/T0001-palette-tabs-and-reload.md).
 
 ## Where shortcuts apply
 

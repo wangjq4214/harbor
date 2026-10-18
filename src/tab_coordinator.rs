@@ -43,6 +43,7 @@ pub(crate) fn format_window_title(title: &str) -> String {
 pub(crate) struct TabDrainOutcome {
     pub(crate) wait: Option<ControlFlowEffect>,
     pub(crate) close_window: bool,
+    pub(crate) failed: bool,
 }
 
 impl TabDrainOutcome {
@@ -406,6 +407,14 @@ impl TabCoordinator {
         }
     }
 
+    pub(crate) fn take_palette_request(
+        &self,
+        request: harbor_app::command::AppCommandRequest,
+    ) -> Result<(), &'static str> {
+        self.workspace_ui
+            .take_palette_request(request, &self.tabs.snapshots())
+    }
+
     pub(crate) fn dispatch_search_command(
         &mut self,
         command: harbor_app::command::AppCommand,
@@ -477,20 +486,6 @@ impl TabCoordinator {
         self.tabs.resize_all_if_changed(size)
     }
 
-    pub(crate) fn create_terminal_tab(
-        &mut self,
-        surface_size: (u32, u32),
-    ) -> anyhow::Result<TabActionOutcome> {
-        let size = self
-            .tabs
-            .last_broadcast_size()
-            .unwrap_or_else(|| self.factory.default_terminal_size(surface_size));
-        self.tabs.create_tab(|tab_id, draw_id| {
-            self.factory
-                .create_resources(tab_id, draw_id, size, surface_size)
-        })
-    }
-
     pub(crate) fn terminal_focus(&self) -> harbor_widget::widgets::FocusHandle {
         self.workspace_ui.terminal_focus()
     }
@@ -551,32 +546,35 @@ impl TabCoordinator {
                 .unwrap_or(TabFocusPolicy::PreserveRail),
             (focus, _) => focus,
         };
-        let outcome = match command {
-            TabCommand::New => match self.create_terminal_tab(host.viewport().physical_size) {
-                Ok(outcome) => {
+        let surface_size = host.viewport().physical_size;
+        let size = self
+            .tabs
+            .last_broadcast_size()
+            .unwrap_or_else(|| self.factory.default_terminal_size(surface_size));
+        let outcome = match self.tabs.execute_command(command, |tab_id, draw_id| {
+            self.factory
+                .create_resources(tab_id, draw_id, size, surface_size)
+        }) {
+            Ok(outcome) => {
+                if command == TabCommand::New {
                     self.workspace_ui.publish_configuration_notice(
                         harbor_app::notifications::ConfigurationNoticeSource::Operation,
                         None,
                     );
-                    outcome
                 }
-                Err(error) => {
-                    let message =
-                        format!("New session failed: {error:#}. Existing sessions are unchanged.");
-                    tracing::warn!(%message, "failed to create terminal tab");
-                    self.workspace_ui.report_configuration_result(message);
-                    return TabDrainOutcome {
-                        wait: host.request_frame().wait,
-                        close_window: false,
-                    };
-                }
-            },
-            TabCommand::Close(id) => self.tabs.close(id),
-            TabCommand::CloseActive => self.tabs.close_active(),
-            TabCommand::Activate(id) => self.tabs.activate(id),
-            TabCommand::Next => self.tabs.activate_next(),
-            TabCommand::Previous => self.tabs.activate_previous(),
-            TabCommand::Numeric(index) => self.tabs.activate_numeric(index),
+                outcome
+            }
+            Err(error) => {
+                let message =
+                    format!("New session failed: {error:#}. Existing sessions are unchanged.");
+                tracing::warn!(%message, "failed to create terminal tab");
+                self.workspace_ui.report_configuration_result(message);
+                return TabDrainOutcome {
+                    wait: host.request_frame().wait,
+                    close_window: false,
+                    failed: true,
+                };
+            }
         };
         self.apply_tab_outcome(host, outcome, focus)
     }

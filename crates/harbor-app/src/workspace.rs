@@ -17,6 +17,8 @@ use harbor_widget::{
     view::{BuildCx, Component, View},
     widgets::{layout_observer::LayoutChangedCallback, padding::Padding, stack::Stack},
 };
+#[path = "palette.rs"]
+mod palette;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -142,6 +144,8 @@ struct WorkspaceUiState {
     keybindings: Option<ResolvedKeybindings>,
     notices: ConfigurationNotices,
     search: SearchUiState,
+    palette: Option<palette::PaletteState>,
+    palette_generation: u64,
 }
 
 /// App-wide publication and the sole one-shot action inbox, independent of tab sync.
@@ -151,6 +155,7 @@ pub struct WorkspaceUiController {
     tabs: TabUiController,
     terminal_focus: FocusHandle,
     search_focus: FocusHandle,
+    palette_focus: FocusHandle,
     allocation: TerminalAllocationMailbox,
 }
 
@@ -165,6 +170,7 @@ impl WorkspaceUiController {
             tabs: TabUiController::new(snapshots, active_bridge, logical_width),
             terminal_focus: FocusHandle::new(),
             search_focus: FocusHandle::new(),
+            palette_focus: FocusHandle::new(),
             allocation: TerminalAllocationMailbox::new(),
         }
     }
@@ -327,7 +333,11 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         .clone()
         .expect("workspace has an active terminal until window exit");
     let root = root_padding(props.backdrop_available, props.backdrop_fallback);
-    let shortcuts = shortcuts(state.keybindings.as_ref().unwrap_or(&props.keybindings));
+    let shortcuts = if state.palette.is_some() {
+        Shortcuts::empty()
+    } else {
+        shortcuts(state.keybindings.as_ref().unwrap_or(&props.keybindings))
+    };
     let command_bridge = active_bridge.clone();
     let actions = Actions::handler(move |command| {
         let outcome = command_outcome(command, &command_bridge);
@@ -349,6 +359,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
             dismiss_dispatcher.dispatch(AppCommandRequest {
                 command: AppCommand::DismissNotification(revision),
                 focus: TabFocusPolicy::PreserveRail,
+                source: crate::command::CommandSource::Direct,
             })
         })
     });
@@ -359,7 +370,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
                     shortcuts => {
                         Row::new() => {
                             tab_rail(cx, &tab_state, &props.controller.tabs, dispatcher);
-                            terminal_panel(cx, &props.controller, active_bridge);
+                            terminal_panel(cx, &props.controller, active_bridge, state.keybindings.as_ref().unwrap_or(&props.keybindings));
                         }
                     }
                 }
@@ -375,6 +386,7 @@ fn terminal_panel(
     cx: &mut BuildCx,
     controller: &WorkspaceUiController,
     active_bridge: TerminalWidgetBridge,
+    bindings: &ResolvedKeybindings,
 ) -> View {
     let search = controller.store.state().read().search.clone();
     harbor_widget::view! { cx; Expanded::new() => {
@@ -390,6 +402,9 @@ fn terminal_panel(
             }
             if search.open {
                 search_bar(cx, controller);
+            }
+            if controller.palette_is_open() {
+                palette::palette_panel(cx, controller, bindings);
             }
         }
     } }

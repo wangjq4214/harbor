@@ -31,6 +31,7 @@ pub struct EditableText {
     changed: Option<Changed>,
     submitted: Option<Submitted>,
     escaped: Option<Rc<dyn Fn()>>,
+    vertical_navigation: Option<Rc<dyn Fn(bool)>>,
 }
 
 impl EditableText {
@@ -45,6 +46,7 @@ impl EditableText {
             changed: None,
             submitted: None,
             escaped: None,
+            vertical_navigation: None,
         }
     }
     pub fn enabled(mut self, enabled: bool) -> Self {
@@ -79,6 +81,12 @@ impl EditableText {
         self.escaped = Some(Rc::new(callback));
         self
     }
+    /// Observe unmodified vertical navigation outside IME composition.
+    /// `true` means down. Selection policy belongs to the consumer.
+    pub fn on_vertical_navigation(mut self, callback: impl Fn(bool) + 'static) -> Self {
+        self.vertical_navigation = Some(Rc::new(callback));
+        self
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -92,7 +100,6 @@ struct EditingRuntime {
     controller: TextEditingController,
     focused: bool,
     pointer: Option<u64>,
-    ime_confirmation: Option<Key>,
     clipboard: Option<PendingClipboard>,
     scroll: f32,
     positions: Vec<(usize, f32)>,
@@ -110,7 +117,6 @@ impl EditingRuntime {
             controller,
             focused: false,
             pointer: None,
-            ime_confirmation: None,
             clipboard: None,
             scroll: 0.0,
             positions: vec![(0, 0.0)],
@@ -224,15 +230,13 @@ impl EditorView {
         let value = c.value();
         if value.composition.is_some() {
             if matches!(key, Key::Enter | Key::NumpadEnter) {
-                self.runtime.borrow_mut().ime_confirmation = Some(key);
+                ctx.consume_key_press(key, false);
             }
             // Native IME owns editing/confirmation during composition.
             if key == Key::Escape {
+                ctx.consume_key_press(key, false);
                 c.cancel_composition();
             }
-            return true;
-        }
-        if self.runtime.borrow().ime_confirmation == Some(key) {
             return true;
         }
         let writable = !self.config.read_only;
@@ -267,6 +271,13 @@ impl EditorView {
             return false;
         }
         match key {
+            Key::ArrowUp | Key::ArrowDown => {
+                if !modifiers.shift
+                    && let Some(callback) = &self.config.vertical_navigation
+                {
+                    callback(key == Key::ArrowDown);
+                }
+            }
             Key::ArrowLeft | Key::ArrowRight => {
                 let range = value.selection.range();
                 let offset = if !modifiers.shift && !range.is_empty() {
@@ -288,11 +299,13 @@ impl EditorView {
             Key::Delete if writable => c.delete(false),
             Key::Enter | Key::NumpadEnter => {
                 if let Some(callback) = &self.config.submitted {
+                    ctx.consume_key_press(key, true);
                     callback(modifiers);
                 }
             }
             Key::Escape => {
                 if let Some(callback) = &self.config.escaped {
+                    ctx.consume_key_press(key, true);
                     callback();
                 }
             }
@@ -500,7 +513,6 @@ impl AnyView for EditorView {
                         ctx.release_pointer(pointer);
                     }
                     runtime.clipboard = None;
-                    runtime.ime_confirmation = None;
                     c.cancel_composition();
                 }
                 true
@@ -534,13 +546,7 @@ impl AnyView for EditorView {
                 }
                 true
             }
-            UiEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
-                let mut runtime = self.runtime.borrow_mut();
-                if runtime.ime_confirmation == Some(*key) {
-                    runtime.ime_confirmation = None;
-                }
-                true
-            }
+            UiEvent::Keyboard(KeyboardEvent::KeyUp { .. }) => true,
             UiEvent::Keyboard(KeyboardEvent::KeyDown { key, modifiers }) => {
                 self.key(*key, *modifiers, ctx)
             }
@@ -590,7 +596,6 @@ impl AnyView for EditorView {
         runtime.focused = false;
         runtime.pointer = None;
         runtime.clipboard = None;
-        runtime.ime_confirmation = None;
         self.config.controller.cancel_composition();
     }
 }

@@ -269,6 +269,25 @@ impl TabManager {
         })
     }
 
+    /// The shared tab reduction used by Host command draining; only resource creation
+    /// is supplied by the Host. The model preserves numeric bounds/final-tab close.
+    pub fn execute_command(
+        &mut self,
+        command: crate::tab_view::TabCommand,
+        create: impl FnOnce(TabId, ExternalDrawId) -> Result<TerminalTabResources>,
+    ) -> Result<TabActionOutcome> {
+        use crate::tab_view::TabCommand;
+        Ok(match command {
+            TabCommand::New => return self.create_tab(create),
+            TabCommand::Close(id) => self.close(id),
+            TabCommand::CloseActive => self.close_active(),
+            TabCommand::Activate(id) => self.activate(id),
+            TabCommand::Next => self.activate_next(),
+            TabCommand::Previous => self.activate_previous(),
+            TabCommand::Numeric(index) => self.activate_numeric(index),
+        })
+    }
+
     pub fn active_id(&self) -> Option<TabId> {
         self.active
     }

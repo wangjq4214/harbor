@@ -381,3 +381,124 @@ fn portable_startup_manual_and_watched_reload_keep_one_source() {
     assert!(error.to_string().contains(expected.to_str().unwrap()));
     assert_eq!(accepted.font.size, 25.0);
 }
+
+/// Exercises the same UI FIFO, one-shot Host admission and live I/O/publication seam
+/// as the native drain. GPU/font effects are covered by configuration_reload_tests.
+#[test]
+#[allow(clippy::arc_with_non_send_sync)]
+fn palette_reload_fifo_applies_once_and_rejected_candidate_keeps_effective_bindings() {
+    use harbor_app::{
+        command::{AppCommandRequest, CommandSource, resolve_keybindings},
+        tab_manager::{TabManager, TerminalTabResources},
+        terminal_view::TerminalWidgetBridge,
+        workspace::{WorkspaceUiController, tab_workspace},
+    };
+    use harbor_widget::{
+        input::event::{Key, KeyboardEvent, Modifiers, UiEvent},
+        renderer::Viewport,
+        runtime::Runtime,
+    };
+    use std::{
+        sync::{Arc, Mutex, atomic::AtomicBool},
+        time::Instant,
+    };
+    let file = ConfigFile::new();
+    let mut tabs = TabManager::new();
+    tabs.create_tab(|_, draw| {
+        let terminal = Arc::new(Mutex::new(harbor_terminal::Terminal::new_headless(4, 20)));
+        let bridge =
+            TerminalWidgetBridge::new(draw, terminal.clone(), Arc::new(AtomicBool::new(false)));
+        Ok(TerminalTabResources::new(terminal, bridge, "synthetic"))
+    })
+    .unwrap();
+    let ui = WorkspaceUiController::new(tabs.snapshots(), tabs.active_bridge().unwrap(), 1000.0);
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(1000, 500, 1.0));
+    runtime.set_root(tab_workspace(ui.clone(), false));
+    runtime.update(Instant::now());
+    let mut accepted = harbor_config::Settings::default();
+    let clipboard = accepted.clipboard.clone();
+    let mut effective = resolve_keybindings(&accepted.keybindings).keybindings;
+    let mut applied = 0;
+    for (source, should_accept) in [
+        (
+            "[keybindings.app.new-tab]\nbindings = [{ modifiers = ['ctrl'], key = 'n' }]\n",
+            true,
+        ),
+        (
+            "[keybindings.app.new-tab]\nbindings = [{ modifiers = ['ctrl'], key = 'w' }]\n",
+            false,
+        ),
+    ] {
+        file.write(source);
+        runtime.request_focus(&ui.terminal_focus());
+        runtime.update(Instant::now());
+        let mods = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('p'),
+            modifiers: mods,
+        }));
+        assert_eq!(
+            ui.drain_actions(),
+            [AppCommandRequest::shortcut(AppCommand::OpenCommandPalette)]
+        );
+        runtime.request_focus(&ui.open_palette());
+        runtime.update(Instant::now());
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: Key::Character('p'),
+            modifiers: mods,
+        }));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime(
+            "app.reload-configuration".into(),
+        )));
+        for _ in 0..2 {
+            runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: Key::Enter,
+                modifiers: Modifiers::default(),
+            }));
+        }
+        let actions = ui.drain_actions();
+        assert_eq!(actions.len(), 1);
+        let request = actions[0];
+        assert_eq!(request.command, AppCommand::ReloadConfiguration);
+        assert!(matches!(request.source, CommandSource::Palette { .. }));
+        ui.take_palette_request(request, &tabs.snapshots()).unwrap();
+        let previous = effective.clone();
+        let result = reload_configuration_from_path(
+            Some(file.path()),
+            &mut accepted,
+            &clipboard,
+            |_, _, bindings| {
+                applied += 1;
+                effective = bindings.clone();
+                ui.publish_keybindings(bindings);
+                Ok(vec![])
+            },
+        );
+        assert_eq!(result.is_ok(), should_accept);
+        if should_accept {
+            assert_ne!(effective, previous);
+            assert_eq!(applied, 1);
+            ui.report_palette_result(request.command, Ok(()));
+        } else {
+            assert_eq!(effective, previous);
+            assert_eq!(
+                applied, 1,
+                "rejected candidates cannot invoke effects/publication"
+            );
+            ui.report_palette_result(request.command, Err("Failed: conflicting bindings"));
+        }
+        assert!(ui.take_palette_request(request, &tabs.snapshots()).is_err());
+        runtime.request_focus(&ui.terminal_focus());
+        runtime.update(Instant::now());
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        }));
+        assert!(ui.drain_actions().is_empty());
+    }
+}

@@ -16,6 +16,9 @@ use crate::{
 /// An application operation that may be invoked by UI controls or keybindings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppCommand {
+    OpenCommandPalette,
+    /// Internal close intent tied to one editor lifetime.
+    CloseCommandPalette(u64),
     Tab(TabCommand),
     Copy,
     CopyOrInterrupt,
@@ -35,11 +38,21 @@ pub enum AppCommand {
     DismissNotification(u64),
 }
 
+/// Invocation origin is independent of shortcut consumption and focus disposition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandSource {
+    Direct,
+    Palette {
+        generation: u64,
+        target: Option<TabId>,
+    },
+}
 /// A typed command plus source-specific focus disposition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AppCommandRequest {
     pub command: AppCommand,
     pub focus: TabFocusPolicy,
+    pub source: CommandSource,
 }
 
 impl AppCommandRequest {
@@ -47,6 +60,7 @@ impl AppCommandRequest {
         Self {
             command,
             focus: TabFocusPolicy::Terminal,
+            source: CommandSource::Direct,
         }
     }
 
@@ -54,6 +68,7 @@ impl AppCommandRequest {
         Self {
             command: AppCommand::Tab(command),
             focus: TabFocusPolicy::PreserveRail,
+            source: CommandSource::Direct,
         }
     }
 
@@ -107,6 +122,13 @@ fn chord(key: Key, ctrl: bool, shift: bool) -> KeyChord {
 /// Returns the fixed initial registry in stable presentation order.
 pub fn command_registry() -> Vec<CommandDescriptor> {
     let mut entries = vec![
+        descriptor(
+            "app.command-palette",
+            "Open command palette",
+            AppCommand::OpenCommandPalette,
+            chord(Key::Character('p'), true, true),
+            false,
+        ),
         descriptor(
             "app.reload-configuration",
             "Reload configuration",
@@ -434,6 +456,48 @@ fn parse_key(token: &str) -> Result<Key, &'static str> {
     }
 }
 
+/// The delivered palette increment; registry visibility is not changed for later consumers.
+pub fn palette_command_supported(command: AppCommand) -> bool {
+    matches!(
+        command,
+        AppCommand::Tab(_) | AppCommand::ReloadConfiguration
+    )
+}
+
+/// Shared availability facts used by palette presentation and authoritative Host revalidation.
+/// Shortcut routing remains source-specific (including terminal pass-through).
+pub fn command_availability(
+    command: AppCommand,
+    snapshots: &[crate::tab_manager::TabSnapshot],
+) -> Result<(), &'static str> {
+    let active = snapshots.iter().find(|tab| tab.active);
+    match command {
+        AppCommand::ReloadConfiguration
+        | AppCommand::OpenCommandPalette
+        | AppCommand::Tab(TabCommand::New) => Ok(()),
+        AppCommand::Tab(TabCommand::Numeric(index)) => {
+            let tab = snapshots
+                .get(index.to_zero_based())
+                .ok_or("Tab does not exist")?;
+            if tab.active {
+                Err("Tab is already active")
+            } else {
+                Ok(())
+            }
+        }
+        AppCommand::Tab(TabCommand::Activate(id) | TabCommand::Close(id)) => snapshots
+            .iter()
+            .any(|tab| tab.id == id)
+            .then_some(())
+            .ok_or("Tab no longer exists"),
+        AppCommand::Tab(TabCommand::Next | TabCommand::Previous) if snapshots.len() < 2 => {
+            Err("No other tab")
+        }
+        AppCommand::Tab(_) => active.map(|_| ()).ok_or("No active terminal"),
+        _ => Err("Not yet integrated with the command palette"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +521,42 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             valid: true,
         }
+    }
+
+    #[test]
+    fn palette_opener_uses_atomic_override_multiple_unbind_and_conflict_policy() {
+        let command = AppCommand::OpenCommandPalette;
+        let default = chord(Key::Character('p'), true, true);
+        let defaults = resolve_keybindings(&RawKeybindings::default()).keybindings;
+        assert!(
+            defaults
+                .bindings()
+                .any(|binding| binding == (default, command))
+        );
+        let replaced = validate_keybindings(&raw(vec![(
+            "app.command-palette",
+            vec![binding(&["ctrl"], "p"), binding(&["alt"], "p")],
+        )]))
+        .unwrap();
+        assert_eq!(
+            replaced
+                .bindings()
+                .filter(|(_, bound)| *bound == command)
+                .count(),
+            2
+        );
+        assert!(
+            !replaced
+                .bindings()
+                .any(|binding| binding == (default, command))
+        );
+        let unbound = validate_keybindings(&raw(vec![("app.command-palette", vec![])])).unwrap();
+        assert!(!unbound.bindings().any(|(_, bound)| bound == command));
+        let conflict = raw(vec![("app.command-palette", vec![binding(&["ctrl"], "t")])]);
+        assert!(validate_keybindings(&conflict).is_err());
+        let fallback = resolve_keybindings(&conflict);
+        assert!(fallback.used_defaults);
+        assert_eq!(fallback.keybindings, defaults);
     }
 
     #[test]
@@ -497,7 +597,7 @@ mod tests {
     #[test]
     fn registry_ids_and_defaults_are_unique_and_complete() {
         let registry = command_registry();
-        assert_eq!(registry.len(), 25);
+        assert_eq!(registry.len(), 26);
         assert_eq!(
             registry
                 .iter()

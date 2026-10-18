@@ -414,7 +414,7 @@ impl ActiveSession {
         );
     }
 
-    fn reload_configuration(&mut self, automatic: bool) {
+    fn reload_configuration(&mut self, automatic: bool) -> Option<bool> {
         use harbor_app::notifications::ConfigurationNoticeSource as Source;
         let path = &self.configuration_path;
         let path_label = path
@@ -437,6 +437,11 @@ impl ActiveSession {
                 Ok(warnings)
             },
         );
+        let completion = match &result {
+            Ok(Some(_)) => Some(true),
+            Ok(None) => None,
+            Err(_) => Some(false),
+        };
         match result {
             Ok(acceptance) => {
                 self.reload_feedback.clear();
@@ -480,6 +485,7 @@ impl ActiveSession {
                 }
             }
         }
+        completion
     }
     fn drain_app_commands(
         &mut self,
@@ -490,7 +496,44 @@ impl ActiveSession {
             if self.paste.is_active() {
                 break;
             }
+            let palette_generation = match request.source {
+                harbor_app::command::CommandSource::Palette { generation, .. } => Some(generation),
+                harbor_app::command::CommandSource::Direct => None,
+            };
+            if palette_generation.is_some() {
+                // Admission rechecks Host-owned context and disposes only the source editor.
+                if let Err(reason) = self.tabs.take_palette_request(request) {
+                    self.workspace_ui.report_palette_result(
+                        request.command,
+                        Err(&format!("Rejected: {reason}")),
+                    );
+                    if !self.workspace_ui.palette_is_open() {
+                        Self::merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                    }
+                    Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                    continue;
+                }
+            }
             match request.command {
+                AppCommand::OpenCommandPalette => {
+                    let focus = self.workspace_ui.open_palette();
+                    Self::merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
+                }
+                AppCommand::CloseCommandPalette(generation) => {
+                    if self.workspace_ui.close_palette(generation) {
+                        Self::merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                    }
+                }
                 AppCommand::SearchOpen
                 | AppCommand::SearchClose
                 | AppCommand::SearchChanged
@@ -510,7 +553,25 @@ impl ActiveSession {
                     Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                 }
                 AppCommand::ReloadConfiguration => {
-                    self.reload_configuration(false);
+                    let completion = self.reload_configuration(false);
+                    if palette_generation.is_some() {
+                        self.workspace_ui.report_palette_result(
+                            request.command,
+                            match completion {
+                                Some(true) => Ok(()),
+                                Some(false) => Err("Failed: see configuration reload error"),
+                                None => {
+                                    Err("Rejected: configuration file is absent or unavailable")
+                                }
+                            },
+                        );
+                        Self::merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                    }
                     Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                 }
                 AppCommand::Tab(command) => {
@@ -518,6 +579,24 @@ impl ActiveSession {
                         self.tabs
                             .execute_tab_command(&mut self.main_host, command, request.focus);
 
+                    if palette_generation.is_some() {
+                        self.workspace_ui.report_palette_result(
+                            request.command,
+                            if outcome.failed {
+                                Err("Failed: see session creation error")
+                            } else {
+                                Ok(())
+                            },
+                        );
+                        if outcome.failed {
+                            Self::merge_wait(
+                                &mut result.wait,
+                                self.main_host
+                                    .request_focus(&self.workspace_ui.terminal_focus())
+                                    .wait,
+                            );
+                        }
+                    }
                     Self::merge_wait(&mut result.wait, outcome.wait);
                     self.reconcile_clipboard();
                     if outcome.close_window {
@@ -639,7 +718,7 @@ impl ActiveSession {
                             harbor_app::notifications::ConfigurationNoticeSource::Observation,
                             None,
                         );
-                        self.reload_configuration(true);
+                        let _ = self.reload_configuration(true);
                     }
                     Some(crate::configuration_watch::WatchEvent::Unavailable(kind)) => {
                         self.report_watch_failure(&format!("observation I/O: {kind:?}"), true);
