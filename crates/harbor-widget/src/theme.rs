@@ -82,17 +82,13 @@ impl ControlStyle {
         hovered: bool,
         pressed: bool,
     ) -> ControlColors {
-        if disabled {
-            self.disabled
-        } else if pressed {
-            self.pressed
-        } else if selected {
-            self.selected
-        } else if hovered {
-            self.hovered
-        } else {
-            self.normal
-        }
+        self.resolve_state(&InteractionState {
+            disabled,
+            selected,
+            hovered,
+            pressed,
+            ..InteractionState::default()
+        })
     }
 }
 
@@ -206,6 +202,32 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_resolve_matches_state_precedence_for_all_flag_combinations() {
+        let style = Theme::default().button;
+        for flags in 0..16 {
+            let disabled = flags & 1 != 0;
+            let selected = flags & 2 != 0;
+            let hovered = flags & 4 != 0;
+            let pressed = flags & 8 != 0;
+            let expected = if disabled {
+                style.disabled
+            } else if pressed {
+                style.pressed
+            } else if selected {
+                style.selected
+            } else if hovered {
+                style.hovered
+            } else {
+                style.normal
+            };
+            assert_eq!(
+                style.resolve(disabled, selected, hovered, pressed),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn control_visual_state_precedence() {

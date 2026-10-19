@@ -213,23 +213,15 @@ impl TextEditingController {
 
     fn restore(&self, redo: bool) -> bool {
         let mut history = self.history.borrow_mut();
-        let next = if redo {
-            history.redo.last()
-        } else {
-            history.undo.last()
-        };
-        let Some(next) = next.filter(|next| self.accepts(&next.text)).cloned() else {
+        let History { undo, redo: redos } = &mut *history;
+        let (source, destination) = if redo { (redos, undo) } else { (undo, redos) };
+        if !source.last().is_some_and(|next| self.accepts(&next.text)) {
             return false;
-        };
+        }
         let mut current = self.value();
         current.composition = None;
-        if redo {
-            history.redo.pop();
-            history.undo.push(current);
-        } else {
-            history.undo.pop();
-            history.redo.push(current);
-        }
+        let next = source.pop().expect("history entry was validated");
+        destination.push(current);
         drop(history);
         self.value.set(next);
         true
@@ -299,6 +291,34 @@ pub(crate) fn next_boundary(text: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_history_restores_preserve_both_stacks_and_composition() {
+        use std::cell::Cell;
+        let limit = Rc::new(Cell::new(10));
+        let policy = limit.clone();
+        let c = TextEditingController::with_acceptance("a", move |s| s.len() <= policy.get());
+        c.replace_selection("b");
+        c.compose(ImePreedit::new("你", None));
+        let composed = c.value();
+        let revision = c.revision();
+
+        limit.set(0);
+        assert!(!c.undo());
+        assert_eq!(c.value(), composed);
+        assert_eq!(c.revision(), revision);
+        limit.set(1);
+        assert!(c.undo());
+        assert_eq!(c.text(), "a");
+        assert!(c.value().composition.is_none());
+        let undone = c.value();
+        assert!(!c.redo());
+        assert_eq!(c.value(), undone);
+        limit.set(2);
+        assert!(c.redo());
+        assert_eq!(c.text(), "ab");
+        assert!(c.value().composition.is_none());
+    }
 
     #[test]
     fn unicode_selection_replacement_and_history() {

@@ -497,7 +497,7 @@ impl Runtime {
                 .collect::<Vec<_>>();
             view.post_layout(rect, &child_rects);
 
-            if !valid_layout_notification_rect(rect) {
+            if !rect.is_valid() {
                 continue;
             }
             let Some(callback) = view.layout_changed_callback() else {
@@ -929,10 +929,6 @@ impl Runtime {
     fn tree_has_modal(&self, fiber_id: FiberId) -> bool {
         EventRouter::tree_has_modal(&self.arena, fiber_id)
     }
-}
-
-fn valid_layout_notification_rect(rect: Rect) -> bool {
-    rect.is_valid()
 }
 
 impl Drop for Runtime {

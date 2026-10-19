@@ -407,10 +407,8 @@ impl EventRouter {
         if !external.is_empty() {
             self.pending_external_input.extend(external);
         }
-        let previous_focus = self.input.focused;
-        let previous_visible = self.input.focus_visible;
-        let mut target_focus = previous_focus;
-        let mut target_visible = previous_visible;
+        let mut target_focus = self.input.focused;
+        let mut target_visible = self.input.focus_visible;
         let mut needs_paint = false;
         let mut navigated_scopes = Vec::new();
 
@@ -447,13 +445,8 @@ impl EventRouter {
             }
         }
 
-        let focus_needs_paint = self.apply_focus_transition(
-            arena,
-            previous_focus,
-            previous_visible,
-            target_focus,
-            target_visible,
-        );
+        let focus_needs_paint =
+            self.transition_focus_with_visibility(arena, target_focus, target_visible);
         needs_paint || ctx.needs_paint() || focus_needs_paint
     }
 
@@ -465,21 +458,10 @@ impl EventRouter {
         &mut self,
         arena: &FiberArena,
         next: Option<FiberId>,
-        focus_visible: bool,
+        next_visible: bool,
     ) -> bool {
         let previous = self.input.focused;
         let previous_visible = self.input.focus_visible;
-        self.apply_focus_transition(arena, previous, previous_visible, next, focus_visible)
-    }
-
-    fn apply_focus_transition(
-        &mut self,
-        arena: &FiberArena,
-        previous: Option<FiberId>,
-        previous_visible: bool,
-        next: Option<FiberId>,
-        next_visible: bool,
-    ) -> bool {
         if previous == next && previous_visible == next_visible {
             return false;
         }

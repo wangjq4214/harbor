@@ -133,7 +133,7 @@ impl SceneGraph {
 
     /// Diffs incoming items against retained items by paint_order, primitive,
     /// and id. Matches on id; creates new ids for unmatched items.
-    pub fn diff(&mut self, incoming: Vec<SceneItem>) -> SceneDelta {
+    pub fn diff(&mut self, mut incoming: Vec<SceneItem>) -> SceneDelta {
         let mut added = Vec::new();
         let mut removed = Vec::new();
         let mut modified = Vec::new();
@@ -146,25 +146,11 @@ impl SceneGraph {
                 .filter_map(|item| (item.id != 0).then_some(item.id)),
         );
 
-        let mut new_items = Vec::new();
         let mut seen_ids: HashSet<u64> = HashSet::new();
         let mut next_id = self.next_id;
 
-        for mut item in incoming {
-            if item.id != 0 {
-                seen_ids.insert(item.id);
-                if let Some(old) = old_by_id.get(&item.id) {
-                    if old.paint_order != item.paint_order
-                        || old.primitive != item.primitive
-                        || old.clips != item.clips
-                    {
-                        modified.push(item.clone());
-                    }
-                } else {
-                    added.push(item.clone());
-                }
-                new_items.push(item);
-            } else {
+        for item in &mut incoming {
+            if item.id == 0 {
                 while next_id == 0 || !reserved_ids.insert(next_id) {
                     next_id = next_id
                         .checked_add(1)
@@ -174,25 +160,32 @@ impl SceneGraph {
                 next_id = next_id
                     .checked_add(1)
                     .expect("scene item ID allocator exhausted");
-                seen_ids.insert(item.id);
+            }
+
+            seen_ids.insert(item.id);
+            if let Some(old) = old_by_id.get(&item.id) {
+                if old.paint_order != item.paint_order
+                    || old.primitive != item.primitive
+                    || old.clips != item.clips
+                {
+                    modified.push(item.clone());
+                }
+            } else {
                 added.push(item.clone());
-                new_items.push(item);
             }
         }
 
         self.next_id = next_id;
 
-        // Collect removals while we still have an immutable borrow
+        // Collect removals in retained order.
         for old in &self.items {
             if !seen_ids.contains(&old.id) {
                 removed.push(old.id);
             }
         }
 
-        // Drop old_by_id to release immutable borrow on self.items
         drop(old_by_id);
-
-        self.items = new_items;
+        self.items = incoming;
 
         SceneDelta {
             added,
@@ -263,6 +256,36 @@ mod tests {
             graph.items().iter().map(|item| item.id).collect::<Vec<_>>(),
             [1, 2]
         );
+    }
+
+    #[test]
+    fn diff_mixed_ids_preserves_order_and_detects_clip_only_changes() {
+        let mut graph = SceneGraph::new();
+        graph.diff(vec![
+            make_quad(10, 0, 0.0, 0.0),
+            make_quad(20, 1, 0.0, 0.0),
+            make_quad(30, 2, 0.0, 0.0),
+        ]);
+        let mut clipped = make_quad(20, 1, 0.0, 0.0);
+        clipped.clips.push(
+            RoundedClip::new(
+                Rect::from_min_size(Point::ZERO, Size::new(10.0, 10.0)),
+                crate::BorderRadius::default(),
+                crate::ClipBehavior::HardEdge,
+            )
+            .unwrap(),
+        );
+        let mut allocated = make_quad(0, 0, 5.0, 5.0);
+        // Reserve explicit IDs even when they occur after an unassigned item.
+        let explicit = make_quad(1, 2, 10.0, 10.0);
+        let delta = graph.diff(vec![allocated.clone(), clipped.clone(), explicit.clone()]);
+        allocated.id = 2;
+
+        assert_eq!(delta.added, vec![allocated.clone(), explicit.clone()]);
+        assert_eq!(delta.modified, vec![clipped.clone()]);
+        assert_eq!(delta.removed, vec![10, 30]);
+        assert_eq!(graph.items(), &[allocated, clipped, explicit]);
+        assert!(graph.diff(graph.items().to_vec()).is_empty());
     }
 
     #[test]

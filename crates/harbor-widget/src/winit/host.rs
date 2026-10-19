@@ -752,10 +752,6 @@ impl WinitWindowHost {
             .render_with_prepare(&mut self.runtime, target, |runtime| {
                 runtime.prepare_text(self.gpu.queue());
             });
-        self.finish_frame(frame)
-    }
-
-    fn finish_frame(&mut self, frame: FrameOutcome) -> HostFrameOutcome {
         finish_frame_with(frame, |effects| {
             apply_editor_window_effects(&self.window, &mut self.runtime, effects)
         })

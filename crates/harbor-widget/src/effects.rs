@@ -241,13 +241,11 @@ impl RuntimeEffects {
         self.control_flow = other.control_flow.or(self.control_flow);
         self.cursor = other.cursor.or(self.cursor);
         if let Some(other_ime) = other.ime {
-            if let Some(ime) = self.ime.as_mut() {
-                ime.merge(other_ime);
-            } else {
-                self.ime = Some(other_ime);
-            }
+            self.ime.get_or_insert_default().merge(other_ime);
         }
-        self.clipboard = other.clipboard.or_else(|| self.clipboard.clone());
+        if other.clipboard.is_some() {
+            self.clipboard = other.clipboard;
+        }
     }
 
     /// Returns a merged copy without consuming either input.

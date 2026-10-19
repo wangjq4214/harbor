@@ -357,16 +357,12 @@ impl AnyView for ScrollAreaView {
     }
 
     fn post_layout(&self, rect: Rect, child_rects: &[Rect]) {
-        let content_extent = child_rects
-            .first()
-            .filter(|rect| valid_rect(**rect))
-            .map(|rect| rect.size().height)
-            .unwrap_or(0.0);
-        let offset = child_rects
+        let (content_extent, offset) = child_rects
             .first()
             .filter(|child| valid_rect(**child))
-            .map(|child| rect.min.y - child.min.y)
-            .unwrap_or(0.0);
+            .map_or((0.0, 0.0), |child| {
+                (child.size().height, rect.min.y - child.min.y)
+            });
         self.controller
             .commit_metrics(rect.size().height, content_extent, offset);
     }
@@ -427,6 +423,38 @@ fn valid_rect(rect: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_layout_uses_one_valid_child_for_both_committed_metrics() {
+        let controller = ScrollController::new();
+        let view = ScrollAreaView {
+            controller: controller.clone(),
+            line_step: DEFAULT_SCROLL_LINE_STEP,
+        };
+        let viewport = Rect::from_min_size(Point::new(5.0, 100.0), Size::new(50.0, 40.0));
+        let child = Rect::from_min_size(Point::new(5.0, 80.0), Size::new(50.0, 100.0));
+        view.post_layout(viewport, &[child]);
+        assert_eq!(controller.metrics().content_extent(), 100.0);
+        assert_eq!(controller.metrics().offset(), 20.0);
+        assert_eq!(controller.metrics().max_scroll_extent(), 60.0);
+
+        let invalid = Rect {
+            max: Point::new(f32::NAN, 180.0),
+            ..child
+        };
+        let inverted = Rect {
+            max: Point::new(4.0, 180.0),
+            ..child
+        };
+        let empty = Rect::from_min_size(viewport.min, Size::ZERO);
+        for children in [vec![], vec![invalid], vec![inverted], vec![empty]] {
+            view.post_layout(viewport, &children);
+            assert_eq!(controller.metrics().viewport_extent(), 40.0);
+            assert_eq!(controller.metrics().content_extent(), 0.0);
+            assert_eq!(controller.metrics().offset(), 0.0);
+            assert_eq!(controller.offset(), 0.0);
+        }
+    }
 
     #[test]
     fn controller_normalizes_requests_and_clamps_after_commit() {

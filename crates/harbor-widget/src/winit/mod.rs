@@ -99,7 +99,7 @@ pub struct WinitAdapter {
     /// The latest mouse cursor position in physical pixels.
     mouse_position: Point,
     scale_factor: f32,
-    ime_preedit: Option<String>,
+    ime_composing: bool,
     /// Active touch contacts and their namespaced public pointer ids.
     touch_contacts: Vec<TouchContact>,
     /// Suppresses mouse releases that belong to captures canceled on focus loss,
@@ -133,7 +133,7 @@ impl WinitAdapter {
             } else {
                 1.0
             },
-            ime_preedit: None,
+            ime_composing: false,
             touch_contacts: Vec::new(),
             mouse_release_quarantine: [false; 3],
             active_mouse_buttons: [false; 3],
@@ -242,7 +242,7 @@ impl WinitAdapter {
             self.modifiers = ModifiersState::empty();
             // Focus loss ends the current composition so a later focus
             // session cannot inherit IME suppression.
-            self.ime_preedit = None;
+            self.ime_composing = false;
             self.touch_contacts.clear();
             effects.merge(RuntimeEffects {
                 control_flow: Some(crate::effects::ControlFlowEffect::Wait),
@@ -258,12 +258,8 @@ impl WinitAdapter {
             self.mouse_release_quarantine[index] |= self.active_mouse_buttons[index];
             self.active_mouse_buttons[index] = false;
         }
-        let active_touches: Vec<_> = self
-            .touch_contacts
-            .iter()
-            .map(|contact| (contact.device_id, contact.source_id))
-            .collect();
-        for identity in active_touches {
+        for contact in &self.touch_contacts {
+            let identity = (contact.device_id, contact.source_id);
             if !self.quarantined_touches.contains(&identity) {
                 self.quarantined_touches.push(identity);
             }
@@ -438,7 +434,7 @@ impl WinitAdapter {
         if metadata.is_synthetic {
             return WinitEventOutcome::handled(RuntimeEffects::default());
         }
-        let is_composing = self.ime_preedit.is_some();
+        let is_composing = self.ime_composing;
         let suppressed =
             ime_suppresses_keyboard(logical_key, state, location, self.modifiers, is_composing);
         let Some(ui_event) =
@@ -555,24 +551,24 @@ impl WinitAdapter {
     fn convert_ime(&mut self, event: &Ime) -> Option<UiEvent> {
         match event {
             Ime::Enabled => {
-                self.ime_preedit = None;
+                self.ime_composing = false;
                 None
             }
             Ime::Disabled => {
-                self.ime_preedit = None;
+                self.ime_composing = false;
                 Some(UiEvent::ImePreedit(
                     crate::input::event::ImePreedit::default(),
                 ))
             }
             Ime::Preedit(text, cursor_range) => {
-                self.ime_preedit = (!text.is_empty()).then(|| text.clone());
+                self.ime_composing = !text.is_empty();
                 Some(UiEvent::ImePreedit(crate::input::event::ImePreedit::new(
                     text.clone(),
                     *cursor_range,
                 )))
             }
             Ime::Commit(text) => {
-                let was_composing = self.ime_preedit.take().is_some();
+                let was_composing = std::mem::take(&mut self.ime_composing);
                 if text.is_empty() {
                     was_composing
                         .then(|| UiEvent::ImePreedit(crate::input::event::ImePreedit::default()))
@@ -1262,7 +1258,7 @@ mod tests {
         );
         assert!(outcome.handled);
         assert!(outcome.effects.is_noop());
-        assert!(adapter.ime_preedit.is_some());
+        assert!(adapter.ime_composing);
     }
 
     #[test]
@@ -1293,7 +1289,7 @@ mod tests {
                 ElementState::Pressed,
                 KeyLocation::Standard,
                 ModifiersState::empty(),
-                adapter.ime_preedit.is_some(),
+                adapter.ime_composing,
             )
             .is_none()
         );
@@ -1301,7 +1297,7 @@ mod tests {
         let outcome =
             adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit("你".into())));
         assert!(outcome.handled);
-        assert!(adapter.ime_preedit.is_none());
+        assert!(!adapter.ime_composing);
     }
 
     #[test]
@@ -1351,7 +1347,7 @@ mod tests {
             ElementState::Pressed,
             KeyLocation::Standard,
             ModifiersState::empty(),
-            adapter.ime_preedit.is_some(),
+            adapter.ime_composing,
         );
         assert!(
             key_a.is_some(),
@@ -1364,7 +1360,7 @@ mod tests {
             ElementState::Pressed,
             KeyLocation::Standard,
             ModifiersState::empty(),
-            adapter.ime_preedit.is_some(),
+            adapter.ime_composing,
         );
         assert!(key_enter.is_some(), "Enter should never be suppressed");
 
@@ -1374,7 +1370,7 @@ mod tests {
             ElementState::Pressed,
             KeyLocation::Standard,
             ModifiersState::CONTROL,
-            adapter.ime_preedit.is_some(),
+            adapter.ime_composing,
         );
         assert!(key_ctrl_c.is_some(), "Ctrl+C should never be suppressed");
     }
@@ -1390,14 +1386,14 @@ mod tests {
             &mut runtime,
             &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
         );
-        assert!(adapter.ime_preedit.is_some());
+        assert!(adapter.ime_composing);
 
         // Winit clearing marked text with empty preedit clears composing state
         adapter.handle_event(
             &mut runtime,
             &WindowEvent::Ime(Ime::Preedit(String::new(), None)),
         );
-        assert!(adapter.ime_preedit.is_none());
+        assert!(!adapter.ime_composing);
 
         // Direct character KeyDown is restored
         let key_a = keyboard_to_uievent(
@@ -1405,7 +1401,7 @@ mod tests {
             ElementState::Pressed,
             KeyLocation::Standard,
             ModifiersState::empty(),
-            adapter.ime_preedit.is_some(),
+            adapter.ime_composing,
         );
         assert!(
             key_a.is_some(),
@@ -1852,12 +1848,12 @@ mod tests {
     fn focus_loss_clears_window_transient_state() {
         let mut adapter = WinitAdapter::new();
         adapter.modifiers = ModifiersState::SHIFT;
-        adapter.ime_preedit = Some("draft".into());
+        adapter.ime_composing = true;
         let mut runtime = Runtime::new();
         let outcome = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
         assert!(outcome.handled);
         assert_eq!(adapter.modifiers, ModifiersState::empty());
-        assert!(adapter.ime_preedit.is_none());
+        assert!(!adapter.ime_composing);
 
         adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
         assert!(
@@ -1866,7 +1862,7 @@ mod tests {
                 ElementState::Pressed,
                 KeyLocation::Standard,
                 adapter.modifiers,
-                adapter.ime_preedit.is_some(),
+                adapter.ime_composing,
             )
             .is_some()
         );
@@ -1893,7 +1889,7 @@ mod tests {
         });
 
         assert_eq!(adapter.modifiers, ModifiersState::CONTROL);
-        assert_eq!(adapter.ime_preedit.as_deref(), Some("draft"));
+        assert!(adapter.ime_composing);
         assert_eq!(adapter.mouse_position, Point::new(20.0, 30.0));
         assert!(adapter.quarantine_pointer_event(&WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
@@ -1902,7 +1898,7 @@ mod tests {
         }));
 
         adapter.observe_blocked_widget_event(&WindowEvent::Ime(Ime::Preedit(String::new(), None)));
-        assert!(adapter.ime_preedit.is_none());
+        assert!(!adapter.ime_composing);
     }
 
     #[test]

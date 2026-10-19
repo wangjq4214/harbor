@@ -81,13 +81,16 @@ fn paint_fiber_with_clips(
         }
     };
 
-    let before_ids = retain_scene_item_ids(arena, id, false, &before_primitives, next_scene_id);
     append_scene_items(
         &mut items,
-        before_ids,
+        &mut arena
+            .get_mut(id)
+            .expect("fiber was present during paint")
+            .scene_item_slots,
         before_primitives,
         inherited_clips,
         &mut order,
+        next_scene_id,
     );
 
     let mut child_clips = inherited_clips.to_vec();
@@ -108,60 +111,43 @@ fn paint_fiber_with_clips(
         items.extend(child_items);
     }
 
-    let after_ids = retain_scene_item_ids(arena, id, true, &after_primitives, next_scene_id);
     append_scene_items(
         &mut items,
-        after_ids,
+        &mut arena
+            .get_mut(id)
+            .expect("fiber was present during paint")
+            .after_scene_item_slots,
         after_primitives,
         inherited_clips,
         &mut order,
+        next_scene_id,
     );
 
     items
 }
 
-fn retain_scene_item_ids(
-    arena: &mut FiberArena,
-    id: FiberId,
-    after_children: bool,
-    primitives: &[(u32, crate::scene::primitive::Primitive)],
-    next_scene_id: &mut u64,
-) -> Vec<u64> {
-    let fiber = arena.get_mut(id).expect("fiber was present during paint");
-    let slots = if after_children {
-        &mut fiber.after_scene_item_slots
-    } else {
-        &mut fiber.scene_item_slots
-    };
-
-    primitives
-        .iter()
-        .map(|(slot, _)| {
-            if let Some((_, id)) = slots
-                .iter()
-                .find(|(existing_slot, _)| existing_slot == slot)
-            {
-                *id
-            } else {
-                let id = *next_scene_id;
-                *next_scene_id = next_scene_id
-                    .checked_add(1)
-                    .expect("scene item ID allocator exhausted");
-                slots.push((*slot, id));
-                id
-            }
-        })
-        .collect::<Vec<_>>()
-}
-
 fn append_scene_items(
     items: &mut Vec<SceneItem>,
-    item_ids: Vec<u64>,
+    slots: &mut Vec<(u32, u64)>,
     primitives: Vec<(u32, crate::scene::primitive::Primitive)>,
     clips: &[crate::scene::clip::RoundedClip],
     order: &mut u32,
+    next_scene_id: &mut u64,
 ) {
-    for (id, (_, primitive)) in item_ids.into_iter().zip(primitives) {
+    for (slot, primitive) in primitives {
+        let id = if let Some((_, id)) = slots
+            .iter()
+            .find(|(existing_slot, _)| *existing_slot == slot)
+        {
+            *id
+        } else {
+            let id = *next_scene_id;
+            *next_scene_id = next_scene_id
+                .checked_add(1)
+                .expect("scene item ID allocator exhausted");
+            slots.push((slot, id));
+            id
+        };
         items.push(SceneItem {
             id,
             primitive,
@@ -169,5 +155,54 @@ fn append_scene_items(
             paint_order: *order,
         });
         *order += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::{Point, Rect, Size};
+    use crate::scene::primitive::{Color, Primitive};
+
+    #[test]
+    fn omitted_paint_slots_keep_their_ids_when_restored() {
+        let primitive = Primitive::Quad {
+            rect: Rect::from_min_size(Point::ZERO, Size::new(10.0, 10.0)),
+            color: Color::RED,
+            corner_radius: 0.0,
+        };
+        let mut slots = Vec::new();
+        let mut next_id = 1;
+        for (keys, expected_ids) in [
+            (vec![2, 7], vec![1, 2]),
+            (vec![7], vec![2]),
+            (vec![7, 2], vec![2, 1]),
+        ] {
+            let mut items = Vec::new();
+            let mut order = 10;
+            append_scene_items(
+                &mut items,
+                &mut slots,
+                keys.into_iter()
+                    .map(|key| (key, primitive.clone()))
+                    .collect(),
+                &[],
+                &mut order,
+                &mut next_id,
+            );
+            assert_eq!(
+                items.iter().map(|item| item.id).collect::<Vec<_>>(),
+                expected_ids
+            );
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item.paint_order)
+                    .collect::<Vec<_>>(),
+                (10..order).collect::<Vec<_>>()
+            );
+            assert!(items.iter().all(|item| item.clips.is_empty()));
+            assert_eq!(next_id, 3);
+        }
     }
 }
