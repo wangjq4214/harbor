@@ -26,33 +26,35 @@ struct ConfirmationDialogProps {
     allow_label: &'static str,
 }
 
-fn confirmation_dialog(cx: &mut BuildCx, props: &ConfirmationDialogProps) -> View {
-    let cancelled = Arc::clone(&props.cancelled);
-    let confirmed = Arc::clone(&props.confirmed);
-    harbor_widget::view! { cx; FocusScope::new() => {
-        Padding::new(24.0, 16.0, 24.0, 16.0) => {
-            Column::new() => {
-                TextLabel::new(props.header_text.clone());
-                SizedBox::new(Size::new(0.0, 8.0));
-                PreviewPane::new(
-                    props.wrapped_lines.clone(),
-                    Arc::clone(&props.scroll_offset),
-                    props.line_height,
-                    CONFIRMATION_PREVIEW_VISIBLE_LINES,
-                );
-                SizedBox::new(Size::new(0.0, 12.0));
-                Row::new() => {
-                    Button::new(props.deny_label).on_click(move |_| {
-                        cancelled.store(true, Ordering::SeqCst);
-                    });
-                    SizedBox::new(Size::new(12.0, 0.0));
-                    Button::new(props.allow_label).on_click(move |_| {
-                        confirmed.store(true, Ordering::SeqCst);
-                    });
+impl Component for ConfirmationDialogProps {
+    fn build(&self, cx: &mut BuildCx) -> View {
+        let cancelled = Arc::clone(&self.cancelled);
+        let confirmed = Arc::clone(&self.confirmed);
+        harbor_widget::view! { cx; FocusScope::new() => {
+            Padding::new(24.0, 16.0, 24.0, 16.0) => {
+                Column::new() => {
+                    TextLabel::new(self.header_text.clone());
+                    SizedBox::new(Size::new(0.0, 8.0));
+                    PreviewPane::new(
+                        self.wrapped_lines.clone(),
+                        Arc::clone(&self.scroll_offset),
+                        self.line_height,
+                        CONFIRMATION_PREVIEW_VISIBLE_LINES,
+                    );
+                    SizedBox::new(Size::new(0.0, 12.0));
+                    Row::new() => {
+                        Button::new(self.deny_label).on_click(move |_| {
+                            cancelled.store(true, Ordering::SeqCst);
+                        });
+                        SizedBox::new(Size::new(12.0, 0.0));
+                        Button::new(self.allow_label).on_click(move |_| {
+                            confirmed.store(true, Ordering::SeqCst);
+                        });
+                    }
                 }
             }
-        }
-    } }
+        } }
+    }
 }
 
 pub fn build_confirmation_root(
@@ -63,7 +65,7 @@ pub fn build_confirmation_root(
     confirmed: Arc<AtomicBool>,
     line_height: f32,
 ) -> impl Component {
-    let props = ConfirmationDialogProps {
+    ConfirmationDialogProps {
         header_text: format!("Paste {line_count} lines?"),
         deny_label: "Cancel",
         allow_label: "Paste",
@@ -72,8 +74,7 @@ pub fn build_confirmation_root(
         cancelled,
         confirmed,
         line_height,
-    };
-    move |cx: &mut BuildCx| confirmation_dialog(cx, &props)
+    }
 }
 /// Independent, per-request clipboard-write confirmation; never grants paste permission.
 pub fn build_clipboard_confirmation_root(
@@ -84,7 +85,7 @@ pub fn build_clipboard_confirmation_root(
     confirmed: Arc<AtomicBool>,
     line_height: f32,
 ) -> impl Component {
-    let props = ConfirmationDialogProps {
+    ConfirmationDialogProps {
         header_text,
         deny_label: "Deny this request",
         allow_label: "Allow this request",
@@ -93,6 +94,5 @@ pub fn build_clipboard_confirmation_root(
         cancelled,
         confirmed,
         line_height,
-    };
-    move |cx: &mut BuildCx| confirmation_dialog(cx, &props)
+    }
 }

@@ -173,29 +173,17 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             true,
         ),
     ];
-    for index in 1..=9_u8 {
-        let id = match index {
-            1 => "app.select-tab-1",
-            2 => "app.select-tab-2",
-            3 => "app.select-tab-3",
-            4 => "app.select-tab-4",
-            5 => "app.select-tab-5",
-            6 => "app.select-tab-6",
-            7 => "app.select-tab-7",
-            8 => "app.select-tab-8",
-            _ => "app.select-tab-9",
-        };
-        let label = match index {
-            1 => "Select tab 1",
-            2 => "Select tab 2",
-            3 => "Select tab 3",
-            4 => "Select tab 4",
-            5 => "Select tab 5",
-            6 => "Select tab 6",
-            7 => "Select tab 7",
-            8 => "Select tab 8",
-            _ => "Select tab 9",
-        };
+    for (index, (id, label)) in (1..=9_u8).zip([
+        ("app.select-tab-1", "Select tab 1"),
+        ("app.select-tab-2", "Select tab 2"),
+        ("app.select-tab-3", "Select tab 3"),
+        ("app.select-tab-4", "Select tab 4"),
+        ("app.select-tab-5", "Select tab 5"),
+        ("app.select-tab-6", "Select tab 6"),
+        ("app.select-tab-7", "Select tab 7"),
+        ("app.select-tab-8", "Select tab 8"),
+        ("app.select-tab-9", "Select tab 9"),
+    ]) {
         entries.push(descriptor(
             id,
             label,

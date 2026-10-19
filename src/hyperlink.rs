@@ -16,14 +16,7 @@ fn allowed_scheme(uri: &str) -> bool {
     let Some((scheme, _)) = uri.split_once(':') else {
         return false;
     };
-    if scheme.is_empty()
-        || !scheme.as_bytes()[0].is_ascii_alphabetic()
-        || !scheme
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
-    {
-        return false;
-    }
+    // Exact allowlist membership also guarantees valid ASCII scheme syntax.
     ["http", "https", "mailto", "file"]
         .iter()
         .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
@@ -80,6 +73,12 @@ mod tests {
             "httpsx://example.test",
             "1http://example.test",
             "://example.test",
+            "http+custom://example.test",
+            " https://example.test",
+            "https ://example.test",
+            "https\t://example.test",
+            "httр://example.test", // Cyrillic р is not ASCII p.
+            "https\0://example.test",
         ] {
             assert!(!allowed_scheme(uri), "{uri}");
         }

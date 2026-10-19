@@ -420,6 +420,45 @@ fn invalidated_result_position_is_not_published_while_refreshing() {
 }
 
 #[test]
+fn presented_invalidation_clears_evidence_through_host_and_navigation_paths() {
+    for navigate_first in [false, true] {
+        let mut tabs = setup("needle");
+        tabs.set_search_query("needle");
+        complete(&mut tabs);
+        assert!(tabs.navigate_search(false));
+        assert_eq!(tabs.search_status(), "1 / 1");
+
+        tabs.active_terminal()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .put_str("\x1b[1;1HX");
+        if navigate_first {
+            assert!(!tabs.navigate_search(false));
+        } else {
+            assert!(tabs.advance_search().changed);
+        }
+        assert!(tabs.search.accepted.is_none());
+        assert_eq!(tabs.search.selected, None);
+        assert_eq!(published(&tabs), 0);
+        assert!(!tabs.search_status().contains("1 / 1"));
+        assert_eq!(tabs.search.source, tabs.active_id());
+        assert_eq!(tabs.search.query, "needle");
+
+        complete(&mut tabs);
+        assert_eq!(tabs.search_status(), "No Result");
+        tabs.active_terminal()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .put_str("\x1b[1;1Hneedle");
+        complete(&mut tabs);
+        assert_eq!(tabs.search_status(), "— / 1");
+        assert_eq!(published(&tabs), 1);
+    }
+}
+
+#[test]
 fn application_exposes_result_limits_and_releases_work_on_empty_or_invalid_queries() {
     let mut tabs = setup(&"a".repeat(1500));
     tabs.set_search_query("a");

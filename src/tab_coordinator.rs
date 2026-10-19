@@ -16,6 +16,7 @@ use harbor_widget::{
 };
 use winit::{event_loop::EventLoopProxy, window::Window};
 
+use crate::effects::merge_wait;
 use crate::event::AppEvent;
 use harbor_app::{
     tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources},
@@ -42,16 +43,6 @@ pub(crate) struct TabDrainOutcome {
     pub(crate) wait: Option<ControlFlowEffect>,
     pub(crate) close_window: bool,
     pub(crate) failed: bool,
-}
-
-impl TabDrainOutcome {
-    fn merge_wait(&mut self, wait: Option<ControlFlowEffect>) {
-        self.wait = match (self.wait, wait) {
-            (Some(left), Some(right)) => Some(left.arbitrate(right)),
-            (Some(wait), None) | (None, Some(wait)) => Some(wait),
-            (None, None) => None,
-        };
-    }
 }
 
 /// One step in the Host's drained FIFO. This is admission policy, not an effect bus:
@@ -499,13 +490,6 @@ impl TabCoordinator {
             .execute_search_command(command, &self.workspace_ui)
     }
 
-    pub(crate) fn advance_notifications(
-        &self,
-        now: std::time::Instant,
-    ) -> (bool, Option<std::time::Instant>) {
-        self.workspace_ui.advance_notifications(now)
-    }
-
     pub(crate) fn advance_search(&mut self) -> (bool, bool) {
         let tick = self.tabs.advance_search();
         self.workspace_ui
@@ -569,10 +553,6 @@ impl TabCoordinator {
         self.tabs.resize_all_if_changed(size)
     }
 
-    pub(crate) fn terminal_focus(&self) -> harbor_widget::widgets::FocusHandle {
-        self.workspace_ui.terminal_focus()
-    }
-
     pub(crate) fn apply_tab_outcome(
         &mut self,
         host: &mut WinitWindowHost,
@@ -593,11 +573,12 @@ impl TabCoordinator {
         }
 
         if outcome.active_bridge_changed {
-            result.merge_wait(host.cancel_active_input_ownership().wait);
+            merge_wait(&mut result.wait, host.cancel_active_input_ownership().wait);
         }
         if model_changed {
             self.sync_ui(host.window());
-            result.merge_wait(
+            merge_wait(
+                &mut result.wait,
                 host.invalidate_external(harbor_widget::effects::ExternalInvalidation::new())
                     .wait,
             );
@@ -610,7 +591,7 @@ impl TabCoordinator {
             TabFocusPolicy::Terminal => Some(self.workspace_ui.terminal_focus()),
         };
         if let Some(focus_handle) = focus_handle {
-            result.merge_wait(host.request_focus(&focus_handle).wait);
+            merge_wait(&mut result.wait, host.request_focus(&focus_handle).wait);
         }
         result
     }

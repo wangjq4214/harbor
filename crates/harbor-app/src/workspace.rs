@@ -308,12 +308,11 @@ pub fn tab_workspace(
     controller: WorkspaceUiController,
     backdrop_available: bool,
 ) -> impl Component {
-    main_window_root(MainWindowRootInputs::new(
+    tab_workspace_with_fallback(
         controller,
         backdrop_available,
         harbor_config::WindowBackdropStyle::default().fallback,
-        crate::command::resolve_keybindings(&harbor_config::RawKeybindings::default()).keybindings,
-    ))
+    )
 }
 
 pub fn tab_workspace_with_fallback(
@@ -345,10 +344,11 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         .clone()
         .expect("workspace has an active terminal until window exit");
     let root = root_padding(props.backdrop_available, props.backdrop_fallback);
+    let bindings = state.keybindings.as_ref().unwrap_or(&props.keybindings);
     let shortcuts = if state.palette.is_some() {
         Shortcuts::empty()
     } else {
-        shortcuts(state.keybindings.as_ref().unwrap_or(&props.keybindings))
+        shortcuts(bindings)
     };
     let command_bridge = active_bridge.clone();
     let actions = Actions::handler(move |command| {
@@ -382,7 +382,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
                     shortcuts => {
                         Row::new() => {
                             tab_rail(cx, &tab_state, &props.controller.tabs, dispatcher);
-                            terminal_panel(cx, &props.controller, active_bridge, state.keybindings.as_ref().unwrap_or(&props.keybindings));
+                            terminal_panel(cx, &props.controller, active_bridge, bindings);
                         }
                     }
                 }
@@ -400,7 +400,7 @@ fn terminal_panel(
     active_bridge: TerminalWidgetBridge,
     bindings: &ResolvedKeybindings,
 ) -> View {
-    let search = controller.store.state().read().search.clone();
+    let search_open = controller.store.state().read().search.open;
     harbor_widget::view! { cx; Expanded::new() => {
         harbor_widget::Column::new() => {
             Expanded::new().keyed("terminal-surface") => {
@@ -412,7 +412,7 @@ fn terminal_panel(
                     }
                 }
             }
-            if search.open {
+            if search_open {
                 search_bar(cx, controller);
             }
             if controller.palette_is_open() {

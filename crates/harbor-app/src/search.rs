@@ -120,16 +120,27 @@ impl SessionSearch {
         self.update_status();
     }
 
-    fn accept(&mut self, terminal: &Terminal, completion: SearchResults) -> bool {
+    fn accept(&mut self, terminal: &Terminal, completion: SearchResults) {
         let Ok(accepted) = self.gate.accept(terminal, completion) else {
             self.observed = None;
             self.update_status();
-            return false;
+            return;
         };
         self.presented_gate = std::mem::take(&mut self.gate);
         self.selected = None;
         self.publish(accepted);
-        true
+    }
+
+    // Invalidate only displayed evidence; an in-flight same-query refresh stays live.
+    fn invalidate_presented(&mut self) {
+        self.presented_gate.cancel();
+        self.accepted = None;
+        self.observed = None;
+        self.selected = None;
+        self.update_status();
+        if let Some(bridge) = &self.bridge {
+            bridge.set_decorations(Vec::new());
+        }
     }
 
     fn publish(&mut self, accepted: AcceptedSearch) {
@@ -340,15 +351,7 @@ impl TabManager {
                 .accept(&terminal, previous.into_results())
             {
                 Ok(accepted) => self.search.publish(accepted),
-                Err(_) => {
-                    self.search.presented_gate.cancel();
-                    self.search.observed = None;
-                    self.search.selected = None;
-                    self.search.update_status();
-                    if let Some(bridge) = &self.search.bridge {
-                        bridge.set_decorations(Vec::new());
-                    }
-                }
+                Err(_) => self.search.invalidate_presented(),
             }
             changed = true;
         }
@@ -412,14 +415,7 @@ impl TabManager {
             self.search.update_status();
             true
         } else {
-            self.search.presented_gate.cancel();
-            self.search.accepted = None;
-            self.search.observed = None;
-            self.search.selected = None;
-            self.search.update_status();
-            if let Some(bridge) = &self.search.bridge {
-                bridge.set_decorations(Vec::new());
-            }
+            self.search.invalidate_presented();
             false
         }
     }

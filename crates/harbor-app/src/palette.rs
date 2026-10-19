@@ -342,8 +342,8 @@ impl WorkspaceUiController {
             return;
         }
         let Some(entry) = candidates(&palette.input.text())
-            .get(palette.selected)
-            .cloned()
+            .into_iter()
+            .nth(palette.selected)
         else {
             return;
         };

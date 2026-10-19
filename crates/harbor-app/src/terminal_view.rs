@@ -447,12 +447,10 @@ impl TerminalWidgetBridge {
             Some(effect)
         });
 
-        let input_activate_hyperlink = Arc::clone(&activate_hyperlink);
-        let input_gate = Arc::clone(&gate_active);
         let input_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]
         let on_input: Arc<ExternalInputFn> = Arc::new(move |event, ctx| {
-            if gate_suppresses_event(input_gate.load(Ordering::Acquire), event) {
+            if gate_suppresses_event(gate_active.load(Ordering::Acquire), event) {
                 return EventHandled::Handled;
             }
 
@@ -462,11 +460,8 @@ impl TerminalWidgetBridge {
                 return EventHandled::Ignored;
             };
 
-            let mut offset_before = None;
             if let Ok(mut term) = input_terminal.lock() {
-                if wheel {
-                    offset_before = Some(term.screen().view_offset());
-                }
+                let offset_before = wheel.then(|| term.screen().view_offset());
                 match term.handle_event_with_outcome(mapped) {
                     Ok(outcome) => {
                         if let Some(pointer_id) = outcome.capture_pointer {
@@ -480,7 +475,7 @@ impl TerminalWidgetBridge {
                         }
                         forward_hyperlink_activation(
                             outcome.hyperlink_activation,
-                            input_activate_hyperlink.as_ref(),
+                            activate_hyperlink.as_ref(),
                         );
                         let offset_moved = offset_before
                             .is_some_and(|before| before != term.screen().view_offset());

@@ -14,6 +14,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use crate::effects::merge_wait;
 use harbor_app::command::CommandCompletion;
 use harbor_app::confirmation::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
@@ -53,10 +54,6 @@ pub(crate) fn wrap_preview_text(raw_text: &str, max_columns: usize) -> Vec<Strin
     let mut wrapped = Vec::new();
     for line in raw_text.lines() {
         let escaped = safe_preview_line(line);
-        if escaped.is_empty() {
-            wrapped.push(String::new());
-            continue;
-        }
         let mut current_line = String::new();
         let mut current_width = 0;
         for ch in escaped.chars() {
@@ -68,9 +65,7 @@ pub(crate) fn wrap_preview_text(raw_text: &str, max_columns: usize) -> Vec<Strin
             current_line.push(ch);
             current_width += ch_width;
         }
-        if !current_line.is_empty() {
-            wrapped.push(current_line);
-        }
+        wrapped.push(current_line);
     }
     wrapped
 }
@@ -102,15 +97,6 @@ fn confirmation_result(confirmed: &AtomicBool, cancelled: &AtomicBool) -> Confir
         ConfirmationResult::Cancelled
     } else {
         ConfirmationResult::None
-    }
-}
-
-fn merge_wait(current: &mut Option<ControlFlowEffect>, next: Option<ControlFlowEffect>) {
-    if let Some(next) = next {
-        *current = Some(match current.take() {
-            Some(current) => current.arbitrate(next),
-            None => next,
-        });
     }
 }
 
@@ -335,17 +321,10 @@ fn complete_paste_confirmation(
 
 // ── ConfirmationWindow ──────────────────────────────────────────────────────
 
-struct DialogRoot(Box<dyn harbor_widget::view::Component>);
-impl harbor_widget::view::Component for DialogRoot {
-    fn build(&self, cx: &mut harbor_widget::view::BuildCx) -> harbor_widget::view::View {
-        self.0.build(cx)
-    }
-}
-
 struct ConfirmationRootState {
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
-    wrapped_lines: Vec<String>,
+    max_scroll: usize,
     preview_scroll_offset: Arc<AtomicUsize>,
 }
 
@@ -389,7 +368,7 @@ impl ConfirmationWindow {
         event_loop: &ActiveEventLoop,
         main_host: &WinitWindowHost,
     ) -> anyhow::Result<Self> {
-        let main_window = Some(main_host.window());
+        let main_window = main_host.window();
         let line_count = raw_text.lines().count();
 
         let mut window_attrs = Window::default_attributes()
@@ -400,24 +379,18 @@ impl ConfirmationWindow {
 
         // Owned window on Windows: keep dialog above main window in z-order.
         #[cfg(target_os = "windows")]
-        if let Some(main) = main_window {
-            let hwnd = main.window_handle().ok().and_then(|h| match h.as_raw() {
-                RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
-                _ => None,
-            });
-            if let Some(hwnd) = hwnd {
-                window_attrs = window_attrs.with_owner_window(hwnd);
-            }
+        if let Ok(handle) = main_window.window_handle()
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            window_attrs = window_attrs.with_owner_window(handle.hwnd.get());
         }
 
         // Center dialog over the main window using physical pixels.
-        if let Some(main) = main_window
-            && let Ok(outer) = main.outer_position()
-        {
+        if let Ok(outer) = main_window.outer_position() {
             window_attrs = window_attrs.with_position(centered_dialog_position(
                 outer,
-                main.outer_size(),
-                main.scale_factor(),
+                main_window.outer_size(),
+                main_window.scale_factor(),
             ));
         }
 
@@ -430,6 +403,7 @@ impl ConfirmationWindow {
                     / metrics.cell_width)
                     .floor() as usize;
                 let wrapped_lines = wrap_preview_text(&root_text, max_columns.max(1));
+                let max_scroll = wrapped_lines.len().saturating_sub(PREVIEW_VISIBLE_LINES);
                 let cancelled = Arc::new(AtomicBool::new(false));
                 let confirmed = Arc::new(AtomicBool::new(false));
                 let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
@@ -437,7 +411,7 @@ impl ConfirmationWindow {
                     if let Some(header) = clipboard_header {
                         Box::new(harbor_app::confirmation::build_clipboard_confirmation_root(
                             header,
-                            wrapped_lines.clone(),
+                            wrapped_lines,
                             Arc::clone(&preview_scroll_offset),
                             Arc::clone(&cancelled),
                             Arc::clone(&confirmed),
@@ -446,18 +420,18 @@ impl ConfirmationWindow {
                     } else {
                         Box::new(harbor_app::confirmation::build_confirmation_root(
                             line_count,
-                            wrapped_lines.clone(),
+                            wrapped_lines,
                             Arc::clone(&preview_scroll_offset),
                             Arc::clone(&cancelled),
                             Arc::clone(&confirmed),
                             metrics.line_height,
                         ))
                     };
-                let root = DialogRoot(root);
+                let root = move |cx: &mut harbor_widget::view::BuildCx| root.build(cx);
                 let root_state = ConfirmationRootState {
                     cancelled,
                     confirmed,
-                    wrapped_lines,
+                    max_scroll,
                     preview_scroll_offset,
                 };
                 Ok::<_, anyhow::Error>((root, root_state))
@@ -511,11 +485,7 @@ impl ConfirmationWindow {
                 return ConfirmationEventOutcome { result, wait: None };
             }
 
-            let max_scroll = self
-                .root_state
-                .wrapped_lines
-                .len()
-                .saturating_sub(PREVIEW_VISIBLE_LINES);
+            let max_scroll = self.root_state.max_scroll;
             let scrolled = match &key_event.logical_key {
                 Key::Named(NamedKey::ArrowUp) => {
                     scroll_preview(&self.root_state.preview_scroll_offset, -1, max_scroll)
