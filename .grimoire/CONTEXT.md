@@ -186,7 +186,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - belongs to Harbor Widget Runtime
 
 ### Notification Presentation
-- **Definition:** Reusable widget card/content and close/scroll interaction, with local pressed/scroll state; application-owned placement, appearance, eligibility, message meaning, deduplication, recovery and dismissal history. Harbor notices remain top-right, non-modal, manually dismissible, without focus theft or automatic expiry of actionable errors. See [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Definition:** Reusable widget card/content and close/scroll interaction, with local pressed/scroll state; application-owned placement, appearance, eligibility, message meaning, deduplication, recovery and dismissal history. Harbor notices remain top-right, non-modal, manually dismissible, without focus theft; all Harbor floating notices, including actionable errors, automatically close after three seconds rather than remaining permanent. See [ADR 0064](./adr/0064-widget-and-application-component-ownership.md) and the lifetime override in [ADR 0071](./adr/0071-three-second-notifications-including-errors.md).
 - **Relationships:**
   - depends on Portal
   - references Reusable Widget Component

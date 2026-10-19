@@ -142,7 +142,7 @@ fn notification_placement_style_scroll_and_dismissal_are_caller_composable() {
         for phase in [PointerPhase::Down, PointerPhase::Up] {
             pointer(
                 &mut runtime,
-                Point::new(rect.max.x - 10.0, rect.min.y + 10.0),
+                Point::new(rect.max.x - 18.0, (rect.min.y + rect.max.y) / 2.0),
                 phase,
             );
         }

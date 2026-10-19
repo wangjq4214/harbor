@@ -286,20 +286,22 @@ impl WorkspaceUiController {
         command: AppCommand,
         result: Result<CommandCompletion, &str>,
     ) {
+        // Success and no-change are silent: the palette closing and the action's own effect
+        // (including a separate paste-confirmation window) are their feedback. Success still
+        // retires a stale command failure, but never erases reload/resource failures.
+        let Err(reason) = result else {
+            self.publish_configuration_notice(ConfigurationNoticeSource::Command, None);
+            return;
+        };
         let label = command_registry()
             .into_iter()
             .find(|entry| entry.command == command)
             .map(|entry| entry.label)
             .unwrap_or("Command");
-        let message = match result {
-            Ok(CommandCompletion::Applied) => format!("Executed: {label}"),
-            Ok(CommandCompletion::Unchanged) => format!("No change: {label}"),
-            Ok(CommandCompletion::PendingConfirmation) => format!("Awaiting confirmation: {label}"),
-            Err(reason) => format!("{label}: {reason}"),
-        };
-        // Separate source: command completion cannot erase a reload/resource failure.
-        self.publish_configuration_notice(ConfigurationNoticeSource::Command, None);
-        self.publish_configuration_notice(ConfigurationNoticeSource::Command, Some(message));
+        self.publish_configuration_notice(
+            ConfigurationNoticeSource::Command,
+            Some(format!("{label}: {reason}")),
+        );
     }
 
     fn palette_changed(&self, generation: u64) {

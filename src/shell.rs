@@ -36,7 +36,7 @@ use harbor_widget::winit::{
     HostFrameOutcome, HostInitContext, HostStartupError, WinitWindowHost, WinitWindowHostBuilder,
 };
 
-/// Separate diagnostics from the subset that needs persistent user attention.
+/// Separate diagnostics from the subset that needs explicit user attention.
 pub(crate) struct ConfigurationAcceptance {
     pub summary: String,
     pub notice: Option<String>,
@@ -805,6 +805,14 @@ impl ActiveSession {
         }
         if search_changed && let Some(wait) = self.main_host.request_frame().wait {
             combined_flow = combined_flow.arbitrate(wait);
+        }
+
+        let (notices_expired, notice_deadline) = self.tabs.advance_notifications(now);
+        if notices_expired && let Some(wait) = self.main_host.request_frame().wait {
+            combined_flow = combined_flow.arbitrate(wait);
+        }
+        if let Some(deadline) = notice_deadline {
+            combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
         }
 
         if let Some(confirmation_flow) = self.paste.about_to_wait(now) {

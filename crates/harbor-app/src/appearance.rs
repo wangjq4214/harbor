@@ -7,6 +7,28 @@ use harbor_widget::{
     view::{BuildCx, Component, View},
 };
 
+/// Transparent overlay controls share the search panel's hover/press feedback.
+pub(crate) fn glass_icon_button_style(cx: &BuildCx) -> harbor_widget::theme::ControlStyle {
+    let mut style = cx.theme().icon_button.clone();
+    style.min_height = 32.0;
+    style.icon_size = 18.0;
+    style.horizontal_padding = 7.0;
+    style.border_width = 0.0;
+    for colors in [
+        &mut style.normal,
+        &mut style.hovered,
+        &mut style.pressed,
+        &mut style.selected,
+        &mut style.disabled,
+    ] {
+        colors.background = Color::TRANSPARENT;
+    }
+    style.normal.foreground.a = 0.78;
+    style.hovered.foreground.a = 1.0;
+    style.pressed.foreground.a = 0.5;
+    style
+}
+
 /// Shared application material settings. Consumers override only what differs via
 /// struct update syntax; filtering, decoration and clipping stay composed together.
 #[derive(Clone, Copy, Debug, PartialEq)]

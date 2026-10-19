@@ -123,19 +123,24 @@ fn notification_preserves_terminal_focus_allocation_and_routes_dismissal_as_host
         let before = controller.latest_terminal_allocation();
         let focused = runtime.input().focused();
         let delta = runtime.pending_delta().unwrap();
-        let origin = delta
+        let close = delta
             .added
             .iter()
             .chain(&delta.modified)
-            .find_map(|item| match &item.primitive {
-                Primitive::Text { text, origin, .. } if text.as_ref() == "×" => Some(*origin),
+            .filter_map(|item| match &item.primitive {
+                Primitive::Icon {
+                    icon: LucideIcon::X,
+                    rect,
+                    ..
+                } => Some(*rect),
                 _ => None,
             })
-            .expect("visible close control");
-        assert!((origin.x - (width as f32 / scale - 38.0)).abs() < 1.0);
+            .max_by(|a, b| a.max.x.total_cmp(&b.max.x))
+            .expect("visible vector close control");
+        assert!((close.max.x - (width as f32 / scale - 21.0)).abs() < 1.0);
         for phase in [PointerPhase::Down, PointerPhase::Up] {
             runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
-                Point::new(origin.x + 5.0, origin.y + 5.0),
+                Point::new(close.min.x + 9.0, close.min.y + 9.0),
                 phase,
                 PointerButton::Left,
                 8,
@@ -162,6 +167,59 @@ fn notification_preserves_terminal_focus_allocation_and_routes_dismissal_as_host
         );
         runtime.update(Instant::now());
     }
+}
+
+#[test]
+fn idle_notification_expiry_removes_glass_without_changing_terminal_focus_or_allocation() {
+    let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+    let mut runtime = mount(controller.clone(), 1000, 500);
+    runtime.request_focus(&controller.terminal_focus());
+    let allocation = controller.latest_terminal_allocation();
+    let focused = runtime.input().focused();
+    controller.publish_configuration_notice(
+        ConfigurationNoticeSource::Resource,
+        Some("Unrecovered resource failure".into()),
+    );
+    runtime.update(Instant::now());
+    let (expired, deadline) = controller.advance_notifications(Instant::now());
+    assert!(!expired);
+    let deadline = deadline.expect("idle host receives a wake deadline");
+    assert!(
+        runtime
+            .pending_delta()
+            .unwrap()
+            .added
+            .iter()
+            .any(|item| matches!(item.primitive, Primitive::BackdropRefract { .. }))
+    );
+    assert_eq!(
+        controller.advance_notifications(deadline - std::time::Duration::from_millis(1)),
+        (false, Some(deadline))
+    );
+    assert_eq!(controller.advance_notifications(deadline), (true, None));
+    runtime.update(deadline);
+    let delta = runtime.pending_delta().unwrap();
+    // Unsubmitted added primitives coalesce away when their overlay is removed.
+    assert!(
+        !delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .any(|item| matches!(item.primitive, Primitive::BackdropRefract { .. }))
+    );
+    assert_eq!(controller.latest_terminal_allocation(), allocation);
+    assert_eq!(runtime.input().focused(), focused);
+    assert!(controller.drain_actions().is_empty());
+    assert_eq!(controller.advance_notifications(deadline), (false, None));
+    controller.publish_configuration_notice(
+        ConfigurationNoticeSource::Resource,
+        Some("Unrecovered resource failure".into()),
+    );
+    assert_eq!(controller.store.state().read().notices.message(), None);
+    assert_eq!(
+        controller.advance_notifications(Instant::now()),
+        (false, None)
+    );
 }
 
 #[test]
@@ -1788,28 +1846,30 @@ fn configuration_notice_stays_below_search_and_returns_when_search_closes() {
         Some("Invalid settings".into()),
     );
     let mut runtime = mount(controller.clone(), 1000, 500);
-    let notice_close_y = |runtime: &Runtime| {
+    let notice_top_y = |runtime: &Runtime| {
         let delta = runtime.pending_delta().unwrap();
         delta
             .added
             .iter()
             .chain(&delta.modified)
             .find_map(|item| match &item.primitive {
-                Primitive::Text { text, origin, .. } if text.as_ref() == "×" => Some(origin.y),
+                Primitive::BackdropRefract {
+                    rect, corner_radii, ..
+                } if *corner_radii == [6.0; 4] => Some(rect.min.y),
                 _ => None,
             })
             .unwrap()
     };
-    let original_y = notice_close_y(&runtime);
+    let original_y = notice_top_y(&runtime);
     let allocation = controller.latest_terminal_allocation();
     controller.open_search(TabId(1));
     runtime.update(Instant::now());
     let panel = search_panel_rect(&runtime);
-    assert!(notice_close_y(&runtime) > panel.max.y);
+    assert!(notice_top_y(&runtime) > panel.max.y);
     assert_eq!(controller.latest_terminal_allocation(), allocation);
     controller.close_search();
     runtime.update(Instant::now());
-    assert_eq!(notice_close_y(&runtime), original_y);
+    assert_eq!(notice_top_y(&runtime), original_y);
     assert!(controller.store.state().read().notices.message().is_some());
 }
 

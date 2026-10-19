@@ -1,7 +1,7 @@
 //! Application workspace composition and Host-published global UI state.
 
 use crate::{
-    appearance::GlassAppearance,
+    appearance::{GlassAppearance, glass_icon_button_style},
     command::{AppCommand, AppCommandRequest, ResolvedKeybindings},
     notifications::{ConfigurationNoticeSource, ConfigurationNotices, configuration_notification},
     tab_manager::TabSnapshot,
@@ -68,23 +68,7 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
             }))
         })
         .on_escape(move || close.dispatch(AppCommandRequest::shortcut(AppCommand::SearchClose)));
-    let mut style = cx.theme().icon_button.clone();
-    style.min_height = 32.0;
-    style.icon_size = 18.0;
-    style.horizontal_padding = 7.0;
-    style.border_width = 0.0;
-    for colors in [
-        &mut style.normal,
-        &mut style.hovered,
-        &mut style.pressed,
-        &mut style.selected,
-        &mut style.disabled,
-    ] {
-        colors.background = Color::TRANSPARENT;
-    }
-    style.normal.foreground.a = 0.78;
-    style.hovered.foreground.a = 1.0;
-    style.pressed.foreground.a = 0.5;
+    let style = glass_icon_button_style(cx);
     let button = |icon, label, command| {
         let dispatcher = controller.store.dispatcher();
         IconButton::new(icon, label)
@@ -252,6 +236,25 @@ impl WorkspaceUiController {
         self.store.set_state(state);
     }
 
+    /// Called by the application idle turn, independently of terminal activity.
+    /// The deadline participates in the host wait policy, not a polling thread.
+    pub fn advance_notifications(
+        &self,
+        now: std::time::Instant,
+    ) -> (bool, Option<std::time::Instant>) {
+        let deadline = self.store.state().read().notices.deadline();
+        if !deadline.is_some_and(|deadline| now >= deadline) {
+            return (false, deadline);
+        }
+        let mut state = self.store.state().read().clone();
+        let expired = state.notices.expire(now);
+        let deadline = state.notices.deadline();
+        if expired {
+            self.store.set_state(state);
+        }
+        (expired, deadline)
+    }
+
     pub fn dismiss_notification(&self, revision: u64) {
         let mut state = self.store.state().read().clone();
         state.notices.dismiss(revision);
@@ -351,7 +354,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         } else {
             0.0
         };
-        configuration_notification(message, top_offset, move || {
+        configuration_notification(state.notices.title(), message, top_offset, move || {
             dismiss_dispatcher.dispatch(AppCommandRequest {
                 command: AppCommand::DismissNotification(revision),
                 focus: TabFocusPolicy::PreserveRail,

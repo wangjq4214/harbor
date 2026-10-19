@@ -116,16 +116,8 @@ fn primary_scroll_commands_reduce_once_without_pty_bytes_and_report_real_no_chan
             at_bottom
         );
     }
-    assert!(
-        controller
-            .store
-            .state()
-            .read()
-            .notices
-            .message()
-            .unwrap()
-            .contains("No change")
-    );
+    // No-change scrolls are silent: no notice is published for a successful no-op.
+    assert_eq!(controller.store.state().read().notices.message(), None);
     assert!(bytes.lock().unwrap().is_empty());
 }
 
@@ -333,30 +325,35 @@ fn confirmation_gate_focus_loss_and_removed_target_expire_pending_palette_comman
 }
 
 #[test]
-fn completion_feedback_distinguishes_execution_no_change_confirmation_rejection_and_failure() {
+fn completion_feedback_notifies_only_failures_and_retires_stale_command_failure() {
     let (_, controller, _, _) = fixture();
-    for (result, expected) in [
-        (Ok(CommandCompletion::Applied), "Executed:"),
-        (Ok(CommandCompletion::Unchanged), "No change:"),
-        (
-            Ok(CommandCompletion::PendingConfirmation),
-            "Awaiting confirmation:",
-        ),
-        (Err("Rejected: context changed"), "Rejected:"),
-        (Err("Failed: clipboard unavailable"), "Failed:"),
+    let message = || controller.store.state().read().notices.message();
+    for result in [
+        Ok(CommandCompletion::Applied),
+        Ok(CommandCompletion::Unchanged),
+        Ok(CommandCompletion::PendingConfirmation),
     ] {
         controller.report_palette_completion(AppCommand::Paste, result);
-        assert!(
-            controller
-                .store
-                .state()
-                .read()
-                .notices
-                .message()
-                .unwrap()
-                .contains(expected)
-        );
+        assert_eq!(message(), None, "{result:?}");
     }
+    for (result, expected) in [
+        (Err("Rejected: context changed"), "Rejected:"),
+        (Err("Failed: clipboard unavailable"), "Failed:"),
+        (Err("Cancelled: paste was not confirmed"), "Cancelled:"),
+    ] {
+        controller.report_palette_completion(AppCommand::Paste, result);
+        let notice = message().unwrap();
+        assert!(notice.contains(expected), "{notice:?}");
+        assert!(notice.contains("Paste"), "{notice:?}");
+    }
+    // A later success retires the command failure...
+    controller.report_palette_completion(AppCommand::Paste, Ok(CommandCompletion::Applied));
+    assert_eq!(message(), None);
+    // ...but never erases an unrelated resource/reload failure.
+    controller.publish_configuration_notice(ConfigurationNoticeSource::Resource, Some("P".into()));
+    controller.report_palette_completion(AppCommand::Paste, Err("Failed: clipboard unavailable"));
+    controller.report_palette_completion(AppCommand::Paste, Ok(CommandCompletion::Unchanged));
+    assert_eq!(message().as_deref(), Some("P"));
 }
 
 #[test]

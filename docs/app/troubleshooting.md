@@ -36,7 +36,7 @@ Portable mode does not change the log location. Configuration diagnostics omit e
 4. Try manual reload (default **Ctrl+Shift+R**). Rewriting identical bytes does not retry a failed reload. A missing file retains settings; save a valid empty document to restore defaults.
 5. Inspect configuration notices and logs. Unknown ordinary keys produce warnings; binding errors are strict. If watching fails, try manual reload or restart Harbor.
 
-Notices can be dismissed without taking focus. Successful or unchanged direct/watched reloads do not show a configuration success notification; palette invocation separately reports its command outcome. Repeated identical automatic errors may be suppressed; a manual retry can report them again.
+All floating notices, including errors, automatically close after three seconds and can also be dismissed early without taking focus. Successful or unchanged direct/watched reloads do not show a configuration success notification; a palette invocation reports only command failures, never success. Repeated identical automatic errors may be suppressed; a manual retry can report them again.
 
 ## Keys, selection, or paste behave differently
 

@@ -431,6 +431,13 @@ impl TabCoordinator {
             .execute_search_command(command, &self.workspace_ui)
     }
 
+    pub(crate) fn advance_notifications(
+        &self,
+        now: std::time::Instant,
+    ) -> (bool, Option<std::time::Instant>) {
+        self.workspace_ui.advance_notifications(now)
+    }
+
     pub(crate) fn advance_search(&mut self) -> (bool, bool) {
         let tick = self.tabs.advance_search();
         self.workspace_ui

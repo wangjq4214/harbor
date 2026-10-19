@@ -99,13 +99,13 @@ impl AnyView for TextLabel {
 /// Cumulative renderer advances at grapheme ends, including the empty prefix.
 /// These widths serve both intrinsic layout and truncation; no cell-budget path.
 #[derive(Clone)]
-struct LabelGeometry {
+pub(super) struct LabelGeometry {
     prefixes: Vec<(usize, f32)>,
     ellipsis_width: f32,
 }
 
 impl LabelGeometry {
-    fn measure(text: &str, advance: &mut dyn FnMut(char) -> f32) -> Self {
+    pub(super) fn measure(text: &str, advance: &mut dyn FnMut(char) -> f32) -> Self {
         let mut prefixes = vec![(0, 0.0)];
         let mut width = 0.0;
         for (start, grapheme) in text.grapheme_indices(true) {
@@ -124,23 +124,71 @@ impl LabelGeometry {
         self.prefixes.last().unwrap().1
     }
 
-    fn ellipsized(&self, text: &str, width: f32) -> String {
+    pub(super) fn ellipsized(&self, text: &str, width: f32) -> String {
+        self.display_range(text, 0, self.prefixes.len() - 1, width, false)
+    }
+
+    /// Wrap with the exact advances used by UI rendering, never terminal cells.
+    /// Explicit newlines and grapheme clusters survive; a capped last line signals overflow.
+    pub(super) fn wrapped(&self, text: &str, width: f32, max_lines: Option<usize>) -> Vec<String> {
+        if !width.is_finite() || width <= 0.0 || max_lines == Some(0) {
+            return Vec::new();
+        }
+        let mut ranges = Vec::new();
+        let mut start = 0;
+        let end = self.prefixes.len() - 1;
+        for i in 0..end {
+            let grapheme = &text[self.prefixes[i].0..self.prefixes[i + 1].0];
+            if matches!(grapheme, "\n" | "\r\n" | "\r") {
+                ranges.push((start, i));
+                start = i + 1;
+            } else if i > start && self.prefixes[i + 1].1 - self.prefixes[start].1 > width {
+                ranges.push((start, i));
+                start = i;
+            }
+        }
+        ranges.push((start, end));
+        let count = max_lines.unwrap_or(ranges.len()).min(ranges.len());
+        ranges
+            .iter()
+            .take(count)
+            .enumerate()
+            .map(|(i, &(start, end))| {
+                self.display_range(
+                    text,
+                    start,
+                    end,
+                    width,
+                    i + 1 == count && count < ranges.len(),
+                )
+            })
+            .collect()
+    }
+
+    fn display_range(
+        &self,
+        text: &str,
+        start: usize,
+        end: usize,
+        width: f32,
+        force_ellipsis: bool,
+    ) -> String {
         if !width.is_finite() || width <= 0.0 {
             return String::new();
         }
-        if self.width() <= width {
-            return text.to_owned();
+        let (start_byte, base) = self.prefixes[start];
+        if !force_ellipsis && self.prefixes[end].1 - base <= width {
+            return text[start_byte..self.prefixes[end].0].to_owned();
         }
         if self.ellipsis_width > width {
             return String::new();
         }
-        let end = self
-            .prefixes
+        let end_byte = self.prefixes[start..=end]
             .iter()
-            .take_while(|(_, advance)| advance + self.ellipsis_width <= width)
+            .take_while(|(_, advance)| advance - base + self.ellipsis_width <= width)
             .last()
-            .map_or(0, |(end, _)| *end);
-        format!("{}…", &text[..end])
+            .map_or(start_byte, |(end, _)| *end);
+        format!("{}…", &text[start_byte..end_byte])
     }
 }
 
@@ -161,6 +209,43 @@ mod tests {
                 _ => None,
             })
             .collect::<String>()
+    }
+
+    #[test]
+    fn wrapped_lines_use_proportional_advances_and_mark_capped_overflow() {
+        let advance = |ch| match ch {
+            'i' => 1.0,
+            'W' => 8.0,
+            '…' => 3.0,
+            '\r' | '\n' => 0.0,
+            _ => 2.0,
+        };
+        for (text, width, limit, expected) in [
+            ("iiiiWW", 10.0, None, vec!["iiii", "W", "W"]),
+            ("iiiiWW", 10.0, Some(2), vec!["iiii", "…"]),
+            ("iiiiWW", 12.0, Some(2), vec!["iiiiW", "W"]),
+            ("A\r\nB\nC\nD\nE", 50.0, Some(4), vec!["A", "B", "C", "D…"]),
+            ("a\n", 50.0, None, vec!["a", ""]),
+            ("", 50.0, None, vec![""]),
+            ("text", 0.0, Some(4), vec![]),
+            ("text", 50.0, Some(0), vec![]),
+        ] {
+            let geometry = LabelGeometry::measure(text, &mut |ch| advance(ch));
+            assert_eq!(geometry.wrapped(text, width, limit), expected, "{text:?}");
+        }
+        let text = "e\u{0301}👩\u{200d}💻项目";
+        let geometry = LabelGeometry::measure(text, &mut |ch| match ch {
+            '\u{0301}' | '\u{200d}' => 0.0,
+            '…' => 1.0,
+            _ => 2.0,
+        });
+        assert_eq!(
+            geometry.wrapped(text, 4.0, None),
+            ["e\u{0301}", "👩\u{200d}💻", "项目"]
+        );
+        assert_eq!(geometry.wrapped(text, 4.0, Some(2)), ["e\u{0301}", "…"]);
+        // Truncation never mutates the source/geometry used by wider layouts.
+        assert_eq!(geometry.wrapped(text, 50.0, Some(4)), [text]);
     }
 
     #[test]
