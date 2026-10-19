@@ -60,7 +60,6 @@ pub(crate) fn reload_configuration_from_path(
     effective_clipboard: &harbor_config::ClipboardSettings,
     apply: impl FnOnce(
         &harbor_config::Settings,
-        bool,
         harbor_app::command::ResolvedKeybindings,
     ) -> anyhow::Result<Vec<String>>,
 ) -> anyhow::Result<Option<ConfigurationAcceptance>> {
@@ -74,9 +73,8 @@ pub(crate) fn reload_configuration_from_path(
         accepted,
         effective_clipboard,
         loaded.settings,
-        |candidate, font_changed, bindings| {
-            apply(candidate, font_changed, bindings)
-                .map_err(|error| error.context(ConfigurationOperationFailure))
+        |candidate, bindings| {
+            apply(candidate, bindings).map_err(|error| error.context(ConfigurationOperationFailure))
         },
     )?;
     let mut notices = result.notice.into_iter().collect::<Vec<_>>();
@@ -97,14 +95,13 @@ pub(crate) fn accept_configuration(
     candidate: harbor_config::Settings,
     apply: impl FnOnce(
         &harbor_config::Settings,
-        bool,
         harbor_app::command::ResolvedKeybindings,
     ) -> anyhow::Result<Vec<String>>,
 ) -> anyhow::Result<ConfigurationAcceptance> {
     let bindings = harbor_app::command::validate_keybindings(&candidate.keybindings)
         .map_err(|errors| anyhow::anyhow!("{}", errors.join("; ")))?;
     let font_changed = candidate.font != accepted.font;
-    let warnings = apply(&candidate, font_changed, bindings)?;
+    let warnings = apply(&candidate, bindings)?;
     let mut live = Vec::new();
     if candidate.colors != accepted.colors {
         live.push("colors");
@@ -426,10 +423,9 @@ impl ActiveSession {
             path.as_deref(),
             &mut self.accepted_settings,
             &self.effective_clipboard,
-            |candidate, font_changed, bindings| {
+            |candidate, bindings| {
                 let warnings = self.tabs.apply_configuration(
                     candidate,
-                    font_changed,
                     viewport.scale_factor,
                     viewport.physical_size,
                 )?;
@@ -492,22 +488,23 @@ impl ActiveSession {
         event_loop: &ActiveEventLoop,
     ) -> crate::tab_coordinator::TabDrainOutcome {
         let mut result = crate::tab_coordinator::TabDrainOutcome::default();
-        for request in self.workspace_ui.drain_actions() {
-            let palette_generation = match request.source {
-                harbor_app::command::CommandSource::Palette { generation, .. } => Some(generation),
-                harbor_app::command::CommandSource::Direct => None,
-            };
-            if palette_generation.is_some() {
-                // Admission rechecks Host-owned context and disposes only the source editor.
-                if let Err(reason) = self
-                    .tabs
-                    .take_palette_request(request, self.paste.is_active())
-                {
+        use crate::tab_coordinator::AppActionAdmission;
+        let mut actions = self.workspace_ui.drain_actions().into_iter();
+        while let Some(admission) = self
+            .tabs
+            .next_app_action(&mut actions, self.paste.is_active())
+        {
+            let (request, from_palette) = match admission {
+                AppActionAdmission::Rejected {
+                    request,
+                    reason,
+                    restore_terminal_focus,
+                } => {
                     self.workspace_ui.report_palette_result(
                         request.command,
                         Err(&format!("Rejected: {reason}")),
                     );
-                    if !self.workspace_ui.palette_is_open() && !self.paste.is_active() {
+                    if restore_terminal_focus {
                         Self::merge_wait(
                             &mut result.wait,
                             self.main_host
@@ -518,13 +515,16 @@ impl ActiveSession {
                     Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     continue;
                 }
-            }
-            if self.paste.is_active() {
-                continue;
-            }
-            if palette_generation.is_some() {
-                Self::merge_wait(&mut result.wait, self.main_host.clear_focus().wait);
-            }
+                AppActionAdmission::Execute {
+                    request,
+                    clear_palette_focus,
+                } => {
+                    if clear_palette_focus {
+                        Self::merge_wait(&mut result.wait, self.main_host.clear_focus().wait);
+                    }
+                    (request, clear_palette_focus)
+                }
+            };
             match request.command {
                 AppCommand::OpenCommandPalette => {
                     let focus = self.workspace_ui.open_palette();
@@ -547,7 +547,7 @@ impl ActiveSession {
                 | AppCommand::SearchPrevious => {
                     let outcome = self.tabs.dispatch_search_command(request.command);
                     let focus = outcome.focus_for_source(request.source, &self.workspace_ui);
-                    if palette_generation.is_some() {
+                    if from_palette {
                         self.workspace_ui
                             .report_palette_completion(request.command, outcome.completion);
                     }
@@ -565,7 +565,7 @@ impl ActiveSession {
                 }
                 AppCommand::ReloadConfiguration => {
                     let completion = self.reload_configuration(false);
-                    if palette_generation.is_some() {
+                    if from_palette {
                         self.workspace_ui.report_palette_result(
                             request.command,
                             match completion {
@@ -590,7 +590,7 @@ impl ActiveSession {
                         self.tabs
                             .execute_tab_command(&mut self.main_host, command, request.focus);
 
-                    if palette_generation.is_some() {
+                    if from_palette {
                         self.workspace_ui.report_palette_result(
                             request.command,
                             if outcome.failed {
@@ -658,7 +658,7 @@ impl ActiveSession {
                             }
                             completion
                         });
-                    if palette_generation.is_some() {
+                    if from_palette {
                         self.workspace_ui
                             .report_palette_completion(request.command, completion);
                         Self::merge_wait(
@@ -672,7 +672,7 @@ impl ActiveSession {
                 }
                 AppCommand::Paste => {
                     let active_terminal = self.tabs.active_terminal();
-                    if palette_generation.is_some() {
+                    if from_palette {
                         // Establish the main-window fallback before opening a secondary window.
                         // Never refocus the main window over a pending confirmation.
                         Self::merge_wait(
@@ -688,7 +688,7 @@ impl ActiveSession {
                             event_loop,
                             &mut self.main_host,
                             active_terminal.as_ref(),
-                            palette_generation.is_some(),
+                            from_palette,
                         )
                         .map(|(outcome, completion)| {
                             Self::merge_wait(&mut result.wait, outcome.wait);
@@ -697,7 +697,7 @@ impl ActiveSession {
                     if let Err(reason) = completion {
                         tracing::warn!(%reason, "clipboard paste rejected or failed");
                     }
-                    if palette_generation.is_some() {
+                    if from_palette {
                         self.workspace_ui
                             .report_palette_completion(request.command, completion);
                         Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);

@@ -48,14 +48,14 @@ fn startup_and_manual_absence_are_silent_but_live_absence_never_commits_defaults
             Some(file.path()),
             &mut accepted,
             &clipboard,
-            |_, _, _| panic!("missing live candidate must not invoke application transaction")
+            |_, _| panic!("missing live candidate must not invoke application transaction")
         )
         .unwrap()
         .is_none()
     );
     assert_eq!(accepted, baseline);
     let unresolved =
-        reload_configuration_from_path(None, &mut accepted, &clipboard, |_, _, _| unreachable!());
+        reload_configuration_from_path(None, &mut accepted, &clipboard, |_, _| unreachable!());
     assert!(
         unresolved.is_err(),
         "unresolvable path is not missing-file silence"
@@ -77,21 +77,19 @@ fn manual_success_no_change_launch_changes_restart_and_ignored_setting_have_sele
         "[font]\nsize = 22\n[shell.environment]\nSYNTHETIC = 'never-disclose-notice-value'\n",
     );
     for _ in 0..2 {
-        let result = reload_configuration_from_path(
-            Some(file.path()),
-            &mut accepted,
-            &clipboard,
-            |_, _, _| Ok(vec![]),
-        )
-        .unwrap()
-        .unwrap();
+        let result =
+            reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _| {
+                Ok(vec![])
+            })
+            .unwrap()
+            .unwrap();
         assert!(result.notice.is_none());
         assert!(!result.summary.contains("never-disclose-notice-value"));
     }
     assert_eq!(accepted.font.size, 22.0);
     file.write("[clipboard]\nosc52_write = 'deny'\n");
     let result =
-        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _, _| {
+        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _| {
             Ok(vec![])
         })
         .unwrap()
@@ -101,7 +99,7 @@ fn manual_success_no_change_launch_changes_restart_and_ignored_setting_have_sele
     assert!(!notice.contains("applied live") && !notice.contains("new sessions only"));
     file.write("mystery = true\n");
     let result =
-        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _, _| {
+        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _| {
             Ok(vec![])
         })
         .unwrap()
@@ -109,7 +107,7 @@ fn manual_success_no_change_launch_changes_restart_and_ignored_setting_have_sele
     assert!(result.notice.unwrap().contains("mystery"));
     file.write("");
     let result =
-        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _, _| {
+        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _| {
             Ok(vec![
                 "requested font unavailable; system font selected".into(),
             ])
@@ -136,14 +134,12 @@ fn invalid_parse_setting_read_and_resource_failures_remain_errors_without_partia
         "[font]\nsize = 25\n[colors]\nforeground = 'invalid'\n",
     ] {
         file.write(source);
-        let error = reload_configuration_from_path(
-            Some(file.path()),
-            &mut accepted,
-            &clipboard,
-            |_, _, _| panic!("rejected document may not apply valid subset"),
-        )
-        .err()
-        .unwrap();
+        let error =
+            reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _| {
+                panic!("rejected document may not apply valid subset")
+            })
+            .err()
+            .unwrap();
         let diagnostic = format!("{error:#}");
         assert!(!diagnostic.contains("never-disclose-notice-value"));
         assert!(diagnostic.contains(file.path().to_str().unwrap()));
@@ -151,7 +147,7 @@ fn invalid_parse_setting_read_and_resource_failures_remain_errors_without_partia
     }
     file.write("[font]\nsize = 25\n");
     let error =
-        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _, _| {
+        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _| {
             anyhow::bail!(
                 "session 2: PTY resize failed; session 1: recovery failed; session needs recovery"
             )
@@ -185,7 +181,7 @@ fn invalid_parse_setting_read_and_resource_failures_remain_errors_without_partia
                 Some(file.path()),
                 &mut accepted,
                 &clipboard,
-                |_, _, _| unreachable!()
+                |_, _| unreachable!()
             )
             .is_err()
         );
@@ -225,7 +221,7 @@ fn actual_watcher_reload_handles_missing_invalid_recovery_and_success_without_su
             Some(file.path()),
             &mut accepted,
             &clipboard,
-            |_, _, _| unreachable!()
+            |_, _| unreachable!()
         )
         .unwrap()
         .is_none()
@@ -237,7 +233,7 @@ fn actual_watcher_reload_handles_missing_invalid_recovery_and_success_without_su
         Some(file.path()),
         &mut accepted,
         &clipboard,
-        |_, _, _| unreachable!(),
+        |_, _| unreachable!(),
     )
     .err()
     .unwrap();
@@ -247,7 +243,7 @@ fn actual_watcher_reload_handles_missing_invalid_recovery_and_success_without_su
     file.write("[font]\nsize = 24\n");
     next();
     let result =
-        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _, _| {
+        reload_configuration_from_path(Some(file.path()), &mut accepted, &clipboard, |_, _| {
             Ok(vec![])
         })
         .unwrap()
@@ -262,7 +258,7 @@ fn actual_watcher_reload_handles_missing_invalid_recovery_and_success_without_su
             Some(file.path()),
             &mut accepted,
             &clipboard,
-            |_, _, _| unreachable!()
+            |_, _| unreachable!()
         )
         .unwrap()
         .is_none()
@@ -274,7 +270,7 @@ fn actual_watcher_reload_handles_missing_invalid_recovery_and_success_without_su
         Some(file.path()),
         &mut accepted,
         &clipboard,
-        |_, _, _| unreachable!(),
+        |_, _| unreachable!(),
     )
     .err()
     .unwrap();
@@ -355,7 +351,7 @@ fn portable_startup_manual_and_watched_reload_keep_one_source() {
         assert!(matches!(watch.take_pending(), Some(WatchEvent::Reload)));
     };
     let reload = |accepted: &mut harbor_config::Settings| {
-        reload_configuration_from_path(path.as_deref(), accepted, &clipboard, |_, _, _| Ok(vec![]))
+        reload_configuration_from_path(path.as_deref(), accepted, &clipboard, |_, _| Ok(vec![]))
     };
     next(); // The initial observation must not substitute another source.
     reload(&mut accepted).unwrap();
@@ -472,7 +468,7 @@ fn palette_reload_fifo_applies_once_and_rejected_candidate_keeps_effective_bindi
             Some(file.path()),
             &mut accepted,
             &clipboard,
-            |_, _, bindings| {
+            |_, bindings| {
                 applied += 1;
                 effective = bindings.clone();
                 ui.publish_keybindings(bindings);

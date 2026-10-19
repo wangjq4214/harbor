@@ -30,6 +30,7 @@ impl Fixture {
             load_system_fonts(&accepted.font).unwrap().font_metrics(),
         );
         let policy = TerminalConfiguration {
+            geometry_recovery_pending: false,
             shell_command: ShellCommand::default(),
             font_settings: accepted.font.clone(),
             font_warnings: Vec::new(),
@@ -109,7 +110,7 @@ impl Fixture {
             &mut self.accepted,
             &self.clipboard,
             candidate,
-            |settings, changed, bindings| {
+            |settings, bindings| {
                 let warnings = self.policy.apply(
                     &mut self.tabs,
                     &self.ui,
@@ -119,7 +120,6 @@ impl Fixture {
                         wgpu::TextureFormat::Rgba8Unorm,
                     ),
                     settings,
-                    changed,
                     1.0,
                     (640, 320),
                     preflight,
@@ -273,6 +273,124 @@ fn acceptance_updates_inactive_renderers_osc_baselines_and_new_session_policy() 
     assert!(new_terminal.drain_output_events().is_empty());
     f.reload(Settings::default(), None).unwrap();
     assert_eq!(f.accepted, Settings::default());
+}
+
+fn poison<T>(resource: &Mutex<T>) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = resource.lock().unwrap();
+        panic!("intentional unrelated-resource poison");
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn unchanged_binding_launch_and_restart_only_acceptance_avoid_session_resources() {
+    let mut f = Fixture::new();
+    let targets = f.tabs.configuration_targets();
+    let warning = "requested family unavailable; using system font".to_owned();
+    f.policy.font_warnings = vec![warning.clone()];
+    for (_, terminal, bridge) in &targets {
+        poison(terminal);
+        poison(&bridge.renderer().unwrap());
+    }
+    let mut candidates = vec![f.accepted.clone()];
+    let mut bindings = f.accepted.clone();
+    bindings
+        .keybindings
+        .entries
+        .insert("app.new-tab".into(), vec![]);
+    candidates.push(bindings.clone());
+    let mut launch = bindings;
+    launch.shell.program = Some("cmd.exe".into());
+    launch.shell.args = vec!["/Q".into()];
+    launch
+        .shell
+        .environment
+        .insert("SYNTHETIC".into(), "literal".into());
+    launch.shell.directory = Some(std::env::temp_dir());
+    candidates.push(launch.clone());
+    launch.clipboard.osc52_write = Osc52WritePolicy::Deny;
+    candidates.push(launch);
+    for candidate in candidates {
+        let summary = f
+            .reload_with(candidate.clone(), |_, stage| {
+                panic!("unrelated transaction stage: {stage:?}")
+            })
+            .unwrap();
+        assert!(summary.contains(&warning));
+        assert_eq!(f.accepted, candidate);
+        assert_eq!(f.policy.shell_command, configured_shell(&candidate.shell));
+        assert_eq!(f.policy.font_warnings, std::slice::from_ref(&warning));
+    }
+    assert_eq!(f.clipboard.osc52_write, Osc52WritePolicy::Allow);
+    let mut invalid = f.accepted.clone();
+    invalid
+        .keybindings
+        .entries
+        .insert("app.unknown".into(), vec![]);
+    let before = f.accepted.clone();
+    assert!(
+        f.reload_with(invalid, |_, _| panic!(
+            "invalid binding reached transaction"
+        ))
+        .is_err()
+    );
+    assert_eq!(f.accepted, before);
+    assert_eq!(f.policy.shell_command, configured_shell(&before.shell));
+    assert!(f.reload(before, None).unwrap().contains("restart required"));
+}
+
+#[test]
+fn color_only_prepares_all_palettes_atomically_without_renderer_or_resize_work() {
+    let mut f = Fixture::new();
+    let before = f.accepted.clone();
+    let size = f.tabs.last_broadcast_size();
+    let targets = f.tabs.configuration_targets();
+    for (_, _, bridge) in &targets {
+        poison(&bridge.renderer().unwrap());
+    }
+    let mut candidate = before.clone();
+    candidate.colors.foreground = Rgba::from_rgb8(88, 99, 111);
+    candidate.shell.program = Some("cmd.exe".into());
+    assert!(
+        f.reload(candidate.clone(), Some(ReloadStage::Palette))
+            .is_err()
+    );
+    assert_eq!(f.accepted, before);
+    assert_eq!(f.policy.appearance.palette(), before.colors);
+    assert_eq!(f.policy.shell_command, ShellCommand::default());
+    for (_, terminal, _) in &targets {
+        let mut terminal = terminal.lock().unwrap();
+        terminal.put_str("\x1b]110\x07");
+        assert_eq!(
+            terminal.read_update(Instant::now()).appearance.palette(),
+            before.colors
+        );
+    }
+    let mut stages = Vec::new();
+    f.reload_with(candidate.clone(), |index, stage| {
+        stages.push((index, stage));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        stages,
+        [(0, ReloadStage::Palette), (1, ReloadStage::Palette)]
+    );
+    assert_eq!(f.accepted, candidate);
+    assert_eq!(f.tabs.last_broadcast_size(), size);
+    assert!(!f.policy.geometry_recovery_pending);
+    for (_, terminal, _) in &targets {
+        let terminal = terminal.lock().unwrap();
+        assert_eq!(
+            terminal.read_update(Instant::now()).appearance.palette(),
+            candidate.colors
+        );
+        assert_eq!(
+            (terminal.screen().rows(), terminal.screen().cols()),
+            (size.unwrap().rows, size.unwrap().cols)
+        );
+    }
 }
 
 #[test]
@@ -588,6 +706,35 @@ fn native_group_rejection_and_retry(compensation_fails: bool) {
     // These are actual blocked native readers resumed by ResizeBarrier::drop, not a fake resume.
     f.native_input();
     f.wait_for_native_markers("RESUMED");
+    if compensation_fails {
+        assert!(f.policy.geometry_recovery_pending);
+        let mut recovery_stages = Vec::new();
+        // The candidate is exactly the accepted settings, not the rejected font request.
+        // ADR 0061 requires this retry to reconcile geometry rather than equality-skip.
+        f.reload_with(accepted.clone(), |index, stage| {
+            recovery_stages.push((index, stage));
+            Ok(())
+        })
+        .unwrap();
+        assert!(!f.policy.geometry_recovery_pending);
+        assert!(recovery_stages.iter().all(|(_, stage)| !matches!(
+            stage,
+            ReloadStage::Font | ReloadStage::Metrics | ReloadStage::Gpu
+        )));
+        assert!(recovery_stages.contains(&(0, ReloadStage::Pty(old_size))));
+        for (_, terminal, bridge) in &targets {
+            let terminal = terminal.lock().unwrap();
+            assert_eq!(
+                (terminal.screen().rows(), terminal.screen().cols()),
+                (old_size.rows, old_size.cols)
+            );
+            assert_eq!(
+                *bridge.renderer().unwrap().lock().unwrap().metrics(),
+                metrics
+            );
+        }
+        assert_eq!(f.accepted, accepted);
+    }
     let result = f.reload(candidate.clone(), None).unwrap();
     assert!(result.contains("applied live"));
     assert_eq!(f.accepted, candidate);

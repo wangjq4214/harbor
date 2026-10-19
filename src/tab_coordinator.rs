@@ -14,8 +14,6 @@ use harbor_widget::{
     scene::primitive::ExternalDrawId,
     winit::{SharedGpu, WinitWindowHost},
 };
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 use winit::{event_loop::EventLoopProxy, window::Window};
 
 use crate::event::AppEvent;
@@ -56,17 +54,46 @@ impl TabDrainOutcome {
     }
 }
 
-#[cfg(test)]
-fn process_ungated_action_batch<A>(
-    actions: impl IntoIterator<Item = A>,
-    input_gate: &std::sync::atomic::AtomicBool,
-    mut process: impl FnMut(A) -> bool,
-) {
-    for action in actions {
-        if input_gate.load(Ordering::Acquire) || !process(action) {
-            return;
+/// One step in the Host's drained FIFO. This is admission policy, not an effect bus:
+/// the Shell still executes commands and owns all native focus/window/clipboard effects.
+pub(crate) enum AppActionAdmission {
+    Execute {
+        request: harbor_app::command::AppCommandRequest,
+        clear_palette_focus: bool,
+    },
+    Rejected {
+        request: harbor_app::command::AppCommandRequest,
+        reason: &'static str,
+        restore_terminal_focus: bool,
+    },
+}
+
+/// Pull after each execution so a gate raised by Paste applies to the remainder.
+/// Palette admission precedes the gate: even a blocked request retires its own editor.
+fn next_app_action(
+    actions: &mut impl Iterator<Item = harbor_app::command::AppCommandRequest>,
+    ui: &WorkspaceUiController,
+    tabs: &TabManager,
+    input_blocked: bool,
+) -> Option<AppActionAdmission> {
+    use harbor_app::command::CommandSource;
+    for request in actions.by_ref() {
+        let palette = matches!(request.source, CommandSource::Palette { .. });
+        if palette && let Err(reason) = ui.take_palette_request(request, tabs, input_blocked) {
+            return Some(AppActionAdmission::Rejected {
+                request,
+                reason,
+                restore_terminal_focus: !ui.palette_is_open() && !input_blocked,
+            });
+        }
+        if !input_blocked {
+            return Some(AppActionAdmission::Execute {
+                request,
+                clear_palette_focus: palette,
+            });
         }
     }
+    None
 }
 
 /// Window-independent factory policy and the real application-thread transaction.
@@ -80,12 +107,16 @@ struct TerminalConfiguration {
     font_warnings: Vec<String>,
     metrics: TextMetrics,
     appearance: TerminalAppearance,
+    // A rejected group may leave a reconciled model at a different PTY size (ADR 0061).
+    // Settings equality is not evidence that geometry no longer needs recovery.
+    geometry_recovery_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReloadStage {
     Font,
     Metrics,
+    Palette,
     Model,
     Gpu,
     Pty(TerminalSize),
@@ -99,11 +130,47 @@ impl TerminalConfiguration {
         workspace_ui: &WorkspaceUiController,
         gpu: TerminalGpuAccess<'_>,
         settings: &harbor_config::Settings,
-        font_changed: bool,
         scale: f32,
         surface: (u32, u32),
         mut preflight: impl FnMut(usize, ReloadStage) -> anyhow::Result<()>,
     ) -> anyhow::Result<Vec<String>> {
+        let font_changed = settings.font != self.font_settings;
+        let colors_changed = settings.colors != self.appearance.palette();
+        if !font_changed && !self.geometry_recovery_pending {
+            if colors_changed {
+                let targets = tabs.configuration_targets();
+                anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
+                // Acquire every model before publishing a palette. No renderer, allocation,
+                // reader barrier or PTY operation is involved in a color-only change.
+                let mut terminals = targets
+                    .iter()
+                    .map(|(id, terminal, _)| {
+                        terminal
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("session {id}: terminal lock unavailable"))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                let mut palettes = Vec::new();
+                for (index, terminal) in terminals.iter_mut().enumerate() {
+                    preflight(index, ReloadStage::Palette).with_context(|| {
+                        format!("session {}: palette preparation", targets[index].0)
+                    })?;
+                    let size = TerminalSize {
+                        rows: terminal.screen().rows(),
+                        cols: terminal.screen().cols(),
+                    };
+                    // Same-size preparation owns exclusive model access without a resize/barrier.
+                    palettes.push(terminal.prepare_configuration_resize(size)?);
+                }
+                for palette in palettes {
+                    palette.commit(settings.colors, None, scale);
+                }
+                self.appearance = TerminalAppearance::from_palette(settings.colors);
+            }
+            self.shell_command = configured_shell(&settings.shell);
+            // Bindings and launch/restart-only changes do not depend on session resources.
+            return Ok(self.font_warnings.clone());
+        }
         let targets = tabs.configuration_targets();
         anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
         let mut warnings = if font_changed {
@@ -207,6 +274,9 @@ impl TerminalConfiguration {
                 );
             }
         }
+        // Conservatively retry geometry after any rejected native group. In particular,
+        // compensation failure can mutate a model while the accepted settings stay old.
+        self.geometry_recovery_pending = true;
         harbor_terminal::resize_configuration_group_with_check(&mut transactions, |index, size| {
             preflight(index, ReloadStage::Pty(size))
         })
@@ -237,6 +307,7 @@ impl TerminalConfiguration {
         self.shell_command = configured_shell(&settings.shell);
         // Effective clipboard delivery remains the startup policy, including for new tabs.
         tabs.accept_configuration_size(size);
+        self.geometry_recovery_pending = false;
         Ok(warnings)
     }
 
@@ -298,6 +369,7 @@ impl TerminalTabFactory {
                 shell_command,
                 font_settings,
                 font_warnings,
+                geometry_recovery_pending: false,
                 metrics,
                 appearance,
             },
@@ -375,7 +447,6 @@ impl TabCoordinator {
     pub(crate) fn apply_configuration(
         &mut self,
         settings: &harbor_config::Settings,
-        font_changed: bool,
         scale: f32,
         surface: (u32, u32),
     ) -> anyhow::Result<Vec<String>> {
@@ -389,7 +460,6 @@ impl TabCoordinator {
             &self.workspace_ui,
             gpu,
             settings,
-            font_changed,
             scale,
             surface,
             |_, _| Ok(()),
@@ -407,15 +477,13 @@ impl TabCoordinator {
         }
     }
 
-    pub(crate) fn take_palette_request(
+    pub(crate) fn next_app_action(
         &self,
-        request: harbor_app::command::AppCommandRequest,
+        actions: &mut impl Iterator<Item = harbor_app::command::AppCommandRequest>,
         input_blocked: bool,
-    ) -> Result<(), &'static str> {
-        self.workspace_ui
-            .take_palette_request(request, &self.tabs, input_blocked)
+    ) -> Option<AppActionAdmission> {
+        next_app_action(actions, &self.workspace_ui, &self.tabs, input_blocked)
     }
-
     pub(crate) fn dispatch_terminal_command(
         &self,
         command: harbor_app::command::AppCommand,
@@ -608,53 +676,15 @@ pub(crate) fn logical_width_from_physical(width: u32, scale: f64) -> f64 {
 }
 
 #[cfg(test)]
+#[path = "action_batch_tests.rs"]
+mod action_batch_tests;
+#[cfg(test)]
 #[path = "configuration_reload_tests.rs"]
 mod configuration_reload_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use harbor_widget::Store;
-    use std::sync::atomic::AtomicBool;
-
-    #[test]
-    fn gated_action_batch_applies_no_actions_and_is_not_replayed() {
-        let store = Store::<(), u8>::new(());
-        let dispatcher = store.dispatcher();
-        dispatcher.dispatch(1);
-        dispatcher.dispatch(2);
-        let input_gate = AtomicBool::new(true);
-        let mut processed = Vec::new();
-
-        process_ungated_action_batch(store.drain_actions(), &input_gate, |action| {
-            processed.push(action);
-            true
-        });
-
-        assert!(processed.is_empty());
-        assert!(store.drain_actions().is_empty());
-    }
-
-    #[test]
-    fn gate_raised_mid_batch_discards_the_unprocessed_remainder() {
-        let store = Store::<(), u8>::new(());
-        let dispatcher = store.dispatcher();
-        dispatcher.dispatch(1);
-        dispatcher.dispatch(2);
-        dispatcher.dispatch(3);
-        let input_gate = AtomicBool::new(false);
-        let mut processed = Vec::new();
-
-        process_ungated_action_batch(store.drain_actions(), &input_gate, |action| {
-            processed.push(action);
-            input_gate.store(true, Ordering::Release);
-            true
-        });
-
-        assert_eq!(processed, [1]);
-        assert!(store.drain_actions().is_empty());
-    }
 
     #[test]
     fn logical_width_conversion_handles_dpi_zero_and_invalid_scale() {

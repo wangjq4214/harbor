@@ -75,8 +75,13 @@ pub(crate) struct ConfigurationNotices {
 }
 
 impl ConfigurationNotices {
-    pub(crate) fn publish(&mut self, source: ConfigurationNoticeSource, message: Option<String>) {
-        self.publish_at(source, message, Instant::now());
+    /// Returns whether content, dismissal history or the expiry deadline changed.
+    pub(crate) fn publish(
+        &mut self,
+        source: ConfigurationNoticeSource,
+        message: Option<String>,
+    ) -> bool {
+        self.publish_at(source, message, Instant::now())
     }
 
     fn publish_at(
@@ -84,17 +89,17 @@ impl ConfigurationNotices {
         source: ConfigurationNoticeSource,
         message: Option<String>,
         now: Instant,
-    ) {
-        // Retire an overdue snapshot even if the host has not yet had an idle turn.
-        self.expire(now);
+    ) -> bool {
+        // Expiry is a real update even when this publication itself is a duplicate.
+        let expired = self.expire(now);
         let existing = self.entries.iter().position(|entry| entry.0 == source);
         if let Some(index) = existing {
             if message.as_ref() == Some(&self.entries[index].1) {
-                return;
+                return expired;
             }
             self.entries.remove(index);
         } else if message.is_none() {
-            return;
+            return expired;
         }
         if let Some(message) = message {
             self.entries.push((source, message, false));
@@ -104,6 +109,7 @@ impl ConfigurationNotices {
         if !self.entries.iter().any(|entry| !entry.2) {
             self.deadline = None;
         }
+        true
     }
 
     pub(crate) fn title(&self) -> &'static str {
@@ -134,13 +140,17 @@ impl ConfigurationNotices {
         (!messages.is_empty()).then(|| messages.join("\n\n"))
     }
 
-    pub(crate) fn dismiss(&mut self, revision: u64) {
-        if revision == self.revision {
-            self.deadline = None;
-            for entry in &mut self.entries {
-                entry.2 = true;
-            }
+    pub(crate) fn dismiss(&mut self, revision: u64) -> bool {
+        if revision != self.revision
+            || (self.deadline.is_none() && self.entries.iter().all(|entry| entry.2))
+        {
+            return false;
         }
+        self.deadline = None;
+        for entry in &mut self.entries {
+            entry.2 = true;
+        }
+        true
     }
 
     pub(crate) fn deadline(&self) -> Option<Instant> {
@@ -161,6 +171,47 @@ impl ConfigurationNotices {
 mod tests {
     use super::*;
     use ConfigurationNoticeSource as Source;
+
+    #[test]
+    fn change_results_include_expiry_and_dismissal_history_but_exclude_no_ops() {
+        let start = Instant::now();
+        let mut notices = ConfigurationNotices::default();
+        assert!(!notices.publish_at(Source::Reload, None, start));
+        assert!(!notices.dismiss(0));
+        assert!(notices.publish_at(Source::Reload, Some("Invalid settings".into()), start));
+        let revision = notices.revision;
+        let deadline = notices.deadline().unwrap();
+        assert!(!notices.publish_at(
+            Source::Reload,
+            Some("Invalid settings".into()),
+            start + std::time::Duration::from_secs(1),
+        ));
+        assert_eq!(notices.deadline(), Some(deadline));
+        assert!(!notices.dismiss(revision + 1));
+        assert!(
+            notices.publish_at(Source::Reload, Some("Invalid settings".into()), deadline,),
+            "an identical publication still commits overdue expiry"
+        );
+        assert!(notices.message().is_none());
+        assert_eq!(notices.deadline(), None);
+        assert!(!notices.dismiss(revision));
+        assert!(!notices.publish_at(Source::Reload, Some("Invalid settings".into()), deadline,));
+        assert!(
+            notices.publish_at(Source::Reload, None, deadline),
+            "recovery retires history"
+        );
+        assert!(notices.publish_at(Source::Reload, Some("Invalid settings".into()), deadline));
+        assert!(notices.dismiss(notices.revision));
+        assert!(!notices.dismiss(notices.revision));
+
+        assert!(notices.publish_at(Source::Command, Some("Failed".into()), deadline));
+        let next_deadline = notices.deadline().unwrap();
+        assert!(
+            notices.publish_at(Source::Observation, None, next_deadline),
+            "even an absent-source clear must publish an overdue expiry"
+        );
+        assert!(notices.message().is_none());
+    }
 
     #[test]
     fn headings_describe_only_visible_notice_sources() {

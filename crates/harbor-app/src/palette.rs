@@ -429,6 +429,7 @@ pub(super) fn palette_panel(
                 .build(cx),
         );
     } else {
+        let context = controller.palette_context();
         let shortcut_rows = candidates("")
             .iter()
             .map(|entry| {
@@ -443,13 +444,7 @@ pub(super) fn palette_panel(
         // Keep the selected row visible without giving keyboard focus to a second editor/list.
         let start = palette.selected.saturating_sub(4);
         for (index, entry) in entries.iter().enumerate().skip(start).take(5) {
-            let reason = availability(
-                entry.command,
-                palette.target,
-                &snapshots,
-                controller.palette_context(),
-            )
-            .err();
+            let reason = availability(entry.command, palette.target, &snapshots, context).err();
             let mut labels = Column::new().cross_axis_alignment(Alignment::Stretch);
             labels = labels.child(
                 TextLabel::new(entry.label)

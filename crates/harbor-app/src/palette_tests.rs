@@ -130,6 +130,37 @@ fn palette_geometry(runtime: &Runtime) -> (Rect, Rect) {
         .expect("selected command row");
     (panel, selected_row)
 }
+#[test]
+fn palette_build_queries_context_once_for_visible_rows_and_never_for_no_matches() {
+    let (tabs, controller, mut runtime, _) = fixture();
+    let bridge = tabs.active_bridge().unwrap();
+    let focus = controller.open_palette();
+    runtime.request_focus(&focus);
+    let before = bridge.alt_screen_queries();
+    runtime.update(Instant::now());
+    assert!(
+        crate::command::command_registry()
+            .iter()
+            .filter(|entry| entry.palette_visible)
+            .count()
+            > 5
+    );
+    assert_eq!(
+        bridge.alt_screen_queries() - before,
+        1,
+        "one context for five visible rows"
+    );
+
+    let before = bridge.alt_screen_queries();
+    assert!(input(&controller).set_text("definitely-not-a-command"));
+    runtime.update(Instant::now());
+    assert!(painted(&runtime).contains("No matching commands"));
+    assert_eq!(
+        bridge.alt_screen_queries(),
+        before,
+        "empty results do not drain the PTY"
+    );
+}
 
 fn assert_palette_title_centered(runtime: &Runtime, row: Rect, title: &str, lines: usize) {
     let delta = runtime.pending_delta().unwrap();

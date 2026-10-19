@@ -1394,6 +1394,87 @@ fn tab_index_domain_type_validates_range() {
 }
 
 #[test]
+fn unchanged_global_publications_do_not_rebuild_the_workspace() {
+    use std::{cell::Cell, rc::Rc};
+
+    let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+    let bindings =
+        crate::command::validate_keybindings(&harbor_config::RawKeybindings::default()).unwrap();
+    controller.publish_keybindings(bindings.clone());
+    controller.open_search(TabId(1));
+    controller.publish_configuration_notice(
+        ConfigurationNoticeSource::Reload,
+        Some("invalid TOML".into()),
+    );
+    let builds = Rc::new(Cell::new(0));
+    let observed = builds.clone();
+    let root = tab_workspace(controller.clone(), false);
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(1000, 320, 1.0));
+    runtime.set_root(move |cx: &mut harbor_widget::view::BuildCx| {
+        observed.set(observed.get() + 1);
+        root.build(cx)
+    });
+    runtime.update(Instant::now());
+    runtime.request_focus(&controller.search_focus());
+    runtime.update(Instant::now());
+    let focused = runtime.input().focused();
+    let allocation = controller.latest_terminal_allocation();
+    let version = controller.store.state().version();
+    let built = builds.get();
+    let revision = controller.store.state().read().notices.revision;
+    let deadline = controller.store.state().read().notices.deadline();
+
+    controller.publish_keybindings(bindings);
+    controller.publish_search_status("No Result");
+    controller.publish_configuration_notice(ConfigurationNoticeSource::Observation, None);
+    controller.publish_configuration_notice(
+        ConfigurationNoticeSource::Reload,
+        Some("invalid TOML".into()),
+    );
+    controller.dismiss_notification(revision + 1);
+    assert_eq!(
+        controller.advance_notifications(Instant::now()),
+        (false, deadline)
+    );
+    runtime.update(Instant::now());
+
+    assert_eq!(controller.store.state().version(), version);
+    assert_eq!(
+        builds.get(),
+        built,
+        "no-op publications must not dirty the root"
+    );
+    assert_eq!(runtime.input().focused(), focused);
+    assert_eq!(controller.latest_terminal_allocation(), allocation);
+    assert!(controller.drain_actions().is_empty());
+
+    controller.publish_search_status("1 / 2");
+    assert_eq!(controller.store.state().version(), version + 1);
+    runtime.update(Instant::now());
+    assert_eq!(builds.get(), built + 1);
+
+    controller.dismiss_notification(revision);
+    let dismissed_version = controller.store.state().version();
+    controller.dismiss_notification(revision);
+    controller.publish_configuration_notice(
+        ConfigurationNoticeSource::Reload,
+        Some("invalid TOML".into()),
+    );
+    assert_eq!(controller.store.state().version(), dismissed_version);
+    assert!(controller.store.state().read().notices.message().is_none());
+
+    // Recovery changes deduplication history even when no notice is visible.
+    controller.publish_configuration_notice(ConfigurationNoticeSource::Reload, None);
+    assert_eq!(controller.store.state().version(), dismissed_version + 1);
+    controller.publish_configuration_notice(
+        ConfigurationNoticeSource::Reload,
+        Some("invalid TOML".into()),
+    );
+    assert!(controller.store.state().read().notices.message().is_some());
+}
+
+#[test]
 fn global_publication_survives_tab_mutations_responsive_changes_and_root_replacement() {
     let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
     let mut raw = harbor_config::RawKeybindings::default();

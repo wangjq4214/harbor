@@ -197,11 +197,14 @@ impl WorkspaceUiController {
     }
 
     pub fn publish_search_status(&self, status: &str) {
-        let mut state = self.store.state().read().clone();
-        if state.search.status != status {
-            state.search.status = status.into();
-            self.store.set_state(state);
+        let current = self.store.state().read();
+        if current.search.status == status {
+            return;
         }
+        let mut state = current.clone();
+        drop(current);
+        state.search.status = status.into();
+        self.store.set_state(state);
     }
 
     pub fn tabs(&self) -> &TabUiController {
@@ -217,7 +220,12 @@ impl WorkspaceUiController {
         self.allocation.latest()
     }
     pub fn publish_keybindings(&self, keybindings: crate::command::ResolvedKeybindings) {
-        let mut state = self.store.state().read().clone();
+        let current = self.store.state().read();
+        if current.keybindings.as_ref() == Some(&keybindings) {
+            return;
+        }
+        let mut state = current.clone();
+        drop(current);
         state.keybindings = Some(keybindings);
         self.store.set_state(state);
     }
@@ -231,9 +239,7 @@ impl WorkspaceUiController {
         source: ConfigurationNoticeSource,
         message: Option<String>,
     ) {
-        let mut state = self.store.state().read().clone();
-        state.notices.publish(source, message);
-        self.store.set_state(state);
+        self.update_notices(|notices| notices.publish(source, message));
     }
 
     /// Called by the application idle turn, independently of terminal activity.
@@ -246,19 +252,26 @@ impl WorkspaceUiController {
         if !deadline.is_some_and(|deadline| now >= deadline) {
             return (false, deadline);
         }
-        let mut state = self.store.state().read().clone();
-        let expired = state.notices.expire(now);
-        let deadline = state.notices.deadline();
-        if expired {
-            self.store.set_state(state);
-        }
-        (expired, deadline)
+        let expired = self.update_notices(|notices| notices.expire(now));
+        (expired, self.store.state().read().notices.deadline())
     }
 
     pub fn dismiss_notification(&self, revision: u64) {
-        let mut state = self.store.state().read().clone();
-        state.notices.dismiss(revision);
+        self.update_notices(|notices| notices.dismiss(revision));
+    }
+
+    /// Keep unrelated workspace state and subscribers untouched for notice no-ops.
+    fn update_notices(&self, update: impl FnOnce(&mut ConfigurationNotices) -> bool) -> bool {
+        let current = self.store.state().read();
+        let mut notices = current.notices.clone();
+        if !update(&mut notices) {
+            return false;
+        }
+        let mut state = current.clone();
+        drop(current);
+        state.notices = notices;
         self.store.set_state(state);
+        true
     }
 }
 
