@@ -2,7 +2,7 @@
 
 **Status:** Testing
 **Date:** 2026-10-19
-**Sources:** The user's notification refinement changed the requested timeout from five to three seconds, followed by explicit confirmation: “覆盖，不能常驻！！！” when asked whether this includes error notifications and overrides their persistent presentation.
+**Sources:** The user's notification refinement changed the requested timeout from five to three seconds, followed by explicit confirmation: “Override it; notifications must not remain permanently!” when asked whether this includes error notifications and overrides their persistent presentation.
 **Supersedes:** [ADR 0064](./0064-widget-and-application-component-ownership.md), only its persistent-actionable-error constraint in decision 3. Also replaces the no-auto-expiry/persistent-error requirements in [spec 0025](../spec/0025-portal-and-configuration-notifications.md), R3 and E10; the remaining contract is unchanged.
 **Related:** [ADR 0063](./0063-root-composable-escape-and-quiet-configuration-notices.md).
 

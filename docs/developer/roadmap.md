@@ -28,7 +28,7 @@ These identifiers preserve references used by existing issues/specifications wit
 | N02 | Unicode text correctness | Combining/VS/ZWJ implemented; no-wrap selector-width discrepancy and native coverage remain. |
 | N03 | `chcp` / legacy Windows compatibility | Investigate actual console API and byte paths. ConPTY remains UTF-8; do not switch the VT parser to GBK based on `chcp`. |
 | N04 | Configuration reload | Manual/watched reload and launch settings implemented; remaining integrated human/runtime acceptance. |
-| N05 | Command palette | Existing visible commands integrated through the shared registry; [native acceptance and readability work remain](../verification/T0003-command-palette/README.md). #156 still defers profiles/panes/appearance scope. |
+| N05 | Command palette | Existing visible commands integrated through the shared registry; [native acceptance and readability work remain](../../.grimoire/ticket/0001-command-palette/T0003-windows-acceptance-and-docs.md). #156 still defers profiles/panes/appearance scope. |
 | N06 | Named session profiles | Not implemented; retain new-session-only launch policy. |
 | N07 | Pane workspace | Not implemented; independent allocation, focus, routing, resize and close lifetimes required. |
 | N08 | Scrollback search | Bounded current-session literal search delivered; retained acceptance/cost work and broader search scope remain separate. |
