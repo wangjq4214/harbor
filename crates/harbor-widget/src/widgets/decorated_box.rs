@@ -197,93 +197,66 @@ impl AnyView for DecoratedBox {
         &self,
         phase: PaintPhase,
         rect: Rect,
-        _metrics: &TextMetrics,
+        metrics: &TextMetrics,
     ) -> Vec<Primitive> {
-        let Some(radii) = self
-            .decoration
-            .border_radius_value()
-            .unwrap_or_default()
-            .normalize(rect.size())
-            .ok()
-            .map(|radii| radii.as_array())
-        else {
-            return Vec::new();
-        };
-
-        match phase {
-            PaintPhase::BeforeChildren => {
-                let radius = self.decoration.border_radius_value().unwrap_or_default();
-                let mut primitives = self
-                    .decoration
-                    .shadows()
-                    .iter()
-                    .filter_map(|shadow| self.outer_shadow_primitive(rect, radius, shadow))
-                    .collect::<Vec<_>>();
-                primitives.extend(self.fill_primitive(rect, radii));
-                primitives
-            }
-            PaintPhase::AfterChildren => self
-                .decoration
-                .border_value()
-                .filter(|border| border.width() > 0.0 && border.paint().is_visible())
-                .map(|border| match border.paint() {
-                    crate::Paint::Solid(color) => Primitive::RoundedBorder {
-                        rect,
-                        width: border.width(),
-                        color,
-                        corner_radii: radii,
-                    },
-                    paint => Primitive::PaintedBorder {
-                        rect,
-                        width: border.width(),
-                        paint,
-                        corner_radii: radii,
-                    },
-                })
-                .into_iter()
-                .collect(),
-        }
+        self.paint_primitives_with_slots_for_phase(phase, rect, metrics)
+            .into_iter()
+            .map(|(_, primitive)| primitive)
+            .collect()
     }
 
     fn paint_primitives_with_slots_for_phase(
         &self,
         phase: PaintPhase,
         rect: Rect,
-        metrics: &TextMetrics,
+        _metrics: &TextMetrics,
     ) -> Vec<(u32, Primitive)> {
-        if phase == PaintPhase::AfterChildren {
-            return self
-                .paint_primitives_for_phase(phase, rect, metrics)
-                .into_iter()
-                .enumerate()
-                .map(|(slot, primitive)| (slot as u32, primitive))
-                .collect();
-        }
-        let Some(radii) = self
-            .decoration
-            .border_radius_value()
-            .unwrap_or_default()
-            .normalize(rect.size())
-            .ok()
-            .map(|radii| radii.as_array())
-        else {
+        let radius = self.decoration.border_radius_value().unwrap_or_default();
+        let Ok(radii) = radius.normalize(rect.size()) else {
             return Vec::new();
         };
-        let radius = self.decoration.border_radius_value().unwrap_or_default();
-        let mut primitives = self
-            .decoration
-            .shadows()
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, shadow)| {
-                self.outer_shadow_primitive(rect, radius, shadow)
-                    .map(|primitive| (slot as u32, primitive))
-            })
-            .collect::<Vec<_>>();
-        if let Some(fill) = self.fill_primitive(rect, radii) {
-            primitives.push((u32::MAX, fill));
+        let radii = radii.as_array();
+        match phase {
+            PaintPhase::BeforeChildren => {
+                let mut primitives = self
+                    .decoration
+                    .shadows()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, shadow)| {
+                        self.outer_shadow_primitive(rect, radius, shadow)
+                            .map(|primitive| (slot as u32, primitive))
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(fill) = self.fill_primitive(rect, radii) {
+                    primitives.push((u32::MAX, fill));
+                }
+                primitives
+            }
+            PaintPhase::AfterChildren => self
+                .decoration
+                .border_value()
+                .filter(|border| border.width() > 0.0 && border.paint().is_visible())
+                .map(|border| {
+                    let primitive = match border.paint() {
+                        crate::Paint::Solid(color) => Primitive::RoundedBorder {
+                            rect,
+                            width: border.width(),
+                            color,
+                            corner_radii: radii,
+                        },
+                        paint => Primitive::PaintedBorder {
+                            rect,
+                            width: border.width(),
+                            paint,
+                            corner_radii: radii,
+                        },
+                    };
+                    (0, primitive)
+                })
+                .into_iter()
+                .collect(),
         }
-        primitives
     }
 
     fn descendant_clip(&self, rect: Rect) -> Option<RoundedClip> {
@@ -300,6 +273,74 @@ mod tests {
     use super::*;
     use crate::scene::primitive::Color;
     use crate::widgets::sized_box::SizedBox;
+
+    #[test]
+    fn phase_paint_preserves_sparse_shadow_slots_fill_and_border_order() {
+        let shadow = crate::BoxShadow::new()
+            .try_color(Color::BLACK)
+            .unwrap()
+            .try_blur_radius(2.0)
+            .unwrap();
+        let widget = DecoratedBox::new(
+            BoxDecoration::new()
+                .shadow(crate::BoxShadow::default())
+                .shadow(shadow)
+                .try_color(Color::RED)
+                .unwrap()
+                .border(crate::Border::all(Color::BLUE, 1.0).unwrap()),
+        );
+        let metrics = &crate::runtime::DEFAULT_TEXT_METRICS;
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(20.0, 10.0));
+        for phase in [PaintPhase::BeforeChildren, PaintPhase::AfterChildren] {
+            let slotted = widget.paint_primitives_with_slots_for_phase(phase, rect, metrics);
+            let slots: Vec<_> = slotted.iter().map(|(slot, _)| *slot).collect();
+            assert_eq!(
+                slots,
+                if phase == PaintPhase::BeforeChildren {
+                    vec![1, u32::MAX]
+                } else {
+                    vec![0]
+                }
+            );
+            assert_eq!(
+                widget.paint_primitives_for_phase(phase, rect, metrics),
+                slotted
+                    .into_iter()
+                    .map(|(_, primitive)| primitive)
+                    .collect::<Vec<_>>()
+            );
+            let invalid = Rect {
+                min: Point::ZERO,
+                max: Point::new(f32::NAN, 10.0),
+            };
+            assert!(
+                widget
+                    .paint_primitives_for_phase(phase, invalid, metrics)
+                    .is_empty()
+            );
+            assert!(
+                widget
+                    .paint_primitives_with_slots_for_phase(phase, invalid, metrics)
+                    .is_empty()
+            );
+        }
+        let before = widget.paint_primitives_for_phase(PaintPhase::BeforeChildren, rect, metrics);
+        assert!(matches!(before[0], Primitive::OuterShadow { .. }));
+        assert!(matches!(
+            before[1],
+            Primitive::RoundedQuad {
+                color: Color::RED,
+                ..
+            }
+        ));
+        assert!(matches!(
+            widget.paint_primitives_for_phase(PaintPhase::AfterChildren, rect, metrics)[0],
+            Primitive::RoundedBorder {
+                color: Color::BLUE,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn layout_preserves_child_size_and_constraints() {

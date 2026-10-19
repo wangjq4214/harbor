@@ -14,10 +14,9 @@ use harbor_widget::{
     scene::primitive::ExternalDrawId,
     winit::{SharedGpu, WinitWindowHost},
 };
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 use winit::{event_loop::EventLoopProxy, window::Window};
 
+use crate::effects::merge_wait;
 use crate::event::AppEvent;
 use harbor_app::{
     tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources},
@@ -43,29 +42,49 @@ pub(crate) fn format_window_title(title: &str) -> String {
 pub(crate) struct TabDrainOutcome {
     pub(crate) wait: Option<ControlFlowEffect>,
     pub(crate) close_window: bool,
+    pub(crate) failed: bool,
 }
 
-impl TabDrainOutcome {
-    fn merge_wait(&mut self, wait: Option<ControlFlowEffect>) {
-        self.wait = match (self.wait, wait) {
-            (Some(left), Some(right)) => Some(left.arbitrate(right)),
-            (Some(wait), None) | (None, Some(wait)) => Some(wait),
-            (None, None) => None,
-        };
-    }
+/// One step in the Host's drained FIFO. This is admission policy, not an effect bus:
+/// the Shell still executes commands and owns all native focus/window/clipboard effects.
+pub(crate) enum AppActionAdmission {
+    Execute {
+        request: harbor_app::command::AppCommandRequest,
+        clear_palette_focus: bool,
+    },
+    Rejected {
+        request: harbor_app::command::AppCommandRequest,
+        reason: &'static str,
+        restore_terminal_focus: bool,
+    },
 }
 
-#[cfg(test)]
-fn process_ungated_action_batch<A>(
-    actions: impl IntoIterator<Item = A>,
-    input_gate: &std::sync::atomic::AtomicBool,
-    mut process: impl FnMut(A) -> bool,
-) {
-    for action in actions {
-        if input_gate.load(Ordering::Acquire) || !process(action) {
-            return;
+/// Pull after each execution so a gate raised by Paste applies to the remainder.
+/// Palette admission precedes the gate: even a blocked request retires its own editor.
+fn next_app_action(
+    actions: &mut impl Iterator<Item = harbor_app::command::AppCommandRequest>,
+    ui: &WorkspaceUiController,
+    tabs: &TabManager,
+    input_blocked: bool,
+) -> Option<AppActionAdmission> {
+    use harbor_app::command::CommandSource;
+    for request in actions.by_ref() {
+        let palette = matches!(request.source, CommandSource::Palette { .. });
+        if palette && let Err(reason) = ui.take_palette_request(request, tabs, input_blocked) {
+            return Some(AppActionAdmission::Rejected {
+                request,
+                reason,
+                restore_terminal_focus: !ui.palette_is_open() && !input_blocked,
+            });
+        }
+        if !input_blocked {
+            return Some(AppActionAdmission::Execute {
+                request,
+                clear_palette_focus: palette,
+            });
         }
     }
+    None
 }
 
 /// Window-independent factory policy and the real application-thread transaction.
@@ -79,12 +98,16 @@ struct TerminalConfiguration {
     font_warnings: Vec<String>,
     metrics: TextMetrics,
     appearance: TerminalAppearance,
+    // A rejected group may leave a reconciled model at a different PTY size (ADR 0061).
+    // Settings equality is not evidence that geometry no longer needs recovery.
+    geometry_recovery_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReloadStage {
     Font,
     Metrics,
+    Palette,
     Model,
     Gpu,
     Pty(TerminalSize),
@@ -98,11 +121,47 @@ impl TerminalConfiguration {
         workspace_ui: &WorkspaceUiController,
         gpu: TerminalGpuAccess<'_>,
         settings: &harbor_config::Settings,
-        font_changed: bool,
         scale: f32,
         surface: (u32, u32),
         mut preflight: impl FnMut(usize, ReloadStage) -> anyhow::Result<()>,
     ) -> anyhow::Result<Vec<String>> {
+        let font_changed = settings.font != self.font_settings;
+        let colors_changed = settings.colors != self.appearance.palette();
+        if !font_changed && !self.geometry_recovery_pending {
+            if colors_changed {
+                let targets = tabs.configuration_targets();
+                anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
+                // Acquire every model before publishing a palette. No renderer, allocation,
+                // reader barrier or PTY operation is involved in a color-only change.
+                let mut terminals = targets
+                    .iter()
+                    .map(|(id, terminal, _)| {
+                        terminal
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("session {id}: terminal lock unavailable"))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                let mut palettes = Vec::new();
+                for (index, terminal) in terminals.iter_mut().enumerate() {
+                    preflight(index, ReloadStage::Palette).with_context(|| {
+                        format!("session {}: palette preparation", targets[index].0)
+                    })?;
+                    let size = TerminalSize {
+                        rows: terminal.screen().rows(),
+                        cols: terminal.screen().cols(),
+                    };
+                    // Same-size preparation owns exclusive model access without a resize/barrier.
+                    palettes.push(terminal.prepare_configuration_resize(size)?);
+                }
+                for palette in palettes {
+                    palette.commit(settings.colors, None, scale);
+                }
+                self.appearance = TerminalAppearance::from_palette(settings.colors);
+            }
+            self.shell_command = configured_shell(&settings.shell);
+            // Bindings and launch/restart-only changes do not depend on session resources.
+            return Ok(self.font_warnings.clone());
+        }
         let targets = tabs.configuration_targets();
         anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
         let mut warnings = if font_changed {
@@ -206,6 +265,9 @@ impl TerminalConfiguration {
                 );
             }
         }
+        // Conservatively retry geometry after any rejected native group. In particular,
+        // compensation failure can mutate a model while the accepted settings stay old.
+        self.geometry_recovery_pending = true;
         harbor_terminal::resize_configuration_group_with_check(&mut transactions, |index, size| {
             preflight(index, ReloadStage::Pty(size))
         })
@@ -236,6 +298,7 @@ impl TerminalConfiguration {
         self.shell_command = configured_shell(&settings.shell);
         // Effective clipboard delivery remains the startup policy, including for new tabs.
         tabs.accept_configuration_size(size);
+        self.geometry_recovery_pending = false;
         Ok(warnings)
     }
 
@@ -297,6 +360,7 @@ impl TerminalTabFactory {
                 shell_command,
                 font_settings,
                 font_warnings,
+                geometry_recovery_pending: false,
                 metrics,
                 appearance,
             },
@@ -374,7 +438,6 @@ impl TabCoordinator {
     pub(crate) fn apply_configuration(
         &mut self,
         settings: &harbor_config::Settings,
-        font_changed: bool,
         scale: f32,
         surface: (u32, u32),
     ) -> anyhow::Result<Vec<String>> {
@@ -388,7 +451,6 @@ impl TabCoordinator {
             &self.workspace_ui,
             gpu,
             settings,
-            font_changed,
             scale,
             surface,
             |_, _| Ok(()),
@@ -406,12 +468,26 @@ impl TabCoordinator {
         }
     }
 
+    pub(crate) fn next_app_action(
+        &self,
+        actions: &mut impl Iterator<Item = harbor_app::command::AppCommandRequest>,
+        input_blocked: bool,
+    ) -> Option<AppActionAdmission> {
+        next_app_action(actions, &self.workspace_ui, &self.tabs, input_blocked)
+    }
+    pub(crate) fn dispatch_terminal_command(
+        &self,
+        command: harbor_app::command::AppCommand,
+    ) -> Result<harbor_terminal::TerminalEventOutcome, &'static str> {
+        self.tabs.dispatch_terminal_command(command)
+    }
+
     pub(crate) fn dispatch_search_command(
         &mut self,
         command: harbor_app::command::AppCommand,
-    ) -> Option<harbor_widget::FocusHandle> {
+    ) -> harbor_app::SearchCommandOutcome {
         self.tabs
-            .dispatch_search_command(command, &self.workspace_ui)
+            .execute_search_command(command, &self.workspace_ui)
     }
 
     pub(crate) fn advance_search(&mut self) -> (bool, bool) {
@@ -477,24 +553,6 @@ impl TabCoordinator {
         self.tabs.resize_all_if_changed(size)
     }
 
-    pub(crate) fn create_terminal_tab(
-        &mut self,
-        surface_size: (u32, u32),
-    ) -> anyhow::Result<TabActionOutcome> {
-        let size = self
-            .tabs
-            .last_broadcast_size()
-            .unwrap_or_else(|| self.factory.default_terminal_size(surface_size));
-        self.tabs.create_tab(|tab_id, draw_id| {
-            self.factory
-                .create_resources(tab_id, draw_id, size, surface_size)
-        })
-    }
-
-    pub(crate) fn terminal_focus(&self) -> harbor_widget::widgets::FocusHandle {
-        self.workspace_ui.terminal_focus()
-    }
-
     pub(crate) fn apply_tab_outcome(
         &mut self,
         host: &mut WinitWindowHost,
@@ -515,11 +573,12 @@ impl TabCoordinator {
         }
 
         if outcome.active_bridge_changed {
-            result.merge_wait(host.cancel_active_input_ownership().wait);
+            merge_wait(&mut result.wait, host.cancel_active_input_ownership().wait);
         }
         if model_changed {
             self.sync_ui(host.window());
-            result.merge_wait(
+            merge_wait(
+                &mut result.wait,
                 host.invalidate_external(harbor_widget::effects::ExternalInvalidation::new())
                     .wait,
             );
@@ -532,7 +591,7 @@ impl TabCoordinator {
             TabFocusPolicy::Terminal => Some(self.workspace_ui.terminal_focus()),
         };
         if let Some(focus_handle) = focus_handle {
-            result.merge_wait(host.request_focus(&focus_handle).wait);
+            merge_wait(&mut result.wait, host.request_focus(&focus_handle).wait);
         }
         result
     }
@@ -551,32 +610,35 @@ impl TabCoordinator {
                 .unwrap_or(TabFocusPolicy::PreserveRail),
             (focus, _) => focus,
         };
-        let outcome = match command {
-            TabCommand::New => match self.create_terminal_tab(host.viewport().physical_size) {
-                Ok(outcome) => {
+        let surface_size = host.viewport().physical_size;
+        let size = self
+            .tabs
+            .last_broadcast_size()
+            .unwrap_or_else(|| self.factory.default_terminal_size(surface_size));
+        let outcome = match self.tabs.execute_command(command, |tab_id, draw_id| {
+            self.factory
+                .create_resources(tab_id, draw_id, size, surface_size)
+        }) {
+            Ok(outcome) => {
+                if command == TabCommand::New {
                     self.workspace_ui.publish_configuration_notice(
                         harbor_app::notifications::ConfigurationNoticeSource::Operation,
                         None,
                     );
-                    outcome
                 }
-                Err(error) => {
-                    let message =
-                        format!("New session failed: {error:#}. Existing sessions are unchanged.");
-                    tracing::warn!(%message, "failed to create terminal tab");
-                    self.workspace_ui.report_configuration_result(message);
-                    return TabDrainOutcome {
-                        wait: host.request_frame().wait,
-                        close_window: false,
-                    };
-                }
-            },
-            TabCommand::Close(id) => self.tabs.close(id),
-            TabCommand::CloseActive => self.tabs.close_active(),
-            TabCommand::Activate(id) => self.tabs.activate(id),
-            TabCommand::Next => self.tabs.activate_next(),
-            TabCommand::Previous => self.tabs.activate_previous(),
-            TabCommand::Numeric(index) => self.tabs.activate_numeric(index),
+                outcome
+            }
+            Err(error) => {
+                let message =
+                    format!("New session failed: {error:#}. Existing sessions are unchanged.");
+                tracing::warn!(%message, "failed to create terminal tab");
+                self.workspace_ui.report_configuration_result(message);
+                return TabDrainOutcome {
+                    wait: host.request_frame().wait,
+                    close_window: false,
+                    failed: true,
+                };
+            }
         };
         self.apply_tab_outcome(host, outcome, focus)
     }
@@ -595,53 +657,15 @@ pub(crate) fn logical_width_from_physical(width: u32, scale: f64) -> f64 {
 }
 
 #[cfg(test)]
+#[path = "action_batch_tests.rs"]
+mod action_batch_tests;
+#[cfg(test)]
 #[path = "configuration_reload_tests.rs"]
 mod configuration_reload_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use harbor_widget::Store;
-    use std::sync::atomic::AtomicBool;
-
-    #[test]
-    fn gated_action_batch_applies_no_actions_and_is_not_replayed() {
-        let store = Store::<(), u8>::new(());
-        let dispatcher = store.dispatcher();
-        dispatcher.dispatch(1);
-        dispatcher.dispatch(2);
-        let input_gate = AtomicBool::new(true);
-        let mut processed = Vec::new();
-
-        process_ungated_action_batch(store.drain_actions(), &input_gate, |action| {
-            processed.push(action);
-            true
-        });
-
-        assert!(processed.is_empty());
-        assert!(store.drain_actions().is_empty());
-    }
-
-    #[test]
-    fn gate_raised_mid_batch_discards_the_unprocessed_remainder() {
-        let store = Store::<(), u8>::new(());
-        let dispatcher = store.dispatcher();
-        dispatcher.dispatch(1);
-        dispatcher.dispatch(2);
-        dispatcher.dispatch(3);
-        let input_gate = AtomicBool::new(false);
-        let mut processed = Vec::new();
-
-        process_ungated_action_batch(store.drain_actions(), &input_gate, |action| {
-            processed.push(action);
-            input_gate.store(true, Ordering::Release);
-            true
-        });
-
-        assert_eq!(processed, [1]);
-        assert!(store.drain_actions().is_empty());
-    }
 
     #[test]
     fn logical_width_conversion_handles_dpi_zero_and_invalid_scale() {

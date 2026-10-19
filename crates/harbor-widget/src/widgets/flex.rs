@@ -141,7 +141,7 @@ impl crate::WithChildren for Flex {
 
 impl AnyView for Flex {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        finite_fill(constraints)
+        constraints.fill_bounded(Size::ZERO)
     }
 
     fn accepts_flex_children(&self) -> bool {
@@ -421,10 +421,6 @@ fn validate_size(size: Size) -> Result<(), LayoutError> {
     finite(f64::from(size.width))?;
     finite(f64::from(size.height))?;
     Ok(())
-}
-
-pub(crate) fn finite_fill(constraints: BoxConstraints) -> Size {
-    constraints.fill_bounded(Size::ZERO)
 }
 
 #[cfg(test)]

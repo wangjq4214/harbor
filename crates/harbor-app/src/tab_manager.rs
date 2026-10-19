@@ -92,7 +92,6 @@ struct TerminalTab {
     working_directory: Option<WorkingDirectoryMetadata>,
     shell_integration: Option<ShellIntegrationMarker>,
     unread: bool,
-    draw_id: ExternalDrawId,
     terminal: Arc<Mutex<Terminal>>,
     bridge: TerminalWidgetBridge,
 }
@@ -129,18 +128,6 @@ pub struct TabActionOutcome {
     pub unread_changed: bool,
     pub active_title_changed: bool,
     pub close_window: bool,
-}
-
-impl TabActionOutcome {
-    const fn unchanged() -> Self {
-        Self {
-            active_bridge_changed: false,
-            request_redraw: false,
-            unread_changed: false,
-            active_title_changed: false,
-            close_window: false,
-        }
-    }
 }
 
 /// A bounded clipboard candidate carrying its stable originating session.
@@ -253,7 +240,6 @@ impl TabManager {
             working_directory: None,
             shell_integration: None,
             unread: false,
-            draw_id,
             terminal: resources.terminal,
             bridge: resources.bridge,
         });
@@ -266,6 +252,25 @@ impl TabManager {
             unread_changed: false,
             active_title_changed: true,
             close_window: false,
+        })
+    }
+
+    /// The shared tab reduction used by Host command draining; only resource creation
+    /// is supplied by the Host. The model preserves numeric bounds/final-tab close.
+    pub fn execute_command(
+        &mut self,
+        command: crate::tab_view::TabCommand,
+        create: impl FnOnce(TabId, ExternalDrawId) -> Result<TerminalTabResources>,
+    ) -> Result<TabActionOutcome> {
+        use crate::tab_view::TabCommand;
+        Ok(match command {
+            TabCommand::New => return self.create_tab(create),
+            TabCommand::Close(id) => self.close(id),
+            TabCommand::CloseActive => self.close_active(),
+            TabCommand::Activate(id) => self.activate(id),
+            TabCommand::Next => self.activate_next(),
+            TabCommand::Previous => self.activate_previous(),
+            TabCommand::Numeric(index) => self.activate_numeric(index),
         })
     }
 
@@ -361,7 +366,7 @@ impl TabManager {
                 working_directory: tab.working_directory.clone(),
                 shell_integration: tab.shell_integration,
                 unread: tab.unread,
-                draw_id: tab.draw_id,
+                draw_id: tab.bridge.draw_id(),
                 active: self.active == Some(tab.id),
             })
             .collect()
@@ -369,10 +374,10 @@ impl TabManager {
 
     pub fn activate(&mut self, id: TabId) -> TabActionOutcome {
         if self.active == Some(id) {
-            return TabActionOutcome::unchanged();
+            return TabActionOutcome::default();
         }
         let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
-            return TabActionOutcome::unchanged();
+            return TabActionOutcome::default();
         };
         self.cancel_search();
         self.clear_active_preedit();
@@ -389,10 +394,10 @@ impl TabManager {
 
     pub fn activate_next(&mut self) -> TabActionOutcome {
         let Some(active) = self.active else {
-            return TabActionOutcome::unchanged();
+            return TabActionOutcome::default();
         };
         let Some(index) = self.tabs.iter().position(|tab| tab.id == active) else {
-            return TabActionOutcome::unchanged();
+            return TabActionOutcome::default();
         };
         let next = (index + 1) % self.tabs.len();
         self.activate(self.tabs[next].id)
@@ -400,10 +405,10 @@ impl TabManager {
 
     pub fn activate_previous(&mut self) -> TabActionOutcome {
         let Some(active) = self.active else {
-            return TabActionOutcome::unchanged();
+            return TabActionOutcome::default();
         };
         let Some(index) = self.tabs.iter().position(|tab| tab.id == active) else {
-            return TabActionOutcome::unchanged();
+            return TabActionOutcome::default();
         };
         let previous = index.checked_sub(1).unwrap_or(self.tabs.len() - 1);
         self.activate(self.tabs[previous].id)
@@ -411,14 +416,14 @@ impl TabManager {
 
     pub fn activate_numeric(&mut self, index: TabIndex) -> TabActionOutcome {
         let Some(tab) = self.tabs.get(index.to_zero_based()) else {
-            return TabActionOutcome::unchanged();
+            return TabActionOutcome::default();
         };
         self.activate(tab.id)
     }
 
     pub fn close(&mut self, id: TabId) -> TabActionOutcome {
         let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
-            return TabActionOutcome::unchanged();
+            return TabActionOutcome::default();
         };
         let was_active = self.active == Some(id);
         if was_active {
@@ -442,7 +447,7 @@ impl TabManager {
         if !was_active {
             return TabActionOutcome {
                 request_redraw: true,
-                ..TabActionOutcome::unchanged()
+                ..TabActionOutcome::default()
             };
         }
 
@@ -463,7 +468,7 @@ impl TabManager {
     pub fn close_active(&mut self) -> TabActionOutcome {
         match self.active {
             Some(id) => self.close(id),
-            None => TabActionOutcome::unchanged(),
+            None => TabActionOutcome::default(),
         }
     }
 
@@ -598,6 +603,7 @@ mod tests {
             .create_tab(|_, draw_id| Ok(resources(draw_id)))
             .unwrap();
         let snapshot = manager.snapshots().pop().unwrap();
+        assert_eq!(snapshot.draw_id, manager.active_bridge().unwrap().draw_id());
         (snapshot.id, snapshot.draw_id)
     }
 
@@ -962,7 +968,7 @@ mod tests {
         assert_eq!(manager.active_id(), Some(b));
         assert_eq!(
             manager.activate_numeric(TabIndex::from_valid_u8(9)),
-            TabActionOutcome::unchanged()
+            TabActionOutcome::default()
         );
     }
 
@@ -1219,11 +1225,11 @@ mod tests {
             manager.close(a),
             TabActionOutcome {
                 request_redraw: true,
-                ..TabActionOutcome::unchanged()
+                ..TabActionOutcome::default()
             }
         );
         assert_eq!(manager.active_id(), Some(b));
-        assert_eq!(manager.close(a), TabActionOutcome::unchanged());
+        assert_eq!(manager.close(a), TabActionOutcome::default());
         assert_eq!(manager.process_output(a), TabOutputOutcome::default());
     }
 

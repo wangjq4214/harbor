@@ -377,9 +377,6 @@ impl TextRenderer {
     /// Looks up the SceneItem by id and draws its glyph instances.
     pub fn encode_item<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, item_id: u64) {
         if let Some(&(start, count)) = self.id_to_offset.get(&item_id) {
-            if count == 0 {
-                return;
-            }
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));

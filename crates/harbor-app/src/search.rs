@@ -120,16 +120,27 @@ impl SessionSearch {
         self.update_status();
     }
 
-    fn accept(&mut self, terminal: &Terminal, completion: SearchResults) -> bool {
+    fn accept(&mut self, terminal: &Terminal, completion: SearchResults) {
         let Ok(accepted) = self.gate.accept(terminal, completion) else {
             self.observed = None;
             self.update_status();
-            return false;
+            return;
         };
         self.presented_gate = std::mem::take(&mut self.gate);
         self.selected = None;
         self.publish(accepted);
-        true
+    }
+
+    // Invalidate only displayed evidence; an in-flight same-query refresh stays live.
+    fn invalidate_presented(&mut self) {
+        self.presented_gate.cancel();
+        self.accepted = None;
+        self.observed = None;
+        self.selected = None;
+        self.update_status();
+        if let Some(bridge) = &self.bridge {
+            bridge.set_decorations(Vec::new());
+        }
     }
 
     fn publish(&mut self, accepted: AcceptedSearch) {
@@ -151,6 +162,29 @@ pub struct SearchTick {
     pub changed: bool,
 }
 
+pub struct SearchCommandOutcome {
+    pub focus: Option<harbor_widget::FocusHandle>,
+    pub completion: Result<crate::command::CommandCompletion, &'static str>,
+}
+
+impl SearchCommandOutcome {
+    /// Direct match navigation preserves focus; palette teardown needs a live destination.
+    pub fn focus_for_source(
+        &self,
+        source: crate::command::CommandSource,
+        ui: &crate::workspace::WorkspaceUiController,
+    ) -> Option<harbor_widget::FocusHandle> {
+        self.focus.or_else(|| match source {
+            crate::command::CommandSource::Direct => None,
+            crate::command::CommandSource::Palette { .. } => Some(if ui.search_query().is_some() {
+                ui.search_focus()
+            } else {
+                ui.terminal_focus()
+            }),
+        })
+    }
+}
+
 impl TabManager {
     /// Shared typed host execution path, also exercised by headless routing tests.
     pub fn dispatch_search_command(
@@ -158,18 +192,39 @@ impl TabManager {
         command: crate::command::AppCommand,
         ui: &crate::workspace::WorkspaceUiController,
     ) -> Option<harbor_widget::FocusHandle> {
-        use crate::command::AppCommand;
-        match command {
+        self.execute_search_command(command, ui).focus
+    }
+
+    /// Completion records actual reduction rather than merely dispatching a request.
+    pub fn execute_search_command(
+        &mut self,
+        command: crate::command::AppCommand,
+        ui: &crate::workspace::WorkspaceUiController,
+    ) -> SearchCommandOutcome {
+        use crate::command::{AppCommand, CommandCompletion};
+        let (focus, completion) = match command {
             AppCommand::SearchOpen => {
-                if let Some(source) = self.active_id() {
-                    ui.open_search(source);
-                }
-                Some(ui.search_focus())
+                let Some(source) = self.active_id() else {
+                    return SearchCommandOutcome {
+                        focus: None,
+                        completion: Err("No active terminal"),
+                    };
+                };
+                ui.open_search(source);
+                (Some(ui.search_focus()), CommandCompletion::Applied)
             }
             AppCommand::SearchClose => {
+                let open = ui.search_query().is_some();
                 self.cancel_search();
                 ui.close_search();
-                Some(ui.terminal_focus())
+                (
+                    Some(ui.terminal_focus()),
+                    if open {
+                        CommandCompletion::Applied
+                    } else {
+                        CommandCompletion::Unchanged
+                    },
+                )
             }
             AppCommand::SearchChanged => {
                 if let Some((source, query)) = ui.search_query()
@@ -177,14 +232,30 @@ impl TabManager {
                 {
                     self.set_search_query(&query);
                 }
-                None
+                (None, CommandCompletion::Applied)
             }
             AppCommand::SearchNext | AppCommand::SearchPrevious => {
-                self.navigate_search(command == AppCommand::SearchPrevious);
+                let changed = self.navigate_search(command == AppCommand::SearchPrevious);
                 ui.publish_search_status(self.search_status());
-                None
+                (
+                    None,
+                    if changed {
+                        CommandCompletion::Applied
+                    } else {
+                        CommandCompletion::Unchanged
+                    },
+                )
             }
-            _ => None,
+            _ => {
+                return SearchCommandOutcome {
+                    focus: None,
+                    completion: Err("Not a search operation"),
+                };
+            }
+        };
+        SearchCommandOutcome {
+            focus,
+            completion: Ok(completion),
         }
     }
 
@@ -280,15 +351,7 @@ impl TabManager {
                 .accept(&terminal, previous.into_results())
             {
                 Ok(accepted) => self.search.publish(accepted),
-                Err(_) => {
-                    self.search.presented_gate.cancel();
-                    self.search.observed = None;
-                    self.search.selected = None;
-                    self.search.update_status();
-                    if let Some(bridge) = &self.search.bridge {
-                        bridge.set_decorations(Vec::new());
-                    }
-                }
+                Err(_) => self.search.invalidate_presented(),
             }
             changed = true;
         }
@@ -352,14 +415,7 @@ impl TabManager {
             self.search.update_status();
             true
         } else {
-            self.search.presented_gate.cancel();
-            self.search.accepted = None;
-            self.search.observed = None;
-            self.search.selected = None;
-            self.search.update_status();
-            if let Some(bridge) = &self.search.bridge {
-                bridge.set_decorations(Vec::new());
-            }
+            self.search.invalidate_presented();
             false
         }
     }

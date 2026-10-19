@@ -15,10 +15,41 @@ pub(crate) fn apply_control_flow(event_loop: &ActiveEventLoop, effect: ControlFl
     event_loop.set_control_flow(control_flow_for_effect(effect));
 }
 
+/// Combines optional host wait requests without inventing a request when both are absent.
+pub(crate) fn merge_wait(current: &mut Option<ControlFlowEffect>, next: Option<ControlFlowEffect>) {
+    if let Some(next) = next {
+        *current = Some(match *current {
+            Some(current) => current.arbitrate(next),
+            None => next,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn optional_wait_merge_preserves_absence_and_arbitrates_both_orders() {
+        let early = Instant::now();
+        let late = early + Duration::from_secs(1);
+        let values = [
+            None,
+            Some(ControlFlowEffect::Wait),
+            Some(ControlFlowEffect::WaitUntil(late)),
+            Some(ControlFlowEffect::WaitUntil(early)),
+            Some(ControlFlowEffect::Poll),
+        ];
+        // The array is ordered by increasing urgency; the later index wins.
+        for (left_index, left) in values.iter().copied().enumerate() {
+            for (right_index, right) in values.iter().copied().enumerate() {
+                let mut merged = left;
+                merge_wait(&mut merged, right);
+                assert_eq!(merged, values[left_index.max(right_index)]);
+            }
+        }
+    }
 
     #[test]
     fn control_flow_arbitration_prefers_poll_then_earliest_deadline() {

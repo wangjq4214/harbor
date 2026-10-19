@@ -206,7 +206,6 @@ fn duplicate_key_diagnostics(
     parent: FiberId,
     list: ReconcileSiblingList,
     keys: &[Option<Key>],
-    counts: &HashMap<Key, usize>,
 ) -> Vec<ReconcileDiagnostic> {
     let mut occurrences_by_key: HashMap<Key, Vec<usize>> = HashMap::new();
     for (index, key) in keys.iter().enumerate() {
@@ -218,17 +217,17 @@ fn duplicate_key_diagnostics(
         }
     }
 
-    let mut reported = HashSet::new();
     let mut diagnostics = Vec::new();
     for key in keys.iter().flatten() {
-        if counts.get(key).copied().unwrap_or_default() > 1 && reported.insert(key.clone()) {
+        // Removing the first occurrence also prevents reporting a key twice.
+        if let Some(occurrences) = occurrences_by_key.remove(key)
+            && occurrences.len() > 1
+        {
             diagnostics.push(ReconcileDiagnostic::DuplicateSiblingKey {
                 parent,
                 list,
                 key: key.clone(),
-                occurrences: occurrences_by_key
-                    .remove(key)
-                    .expect("key was collected before duplicate diagnostics"),
+                occurrences,
             });
         }
     }
@@ -271,23 +270,13 @@ pub(crate) fn reconcile_children_with_externals(
                 .map(|key| (key.clone(), id))
         })
         .collect();
-    let duplicate_new_keys: HashSet<Key> = new_key_counts
-        .iter()
-        .filter(|(_, count)| **count > 1)
-        .map(|(key, _)| key.clone())
-        .collect();
 
-    let mut diagnostics = duplicate_key_diagnostics(
-        parent_id,
-        ReconcileSiblingList::Previous,
-        &old_keys,
-        &old_key_counts,
-    );
+    let mut diagnostics =
+        duplicate_key_diagnostics(parent_id, ReconcileSiblingList::Previous, &old_keys);
     diagnostics.extend(duplicate_key_diagnostics(
         parent_id,
         ReconcileSiblingList::Incoming,
         &new_keys,
-        &new_key_counts,
     ));
 
     let mut consumed = HashSet::new();
@@ -295,7 +284,7 @@ pub(crate) fn reconcile_children_with_externals(
     for (new_index, view) in new_views.into_iter().enumerate() {
         let key = &new_keys[new_index];
         let candidate = match key {
-            Some(key) if !duplicate_new_keys.contains(key) => old_unique_by_key.get(key).copied(),
+            Some(key) if new_key_counts.get(key) == Some(&1) => old_unique_by_key.get(key).copied(),
             Some(_) => None,
             None => old_children.get(new_index).copied(),
         };
@@ -336,4 +325,38 @@ pub(crate) fn reconcile_children_with_externals(
     }
 
     new_child_ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_diagnostics_follow_first_occurrence_order() {
+        let mut arena = FiberArena::new();
+        let parent = arena.insert(Fiber::new(None, std::any::TypeId::of::<()>(), None));
+        let keys = ["b", "unique", "a", "b", "a", "b"].map(|key| Some(Key::new(key)));
+        for list in [
+            ReconcileSiblingList::Previous,
+            ReconcileSiblingList::Incoming,
+        ] {
+            assert_eq!(
+                duplicate_key_diagnostics(parent, list, &keys),
+                vec![
+                    ReconcileDiagnostic::DuplicateSiblingKey {
+                        parent,
+                        list,
+                        key: Key::new("b"),
+                        occurrences: vec![0, 3, 5],
+                    },
+                    ReconcileDiagnostic::DuplicateSiblingKey {
+                        parent,
+                        list,
+                        key: Key::new("a"),
+                        occurrences: vec![2, 4],
+                    },
+                ]
+            );
+        }
+    }
 }

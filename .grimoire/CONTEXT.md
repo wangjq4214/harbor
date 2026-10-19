@@ -145,7 +145,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Reusable `harbor-widget::Paint` for solid colors and linear-gradient box fills/border strokes. Rendering and alpha composition are widget-owned; material presets are application-owned, and existing solid-color APIs remain compatible. See [ADR 0067](./adr/0067-widget-gradient-paints-with-application-material-presets.md).
 
 ### Widget Local Backdrop Blur
-- **Definition:** Reusable `harbor-widget::BackdropFilter` that softens already-drawn content, including embedded terminal presentation, while leaving its foreground sharp. Unlike Windows Acrylic it filters within the window; product presets remain application-owned. See [ADR 0066](./adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md).
+- **Definition:** Reusable `harbor-widget::BackdropFilter` that softens already-drawn content, including embedded terminal presentation, while leaving its foreground sharp. Unlike Windows Acrylic it filters within the window; product presets remain application-owned. Search and the command palette share code-level appearance defaults with per-consumer overrides, not new TOML settings; see [ADR 0070](./adr/0070-shared-application-glass-presets-with-local-overrides.md). See [ADR 0066](./adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md).
 
 ### Widget Backdrop Edge Refraction
 - **Definition:** Optional widget-owned local background displacement concentrated near edges and rounded corners, fading to zero in the center while leaving foreground and hit testing unchanged. Application-owned glass recipes choose its parameters; blur-only consumers keep existing behavior. See [ADR 0068](./adr/0068-local-backdrop-edge-refraction.md).
@@ -186,7 +186,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - belongs to Harbor Widget Runtime
 
 ### Notification Presentation
-- **Definition:** Reusable widget card/content and close/scroll interaction, with local pressed/scroll state; application-owned placement, appearance, eligibility, message meaning, deduplication, recovery and dismissal history. Harbor notices remain top-right, non-modal, manually dismissible, without focus theft or automatic expiry of actionable errors. See [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Definition:** Reusable widget card/content and close/scroll interaction, with local pressed/scroll state; application-owned placement, appearance, eligibility, message meaning, deduplication, recovery and dismissal history. Harbor notices remain top-right, non-modal, manually dismissible, without focus theft; all Harbor floating notices, including actionable errors, automatically close after three seconds rather than remaining permanent. See [ADR 0064](./adr/0064-widget-and-application-component-ownership.md) and the lifetime override in [ADR 0071](./adr/0071-three-second-notifications-including-errors.md).
 - **Relationships:**
   - depends on Portal
   - references Reusable Widget Component
@@ -639,6 +639,14 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 
 ### Application Command Dispatcher
 - **Definition:** Single command path for shortcuts/buttons/menus/future palette. Shortcuts synchronously return Command Outcome; only consumed commands enter scoped FIFO for later Host-owned execution. Not a pub/sub bus.
+
+### Command Palette
+- **Definition:** Application-owned searchable presentation of implemented, palette-visible Application Commands through the existing registry and dispatcher. Current unavailability disables an action with a reason rather than forwarding palette input to the PTY; execution revalidates availability and respects the resulting action's focus destination. See [ADR 0069](./adr/0069-command-palette-source-aware-availability-and-focus.md).
+- **Relationships:**
+  - belongs to Application UI Composition
+  - depends on Application Command Registry
+  - communicates with Application Command Dispatcher
+  - references Widget Text Input
 
 ### Application Keybindings
 - **Definition:** Structured TOML command tables with `bindings` records carrying explicit modifiers and key. Omission retains defaults; an empty array unbinds. Matched available commands get first refusal before terminal input. Invalid overrides, including the superseded string-array format, reject the entire override set without discarding other valid startup settings. See [ADR 0041](./adr/0041-structured-keybinding-configuration.md).

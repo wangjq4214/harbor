@@ -366,7 +366,6 @@ pub struct QuadRenderer {
     instance_capacity: u32,
     free_slots: Vec<u32>,
     id_to_slot: std::collections::BTreeMap<u64, u32>,
-    slot_to_id: std::collections::BTreeMap<u32, u64>,
 }
 
 impl QuadRenderer {
@@ -625,14 +624,12 @@ impl QuadRenderer {
             instance_capacity,
             free_slots: Vec::new(),
             id_to_slot: std::collections::BTreeMap::new(),
-            slot_to_id: std::collections::BTreeMap::new(),
         }
     }
 
     pub fn update(&mut self, queue: &wgpu::Queue, delta: &SceneDelta, viewport: &Viewport) {
         for id in &delta.removed {
             if let Some(slot) = self.id_to_slot.remove(id) {
-                self.slot_to_id.remove(&slot);
                 self.free_slots.push(slot);
                 self.write_instance(
                     queue,
@@ -649,7 +646,6 @@ impl QuadRenderer {
                 continue;
             };
             self.id_to_slot.insert(item.id, slot);
-            self.slot_to_id.insert(slot, item.id);
             self.write_instance(queue, slot, self.item_to_instance(item, viewport));
         }
         for item in &delta.modified {
@@ -658,11 +654,9 @@ impl QuadRenderer {
                     self.write_instance(queue, slot, self.item_to_instance(item, viewport));
                 } else if let Some(slot) = self.allocate_slot(queue) {
                     self.id_to_slot.insert(item.id, slot);
-                    self.slot_to_id.insert(slot, item.id);
                     self.write_instance(queue, slot, self.item_to_instance(item, viewport));
                 }
             } else if let Some(slot) = self.id_to_slot.remove(&item.id) {
-                self.slot_to_id.remove(&slot);
                 self.free_slots.push(slot);
                 self.write_instance(
                     queue,

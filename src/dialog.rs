@@ -14,6 +14,8 @@ use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use crate::effects::merge_wait;
+use harbor_app::command::CommandCompletion;
 use harbor_app::confirmation::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
 use harbor_terminal::safe_preview_line;
 use harbor_terminal::{InputModes, PasteDisposition, Terminal};
@@ -52,10 +54,6 @@ pub(crate) fn wrap_preview_text(raw_text: &str, max_columns: usize) -> Vec<Strin
     let mut wrapped = Vec::new();
     for line in raw_text.lines() {
         let escaped = safe_preview_line(line);
-        if escaped.is_empty() {
-            wrapped.push(String::new());
-            continue;
-        }
         let mut current_line = String::new();
         let mut current_width = 0;
         for ch in escaped.chars() {
@@ -67,9 +65,7 @@ pub(crate) fn wrap_preview_text(raw_text: &str, max_columns: usize) -> Vec<Strin
             current_line.push(ch);
             current_width += ch_width;
         }
-        if !current_line.is_empty() {
-            wrapped.push(current_line);
-        }
+        wrapped.push(current_line);
     }
     wrapped
 }
@@ -101,15 +97,6 @@ fn confirmation_result(confirmed: &AtomicBool, cancelled: &AtomicBool) -> Confir
         ConfirmationResult::Cancelled
     } else {
         ConfirmationResult::None
-    }
-}
-
-fn merge_wait(current: &mut Option<ControlFlowEffect>, next: Option<ControlFlowEffect>) {
-    if let Some(next) = next {
-        *current = Some(match current.take() {
-            Some(current) => current.arbitrate(next),
-            None => next,
-        });
     }
 }
 
@@ -152,6 +139,7 @@ pub(crate) enum PasteEventOutcome {
     Handled {
         request_redraw: bool,
         wait: Option<ControlFlowEffect>,
+        palette_completion: Option<Result<CommandCompletion, &'static str>>,
     },
     Fatal {
         error: FrameError,
@@ -163,6 +151,8 @@ pub(crate) enum PasteEventOutcome {
 pub(crate) struct PasteController {
     window: Option<ConfirmationWindow>,
     input_gate: Arc<AtomicBool>,
+    // Completion origin only; confirmation retains the existing current-target policy.
+    palette_invocation: bool,
 }
 
 impl PasteController {
@@ -170,6 +160,7 @@ impl PasteController {
         Self {
             window: None,
             input_gate,
+            palette_invocation: false,
         }
     }
 
@@ -196,25 +187,19 @@ impl PasteController {
 
         match &result {
             DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
-                if let DialogOutcome::Confirmed(_) = &result
-                    && let Some(active_terminal) = active_terminal
-                    && let Ok(mut terminal) = active_terminal.lock()
-                {
-                    let input_modes = terminal.drain_and_snapshot().input_modes;
-                    if let Err(error) = write_confirmation_outcome(&result, input_modes, |bytes| {
-                        terminal.write_pty(bytes)
-                    }) {
-                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
-                    }
-                }
+                let completion = complete_paste_confirmation(&result, active_terminal);
+                let palette_completion =
+                    std::mem::take(&mut self.palette_invocation).then_some(completion);
                 self.input_gate.store(false, Ordering::Release);
                 PasteEventOutcome::Handled {
                     request_redraw: true,
                     wait,
+                    palette_completion,
                 }
             }
             DialogOutcome::Fatal(error) => {
                 self.input_gate.store(false, Ordering::Release);
+                self.palette_invocation = false;
                 PasteEventOutcome::Fatal {
                     error: error.clone(),
                     wait,
@@ -223,6 +208,7 @@ impl PasteController {
             DialogOutcome::None => PasteEventOutcome::Handled {
                 request_redraw: false,
                 wait,
+                palette_completion: None,
             },
         }
     }
@@ -250,67 +236,95 @@ impl PasteController {
         event_loop: &ActiveEventLoop,
         main_host: &mut WinitWindowHost,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
-    ) -> HostIdleOutcome {
-        let raw_text =
-            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
-                Ok(text) => text,
-                Err(error) => {
-                    tracing::warn!(error = %error, "failed to read clipboard text");
-                    return HostIdleOutcome::default();
-                }
-            };
-
-        let confirmation = {
-            let Some(active_terminal) = active_terminal else {
-                tracing::warn!("no active terminal for clipboard paste");
-                return HostIdleOutcome::default();
-            };
-            let Ok(mut terminal) = active_terminal.lock() else {
-                tracing::warn!("terminal lock unavailable for clipboard paste");
-                return HostIdleOutcome::default();
-            };
-            let input_modes = terminal.drain_and_snapshot().input_modes;
-
-            match PasteDisposition::decide(input_modes, &raw_text) {
-                PasteDisposition::SendDirect => {
-                    if let Err(error) =
-                        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref())
-                    {
-                        tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
-                    }
-                    return HostIdleOutcome::default();
-                }
-                PasteDisposition::Confirm { raw_text } => {
-                    match ConfirmationWindow::new(raw_text, event_loop, main_host) {
-                        Ok(confirmation) => confirmation,
-                        Err(error) => {
-                            tracing::warn!(error = %format_args!("{error:#}"), "failed to create confirmation window");
-                            return HostIdleOutcome::default();
-                        }
-                    }
-                }
+        palette_invocation: bool,
+    ) -> Result<(HostIdleOutcome, CommandCompletion), &'static str> {
+        if self.is_active() {
+            return Err("Rejected: paste confirmation is active");
+        }
+        let raw_text = arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.get_text())
+            .map_err(|error| {
+                tracing::warn!(error = %error, "failed to read clipboard text");
+                "Failed: clipboard text unavailable"
+            })?;
+        match prepare_paste(active_terminal, &raw_text)? {
+            PasteDisposition::SendDirect => Ok((
+                HostIdleOutcome::default(),
+                if raw_text.is_empty() {
+                    CommandCompletion::Unchanged
+                } else {
+                    CommandCompletion::Applied
+                },
+            )),
+            PasteDisposition::Confirm { raw_text } => {
+                let confirmation = ConfirmationWindow::new(raw_text, event_loop, main_host).map_err(|error| {
+                    tracing::warn!(error = %format_args!("{error:#}"), "failed to create confirmation window");
+                    "Failed: could not open paste confirmation"
+                })?;
+                self.window = Some(confirmation);
+                self.input_gate.store(true, Ordering::Release);
+                self.palette_invocation = palette_invocation;
+                Ok((
+                    main_host.cancel_active_input_ownership(),
+                    CommandCompletion::PendingConfirmation,
+                ))
             }
-        };
-
-        self.window = Some(confirmation);
-        self.input_gate.store(true, Ordering::Release);
-        main_host.cancel_active_input_ownership()
+        }
     }
+}
+
+/// The production decision/write seam: confirmation never writes bytes before approval.
+fn prepare_paste(
+    active_terminal: Option<&Arc<Mutex<Terminal>>>,
+    raw_text: &str,
+) -> Result<PasteDisposition, &'static str> {
+    let terminal = active_terminal.ok_or("Rejected: no active terminal for paste")?;
+    let mut terminal = terminal
+        .lock()
+        .map_err(|_| "Failed: terminal lock unavailable for paste")?;
+    let input_modes = terminal.drain_and_snapshot().input_modes;
+    let disposition = PasteDisposition::decide(input_modes, raw_text);
+    if matches!(disposition, PasteDisposition::SendDirect) {
+        terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref()).map_err(|error| {
+            tracing::warn!(error = %format_args!("{error:#}"), "failed to write clipboard paste");
+            "Failed: could not write clipboard paste"
+        })?;
+    }
+    Ok(disposition)
+}
+
+/// Finish the same Host write path at approval time; no target or input modes are captured.
+fn complete_paste_confirmation(
+    outcome: &DialogOutcome,
+    active_terminal: Option<&Arc<Mutex<Terminal>>>,
+) -> Result<CommandCompletion, &'static str> {
+    let DialogOutcome::Confirmed(raw_text) = outcome else {
+        return Err("Cancelled: paste was not confirmed");
+    };
+    let terminal = active_terminal.ok_or("Rejected: no active terminal for confirmed paste")?;
+    let mut terminal = terminal
+        .lock()
+        .map_err(|_| "Failed: terminal lock unavailable for confirmed paste")?;
+    let modes = terminal.drain_and_snapshot().input_modes;
+    write_confirmation_outcome(outcome, modes, |bytes| terminal.write_pty(bytes)).map_err(
+        |error| {
+            tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
+            "Failed: could not write confirmed paste"
+        },
+    )?;
+    Ok(if raw_text.is_empty() {
+        CommandCompletion::Unchanged
+    } else {
+        CommandCompletion::Applied
+    })
 }
 
 // ── ConfirmationWindow ──────────────────────────────────────────────────────
 
-struct DialogRoot(Box<dyn harbor_widget::view::Component>);
-impl harbor_widget::view::Component for DialogRoot {
-    fn build(&self, cx: &mut harbor_widget::view::BuildCx) -> harbor_widget::view::View {
-        self.0.build(cx)
-    }
-}
-
 struct ConfirmationRootState {
     cancelled: Arc<AtomicBool>,
     confirmed: Arc<AtomicBool>,
-    wrapped_lines: Vec<String>,
+    max_scroll: usize,
     preview_scroll_offset: Arc<AtomicUsize>,
 }
 
@@ -354,7 +368,7 @@ impl ConfirmationWindow {
         event_loop: &ActiveEventLoop,
         main_host: &WinitWindowHost,
     ) -> anyhow::Result<Self> {
-        let main_window = Some(main_host.window());
+        let main_window = main_host.window();
         let line_count = raw_text.lines().count();
 
         let mut window_attrs = Window::default_attributes()
@@ -365,24 +379,18 @@ impl ConfirmationWindow {
 
         // Owned window on Windows: keep dialog above main window in z-order.
         #[cfg(target_os = "windows")]
-        if let Some(main) = main_window {
-            let hwnd = main.window_handle().ok().and_then(|h| match h.as_raw() {
-                RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
-                _ => None,
-            });
-            if let Some(hwnd) = hwnd {
-                window_attrs = window_attrs.with_owner_window(hwnd);
-            }
+        if let Ok(handle) = main_window.window_handle()
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            window_attrs = window_attrs.with_owner_window(handle.hwnd.get());
         }
 
         // Center dialog over the main window using physical pixels.
-        if let Some(main) = main_window
-            && let Ok(outer) = main.outer_position()
-        {
+        if let Ok(outer) = main_window.outer_position() {
             window_attrs = window_attrs.with_position(centered_dialog_position(
                 outer,
-                main.outer_size(),
-                main.scale_factor(),
+                main_window.outer_size(),
+                main_window.scale_factor(),
             ));
         }
 
@@ -395,6 +403,7 @@ impl ConfirmationWindow {
                     / metrics.cell_width)
                     .floor() as usize;
                 let wrapped_lines = wrap_preview_text(&root_text, max_columns.max(1));
+                let max_scroll = wrapped_lines.len().saturating_sub(PREVIEW_VISIBLE_LINES);
                 let cancelled = Arc::new(AtomicBool::new(false));
                 let confirmed = Arc::new(AtomicBool::new(false));
                 let preview_scroll_offset = Arc::new(AtomicUsize::new(0));
@@ -402,7 +411,7 @@ impl ConfirmationWindow {
                     if let Some(header) = clipboard_header {
                         Box::new(harbor_app::confirmation::build_clipboard_confirmation_root(
                             header,
-                            wrapped_lines.clone(),
+                            wrapped_lines,
                             Arc::clone(&preview_scroll_offset),
                             Arc::clone(&cancelled),
                             Arc::clone(&confirmed),
@@ -411,18 +420,18 @@ impl ConfirmationWindow {
                     } else {
                         Box::new(harbor_app::confirmation::build_confirmation_root(
                             line_count,
-                            wrapped_lines.clone(),
+                            wrapped_lines,
                             Arc::clone(&preview_scroll_offset),
                             Arc::clone(&cancelled),
                             Arc::clone(&confirmed),
                             metrics.line_height,
                         ))
                     };
-                let root = DialogRoot(root);
+                let root = move |cx: &mut harbor_widget::view::BuildCx| root.build(cx);
                 let root_state = ConfirmationRootState {
                     cancelled,
                     confirmed,
-                    wrapped_lines,
+                    max_scroll,
                     preview_scroll_offset,
                 };
                 Ok::<_, anyhow::Error>((root, root_state))
@@ -476,11 +485,7 @@ impl ConfirmationWindow {
                 return ConfirmationEventOutcome { result, wait: None };
             }
 
-            let max_scroll = self
-                .root_state
-                .wrapped_lines
-                .len()
-                .saturating_sub(PREVIEW_VISIBLE_LINES);
+            let max_scroll = self.root_state.max_scroll;
             let scrolled = match &key_event.logical_key {
                 Key::Named(NamedKey::ArrowUp) => {
                     scroll_preview(&self.root_state.preview_scroll_offset, -1, max_scroll)
@@ -517,6 +522,10 @@ impl ConfirmationWindow {
 }
 
 // ── Confirmation widget tree ────────────────────────────────────────────────
+
+#[cfg(test)]
+#[path = "paste_command_tests.rs"]
+mod paste_command_tests;
 
 #[cfg(test)]
 mod tests {

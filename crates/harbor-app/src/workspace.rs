@@ -1,7 +1,7 @@
 //! Application workspace composition and Host-published global UI state.
 
 use crate::{
-    appearance::SearchAppearance,
+    appearance::{GlassAppearance, glass_icon_button_style},
     command::{AppCommand, AppCommandRequest, ResolvedKeybindings},
     notifications::{ConfigurationNoticeSource, ConfigurationNotices, configuration_notification},
     tab_manager::TabSnapshot,
@@ -9,14 +9,16 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionOutcome, Actions, BackdropFilter, ClipBehavior, ComponentExt as _, DecoratedBox,
-    Expanded, Focus, FocusHandle, FocusScope, IconButton, LayoutObserver, LucideIcon, Portal, Row,
-    Shortcuts, Store, TextEditingController, TextField,
+    ActionOutcome, Actions, ComponentExt as _, Expanded, Focus, FocusHandle, FocusScope,
+    IconButton, LayoutObserver, LucideIcon, Portal, Row, Shortcuts, Store, TextEditingController,
+    TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
     widgets::{layout_observer::LayoutChangedCallback, padding::Padding, stack::Stack},
 };
+#[path = "palette.rs"]
+mod palette;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -41,12 +43,13 @@ impl Default for SearchUiState {
 }
 
 fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
+    let appearance = GlassAppearance::default();
     let input = controller.store.state().read().search.input.clone();
     let changed_ui = controller.clone();
     let submit = controller.store.dispatcher();
     let close = controller.store.dispatcher();
     let entry = TextField::new(input)
-        .decoration(SearchAppearance::input())
+        .decoration(appearance.input())
         .padding(6.0)
         .placeholder("Find…")
         .focus_handle(controller.search_focus)
@@ -65,23 +68,7 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
             }))
         })
         .on_escape(move || close.dispatch(AppCommandRequest::shortcut(AppCommand::SearchClose)));
-    let mut style = cx.theme().icon_button.clone();
-    style.min_height = 32.0;
-    style.icon_size = 18.0;
-    style.horizontal_padding = 7.0;
-    style.border_width = 0.0;
-    for colors in [
-        &mut style.normal,
-        &mut style.hovered,
-        &mut style.pressed,
-        &mut style.selected,
-        &mut style.disabled,
-    ] {
-        colors.background = Color::TRANSPARENT;
-    }
-    style.normal.foreground.a = 0.78;
-    style.hovered.foreground.a = 1.0;
-    style.pressed.foreground.a = 0.5;
+    let style = glass_icon_button_style(cx);
     let button = |icon, label, command| {
         let dispatcher = controller.store.dispatcher();
         IconButton::new(icon, label)
@@ -89,28 +76,22 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
             .on_click(move |_| dispatcher.dispatch(AppCommandRequest::shortcut(command)))
     };
     let status = controller.store.state().read().search.status.clone();
-    let radius = SearchAppearance::radius();
-    let decoration = SearchAppearance::panel();
-    let card = harbor_widget::view! { &mut *cx;
-        BackdropFilter::new(SearchAppearance::BLUR_SIGMA).unwrap()
-            .border_radius(radius).edge_refraction(SearchAppearance::refraction()) => {
-            DecoratedBox::new(decoration).clip_behavior(ClipBehavior::AntiAlias) => {
-                Padding::all(8.0) => {
-                    Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
-                        Expanded::new() => { entry; }
-                        // Status text changes frequently; reserve its slot instead of resizing the editor.
-                        harbor_widget::ConstrainedBox::new().min_width(120.0).max_width(120.0) => {
-                            harbor_widget::widgets::text_label::TextLabel::new(status)
-                                .color(cx.theme().button.normal.foreground).ellipsis();
-                        }
-                        button(LucideIcon::ChevronUp, "Previous match", AppCommand::SearchPrevious);
-                        button(LucideIcon::ChevronDown, "Next match", AppCommand::SearchNext);
-                        button(LucideIcon::X, "Close search", AppCommand::SearchClose);
-                    }
+    let content = harbor_widget::view! { &mut *cx;
+        Padding::all(8.0) => {
+            Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
+                Expanded::new() => { entry; }
+                // Status text changes frequently; reserve its slot instead of resizing the editor.
+                harbor_widget::ConstrainedBox::new().min_width(120.0).max_width(120.0) => {
+                    harbor_widget::widgets::text_label::TextLabel::new(status)
+                        .color(cx.theme().button.normal.foreground).ellipsis();
                 }
+                button(LucideIcon::ChevronUp, "Previous match", AppCommand::SearchPrevious);
+                button(LucideIcon::ChevronDown, "Next match", AppCommand::SearchNext);
+                button(LucideIcon::X, "Close search", AppCommand::SearchClose);
             }
         }
     };
+    let card = appearance.panel(cx, content);
     Portal::new()
         .child(
             harbor_widget::widgets::align::Align::new(harbor_widget::Alignment::End)
@@ -130,6 +111,7 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
                         .child(card),
                 ),
         )
+        .keyed("session-search")
         .build(cx)
 }
 
@@ -142,6 +124,8 @@ struct WorkspaceUiState {
     keybindings: Option<ResolvedKeybindings>,
     notices: ConfigurationNotices,
     search: SearchUiState,
+    palette: Option<palette::PaletteState>,
+    palette_generation: u64,
 }
 
 /// App-wide publication and the sole one-shot action inbox, independent of tab sync.
@@ -151,6 +135,7 @@ pub struct WorkspaceUiController {
     tabs: TabUiController,
     terminal_focus: FocusHandle,
     search_focus: FocusHandle,
+    palette_focus: FocusHandle,
     allocation: TerminalAllocationMailbox,
 }
 
@@ -165,6 +150,7 @@ impl WorkspaceUiController {
             tabs: TabUiController::new(snapshots, active_bridge, logical_width),
             terminal_focus: FocusHandle::new(),
             search_focus: FocusHandle::new(),
+            palette_focus: FocusHandle::new(),
             allocation: TerminalAllocationMailbox::new(),
         }
     }
@@ -211,11 +197,14 @@ impl WorkspaceUiController {
     }
 
     pub fn publish_search_status(&self, status: &str) {
-        let mut state = self.store.state().read().clone();
-        if state.search.status != status {
-            state.search.status = status.into();
-            self.store.set_state(state);
+        let current = self.store.state().read();
+        if current.search.status == status {
+            return;
         }
+        let mut state = current.clone();
+        drop(current);
+        state.search.status = status.into();
+        self.store.set_state(state);
     }
 
     pub fn tabs(&self) -> &TabUiController {
@@ -231,7 +220,12 @@ impl WorkspaceUiController {
         self.allocation.latest()
     }
     pub fn publish_keybindings(&self, keybindings: crate::command::ResolvedKeybindings) {
-        let mut state = self.store.state().read().clone();
+        let current = self.store.state().read();
+        if current.keybindings.as_ref() == Some(&keybindings) {
+            return;
+        }
+        let mut state = current.clone();
+        drop(current);
         state.keybindings = Some(keybindings);
         self.store.set_state(state);
     }
@@ -245,15 +239,39 @@ impl WorkspaceUiController {
         source: ConfigurationNoticeSource,
         message: Option<String>,
     ) {
-        let mut state = self.store.state().read().clone();
-        state.notices.publish(source, message);
-        self.store.set_state(state);
+        self.update_notices(|notices| notices.publish(source, message));
+    }
+
+    /// Called by the application idle turn, independently of terminal activity.
+    /// The deadline participates in the host wait policy, not a polling thread.
+    pub fn advance_notifications(
+        &self,
+        now: std::time::Instant,
+    ) -> (bool, Option<std::time::Instant>) {
+        let deadline = self.store.state().read().notices.deadline();
+        if !deadline.is_some_and(|deadline| now >= deadline) {
+            return (false, deadline);
+        }
+        let expired = self.update_notices(|notices| notices.expire(now));
+        (expired, self.store.state().read().notices.deadline())
     }
 
     pub fn dismiss_notification(&self, revision: u64) {
-        let mut state = self.store.state().read().clone();
-        state.notices.dismiss(revision);
+        self.update_notices(|notices| notices.dismiss(revision));
+    }
+
+    /// Keep unrelated workspace state and subscribers untouched for notice no-ops.
+    fn update_notices(&self, update: impl FnOnce(&mut ConfigurationNotices) -> bool) -> bool {
+        let current = self.store.state().read();
+        let mut notices = current.notices.clone();
+        if !update(&mut notices) {
+            return false;
+        }
+        let mut state = current.clone();
+        drop(current);
+        state.notices = notices;
         self.store.set_state(state);
+        true
     }
 }
 
@@ -290,12 +308,11 @@ pub fn tab_workspace(
     controller: WorkspaceUiController,
     backdrop_available: bool,
 ) -> impl Component {
-    main_window_root(MainWindowRootInputs::new(
+    tab_workspace_with_fallback(
         controller,
         backdrop_available,
         harbor_config::WindowBackdropStyle::default().fallback,
-        crate::command::resolve_keybindings(&harbor_config::RawKeybindings::default()).keybindings,
-    ))
+    )
 }
 
 pub fn tab_workspace_with_fallback(
@@ -327,7 +344,12 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         .clone()
         .expect("workspace has an active terminal until window exit");
     let root = root_padding(props.backdrop_available, props.backdrop_fallback);
-    let shortcuts = shortcuts(state.keybindings.as_ref().unwrap_or(&props.keybindings));
+    let bindings = state.keybindings.as_ref().unwrap_or(&props.keybindings);
+    let shortcuts = if state.palette.is_some() {
+        Shortcuts::empty()
+    } else {
+        shortcuts(bindings)
+    };
     let command_bridge = active_bridge.clone();
     let actions = Actions::handler(move |command| {
         let outcome = command_outcome(command, &command_bridge);
@@ -345,10 +367,11 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         } else {
             0.0
         };
-        configuration_notification(message, top_offset, move || {
+        configuration_notification(state.notices.title(), message, top_offset, move || {
             dismiss_dispatcher.dispatch(AppCommandRequest {
                 command: AppCommand::DismissNotification(revision),
                 focus: TabFocusPolicy::PreserveRail,
+                source: crate::command::CommandSource::Direct,
             })
         })
     });
@@ -359,7 +382,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
                     shortcuts => {
                         Row::new() => {
                             tab_rail(cx, &tab_state, &props.controller.tabs, dispatcher);
-                            terminal_panel(cx, &props.controller, active_bridge);
+                            terminal_panel(cx, &props.controller, active_bridge, bindings);
                         }
                     }
                 }
@@ -375,8 +398,9 @@ fn terminal_panel(
     cx: &mut BuildCx,
     controller: &WorkspaceUiController,
     active_bridge: TerminalWidgetBridge,
+    bindings: &ResolvedKeybindings,
 ) -> View {
-    let search = controller.store.state().read().search.clone();
+    let search_open = controller.store.state().read().search.open;
     harbor_widget::view! { cx; Expanded::new() => {
         harbor_widget::Column::new() => {
             Expanded::new().keyed("terminal-surface") => {
@@ -388,8 +412,11 @@ fn terminal_panel(
                     }
                 }
             }
-            if search.open {
+            if search_open {
                 search_bar(cx, controller);
+            }
+            if controller.palette_is_open() {
+                palette::palette_panel(cx, controller, bindings);
             }
         }
     } }

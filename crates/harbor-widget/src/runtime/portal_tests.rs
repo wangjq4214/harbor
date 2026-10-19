@@ -222,7 +222,7 @@ fn pointer(rt: &mut Runtime, position: Point, phase: PointerPhase) {
 }
 
 #[test]
-fn notification_is_persistent_transparent_outside_and_dismissible_at_resized_position() {
+fn notification_lifetime_is_caller_owned_and_close_follows_resized_position() {
     let dismissed = Arc::new(AtomicUsize::new(0));
     let mut rt = Runtime::new();
     rt.set_viewport(Viewport::new(900, 600, 1.0));
@@ -235,10 +235,29 @@ fn notification_is_persistent_transparent_outside_and_dismissible_at_resized_pos
             .is_none()
     );
     rt.update(Instant::now() + std::time::Duration::from_secs(3600));
-    assert!(!rt.scene_graph.items().is_empty(), "no error timeout");
+    assert!(
+        !rt.scene_graph.items().is_empty(),
+        "reusable presentation does not impose the application's timeout"
+    );
     rt.set_viewport(Viewport::new(1200, 800, 2.0));
     rt.update(Instant::now());
-    let position = Point::new(575.0, 25.0);
+    let close = rt
+        .scene_graph
+        .items()
+        .iter()
+        .find_map(|item| match item.primitive {
+            Primitive::Icon {
+                icon: crate::LucideIcon::X,
+                rect,
+                ..
+            } => Some(rect),
+            _ => None,
+        })
+        .expect("vector close follows resized overlay geometry");
+    let position = Point::new(
+        (close.min.x + close.max.x) / 2.0,
+        (close.min.y + close.max.y) / 2.0,
+    );
     pointer(&mut rt, position, PointerPhase::Down);
     pointer(&mut rt, position, PointerPhase::Up);
     assert_eq!(dismissed.load(Ordering::Relaxed), 1);

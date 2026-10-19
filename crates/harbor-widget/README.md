@@ -135,6 +135,8 @@ See [`tests/native_host_smoke.rs`](tests/native_host_smoke.rs) for a compact lif
 
 Some widgets are available from `harbor_widget::widgets::<module>` rather than the crate root. The crate root re-exports the most commonly used construction, layout, control, and theme types.
 
+`TextLabel` measures its natural width and optional `ellipsis()` against the renderer's actual UI-font glyph advances at the current DPI. It adds no implicit padding; use `Padding` explicitly. Truncation preserves grapheme boundaries and the full source for later wider layouts. Without initialized text resources, headless layout uses the same per-Unicode-scalar fallback as text rendering, not UTF-8 byte counts.
+
 ## Runtime without `winit`
 
 Use [`runtime::Runtime`](src/runtime/mod.rs) directly when another host already owns the window or event loop. The embedding host is responsible for:

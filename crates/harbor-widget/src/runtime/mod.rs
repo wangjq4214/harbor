@@ -426,6 +426,24 @@ impl Runtime {
             .map(|v| v.logical_size)
             .unwrap_or(Size::new(800.0, 600.0));
         let constraints = BoxConstraints::loose(viewport_size);
+        // Intrinsic text widths must use the same advances as paint, including DPI.
+        let scale = crate::text::normalize_raster_scale(
+            self.current_viewport
+                .as_ref()
+                .map_or(1.0, |v| v.scale_factor),
+        );
+        let mut pending = vec![root_id];
+        while let Some(id) = pending.pop() {
+            if let Some(fiber) = self.arena.get(id) {
+                pending.extend_from_slice(&fiber.children);
+                if let Some(view) = &fiber.view {
+                    view.prepare_text_geometry(&self.text_metrics, &mut |ch| {
+                        self.encoder
+                            .advance_width(ch, scale, self.text_metrics.cell_width)
+                    });
+                }
+            }
+        }
         let outcome = layout_fiber(
             &mut self.arena,
             root_id,
@@ -479,7 +497,7 @@ impl Runtime {
                 .collect::<Vec<_>>();
             view.post_layout(rect, &child_rects);
 
-            if !valid_layout_notification_rect(rect) {
+            if !rect.is_valid() {
                 continue;
             }
             let Some(callback) = view.layout_changed_callback() else {
@@ -729,24 +747,6 @@ impl Runtime {
             return;
         };
 
-        let scale = crate::text::normalize_raster_scale(
-            self.current_viewport
-                .as_ref()
-                .map_or(1.0, |v| v.scale_factor),
-        );
-        let mut pending = vec![root_id];
-        while let Some(id) = pending.pop() {
-            if let Some(fiber) = self.arena.get(id) {
-                pending.extend_from_slice(&fiber.children);
-                if let Some(view) = &fiber.view {
-                    view.prepare_text_geometry(&self.text_metrics, &mut |ch| {
-                        self.encoder
-                            .advance_width(ch, scale, self.text_metrics.cell_width)
-                    });
-                }
-            }
-        }
-
         let items = paint_fiber(
             &mut self.arena,
             root_id,
@@ -929,10 +929,6 @@ impl Runtime {
     fn tree_has_modal(&self, fiber_id: FiberId) -> bool {
         EventRouter::tree_has_modal(&self.arena, fiber_id)
     }
-}
-
-fn valid_layout_notification_rect(rect: Rect) -> bool {
-    rect.is_valid()
 }
 
 impl Drop for Runtime {
@@ -2329,7 +2325,7 @@ mod tests {
                 .unwrap()
                 .size()
                 .width,
-            20.0
+            16.0
         );
         assert_eq!(
             second
@@ -2340,7 +2336,7 @@ mod tests {
                 .unwrap()
                 .size()
                 .width,
-            84.0
+            80.0
         );
 
         first.set_text_metrics(wide);
@@ -2354,7 +2350,7 @@ mod tests {
                 .unwrap()
                 .size()
                 .width,
-            84.0
+            80.0
         );
         assert_eq!(second.text_metrics().cell_width, 20.0);
     }

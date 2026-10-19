@@ -10,7 +10,7 @@ Harbor remains Windows-first: stabilize content, input and session lifecycle, th
 | --- | --- | --- |
 | M0 — Establish compatibility | Reproducible Windows application, code-page and extension-transport investigation | Still needed alongside correctness work; a probe or configured workflow is not broad compatibility. |
 | M1 — Preserve content | Coherent Unicode, anchors and resize/reflow | Implementation is present. Resolve the known selector-width discrepancy and remaining native/performance coverage. |
-| M2 — Configure and discover | Reload, command palette and profiles | Manual/watched reload and new-session launch settings are implemented. Integrated acceptance, palette and profiles remain. |
+| M2 — Configure and discover | Reload, command palette and profiles | Reload, new-session launch settings and the existing-command palette are integrated. Native acceptance remains incomplete; profiles are not implemented. |
 | M3 — Work in panes | Independent panes, search and shell workflows | Current-session literal search is implemented. Panes and broader shell workflows are not. |
 | M4 — Extend compatibility | Selected VT gaps, Kitty keyboard and bounded graphics | Modern SGR, palette and mouse slices exist; Kitty negotiation/transport and graphics remain investigation-gated. |
 | M5 — Polish | Unified product themes/glass and release hardening | Acrylic and search-panel blur/gradient/refraction primitives exist. Whole-product composition and measured acceptance remain. |
@@ -28,7 +28,7 @@ These identifiers preserve references used by existing issues/specifications wit
 | N02 | Unicode text correctness | Combining/VS/ZWJ implemented; no-wrap selector-width discrepancy and native coverage remain. |
 | N03 | `chcp` / legacy Windows compatibility | Investigate actual console API and byte paths. ConPTY remains UTF-8; do not switch the VT parser to GBK based on `chcp`. |
 | N04 | Configuration reload | Manual/watched reload and launch settings implemented; remaining integrated human/runtime acceptance. |
-| N05 | Command palette | Not implemented; build on the existing typed command registry, not a second command bus. |
+| N05 | Command palette | Existing visible commands integrated through the shared registry; [native acceptance and readability work remain](../../.grimoire/ticket/0001-command-palette/T0003-windows-acceptance-and-docs.md). #156 still defers profiles/panes/appearance scope. |
 | N06 | Named session profiles | Not implemented; retain new-session-only launch policy. |
 | N07 | Pane workspace | Not implemented; independent allocation, focus, routing, resize and close lifetimes required. |
 | N08 | Scrollback search | Bounded current-session literal search delivered; retained acceptance/cost work and broader search scope remain separate. |
@@ -46,6 +46,6 @@ These identifiers preserve references used by existing issues/specifications wit
 
 1. Close the known content discrepancy and remaining integrated Windows correctness/lifecycle cases; do not reimplement delivered reflow, reload or search.
 2. Complete comparable current-tree performance and targeted code-page/extension transport investigations. Record unavailable scenarios honestly; preserve payload confidentiality.
-3. Continue discoverability and workspace work in dependency order: command palette/profiles, independent panes, then richer shell workflows. Independent bounded compatibility or appearance fixes need not wait for every pane feature.
+3. Continue discoverability and workspace work in dependency order: palette acceptance/profiles, independent panes, then richer shell workflows. Independent bounded compatibility or appearance fixes need not wait for every pane feature.
 
 Keep one major implementation stream plus a short investigation/polish stream, rather than marking all future packages in progress. Advance release/platform claims only for the actual accepted scope. Test reports and run artifacts do not belong in this roadmap.

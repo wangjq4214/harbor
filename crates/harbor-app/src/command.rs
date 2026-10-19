@@ -16,6 +16,9 @@ use crate::{
 /// An application operation that may be invoked by UI controls or keybindings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppCommand {
+    OpenCommandPalette,
+    /// Internal close intent tied to one editor lifetime.
+    CloseCommandPalette(u64),
     Tab(TabCommand),
     Copy,
     CopyOrInterrupt,
@@ -35,11 +38,21 @@ pub enum AppCommand {
     DismissNotification(u64),
 }
 
+/// Invocation origin is independent of shortcut consumption and focus disposition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandSource {
+    Direct,
+    Palette {
+        generation: u64,
+        target: Option<TabId>,
+    },
+}
 /// A typed command plus source-specific focus disposition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AppCommandRequest {
     pub command: AppCommand,
     pub focus: TabFocusPolicy,
+    pub source: CommandSource,
 }
 
 impl AppCommandRequest {
@@ -47,6 +60,7 @@ impl AppCommandRequest {
         Self {
             command,
             focus: TabFocusPolicy::Terminal,
+            source: CommandSource::Direct,
         }
     }
 
@@ -54,12 +68,21 @@ impl AppCommandRequest {
         Self {
             command: AppCommand::Tab(command),
             focus: TabFocusPolicy::PreserveRail,
+            source: CommandSource::Direct,
         }
     }
 
     pub const fn close_rail(id: TabId) -> Self {
         Self::rail(TabCommand::Close(id))
     }
+}
+
+/// Execution evidence, never inferred from FIFO insertion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandCompletion {
+    Applied,
+    Unchanged,
+    PendingConfirmation,
 }
 
 /// Discoverable metadata for one configurable command.
@@ -108,6 +131,13 @@ fn chord(key: Key, ctrl: bool, shift: bool) -> KeyChord {
 pub fn command_registry() -> Vec<CommandDescriptor> {
     let mut entries = vec![
         descriptor(
+            "app.command-palette",
+            "Open command palette",
+            AppCommand::OpenCommandPalette,
+            chord(Key::Character('p'), true, true),
+            false,
+        ),
+        descriptor(
             "app.reload-configuration",
             "Reload configuration",
             AppCommand::ReloadConfiguration,
@@ -143,29 +173,17 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             true,
         ),
     ];
-    for index in 1..=9_u8 {
-        let id = match index {
-            1 => "app.select-tab-1",
-            2 => "app.select-tab-2",
-            3 => "app.select-tab-3",
-            4 => "app.select-tab-4",
-            5 => "app.select-tab-5",
-            6 => "app.select-tab-6",
-            7 => "app.select-tab-7",
-            8 => "app.select-tab-8",
-            _ => "app.select-tab-9",
-        };
-        let label = match index {
-            1 => "Select tab 1",
-            2 => "Select tab 2",
-            3 => "Select tab 3",
-            4 => "Select tab 4",
-            5 => "Select tab 5",
-            6 => "Select tab 6",
-            7 => "Select tab 7",
-            8 => "Select tab 8",
-            _ => "Select tab 9",
-        };
+    for (index, (id, label)) in (1..=9_u8).zip([
+        ("app.select-tab-1", "Select tab 1"),
+        ("app.select-tab-2", "Select tab 2"),
+        ("app.select-tab-3", "Select tab 3"),
+        ("app.select-tab-4", "Select tab 4"),
+        ("app.select-tab-5", "Select tab 5"),
+        ("app.select-tab-6", "Select tab 6"),
+        ("app.select-tab-7", "Select tab 7"),
+        ("app.select-tab-8", "Select tab 8"),
+        ("app.select-tab-9", "Select tab 9"),
+    ]) {
         entries.push(descriptor(
             id,
             label,
@@ -434,6 +452,73 @@ fn parse_key(token: &str) -> Result<Key, &'static str> {
     }
 }
 
+/// Whether a command is discoverable; internal and hidden intents are never admitted.
+pub fn palette_command_supported(command: AppCommand) -> bool {
+    command_registry()
+        .iter()
+        .any(|entry| entry.palette_visible && entry.command == command)
+}
+
+/// Current execution facts, separate from source-specific shortcut consumption.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CommandContext {
+    pub alternate_screen: bool,
+    pub search_open: bool,
+}
+
+/// Shared availability facts used by palette presentation and authoritative Host revalidation.
+/// Shortcut routing remains source-specific (including terminal pass-through).
+pub fn command_availability(
+    command: AppCommand,
+    snapshots: &[crate::tab_manager::TabSnapshot],
+    context: CommandContext,
+) -> Result<(), &'static str> {
+    let active = snapshots.iter().find(|tab| tab.active);
+    match command {
+        AppCommand::ReloadConfiguration
+        | AppCommand::OpenCommandPalette
+        | AppCommand::Tab(TabCommand::New) => Ok(()),
+        AppCommand::Tab(TabCommand::Numeric(index)) => {
+            let tab = snapshots
+                .get(index.to_zero_based())
+                .ok_or("Tab does not exist")?;
+            if tab.active {
+                Err("Tab is already active")
+            } else {
+                Ok(())
+            }
+        }
+        AppCommand::Tab(TabCommand::Activate(id) | TabCommand::Close(id)) => snapshots
+            .iter()
+            .any(|tab| tab.id == id)
+            .then_some(())
+            .ok_or("Tab no longer exists"),
+        AppCommand::Tab(TabCommand::Next | TabCommand::Previous) if snapshots.len() < 2 => {
+            Err("No other tab")
+        }
+        AppCommand::Tab(_) => active.map(|_| ()).ok_or("No active terminal"),
+        AppCommand::PageUp
+        | AppCommand::PageDown
+        | AppCommand::ScrollToTop
+        | AppCommand::ScrollToBottom => {
+            active.ok_or("No active terminal")?;
+            if context.alternate_screen {
+                Err("Scrolling is unavailable in the alternate screen")
+            } else {
+                Ok(())
+            }
+        }
+        AppCommand::SearchClose | AppCommand::SearchNext | AppCommand::SearchPrevious => {
+            active.ok_or("No active terminal")?;
+            context.search_open.then_some(()).ok_or("Search is closed")
+        }
+        AppCommand::Copy | AppCommand::Paste | AppCommand::SearchOpen => {
+            active.map(|_| ()).ok_or("No active terminal")
+        }
+        _ => Err("Command is not available in the palette"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +542,42 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             valid: true,
         }
+    }
+
+    #[test]
+    fn palette_opener_uses_atomic_override_multiple_unbind_and_conflict_policy() {
+        let command = AppCommand::OpenCommandPalette;
+        let default = chord(Key::Character('p'), true, true);
+        let defaults = resolve_keybindings(&RawKeybindings::default()).keybindings;
+        assert!(
+            defaults
+                .bindings()
+                .any(|binding| binding == (default, command))
+        );
+        let replaced = validate_keybindings(&raw(vec![(
+            "app.command-palette",
+            vec![binding(&["ctrl"], "p"), binding(&["alt"], "p")],
+        )]))
+        .unwrap();
+        assert_eq!(
+            replaced
+                .bindings()
+                .filter(|(_, bound)| *bound == command)
+                .count(),
+            2
+        );
+        assert!(
+            !replaced
+                .bindings()
+                .any(|binding| binding == (default, command))
+        );
+        let unbound = validate_keybindings(&raw(vec![("app.command-palette", vec![])])).unwrap();
+        assert!(!unbound.bindings().any(|(_, bound)| bound == command));
+        let conflict = raw(vec![("app.command-palette", vec![binding(&["ctrl"], "t")])]);
+        assert!(validate_keybindings(&conflict).is_err());
+        let fallback = resolve_keybindings(&conflict);
+        assert!(fallback.used_defaults);
+        assert_eq!(fallback.keybindings, defaults);
     }
 
     #[test]
@@ -497,7 +618,7 @@ mod tests {
     #[test]
     fn registry_ids_and_defaults_are_unique_and_complete() {
         let registry = command_registry();
-        assert_eq!(registry.len(), 25);
+        assert_eq!(registry.len(), 26);
         assert_eq!(
             registry
                 .iter()

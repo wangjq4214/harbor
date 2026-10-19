@@ -80,6 +80,11 @@ impl TextField {
         self.editor = self.editor.on_escape(callback);
         self
     }
+    /// Observe vertical navigation after the editor's IME handling.
+    pub fn on_vertical_navigation(mut self, callback: impl Fn(bool) + 'static) -> Self {
+        self.editor = self.editor.on_vertical_navigation(callback);
+        self
+    }
 }
 
 impl Component for TextField {

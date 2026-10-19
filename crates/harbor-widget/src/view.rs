@@ -403,7 +403,7 @@ pub(crate) trait AnyView: 'static {
         rect.contains(point)
     }
 
-    /// Prepare local editing geometry using the renderer's scalar advances.
+    /// Prepare local text geometry before layout using the renderer's scalar advances.
     fn prepare_text_geometry(&self, _metrics: &TextMetrics, _advance: &mut dyn FnMut(char) -> f32) {
     }
 

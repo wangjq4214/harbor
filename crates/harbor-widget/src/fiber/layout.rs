@@ -1,5 +1,5 @@
 use super::{FiberArena, FiberId};
-use crate::layout::child_layout::{valid_diagnostic, valid_point, valid_size};
+use crate::layout::child_layout::valid_diagnostic;
 use crate::layout::{
     BoxConstraints, ChildMeasurer, LayoutDiagnostic, LayoutError, ParentData, ParentLayout, Point,
     Rect, Size,
@@ -148,7 +148,7 @@ impl LayoutPass<'_> {
             return Err(failure.error);
         }
         let result = result?;
-        if !valid_size(result.size)
+        if !result.size.is_valid()
             || result.size.width < constraints.min.width
             || result.size.height < constraints.min.height
             || result.size.width > constraints.max.width
@@ -165,7 +165,7 @@ impl LayoutPass<'_> {
             if placement.is_some() {
                 return Err(LayoutError::DuplicatePlacement);
             }
-            if !valid_point(origin) {
+            if !origin.is_valid() {
                 return Err(LayoutError::InvalidGeometry);
             }
             *placement = Some(origin);
@@ -324,7 +324,7 @@ fn prepare_commit<'a>(
             });
         }
         let rect = Rect::from_min_size(origin, layout.size);
-        if !valid_point(origin) || !valid_point(rect.max) || !valid_size(rect.size()) {
+        if !origin.is_valid() || !rect.max.is_valid() || !rect.size().is_valid() {
             return Err(Failure {
                 id: layout.id,
                 error: LayoutError::InvalidGeometry,
@@ -369,7 +369,7 @@ pub(crate) fn layout_fiber(
         active: HashSet::new(),
         failure: Cell::new(None),
     };
-    let measured = if valid_point(origin) {
+    let measured = if origin.is_valid() {
         pass.measure(id, constraints, false)
     } else {
         pass.fail(id, LayoutError::InvalidGeometry)
@@ -1104,7 +1104,7 @@ mod tests {
                 &DEFAULT_TEXT_METRICS,
             );
             assert_eq!(arena.get(root).unwrap().layout_error(), expected);
-            assert!(valid_size(rect(&arena, root).size()));
+            assert!(rect(&arena, root).size().is_valid());
         }
     }
 
@@ -1565,8 +1565,8 @@ mod tests {
                 );
                 assert_eq!(rect(&arena, leaf).size(), axis_size(3.0, cross));
                 for id in reachable_nodes(&arena, root) {
-                    assert!(valid_size(rect(&arena, id).size()));
-                    assert!(valid_point(rect(&arena, id).max));
+                    assert!(rect(&arena, id).size().is_valid());
+                    assert!(rect(&arena, id).max.is_valid());
                     assert_eq!(arena.get(id).unwrap().layout_error(), None);
                 }
             }
@@ -1653,8 +1653,8 @@ mod tests {
                 assert_eq!(rect(&arena, leaf).size(), axis_size(1.0, depth as f32));
                 for id in nodes {
                     let rect = rect(&arena, id);
-                    assert!(valid_size(rect.size()));
-                    assert!(valid_point(rect.min) && valid_point(rect.max));
+                    assert!(rect.size().is_valid());
+                    assert!(rect.min.is_valid() && rect.max.is_valid());
                     assert_eq!(
                         if horizontal {
                             rect.size().height
@@ -1718,8 +1718,8 @@ mod tests {
             for id in nodes {
                 assert_eq!(arena.get(id).unwrap().layout_error(), None);
                 let rect = rect(&arena, id);
-                assert!(valid_size(rect.size()));
-                assert!(valid_point(rect.min) && valid_point(rect.max));
+                assert!(rect.size().is_valid());
+                assert!(rect.min.is_valid() && rect.max.is_valid());
             }
         }
     }

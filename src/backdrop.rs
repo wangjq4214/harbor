@@ -77,8 +77,6 @@ impl MainWindowPlatformHooks {
 pub(crate) struct MainWindowPlatformState {
     _backend: Box<dyn WindowBackdropBackend>,
     status: BackdropStatus,
-    alpha_mode: Option<wgpu::CompositeAlphaMode>,
-    backdrop_available: bool,
 }
 
 impl WindowPlatformHooks for MainWindowPlatformHooks {
@@ -125,8 +123,6 @@ impl WindowPlatformHooks for MainWindowPlatformHooks {
         Ok(MainWindowPlatformState {
             _backend: backend,
             status,
-            alpha_mode: None,
-            backdrop_available: false,
         })
     }
 
@@ -136,20 +132,19 @@ impl WindowPlatformHooks for MainWindowPlatformHooks {
         setup: &mut Self::Setup,
         surface: WindowSurfaceInfo,
     ) -> anyhow::Result<bool> {
-        setup.alpha_mode = Some(surface.alpha_mode);
-        setup.backdrop_available =
+        let backdrop_available =
             setup.status.backdrop_available && alpha_mode_supports_transparency(surface.alpha_mode);
         #[cfg(target_os = "windows")]
-        if !setup.backdrop_available {
+        if !backdrop_available {
             paint_gdi_background(window, self.style.fallback);
         }
         tracing::info!(
-            backdrop_available = setup.backdrop_available,
+            backdrop_available = backdrop_available,
             tier = ?setup.status.tier,
             alpha_mode = ?surface.alpha_mode,
             "main window backdrop selected"
         );
-        Ok(setup.backdrop_available)
+        Ok(backdrop_available)
     }
 }
 
@@ -631,6 +626,38 @@ mod opaque_backend_tests {
                 backdrop_available: false,
             }
         );
+        let hooks = MainWindowPlatformHooks::new(Box::new(OpaqueBackend), style);
+        for backdrop_available in [false, true] {
+            let mut setup = MainWindowPlatformState {
+                _backend: Box::new(OpaqueBackend),
+                status: BackdropStatus {
+                    tier: if backdrop_available {
+                        BackdropTier::WasdkAcrylic
+                    } else {
+                        BackdropTier::OpaqueFallback
+                    },
+                    backdrop_available,
+                },
+            };
+            // Repeated calls must use the supplied surface, not retained alpha state.
+            for alpha_mode in [
+                wgpu::CompositeAlphaMode::Opaque,
+                wgpu::CompositeAlphaMode::PreMultiplied,
+                wgpu::CompositeAlphaMode::PostMultiplied,
+                wgpu::CompositeAlphaMode::Auto,
+                wgpu::CompositeAlphaMode::Inherit,
+            ] {
+                let surface = WindowSurfaceInfo {
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    alpha_mode,
+                    physical_size: window.inner_size().into(),
+                };
+                assert_eq!(
+                    hooks.surface_ready(&window, &mut setup, surface).unwrap(),
+                    backdrop_available && alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied,
+                );
+            }
+        }
         assert_eq!(window.is_visible(), Some(false));
     }
 

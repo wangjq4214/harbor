@@ -48,6 +48,7 @@ pub struct EventCtx {
     phase: EventPhase,
     focus_navigation_enabled: bool,
     external_input: Vec<(ExternalDrawId, UiEvent)>,
+    consumed_key: Option<(crate::input::event::Key, Option<FiberId>)>,
 }
 
 impl EventCtx {
@@ -67,6 +68,7 @@ impl EventCtx {
             phase: EventPhase::Direct,
             focus_navigation_enabled: true,
             external_input: Vec::new(),
+            consumed_key: None,
         }
     }
 
@@ -143,6 +145,28 @@ impl EventCtx {
         self.editor_clipboard.take()
     }
 
+    /// Retain an editor gesture across focus/unmount until release (or a new
+    /// native press). Repeats may stay local to the current editor, never a new target.
+    pub(crate) fn consume_key_press(
+        &mut self,
+        key: crate::input::event::Key,
+        repeat_locally: bool,
+    ) {
+        self.consumed_key = Some((
+            key,
+            if repeat_locally {
+                self.current_fiber
+            } else {
+                None
+            },
+        ));
+    }
+
+    pub(crate) fn take_consumed_key(
+        &mut self,
+    ) -> Option<(crate::input::event::Key, Option<FiberId>)> {
+        self.consumed_key.take()
+    }
     /// Mark the current widget as needing a repaint.
     pub fn invalidate_paint(&mut self) {
         self.needs_paint = true;

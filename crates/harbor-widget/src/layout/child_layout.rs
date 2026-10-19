@@ -73,17 +73,9 @@ pub(crate) struct ParentLayout {
     pub diagnostics: Vec<LayoutDiagnostic>,
 }
 
-pub(crate) fn valid_size(size: Size) -> bool {
-    size.is_valid()
-}
-
-pub(crate) fn valid_point(point: Point) -> bool {
-    point.is_valid()
-}
-
 pub(crate) fn valid_diagnostic(diagnostic: &LayoutDiagnostic) -> bool {
     match *diagnostic {
-        LayoutDiagnostic::Overflow { main, cross } => valid_size(Size::new(main, cross)),
+        LayoutDiagnostic::Overflow { main, cross } => Size::new(main, cross).is_valid(),
         _ => true,
     }
 }

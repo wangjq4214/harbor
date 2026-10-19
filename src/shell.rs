@@ -17,7 +17,7 @@ use crate::backdrop::{
     MainWindowPlatformHooks, MainWindowPlatformState, os_build, select_backend, wasdk_available,
 };
 use crate::dialog::{PasteController, PasteEventOutcome};
-use crate::effects::apply_control_flow;
+use crate::effects::{apply_control_flow, merge_wait};
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_coordinator::{
     TabCoordinator, TerminalTabFactory, format_window_title, logical_window_width,
@@ -36,7 +36,7 @@ use harbor_widget::winit::{
     HostFrameOutcome, HostInitContext, HostStartupError, WinitWindowHost, WinitWindowHostBuilder,
 };
 
-/// Separate diagnostics from the subset that needs persistent user attention.
+/// Separate diagnostics from the subset that needs explicit user attention.
 pub(crate) struct ConfigurationAcceptance {
     pub summary: String,
     pub notice: Option<String>,
@@ -60,7 +60,6 @@ pub(crate) fn reload_configuration_from_path(
     effective_clipboard: &harbor_config::ClipboardSettings,
     apply: impl FnOnce(
         &harbor_config::Settings,
-        bool,
         harbor_app::command::ResolvedKeybindings,
     ) -> anyhow::Result<Vec<String>>,
 ) -> anyhow::Result<Option<ConfigurationAcceptance>> {
@@ -74,9 +73,8 @@ pub(crate) fn reload_configuration_from_path(
         accepted,
         effective_clipboard,
         loaded.settings,
-        |candidate, font_changed, bindings| {
-            apply(candidate, font_changed, bindings)
-                .map_err(|error| error.context(ConfigurationOperationFailure))
+        |candidate, bindings| {
+            apply(candidate, bindings).map_err(|error| error.context(ConfigurationOperationFailure))
         },
     )?;
     let mut notices = result.notice.into_iter().collect::<Vec<_>>();
@@ -97,14 +95,13 @@ pub(crate) fn accept_configuration(
     candidate: harbor_config::Settings,
     apply: impl FnOnce(
         &harbor_config::Settings,
-        bool,
         harbor_app::command::ResolvedKeybindings,
     ) -> anyhow::Result<Vec<String>>,
 ) -> anyhow::Result<ConfigurationAcceptance> {
     let bindings = harbor_app::command::validate_keybindings(&candidate.keybindings)
         .map_err(|errors| anyhow::anyhow!("{}", errors.join("; ")))?;
     let font_changed = candidate.font != accepted.font;
-    let warnings = apply(&candidate, font_changed, bindings)?;
+    let warnings = apply(&candidate, bindings)?;
     let mut live = Vec::new();
     if candidate.colors != accepted.colors {
         live.push("colors");
@@ -369,14 +366,6 @@ impl ActiveSession {
         }
     }
 
-    fn merge_wait(current: &mut Option<ControlFlowEffect>, next: Option<ControlFlowEffect>) {
-        *current = match (*current, next) {
-            (Some(left), Some(right)) => Some(left.arbitrate(right)),
-            (Some(wait), None) | (None, Some(wait)) => Some(wait),
-            (None, None) => None,
-        };
-    }
-
     fn sync_terminal_allocation(&mut self) -> Option<ControlFlowEffect> {
         let viewport = self.main_host.viewport().clone();
         if self
@@ -414,7 +403,7 @@ impl ActiveSession {
         );
     }
 
-    fn reload_configuration(&mut self, automatic: bool) {
+    fn reload_configuration(&mut self, automatic: bool) -> Option<bool> {
         use harbor_app::notifications::ConfigurationNoticeSource as Source;
         let path = &self.configuration_path;
         let path_label = path
@@ -426,10 +415,9 @@ impl ActiveSession {
             path.as_deref(),
             &mut self.accepted_settings,
             &self.effective_clipboard,
-            |candidate, font_changed, bindings| {
+            |candidate, bindings| {
                 let warnings = self.tabs.apply_configuration(
                     candidate,
-                    font_changed,
                     viewport.scale_factor,
                     viewport.physical_size,
                 )?;
@@ -440,7 +428,8 @@ impl ActiveSession {
         match result {
             Ok(acceptance) => {
                 self.reload_feedback.clear();
-                if acceptance.is_some() {
+                let applied = acceptance.is_some();
+                if applied {
                     self.workspace_ui
                         .publish_configuration_notice(Source::Resource, None);
                 }
@@ -452,6 +441,7 @@ impl ActiveSession {
                 });
                 self.workspace_ui
                     .publish_configuration_notice(Source::Reload, notice);
+                applied.then_some(true)
             }
             Err(error) => {
                 self.workspace_ui
@@ -478,6 +468,7 @@ impl ActiveSession {
                     self.workspace_ui
                         .publish_configuration_notice(source, Some(message));
                 }
+                Some(false)
             }
         }
     }
@@ -486,105 +477,213 @@ impl ActiveSession {
         event_loop: &ActiveEventLoop,
     ) -> crate::tab_coordinator::TabDrainOutcome {
         let mut result = crate::tab_coordinator::TabDrainOutcome::default();
-        for request in self.workspace_ui.drain_actions() {
-            if self.paste.is_active() {
-                break;
-            }
+        use crate::tab_coordinator::AppActionAdmission;
+        let mut actions = self.workspace_ui.drain_actions().into_iter();
+        while let Some(admission) = self
+            .tabs
+            .next_app_action(&mut actions, self.paste.is_active())
+        {
+            let (request, from_palette) = match admission {
+                AppActionAdmission::Rejected {
+                    request,
+                    reason,
+                    restore_terminal_focus,
+                } => {
+                    self.workspace_ui.report_palette_result(
+                        request.command,
+                        Err(&format!("Rejected: {reason}")),
+                    );
+                    if restore_terminal_focus {
+                        merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                    }
+                    merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                    continue;
+                }
+                AppActionAdmission::Execute {
+                    request,
+                    clear_palette_focus,
+                } => {
+                    if clear_palette_focus {
+                        merge_wait(&mut result.wait, self.main_host.clear_focus().wait);
+                    }
+                    (request, clear_palette_focus)
+                }
+            };
             match request.command {
+                AppCommand::OpenCommandPalette => {
+                    let focus = self.workspace_ui.open_palette();
+                    merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
+                }
+                AppCommand::CloseCommandPalette(generation) => {
+                    if self.workspace_ui.close_palette(generation) {
+                        merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                    }
+                }
                 AppCommand::SearchOpen
                 | AppCommand::SearchClose
                 | AppCommand::SearchChanged
                 | AppCommand::SearchNext
                 | AppCommand::SearchPrevious => {
-                    let focus = self.tabs.dispatch_search_command(request.command);
-                    Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                    let outcome = self.tabs.dispatch_search_command(request.command);
+                    let focus = outcome.focus_for_source(request.source, &self.workspace_ui);
+                    if from_palette {
+                        self.workspace_ui
+                            .report_palette_completion(request.command, outcome.completion);
+                    }
+                    merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     if let Some(focus) = focus {
-                        Self::merge_wait(
-                            &mut result.wait,
-                            self.main_host.request_focus(&focus).wait,
-                        );
+                        merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
                     }
                 }
                 AppCommand::DismissNotification(revision) => {
                     self.workspace_ui.dismiss_notification(revision);
-                    Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                    merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                 }
                 AppCommand::ReloadConfiguration => {
-                    self.reload_configuration(false);
-                    Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                    let completion = self.reload_configuration(false);
+                    if from_palette {
+                        self.workspace_ui.report_palette_result(
+                            request.command,
+                            match completion {
+                                Some(true) => Ok(()),
+                                Some(false) => Err("Failed: see configuration reload error"),
+                                None => {
+                                    Err("Rejected: configuration file is absent or unavailable")
+                                }
+                            },
+                        );
+                        merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                    }
+                    merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                 }
                 AppCommand::Tab(command) => {
                     let outcome =
                         self.tabs
                             .execute_tab_command(&mut self.main_host, command, request.focus);
 
-                    Self::merge_wait(&mut result.wait, outcome.wait);
+                    if from_palette {
+                        self.workspace_ui.report_palette_result(
+                            request.command,
+                            if outcome.failed {
+                                Err("Failed: see session creation error")
+                            } else {
+                                Ok(())
+                            },
+                        );
+                        if outcome.failed {
+                            merge_wait(
+                                &mut result.wait,
+                                self.main_host
+                                    .request_focus(&self.workspace_ui.terminal_focus())
+                                    .wait,
+                            );
+                        }
+                    }
+                    merge_wait(&mut result.wait, outcome.wait);
                     self.reconcile_clipboard();
                     if outcome.close_window {
                         result.close_window = true;
                         break;
                     }
                 }
-                AppCommand::Copy | AppCommand::CopyOrInterrupt => {
-                    let copy_outcome = self.tabs.active_terminal().and_then(|terminal| {
-                        terminal
-                            .lock()
-                            .ok()
-                            .map(|mut terminal| terminal.command_copy_selection())
-                    });
-                    if let Some(outcome) = copy_outcome {
-                        if let Some(text) = outcome.clipboard_text {
-                            Self::merge_wait(
-                                &mut result.wait,
-                                self.main_host.write_clipboard(text).wait,
-                            );
-                        }
-                        if outcome.release_pointer.is_some() {
-                            Self::merge_wait(
-                                &mut result.wait,
-                                self.main_host.cancel_active_input_ownership().wait,
-                            );
-                        }
-                        if outcome.redraw {
-                            Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
-                        }
+                AppCommand::Copy
+                | AppCommand::CopyOrInterrupt
+                | AppCommand::PageUp
+                | AppCommand::PageDown
+                | AppCommand::ScrollToTop
+                | AppCommand::ScrollToBottom => {
+                    use harbor_app::command::CommandCompletion;
+                    let completion = self
+                        .tabs
+                        .dispatch_terminal_command(request.command)
+                        .and_then(|outcome| {
+                            let completion = if let Some(text) = outcome.clipboard_text {
+                                self.main_host
+                                    .write_clipboard_checked(text)
+                                    .map(|effect| {
+                                        merge_wait(&mut result.wait, effect.wait);
+                                        CommandCompletion::Applied
+                                    })
+                                    .map_err(|error| {
+                                        tracing::warn!(?error, "failed to copy terminal selection");
+                                        "Failed: clipboard write unavailable"
+                                    })
+                            } else {
+                                Ok(if outcome.redraw {
+                                    CommandCompletion::Applied
+                                } else {
+                                    CommandCompletion::Unchanged
+                                })
+                            };
+                            if outcome.release_pointer.is_some() {
+                                merge_wait(
+                                    &mut result.wait,
+                                    self.main_host.cancel_active_input_ownership().wait,
+                                );
+                            }
+                            if outcome.redraw {
+                                merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                            }
+                            completion
+                        });
+                    if from_palette {
+                        self.workspace_ui
+                            .report_palette_completion(request.command, completion);
+                        merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                        merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     }
                 }
                 AppCommand::Paste => {
                     let active_terminal = self.tabs.active_terminal();
-                    let outcome = self.paste.paste_from_clipboard(
-                        event_loop,
-                        &mut self.main_host,
-                        active_terminal.as_ref(),
-                    );
-                    Self::merge_wait(&mut result.wait, outcome.wait);
-                }
-                AppCommand::PageUp
-                | AppCommand::PageDown
-                | AppCommand::ScrollToTop
-                | AppCommand::ScrollToBottom => {
-                    let scroll_outcome = self.tabs.active_terminal().and_then(|terminal| {
-                        terminal
-                            .lock()
-                            .ok()
-                            .map(|mut terminal| match request.command {
-                                AppCommand::PageUp => terminal.command_page_up(),
-                                AppCommand::PageDown => terminal.command_page_down(),
-                                AppCommand::ScrollToTop => terminal.command_scroll_to_top(),
-                                AppCommand::ScrollToBottom => terminal.command_scroll_to_bottom(),
-                                _ => unreachable!("matched scroll command"),
-                            })
-                    });
-                    if let Some(outcome) = scroll_outcome {
-                        if outcome.release_pointer.is_some() {
-                            Self::merge_wait(
-                                &mut result.wait,
-                                self.main_host.cancel_active_input_ownership().wait,
-                            );
-                        }
-                        if outcome.redraw {
-                            Self::merge_wait(&mut result.wait, self.main_host.request_frame().wait);
-                        }
+                    if from_palette {
+                        // Establish the main-window fallback before opening a secondary window.
+                        // Never refocus the main window over a pending confirmation.
+                        merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                    }
+                    let completion = self
+                        .paste
+                        .paste_from_clipboard(
+                            event_loop,
+                            &mut self.main_host,
+                            active_terminal.as_ref(),
+                            from_palette,
+                        )
+                        .map(|(outcome, completion)| {
+                            merge_wait(&mut result.wait, outcome.wait);
+                            completion
+                        });
+                    if let Err(reason) = completion {
+                        tracing::warn!(%reason, "clipboard paste rejected or failed");
+                    }
+                    if from_palette {
+                        self.workspace_ui
+                            .report_palette_completion(request.command, completion);
+                        merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     }
                 }
             }
@@ -607,7 +706,7 @@ impl ActiveSession {
                     } else {
                         self.tabs.sync_tab_ui(self.main_host.window());
                     }
-                    Self::merge_wait(
+                    merge_wait(
                         &mut wait,
                         self.main_host
                             .invalidate_external(
@@ -616,13 +715,13 @@ impl ActiveSession {
                             .wait,
                     );
                     let allocation_wait = self.sync_terminal_allocation();
-                    Self::merge_wait(&mut wait, allocation_wait);
+                    merge_wait(&mut wait, allocation_wait);
                 }
                 if outcome.request_active_invalidation
                     && let Some(invalidation) =
                         external_invalidation_for_app_event(&AppEvent::TerminalOutputReady(tab_id))
                 {
-                    Self::merge_wait(
+                    merge_wait(
                         &mut wait,
                         self.main_host.invalidate_external(invalidation).wait,
                     );
@@ -639,14 +738,14 @@ impl ActiveSession {
                             harbor_app::notifications::ConfigurationNoticeSource::Observation,
                             None,
                         );
-                        self.reload_configuration(true);
+                        let _ = self.reload_configuration(true);
                     }
                     Some(crate::configuration_watch::WatchEvent::Unavailable(kind)) => {
                         self.report_watch_failure(&format!("observation I/O: {kind:?}"), true);
                     }
                     None => {}
                 }
-                Self::merge_wait(&mut wait, self.main_host.request_frame().wait);
+                merge_wait(&mut wait, self.main_host.request_frame().wait);
             }
             AppEvent::OpenHyperlink(uri) => {
                 if let Err(error) = crate::hyperlink::open(&uri) {
@@ -659,11 +758,11 @@ impl ActiveSession {
             }
             #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
             AppEvent::WidgetHostWork(work) => {
-                Self::merge_wait(&mut wait, self.main_host.handle_hmr_work(work).wait);
-                let focus = self.tabs.terminal_focus();
-                Self::merge_wait(&mut wait, self.main_host.request_focus(&focus).wait);
+                merge_wait(&mut wait, self.main_host.handle_hmr_work(work).wait);
+                let focus = self.workspace_ui.terminal_focus();
+                merge_wait(&mut wait, self.main_host.request_focus(&focus).wait);
                 let allocation_wait = self.sync_terminal_allocation();
-                Self::merge_wait(&mut wait, allocation_wait);
+                merge_wait(&mut wait, allocation_wait);
             }
         }
         if let Some(wait) = wait {
@@ -689,6 +788,14 @@ impl ActiveSession {
         }
         if search_changed && let Some(wait) = self.main_host.request_frame().wait {
             combined_flow = combined_flow.arbitrate(wait);
+        }
+
+        let (notices_expired, notice_deadline) = self.workspace_ui.advance_notifications(now);
+        if notices_expired && let Some(wait) = self.main_host.request_frame().wait {
+            combined_flow = combined_flow.arbitrate(wait);
+        }
+        if let Some(deadline) = notice_deadline {
+            combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
         }
 
         if let Some(confirmation_flow) = self.paste.about_to_wait(now) {
@@ -751,7 +858,7 @@ impl ActiveSession {
                         self.apply_clipboard_write(request, true);
                     }
                     self.clipboard_window = None;
-                    Self::merge_wait(&mut wait, self.main_host.request_frame().wait);
+                    merge_wait(&mut wait, self.main_host.request_frame().wait);
                 }
             }
             if let Some(wait) = wait {
@@ -767,10 +874,15 @@ impl ActiveSession {
                 PasteEventOutcome::Handled {
                     request_redraw,
                     wait,
+                    palette_completion,
                 } => {
                     let mut wait = wait;
+                    if let Some(completion) = palette_completion {
+                        self.workspace_ui
+                            .report_palette_completion(AppCommand::Paste, completion);
+                    }
                     if request_redraw {
-                        Self::merge_wait(&mut wait, self.main_host.request_frame().wait);
+                        merge_wait(&mut wait, self.main_host.request_frame().wait);
                     }
                     if let Some(wait) = wait {
                         apply_control_flow(event_loop, wait);
@@ -815,7 +927,7 @@ impl ActiveSession {
 
         let mut wait = None;
         if self.tabs.update_presentation(self.main_host.window()) {
-            Self::merge_wait(
+            merge_wait(
                 &mut wait,
                 self.main_host
                     .invalidate_external(harbor_widget::effects::ExternalInvalidation::new())
@@ -824,7 +936,16 @@ impl ActiveSession {
         }
 
         let outcome = self.main_host.handle_window_event(&event);
-        Self::merge_wait(&mut wait, outcome.wait);
+        if matches!(&event, WindowEvent::Focused(false)) && self.workspace_ui.cancel_palette() {
+            // Native focus loss expires a queued selection, not just preedit/clipboard delivery.
+            merge_wait(
+                &mut wait,
+                self.main_host
+                    .request_focus(&self.workspace_ui.terminal_focus())
+                    .wait,
+            );
+        }
+        merge_wait(&mut wait, outcome.wait);
         if !outcome.external_input.is_empty() {
             // Main terminal bridges consume input in-tree; queued events indicate a broken root contract.
             tracing::error!(
@@ -833,9 +954,9 @@ impl ActiveSession {
             );
         }
         let allocation_wait = self.sync_terminal_allocation();
-        Self::merge_wait(&mut wait, allocation_wait);
+        merge_wait(&mut wait, allocation_wait);
         let command_outcome = self.drain_app_commands(event_loop);
-        Self::merge_wait(&mut wait, command_outcome.wait);
+        merge_wait(&mut wait, command_outcome.wait);
         if command_outcome.close_window {
             event_loop.exit();
             return;
@@ -855,7 +976,7 @@ impl ActiveSession {
         event_loop: &ActiveEventLoop,
         frame: &mut FrameState,
         outcome: &HostFrameOutcome,
-    ) -> bool {
+    ) {
         let policy = main_frame_policy(outcome, self.show_pending);
         if policy.presented {
             frame.mark_first_present();
@@ -875,7 +996,6 @@ impl ActiveSession {
         if policy.schedule_hidden_retry {
             self.startup_retry_deadline = Some(Instant::now() + HIDDEN_STARTUP_RETRY_DELAY);
         }
-        policy.presented
     }
 }
 
@@ -1019,13 +1139,13 @@ impl Shell {
                     workspace_ui.clone(),
                     context.backdrop_available(),
                     backdrop_fallback,
-                    keybindings.clone(),
+                    keybindings,
                 );
                 #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
                 {
                     *bootstrap_hmr_inputs.borrow_mut() = Some(root_inputs.clone());
                 }
-                let root = build_application_root(root_inputs.clone())
+                let root = build_application_root(root_inputs)
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 let tabs = TabCoordinator::new(tabs, workspace_ui.clone(), factory);
                 let paste = PasteController::new(input_gate);
@@ -1069,12 +1189,12 @@ impl Shell {
         }
 
         let mut wait = None;
-        let focus = session.tabs.terminal_focus();
-        ActiveSession::merge_wait(&mut wait, session.main_host.request_focus(&focus).wait);
+        let focus = session.workspace_ui.terminal_focus();
+        merge_wait(&mut wait, session.main_host.request_focus(&focus).wait);
         let allocation_wait = session.sync_terminal_allocation();
-        ActiveSession::merge_wait(&mut wait, allocation_wait);
+        merge_wait(&mut wait, allocation_wait);
         let frame_outcome = session.main_host.present_now();
-        ActiveSession::merge_wait(&mut wait, frame_outcome.wait());
+        merge_wait(&mut wait, frame_outcome.wait());
         session.handle_frame_outcome(event_loop, &mut self.frame, &frame_outcome);
         if let Some(wait) = wait {
             apply_control_flow(event_loop, wait);

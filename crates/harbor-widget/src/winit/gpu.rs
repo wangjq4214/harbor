@@ -210,7 +210,6 @@ impl SharedGpu {
             composition_host,
             &gpu,
             (size.width, size.height),
-            None,
             true,
         )?;
         Ok((gpu, main_surface))
@@ -229,7 +228,6 @@ impl SharedGpu {
             None,
             self,
             (size.width, size.height),
-            None,
             false,
         )
     }
@@ -255,25 +253,19 @@ pub(crate) struct WindowSurface {
 }
 
 impl WindowSurface {
-    #[allow(clippy::too_many_arguments)]
     fn from_surface(
         surface: wgpu::Surface<'static>,
         #[cfg(target_os = "windows")] composition_host: Option<CompositionHost>,
         gpu: &SharedGpu,
         size: (u32, u32),
-        preferred_format: Option<wgpu::TextureFormat>,
         compositing: bool,
     ) -> Result<Self> {
         let capabilities = surface.get_capabilities(&gpu.adapter);
-        let format = preferred_format
-            .filter(|format| capabilities.formats.contains(format))
-            .or_else(|| {
-                capabilities
-                    .formats
-                    .iter()
-                    .copied()
-                    .find(wgpu::TextureFormat::is_srgb)
-            })
+        let format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(wgpu::TextureFormat::is_srgb)
             .or_else(|| capabilities.formats.first().copied())
             .context("surface reports no supported texture formats")?;
         let alpha_mode = if compositing {

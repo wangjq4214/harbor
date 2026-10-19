@@ -240,10 +240,62 @@ pub(crate) fn gate_suppresses_event(gate_active: bool, event: &UiEvent) -> bool 
 fn wakes_redraw_for_routed_input(event: &UiEvent) -> bool {
     matches!(event, UiEvent::Keyboard(KeyboardEvent::KeyDown { .. }))
 }
+/// CPU cell projection is independent of the renderer's pixel/GPU highlight cache.
+/// All inputs read by project_content_ranges are qualified here; publication invalidates
+/// the key so even different proofs for identical logical positions are revalidated.
+#[derive(Default)]
+struct DecorationProjection {
+    ranges: Vec<harbor_terminal::read_model::ContentRange>,
+    key: Option<DecorationProjectionKey>,
+    spans: Vec<harbor_terminal::read_model::CellSpan>,
+    #[cfg(test)]
+    projections: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DecorationProjectionKey {
+    version: harbor_terminal::read_model::ContentVersion,
+    history_start: u64,
+    scroll_count: usize,
+    view_offset: usize,
+    rows: usize,
+    cols: usize,
+}
+
+impl DecorationProjection {
+    fn set_ranges(&mut self, ranges: Vec<harbor_terminal::read_model::ContentRange>) {
+        self.ranges = ranges;
+        self.key = None;
+    }
+
+    fn project(&mut self, terminal: &Terminal) -> &[harbor_terminal::read_model::CellSpan] {
+        let screen = terminal.screen();
+        let key = DecorationProjectionKey {
+            version: terminal.content_version(),
+            history_start: screen.history_start(),
+            scroll_count: screen.scroll_count(),
+            view_offset: screen.view_offset(),
+            rows: screen.rows(),
+            cols: screen.cols(),
+        };
+        if self.key != Some(key) {
+            self.spans = terminal.project_content_ranges(&self.ranges);
+            self.key = Some(key);
+            #[cfg(test)]
+            {
+                self.projections += 1;
+            }
+        }
+        &self.spans
+    }
+}
+
 /// Component that owns the widget draw id and embeds a shared [`Terminal`] via [`CustomPaint`].
 #[derive(Clone)]
 pub struct TerminalWidgetBridge {
-    decorations: Arc<Mutex<Vec<harbor_terminal::read_model::ContentRange>>>,
+    decorations: Arc<Mutex<DecorationProjection>>,
+    #[cfg(test)]
+    alt_screen_queries: Arc<std::sync::atomic::AtomicUsize>,
     draw_id: ExternalDrawId,
     terminal: Arc<Mutex<Terminal>>,
     handler: Arc<ExternalDrawFn<'static>>,
@@ -302,9 +354,7 @@ impl TerminalWidgetBridge {
         gate_active: Arc<AtomicBool>,
         activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Self {
-        let decorations = Arc::new(Mutex::new(
-            Vec::<harbor_terminal::read_model::ContentRange>::new(),
-        ));
+        let decorations = Arc::new(Mutex::new(DecorationProjection::default()));
         let draw_decorations = Arc::clone(&decorations);
         let draw_terminal = Arc::clone(&terminal);
         let draw_renderer = renderer.clone();
@@ -356,13 +406,13 @@ impl TerminalWidgetBridge {
                                 );
                                 return;
                             }
-                            let ranges = draw_decorations.lock().expect("decoration lock");
-                            renderer.prepare_highlights(gpu, &term.project_content_ranges(&ranges));
+                            let mut decorations = draw_decorations.lock().expect("decoration lock");
+                            renderer.prepare_highlights(gpu, decorations.project(&term));
                             renderer.draw(pass);
                             term.acknowledge_update(&update);
                         } else {
-                            let ranges = draw_decorations.lock().expect("decoration lock");
-                            renderer.prepare_highlights(gpu, &term.project_content_ranges(&ranges));
+                            let mut decorations = draw_decorations.lock().expect("decoration lock");
+                            renderer.prepare_highlights(gpu, decorations.project(&term));
                             renderer.draw(pass);
                         }
                     }
@@ -397,12 +447,10 @@ impl TerminalWidgetBridge {
             Some(effect)
         });
 
-        let input_activate_hyperlink = Arc::clone(&activate_hyperlink);
-        let input_gate = Arc::clone(&gate_active);
         let input_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]
         let on_input: Arc<ExternalInputFn> = Arc::new(move |event, ctx| {
-            if gate_suppresses_event(input_gate.load(Ordering::Acquire), event) {
+            if gate_suppresses_event(gate_active.load(Ordering::Acquire), event) {
                 return EventHandled::Handled;
             }
 
@@ -412,11 +460,8 @@ impl TerminalWidgetBridge {
                 return EventHandled::Ignored;
             };
 
-            let mut offset_before = None;
             if let Ok(mut term) = input_terminal.lock() {
-                if wheel {
-                    offset_before = Some(term.screen().view_offset());
-                }
+                let offset_before = wheel.then(|| term.screen().view_offset());
                 match term.handle_event_with_outcome(mapped) {
                     Ok(outcome) => {
                         if let Some(pointer_id) = outcome.capture_pointer {
@@ -430,7 +475,7 @@ impl TerminalWidgetBridge {
                         }
                         forward_hyperlink_activation(
                             outcome.hyperlink_activation,
-                            input_activate_hyperlink.as_ref(),
+                            activate_hyperlink.as_ref(),
                         );
                         let offset_moved = offset_before
                             .is_some_and(|before| before != term.screen().view_offset());
@@ -460,6 +505,8 @@ impl TerminalWidgetBridge {
 
         Self {
             decorations,
+            #[cfg(test)]
+            alt_screen_queries: Arc::default(),
             draw_id,
             renderer,
             terminal,
@@ -473,12 +520,19 @@ impl TerminalWidgetBridge {
 
     #[cfg(test)]
     pub(crate) fn decoration_ranges(&self) -> Vec<harbor_terminal::read_model::ContentRange> {
-        self.decorations.lock().unwrap().clone()
+        self.decorations.lock().unwrap().ranges.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn alt_screen_queries(&self) -> usize {
+        self.alt_screen_queries.load(Ordering::Relaxed)
+    }
     /// Application-published proven ranges, never physical coordinates or query policy.
     pub fn set_decorations(&self, ranges: Vec<harbor_terminal::read_model::ContentRange>) {
-        *self.decorations.lock().expect("decoration lock") = ranges;
+        self.decorations
+            .lock()
+            .expect("decoration lock")
+            .set_ranges(ranges);
     }
 
     /// Widget-facing external draw identifier owned by this bridge.
@@ -495,9 +549,13 @@ impl TerminalWidgetBridge {
 
     /// Reports whether terminal input currently targets the alternate screen.
     pub fn is_alt_screen(&self) -> bool {
-        self.terminal
-            .lock()
-            .is_ok_and(|mut terminal| terminal.drain_and_snapshot().is_alt)
+        #[cfg(test)]
+        self.alt_screen_queries.fetch_add(1, Ordering::Relaxed);
+        self.terminal.lock().is_ok_and(|mut terminal| {
+            // Preserve fresh mode ingestion without copying the visible grid.
+            terminal.drain_pty();
+            terminal.is_alt_screen()
+        })
     }
 }
 
@@ -576,6 +634,206 @@ mod tests {
     use harbor_widget::winit::WindowPresenter;
     use std::cell::Cell;
     use std::sync::atomic::AtomicBool;
+
+    fn decoration_range(
+        terminal: &Terminal,
+        row: usize,
+        units: std::ops::Range<usize>,
+    ) -> harbor_terminal::read_model::ContentRange {
+        use harbor_terminal::read_model::{ReadBudget, ReadScope};
+        terminal
+            .read_content(
+                ReadScope::Visible {
+                    start_row: row,
+                    row_count: 1,
+                },
+                ReadBudget::default(),
+            )
+            .unwrap()
+            .fragments[0]
+            .range(units)
+            .unwrap()
+    }
+
+    fn assert_cached_projection(cache: &mut DecorationProjection, terminal: &Terminal) {
+        let expected = terminal.project_content_ranges(&cache.ranges);
+        assert_eq!(cache.project(terminal), expected);
+        let count = cache.projections;
+        assert_eq!(cache.project(terminal), expected);
+        assert_eq!(
+            cache.projections, count,
+            "unchanged frames must not reproject"
+        );
+    }
+
+    #[test]
+    fn decoration_projection_caches_and_invalidates_viewport_and_publication() {
+        use harbor_terminal::read_model::CellSpan;
+        let mut terminal = Terminal::new_headless(2, 8);
+        terminal.process_output("ab界\r\nnext".as_bytes());
+        let range = decoration_range(&terminal, 0, 2..3);
+        let mut cache = DecorationProjection::default();
+        cache.set_ranges(vec![range.clone()]);
+        assert_eq!(
+            cache.project(&terminal),
+            [CellSpan {
+                row: 0,
+                start_col: 2,
+                end_col: 4
+            }]
+        );
+        assert_cached_projection(&mut cache, &terminal);
+        assert_eq!(cache.projections, 1);
+
+        // Unrelated row output revalidates proofs but keeps the original match.
+        terminal.process_output(b"!");
+        assert_cached_projection(&mut cache, &terminal);
+        assert_eq!(cache.projections, 2);
+        assert!(!cache.spans.is_empty());
+
+        terminal.process_output(b"\r\nlast");
+        assert_cached_projection(&mut cache, &terminal);
+        assert!(cache.spans.is_empty(), "match is now above the viewport");
+        let version = terminal.content_version();
+        terminal.scroll_viewport_up(1);
+        assert_eq!(
+            terminal.content_version(),
+            version,
+            "scrolling is not a semantic edit"
+        );
+        assert_cached_projection(&mut cache, &terminal);
+        assert_eq!(cache.spans[0].row, 0);
+        let count = cache.projections;
+        terminal.scroll_viewport_to_bottom();
+        assert_cached_projection(&mut cache, &terminal);
+        assert_eq!(cache.projections, count + 1);
+        assert!(cache.spans.is_empty());
+
+        terminal.scroll_viewport_up(1);
+        assert_cached_projection(&mut cache, &terminal);
+        cache.set_ranges(vec![decoration_range(&terminal, 1, 0..2)]);
+        assert_cached_projection(&mut cache, &terminal);
+        assert_eq!(
+            cache.spans,
+            [CellSpan {
+                row: 1,
+                start_col: 0,
+                end_col: 2
+            }]
+        );
+        cache.set_ranges(vec![]);
+        assert_cached_projection(&mut cache, &terminal);
+        assert!(
+            cache.spans.is_empty(),
+            "query cancellation removes cached spans"
+        );
+    }
+
+    #[test]
+    fn decoration_projection_never_reuses_stale_proofs_across_content_lifetimes() {
+        // Overwrite, erase, reset, alternate entry, resize/reflow and eviction must
+        // all replace a populated cache with fresh (empty) geometry.
+        for change in 0..7 {
+            let mut terminal = Terminal::new_headless(2, 8);
+            terminal.process_output(b"needle");
+            let range = decoration_range(&terminal, 0, 0..6);
+            let mut cache = DecorationProjection::default();
+            cache.set_ranges(vec![range]);
+            assert_cached_projection(&mut cache, &terminal);
+            assert!(!cache.spans.is_empty());
+            match change {
+                0 => terminal.process_output(b"\rxxxxxx"),
+                1 => terminal.process_output(b"\r\x1b[2K"),
+                2 => terminal.process_output(b"\x1bcneedle"),
+                3 => terminal.process_output(b"\x1b[?1049hneedle"),
+                4 => {
+                    terminal
+                        .try_resize_if_changed(TerminalSize { rows: 2, cols: 4 })
+                        .unwrap();
+                }
+                5 => {
+                    terminal
+                        .try_resize_if_changed(TerminalSize { rows: 3, cols: 8 })
+                        .unwrap();
+                }
+                6 => terminal.process_output("other\r\n".repeat(1100).as_bytes()),
+                _ => unreachable!(),
+            }
+            assert_cached_projection(&mut cache, &terminal);
+            assert_eq!(
+                cache.projections, 2,
+                "change {change} must miss the CPU cache"
+            );
+            assert!(
+                cache.spans.is_empty(),
+                "change {change} retained stale geometry"
+            );
+            if change == 3 {
+                terminal.process_output(b"\x1b[?1049l");
+                assert_cached_projection(&mut cache, &terminal);
+                // The restored primary's unchanged proof can legitimately be visible again.
+                assert_eq!(cache.projections, 3);
+            }
+        }
+
+        let mut original = Terminal::new_headless(2, 8);
+        original.process_output(b"needle");
+        let mut cache = DecorationProjection::default();
+        cache.set_ranges(vec![decoration_range(&original, 0, 0..6)]);
+        assert!(!cache.project(&original).is_empty());
+        let mut replacement = Terminal::new_headless(2, 8);
+        replacement.process_output(b"needle");
+        assert_cached_projection(&mut cache, &replacement);
+        assert!(
+            cache.spans.is_empty(),
+            "same text in a new session is not the same proof"
+        );
+    }
+
+    #[test]
+    fn bridge_alternate_screen_query_drains_queued_output_without_snapshot_or_acknowledgement() {
+        struct QueuedReader(std::sync::mpsc::Receiver<Vec<u8>>);
+        impl std::io::Read for QueuedReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let Ok(bytes) = self.0.recv() else {
+                    return Ok(0);
+                };
+                assert!(bytes.len() <= buf.len());
+                buf[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }
+        }
+        let (output_tx, output_rx) = std::sync::mpsc::channel();
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+        #[allow(clippy::arc_with_non_send_sync)]
+        let terminal = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+            2,
+            8,
+            QueuedReader(output_rx),
+            std::io::sink(),
+            move || wake_tx.send(()).is_ok(),
+        )));
+        let bridge =
+            TerminalWidgetBridge::new(1, terminal.clone(), Arc::new(AtomicBool::new(false)));
+        for (bytes, expected) in [
+            (b"\x1b[?1049h".to_vec(), true),
+            (b"\x1b[?1049l".to_vec(), false),
+        ] {
+            output_tx.send(bytes).unwrap();
+            wake_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            assert_eq!(terminal.lock().unwrap().is_alt_screen(), !expected);
+            assert_eq!(
+                bridge.is_alt_screen(),
+                expected,
+                "availability must ingest queued modes"
+            );
+            assert!(!terminal.lock().unwrap().snapshot().dirty_ranges.is_empty());
+            assert_eq!(bridge.is_alt_screen(), expected);
+        }
+        drop(output_tx);
+    }
 
     fn context(logical: Rect, physical: (u32, u32), scale: f32) -> ExternalDrawContext {
         ExternalDrawContext::new(logical, Viewport::new(physical.0, physical.1, scale))
@@ -774,6 +1032,33 @@ mod tests {
             queue.submit([encoder.finish()]);
         };
         draw(&initial, 73, ExternalDrawMode::Live);
+        terminal.lock().unwrap().process_output(b"ab");
+        let range = decoration_range(&terminal.lock().unwrap(), 0, 0..2);
+        bridge.set_decorations(vec![range]);
+        draw(&initial, 73, ExternalDrawMode::Live);
+        assert!(!bridge.decorations.lock().unwrap().spans.is_empty());
+        let projections = bridge.decorations.lock().unwrap().projections;
+        for mode in [
+            ExternalDrawMode::Retain,
+            ExternalDrawMode::Live,
+            ExternalDrawMode::Retain,
+        ] {
+            draw(&initial, 73, mode);
+            assert_eq!(bridge.decorations.lock().unwrap().projections, projections);
+        }
+        terminal.lock().unwrap().process_output(b"\rxx");
+        draw(&initial, 73, ExternalDrawMode::Retain);
+        assert!(bridge.decorations.lock().unwrap().spans.is_empty());
+        assert_eq!(
+            bridge.decorations.lock().unwrap().projections,
+            projections + 1
+        );
+        draw(&initial, 73, ExternalDrawMode::Live);
+        assert_eq!(
+            bridge.decorations.lock().unwrap().projections,
+            projections + 1
+        );
+        bridge.set_decorations(vec![]);
         terminal
             .lock()
             .unwrap()
