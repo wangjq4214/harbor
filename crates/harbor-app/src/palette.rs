@@ -6,7 +6,12 @@ use crate::command::{
 };
 use crate::tab_manager::{TabId, TabManager, TabSnapshot};
 use harbor_widget::{
-    Alignment, Column, ConstrainedBox, KeyChord,
+    Alignment, Column, ConstrainedBox, DecoratedBox, KeyChord,
+    decoration::{Border, BorderRadius, BoxDecoration},
+    layout::{BoxConstraints, Size},
+    scene::primitive::Primitive,
+    text::TextMetrics,
+    view::PrimitiveLeaf,
     widgets::{align::Align, text_label::TextLabel},
 };
 
@@ -66,7 +71,7 @@ fn availability(
     command_availability(command, snapshots, context)
 }
 
-fn chord_label(chord: KeyChord) -> String {
+fn chord_keys(chord: KeyChord) -> Vec<String> {
     // KeyChord's fields are normalized by the binding resolver.
     let mut parts = Vec::new();
     if chord.modifiers.ctrl {
@@ -85,20 +90,69 @@ fn chord_label(chord: KeyChord) -> String {
         harbor_widget::input::event::Key::Character(ch) => ch.to_uppercase().to_string(),
         key => format!("{key:?}"),
     });
-    parts.join("+")
+    parts
 }
 
-fn binding_label(bindings: &ResolvedKeybindings, command: AppCommand) -> String {
-    let labels = bindings
-        .bindings()
-        .filter(|(_, bound)| *bound == command)
-        .map(|(chord, _)| chord_label(chord))
-        .collect::<Vec<_>>();
-    if labels.is_empty() {
-        "Unbound".into()
-    } else {
-        labels.join(", ")
+// A zero-width sizing leaf keeps all rows equal without adding fake text lines.
+struct PaletteRowHeight {
+    shortcut_rows: usize,
+}
+
+impl PrimitiveLeaf for PaletteRowHeight {
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
+        let shortcuts_height = self.shortcut_rows as f32 * (metrics.line_height + 2.0)
+            + self.shortcut_rows.saturating_sub(1) as f32 * 2.0;
+        let height = (metrics.line_height * 2.0).max(shortcuts_height);
+        constraints.constrain(Size::new(0.0, height))
     }
+
+    fn paint_primitives(&self, _rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
+        Vec::new()
+    }
+}
+
+fn shortcut_badges(
+    cx: &mut BuildCx,
+    bindings: &ResolvedKeybindings,
+    command: AppCommand,
+    foreground: Color,
+) -> View {
+    let keycap = BoxDecoration::new()
+        .try_color(Color {
+            a: 0.04,
+            ..foreground
+        })
+        .unwrap()
+        .border(
+            Border::all(
+                Color {
+                    a: 0.25,
+                    ..foreground
+                },
+                1.0,
+            )
+            .unwrap(),
+        )
+        .border_radius(BorderRadius::all(4.0).unwrap());
+    let mut shortcuts = Column::new().cross_axis_alignment(Alignment::End).gap(2.0);
+    let mut bound = false;
+    for (chord, _) in bindings.bindings().filter(|(_, bound)| *bound == command) {
+        bound = true;
+        let mut keys = Row::new().gap(4.0);
+        for key in chord_keys(chord) {
+            let label = TextLabel::new(key).color(foreground).build(cx);
+            keys = keys.child(
+                DecoratedBox::new(keycap.clone())
+                    .child(Padding::new(1.0, 2.0, 1.0, 2.0).child(label).build(cx))
+                    .build(cx),
+            );
+        }
+        shortcuts = shortcuts.child(keys.build(cx));
+    }
+    if !bound {
+        shortcuts = shortcuts.child(TextLabel::new("Unbound").color(foreground).build(cx));
+    }
+    shortcuts.build(cx)
 }
 
 impl WorkspaceUiController {
@@ -333,8 +387,9 @@ pub(super) fn palette_panel(
     let navigate = controller.clone();
     let submit = controller.clone();
     let close = controller.store.dispatcher();
+    let appearance = GlassAppearance::command_palette();
     let input = TextField::new(palette.input.clone())
-        .decoration(SearchAppearance::input())
+        .decoration(appearance.input())
         .padding(6.0)
         .placeholder("Type a command label or ID…")
         .focus_handle(controller.palette_focus)
@@ -359,9 +414,12 @@ pub(super) fn palette_panel(
     let entries = candidates(&palette.input.text());
     let snapshots = controller.tabs.state.read().snapshots.clone();
     let foreground = cx.theme().button.normal.foreground;
-    let mut content = Column::new().gap(4.0).child(View::deferred(
-        input.keyed(format!("palette-editor-{generation}")),
-    ));
+    let mut content = Column::new()
+        .cross_axis_alignment(Alignment::Stretch)
+        .gap(4.0)
+        .child(View::deferred(
+            input.keyed(format!("palette-editor-{generation}")),
+        ));
     if entries.is_empty() {
         content = content.child(
             TextLabel::new("No matching commands")
@@ -369,6 +427,17 @@ pub(super) fn palette_panel(
                 .build(cx),
         );
     } else {
+        let shortcut_rows = candidates("")
+            .iter()
+            .map(|entry| {
+                bindings
+                    .bindings()
+                    .filter(|(_, command)| *command == entry.command)
+                    .count()
+            })
+            .max()
+            .unwrap_or(1)
+            .max(1);
         // Keep the selected row visible without giving keyboard focus to a second editor/list.
         let start = palette.selected.saturating_sub(4);
         for (index, entry) in entries.iter().enumerate().skip(start).take(5) {
@@ -379,34 +448,38 @@ pub(super) fn palette_panel(
                 controller.palette_context(),
             )
             .err();
-            let label = format!(
-                "{}{}    {}",
-                if index == palette.selected {
-                    "› "
-                } else {
-                    "  "
-                },
-                entry.label,
-                binding_label(bindings, entry.command)
+            let mut labels = Column::new().cross_axis_alignment(Alignment::Stretch);
+            labels = labels.child(
+                TextLabel::new(entry.label)
+                    .color(foreground)
+                    .ellipsis()
+                    .build(cx),
             );
-            let detail = reason.map_or_else(
-                || entry.id.to_owned(),
-                |reason| format!("{reason} — {}", entry.id),
-            );
-            let row = Column::new()
-                .child(TextLabel::new(label).color(foreground).ellipsis().build(cx))
-                .child(
-                    TextLabel::new(detail)
+            if let Some(reason) = reason {
+                labels = labels.child(
+                    TextLabel::new(reason)
                         .color(foreground)
                         .ellipsis()
                         .build(cx),
                 );
-            let mut background = cx.theme().button.normal.background;
-            background.a = if index == palette.selected { 0.9 } else { 0.0 };
+            }
+            let shortcuts = shortcut_badges(cx, bindings, entry.command, foreground);
+            let row = Row::new()
+                .cross_axis_alignment(Alignment::Center)
+                .child(View::leaf(PaletteRowHeight { shortcut_rows }))
+                .child(Expanded::new().child(labels.build(cx)).build(cx))
+                .child(Padding::new(0.0, 0.0, 0.0, 12.0).child(shortcuts).build(cx))
+                .build(cx);
+            let decoration = BoxDecoration::new()
+                .try_color(Color {
+                    a: if index == palette.selected { 0.10 } else { 0.0 },
+                    ..foreground
+                })
+                .unwrap()
+                .border_radius(BorderRadius::all(6.0).unwrap());
             content = content.child(
-                Padding::all(4.0)
-                    .background(background)
-                    .child(row.build(cx))
+                DecoratedBox::new(decoration)
+                    .child(Padding::new(6.0, 8.0, 6.0, 8.0).child(row).build(cx))
                     .build(cx),
             );
         }
@@ -420,10 +493,8 @@ pub(super) fn palette_panel(
             .build(cx),
         );
     }
-    let card = DecoratedBox::new(SearchAppearance::panel())
-        .clip_behavior(ClipBehavior::AntiAlias)
-        .child(Padding::all(8.0).child(content.build(cx)).build(cx))
-        .build(cx);
+    let content = Padding::all(8.0).child(content.build(cx)).build(cx);
+    let card = appearance.panel(cx, content);
     Portal::new()
         .child(
             Align::new(Alignment::Center)

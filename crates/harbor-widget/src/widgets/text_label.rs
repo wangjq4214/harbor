@@ -2,20 +2,20 @@ use crate::layout::{BoxConstraints, Rect, Size};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, View};
+use std::cell::RefCell;
 use std::sync::Arc;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
 
-// ── TextLabel ───────────────────────────────────────────────────────────────
-
-/// A non-interactive widget that displays a single line of monospace text.
+/// A non-interactive, single-line label measured with the renderer's glyph advances.
 ///
-/// Uses Runtime-owned `TextMetrics` for intrinsic size computation.
-/// Produces a [`Primitive::Text`] with its text payload during the paint pass.
+/// There is no implicit padding; compose with `Padding` when spacing is desired.
+/// Without font resources, measurement uses the renderer's per-scalar fallback.
 #[derive(Clone)]
 pub struct TextLabel {
     text: String,
     color: Color,
     ellipsis: bool,
+    geometry: RefCell<Option<LabelGeometry>>,
 }
 
 impl TextLabel {
@@ -24,11 +24,12 @@ impl TextLabel {
             text: text.into(),
             color: Color::WHITE,
             ellipsis: false,
+            geometry: RefCell::new(None),
         }
     }
 
-    /// Truncates overflowing text to the available monospace cell budget.
-    /// The full source text is retained for subsequent wider layouts.
+    /// Truncates overflowing text at grapheme boundaries using measured advances,
+    /// including the ellipsis glyph. Keeps the source for subsequent wider layouts.
     pub fn ellipsis(mut self) -> Self {
         self.ellipsis = true;
         self
@@ -58,14 +59,29 @@ impl crate::WithChildren for TextLabel {
 
 impl AnyView for TextLabel {
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
-        let width = self.text.len() as f32 * metrics.cell_width + 4.0;
-        let height = metrics.line_height;
-        constraints.constrain(Size::new(width, height))
+        let width = self.geometry.borrow().as_ref().map_or_else(
+            || self.text.chars().count() as f32 * metrics.cell_width,
+            LabelGeometry::width,
+        );
+        constraints.constrain(Size::new(width, metrics.line_height))
+    }
+
+    fn prepare_text_geometry(&self, _metrics: &TextMetrics, advance: &mut dyn FnMut(char) -> f32) {
+        *self.geometry.borrow_mut() = Some(LabelGeometry::measure(&self.text, advance));
     }
 
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
         let text = if self.ellipsis {
-            ellipsized(&self.text, rect.size().width, metrics.cell_width)
+            let geometry = self.geometry.borrow();
+            let fallback;
+            let geometry = match geometry.as_ref() {
+                Some(geometry) => geometry,
+                None => {
+                    fallback = LabelGeometry::measure(&self.text, &mut |_| metrics.cell_width);
+                    &fallback
+                }
+            };
+            geometry.ellipsized(&self.text, rect.size().width)
         } else {
             self.text.clone()
         };
@@ -80,87 +96,142 @@ impl AnyView for TextLabel {
     }
 }
 
-fn ellipsized(text: &str, width: f32, cell_width: f32) -> String {
-    if !width.is_finite() || !cell_width.is_finite() || cell_width <= 0.0 {
-        return String::new();
-    }
-    let budget = (width.max(0.0) / cell_width).floor() as usize;
-    let cells: usize = text.chars().map(|ch| ch.width().unwrap_or(0)).sum();
-    if cells <= budget {
-        return text.to_owned();
-    }
-    if budget == 0 {
-        return String::new();
-    }
-    let mut used = 0;
-    let mut result = String::new();
-    for ch in text.chars() {
-        let cells = ch.width().unwrap_or(0);
-        if used + cells > budget - 1 {
-            break;
+/// Cumulative renderer advances at grapheme ends, including the empty prefix.
+/// These widths serve both intrinsic layout and truncation; no cell-budget path.
+#[derive(Clone)]
+struct LabelGeometry {
+    prefixes: Vec<(usize, f32)>,
+    ellipsis_width: f32,
+}
+
+impl LabelGeometry {
+    fn measure(text: &str, advance: &mut dyn FnMut(char) -> f32) -> Self {
+        let mut prefixes = vec![(0, 0.0)];
+        let mut width = 0.0;
+        for (start, grapheme) in text.grapheme_indices(true) {
+            for ch in grapheme.chars() {
+                width += advance(ch);
+            }
+            prefixes.push((start + grapheme.len(), width));
         }
-        result.push(ch);
-        used += cells;
+        Self {
+            prefixes,
+            ellipsis_width: advance('…'),
+        }
     }
-    result.push('…');
-    result
+
+    fn width(&self) -> f32 {
+        self.prefixes.last().unwrap().1
+    }
+
+    fn ellipsized(&self, text: &str, width: f32) -> String {
+        if !width.is_finite() || width <= 0.0 {
+            return String::new();
+        }
+        if self.width() <= width {
+            return text.to_owned();
+        }
+        if self.ellipsis_width > width {
+            return String::new();
+        }
+        let end = self
+            .prefixes
+            .iter()
+            .take_while(|(_, advance)| advance + self.ellipsis_width <= width)
+            .last()
+            .map_or(0, |(end, _)| *end);
+        format!("{}…", &text[..end])
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn ellipsis_respects_cell_budgets_and_keeps_source_for_wider_layouts() {
-        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
-        for (text, cells, expected) in [
-            ("Terminal", 4, "Ter…"),
-            ("Terminal", 1, "…"),
-            ("Terminal", 0, ""),
-            ("Terminal", 8, "Terminal"),
-            ("项目标签", 5, "项目…"),
-            ("项目标签", 2, "…"),
-            ("e\u{0301}xyz", 3, "e\u{0301}x…"),
-        ] {
-            assert_eq!(
-                ellipsized(text, cells as f32 * metrics.cell_width, metrics.cell_width),
-                expected
-            );
-        }
-        let label = TextLabel::new("Terminal").ellipsis();
-        for (cells, expected) in [(4, "Ter…"), (8, "Terminal")] {
-            let rect = Rect::from_min_size(
-                Point::ZERO,
-                Size::new(cells as f32 * metrics.cell_width, 20.0),
-            );
-            assert!(matches!(&label.paint_primitives(rect, &metrics)[0],
-                Primitive::Text { text, .. } if text.as_ref() == expected));
-        }
-        assert_eq!(ellipsized("test", 10.0, 0.0), "");
-        assert_eq!(ellipsized("test", f32::NAN, 10.0), "");
-    }
-
     use super::*;
     use crate::input::event::UiEvent;
     use crate::input::event_ctx::{EventCtx, EventHandled};
     use crate::layout::Point;
 
-    #[test]
-    fn text_label_intrinsic_size_uses_cell_width() {
-        let label = TextLabel::new("Hello");
-        let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = label.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
-        // Default metrics: cell_width=10.0, line_height=20.0
-        // "Hello" = 5 chars * 10.0 + 4.0 padding = 54.0
-        assert!((size.width - 54.0).abs() < 1.0);
-        assert!((size.height - 20.0).abs() < 1.0);
+    fn painted_text(label: &TextLabel, width: f32) -> String {
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(width, 20.0));
+        label
+            .paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS)
+            .iter()
+            .filter_map(|primitive| match primitive {
+                Primitive::Text { text, .. } => Some(text.as_ref()),
+                _ => None,
+            })
+            .collect::<String>()
     }
 
     #[test]
-    fn text_label_empty_text_min_width() {
-        let label = TextLabel::new("");
+    fn default_width_uses_glyph_advances_without_hidden_padding() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = label.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
-        // Empty text: 0 chars * 10.0 + 4.0 padding = 4.0
-        assert!((size.width - 4.0).abs() < 1.0);
+        let label = TextLabel::new("Ctrl");
+        label.prepare_text_geometry(&metrics, &mut |ch| if ch == 'l' { 2.0 } else { 6.0 });
+        assert_eq!(label.intrinsic_size(constraints, &metrics).width, 20.0);
+        label.prepare_text_geometry(&metrics, &mut |_| 5.0 / 1.5);
+        assert!((label.intrinsic_size(constraints, &metrics).width - 20.0 / 1.5).abs() < 0.001);
+        assert_eq!(
+            label
+                .intrinsic_size(BoxConstraints::loose(Size::new(7.0, 20.0)), &metrics)
+                .width,
+            7.0
+        );
+        let empty = TextLabel::new("");
+        empty.prepare_text_geometry(&metrics, &mut |_| 6.0);
+        assert_eq!(empty.intrinsic_size(constraints, &metrics).width, 0.0);
+    }
+
+    #[test]
+    fn ellipsis_uses_the_same_proportional_advances_and_preserves_graphemes() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        let advance = |ch| match ch {
+            'i' => 1.0,
+            'W' | '👩' | '💻' => 8.0,
+            'e' => 5.0,
+            '\u{0301}' | '\u{200d}' => 0.0,
+            '…' => 3.0,
+            _ => 10.0,
+        };
+        for (text, width, expected) in [
+            ("iiiiWW", 4.0, "i…"),
+            ("iiiiWW", 7.0, "iiii…"),
+            ("iiiiWW", 20.0, "iiiiWW"),
+            ("iiii", 4.0, "iiii"),
+            ("WWii", 10.0, "…"),
+            ("项目标签", 23.0, "项目…"),
+            ("e\u{0301}WW", 8.0, "e\u{0301}…"),
+            ("👩\u{200d}💻WW", 19.0, "👩\u{200d}💻…"),
+            ("👩\u{200d}💻WW", 12.0, "…"),
+            ("WW", 2.0, ""),
+            ("WW", 0.0, ""),
+            ("WW", f32::NAN, ""),
+            ("", 10.0, ""),
+        ] {
+            let label = TextLabel::new(text).ellipsis();
+            label.prepare_text_geometry(&metrics, &mut |ch| advance(ch));
+            assert_eq!(painted_text(&label, width), expected, "{text:?} at {width}");
+            // Narrowing never destroys the source needed by a later wider layout.
+            assert_eq!(painted_text(&label, 800.0), text);
+        }
+    }
+
+    #[test]
+    fn without_fonts_fallback_counts_scalars_not_utf8_bytes_or_padding() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
+        for (text, width) in [("Hello", 50.0), ("项目标签", 40.0), ("", 0.0)] {
+            assert_eq!(
+                TextLabel::new(text)
+                    .intrinsic_size(constraints, &metrics)
+                    .width,
+                width
+            );
+        }
+        let label = TextLabel::new("Terminal").ellipsis();
+        assert_eq!(painted_text(&label, 40.0), "Ter…");
+        assert_eq!(painted_text(&label, 80.0), "Terminal");
     }
 
     #[test]

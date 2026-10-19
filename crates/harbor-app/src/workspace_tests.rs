@@ -14,7 +14,7 @@ use crate::tab_view::{
 };
 use harbor_terminal::Terminal;
 use harbor_widget::{
-    ConstrainedBox, Row,
+    ConstrainedBox, DecoratedBox, Row,
     fiber::FiberId,
     input::event::{
         Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,

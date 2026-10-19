@@ -8,7 +8,7 @@ Shortcuts use exact simultaneous modifiers, not multi-stroke sequences. These ar
 
 | Command ID | Built-in shortcut | Meaning / context |
 | --- | --- | --- |
-| `app.command-palette` | Ctrl+Shift+P | Open/focus the tabs/reload command palette (partial delivery) |
+| `app.command-palette` | Ctrl+Shift+P | Open/focus the command palette for existing application commands |
 | `app.reload-configuration` | Ctrl+Shift+R | Strict reload of the retained configuration path; independent of watcher |
 | `app.new-tab` | Ctrl+T | Create/activate a new session |
 | `app.close-active-tab` | Ctrl+W | Close active session; final tab requests window closure |
@@ -37,25 +37,34 @@ Shortcuts use exact simultaneous modifiers, not multi-stroke sequences. These ar
 
 Search commands consume their shortcuts even if no search or match is available; unbind them to allow those keys through. Escape in the query field closes search (or first cancels IME composition); Enter/Shift+Enter navigate. There is **no global Escape binding**.
 
-## Command palette increment
+## Command palette
 
-The current palette integrates configuration reload and tab creation, closing, next/previous navigation and numeric selection (1–9). Type a case-insensitive substring of a label or command ID; Up/Down selects, Enter invokes once, and Escape closes (first cancelling active composition). No matches cannot execute. Unavailable rows show a reason, and invocation rechecks the active target before Host execution.
+Press **Ctrl+Shift+P** to open/focus the query. The integrated catalog includes configuration reload; tab creation, closing, navigation and numeric selection (1–9); terminal copy/paste and primary-buffer scrolling; and current-session search open/close/next/previous. `terminal.copy-or-interrupt` is deliberately hidden: palette Copy always copies, including empty text without a selection. Profiles, panes and application appearance switching are not delivered.
 
-Rows show accepted **effective** bindings, including alternatives and unbound commands. The opener's stable configurable ID is `app.command-palette`; its overrides use the same grammar below. Query editing and clipboard/undo shortcuts belong to the reusable text field, not the terminal. Closing returns to terminal interaction; tab actions target the resulting active terminal, and final-tab close retains window-close behavior. Execution, rejection and failure feedback are distinct; reload errors remain visible.
+Type a **case-insensitive substring** of a display label or stable command ID (not fuzzy matching). An empty query exposes the catalog; no matches shows an empty state and cannot execute. Up/Down selects a row; Enter invokes it once. Rows show accepted **effective** shortcuts, including multiple alternatives and `Unbound`, rather than superseded defaults. Accepted configuration reload updates them; a rejected reload retains the prior bindings. The opener ID is `app.command-palette`, configurable with the grammar below.
 
-Terminal copy/paste/scroll/search commands are **not yet integrated into the palette** (T0002); their existing shortcuts still work outside it. Native Windows focus/IME acceptance remains T0003 work. This is not the full visible command catalog, profiles/panes/appearance delivery, or completion of issue #156. See [focused evidence and remaining checks](../verification/T0001-palette-tabs-and-reload.md).
+Unavailable rows explain why—for example, scrolling in the alternate screen, a missing tab position, or closed search. Invocation rechecks context; rejecting a palette action does not send Enter or a scroll key to the terminal. Feedback distinguishes execution, no change, rejection, failure and awaiting paste confirmation. Reload errors remain visible; an execution notice is not a promise of new search matches or successful execution of pasted shell text.
+
+The query uses the reusable single-line editor: caret/selection, Unicode-safe edits, Ctrl+A/C/X/V, Ctrl+Z undo, and Ctrl+Y/Ctrl+Shift+Z redo. Clipboard shortcuts edit the field, not terminal input or selection. IME preedit does not filter until committed; confirming a candidate does not invoke a command. Escape first cancels composition, then closes the palette on a separate press.
+
+Cancel returns to terminal interaction. Tab actions target the resulting active terminal; closing the final tab requests window closure. Search open and match navigation target the search editor; search close restores the terminal. Copy, scroll and reload return to terminal interaction. Paste preserves the separate confirmation window and its input gate rather than restoring palette focus. Losing window focus closes the palette; reopen it after returning.
+
+**Verification limits:** focused tests cover the full visible catalog, but integrated Windows acceptance is still incomplete. Native checks observed Chinese candidate commit/cancel, search destinations, alternate-screen rejection, binding reload/display and field clipboard edits. Confirmation completion, late-result/root-replacement races and parts of the tab/scroll matrix remain unresolved. On the tested Windows setup, terminal text shows through the palette and reduces readability; notifications can overlap it. See the [revision-bound evidence and remaining scenarios](../verification/T0003-command-palette/README.md). This is not completion of issue #156 or broad terminal/application certification.
 
 ## Where shortcuts apply
 
 Ctrl+C without selection reaches the shell. PageUp/PageDown/Home/End review the primary buffer but pass through in alternate-screen applications.
 
-The focused search field handles its own editing shortcuts, including Ctrl+A/C/X/V/Z/Y. These modify the query, not terminal selection or input. While a confirmation window is open, terminal input is blocked.
+The focused search or palette field handles its own editing shortcuts, including Ctrl+A/C/X/V/Z/Y. These modify the query, not terminal selection or input. While a confirmation window is open, terminal input is blocked.
 
 ## Override grammar
 
 Use the selected [configuration file](configuration.md#configuration-location):
 
 ```toml
+[keybindings.app.command-palette]
+bindings = [{ modifiers = ["ctrl", "shift"], key = "p" }]
+
 [keybindings.app.new-tab]
 bindings = [{ modifiers = ["ctrl"], key = "n" }]
 

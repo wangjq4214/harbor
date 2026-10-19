@@ -1,7 +1,7 @@
 //! Application workspace composition and Host-published global UI state.
 
 use crate::{
-    appearance::SearchAppearance,
+    appearance::GlassAppearance,
     command::{AppCommand, AppCommandRequest, ResolvedKeybindings},
     notifications::{ConfigurationNoticeSource, ConfigurationNotices, configuration_notification},
     tab_manager::TabSnapshot,
@@ -9,9 +9,9 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionOutcome, Actions, BackdropFilter, ClipBehavior, ComponentExt as _, DecoratedBox,
-    Expanded, Focus, FocusHandle, FocusScope, IconButton, LayoutObserver, LucideIcon, Portal, Row,
-    Shortcuts, Store, TextEditingController, TextField,
+    ActionOutcome, Actions, ComponentExt as _, Expanded, Focus, FocusHandle, FocusScope,
+    IconButton, LayoutObserver, LucideIcon, Portal, Row, Shortcuts, Store, TextEditingController,
+    TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -43,12 +43,13 @@ impl Default for SearchUiState {
 }
 
 fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
+    let appearance = GlassAppearance::default();
     let input = controller.store.state().read().search.input.clone();
     let changed_ui = controller.clone();
     let submit = controller.store.dispatcher();
     let close = controller.store.dispatcher();
     let entry = TextField::new(input)
-        .decoration(SearchAppearance::input())
+        .decoration(appearance.input())
         .padding(6.0)
         .placeholder("Find…")
         .focus_handle(controller.search_focus)
@@ -91,28 +92,22 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
             .on_click(move |_| dispatcher.dispatch(AppCommandRequest::shortcut(command)))
     };
     let status = controller.store.state().read().search.status.clone();
-    let radius = SearchAppearance::radius();
-    let decoration = SearchAppearance::panel();
-    let card = harbor_widget::view! { &mut *cx;
-        BackdropFilter::new(SearchAppearance::BLUR_SIGMA).unwrap()
-            .border_radius(radius).edge_refraction(SearchAppearance::refraction()) => {
-            DecoratedBox::new(decoration).clip_behavior(ClipBehavior::AntiAlias) => {
-                Padding::all(8.0) => {
-                    Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
-                        Expanded::new() => { entry; }
-                        // Status text changes frequently; reserve its slot instead of resizing the editor.
-                        harbor_widget::ConstrainedBox::new().min_width(120.0).max_width(120.0) => {
-                            harbor_widget::widgets::text_label::TextLabel::new(status)
-                                .color(cx.theme().button.normal.foreground).ellipsis();
-                        }
-                        button(LucideIcon::ChevronUp, "Previous match", AppCommand::SearchPrevious);
-                        button(LucideIcon::ChevronDown, "Next match", AppCommand::SearchNext);
-                        button(LucideIcon::X, "Close search", AppCommand::SearchClose);
-                    }
+    let content = harbor_widget::view! { &mut *cx;
+        Padding::all(8.0) => {
+            Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
+                Expanded::new() => { entry; }
+                // Status text changes frequently; reserve its slot instead of resizing the editor.
+                harbor_widget::ConstrainedBox::new().min_width(120.0).max_width(120.0) => {
+                    harbor_widget::widgets::text_label::TextLabel::new(status)
+                        .color(cx.theme().button.normal.foreground).ellipsis();
                 }
+                button(LucideIcon::ChevronUp, "Previous match", AppCommand::SearchPrevious);
+                button(LucideIcon::ChevronDown, "Next match", AppCommand::SearchNext);
+                button(LucideIcon::X, "Close search", AppCommand::SearchClose);
             }
         }
     };
+    let card = appearance.panel(cx, content);
     Portal::new()
         .child(
             harbor_widget::widgets::align::Align::new(harbor_widget::Alignment::End)

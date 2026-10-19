@@ -36,13 +36,13 @@ Portable mode does not change the log location. Configuration diagnostics omit e
 4. Try manual reload (default **Ctrl+Shift+R**). Rewriting identical bytes does not retry a failed reload. A missing file retains settings; save a valid empty document to restore defaults.
 5. Inspect configuration notices and logs. Unknown ordinary keys produce warnings; binding errors are strict. If watching fails, try manual reload or restart Harbor.
 
-Notices can be dismissed without taking focus. Successful or unchanged reloads do not show a success notification. Repeated identical automatic errors may be suppressed; a manual retry can report them again.
+Notices can be dismissed without taking focus. Successful or unchanged direct/watched reloads do not show a configuration success notification; palette invocation separately reports its command outcome. Repeated identical automatic errors may be suppressed; a manual retry can report them again.
 
 ## Keys, selection, or paste behave differently
 
 - Ctrl+C without selection reaches the shell; Ctrl+Shift+C copies even without selection. A successful copy clears selection. Alternate-screen apps receive PageUp/PageDown/Home/End instead of local history commands. Child mouse tracking can take precedence over local selection and scrolling.
 - Check [bindings](commands.md), including conflicts and explicit unbinding. Shift+Insert is not a built-in paste shortcut. Custom function-key tokens such as `"f3"` are not accepted, despite the built-in search shortcuts.
-- Close or refocus search if editing keys do not reach the terminal. Clipboard shortcuts inside search edit the query. IME composition may consume Enter/Escape. A confirmation window blocks terminal input while open.
+- Close or refocus search or the palette if editing keys do not reach the terminal. Clipboard shortcuts inside search or the palette edit the query. IME composition may consume Enter/Escape. A confirmation window blocks terminal input while open.
 - Multiline paste confirmation depends on bracketed-paste mode and internal newlines; trailing newlines alone do not trigger it. A preview is not a shell safety guarantee. [OSC 52 write policy](configuration.md#clipboard-policy) is independent of paste; clipboard reads are always denied.
 
 ## Search says No Result, partial, or changes its count
@@ -61,6 +61,7 @@ Terminal fonts are independent of UI fonts. An unavailable family can fall back 
 
 - Native Unix shell sessions are not implemented. This is separate from running WSL or SSH inside a Windows-hosted session; compatibility with every remote/application combination is not guaranteed.
 - Kitty keyboard/graphics protocols and OSC 52 clipboard reads are not implemented.
-- Split panes, named launch profiles, and a command palette are not available.
+- Split panes and named launch profiles are not available.
+- The existing-command palette is integrated, but its [Windows acceptance remains incomplete](../verification/T0003-command-palette/README.md). Text behind the palette and overlapping notices reduced readability in the tested setup.
 
 For terminal protocol details, see [compatibility](../terminal/compatibility.md).

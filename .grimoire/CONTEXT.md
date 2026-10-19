@@ -145,7 +145,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Reusable `harbor-widget::Paint` for solid colors and linear-gradient box fills/border strokes. Rendering and alpha composition are widget-owned; material presets are application-owned, and existing solid-color APIs remain compatible. See [ADR 0067](./adr/0067-widget-gradient-paints-with-application-material-presets.md).
 
 ### Widget Local Backdrop Blur
-- **Definition:** Reusable `harbor-widget::BackdropFilter` that softens already-drawn content, including embedded terminal presentation, while leaving its foreground sharp. Unlike Windows Acrylic it filters within the window; product presets remain application-owned. See [ADR 0066](./adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md).
+- **Definition:** Reusable `harbor-widget::BackdropFilter` that softens already-drawn content, including embedded terminal presentation, while leaving its foreground sharp. Unlike Windows Acrylic it filters within the window; product presets remain application-owned. Search and the command palette share code-level appearance defaults with per-consumer overrides, not new TOML settings; see [ADR 0070](./adr/0070-shared-application-glass-presets-with-local-overrides.md). See [ADR 0066](./adr/0066-widget-local-backdrop-blur-with-application-glass-presets.md).
 
 ### Widget Backdrop Edge Refraction
 - **Definition:** Optional widget-owned local background displacement concentrated near edges and rounded corners, fading to zero in the center while leaving foreground and hit testing unchanged. Application-owned glass recipes choose its parameters; blur-only consumers keep existing behavior. See [ADR 0068](./adr/0068-local-backdrop-edge-refraction.md).

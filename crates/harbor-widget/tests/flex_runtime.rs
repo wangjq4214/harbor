@@ -185,7 +185,7 @@ fn resize_metrics_and_scale_changes_preserve_deferred_components_and_ids() {
     update(&mut runtime);
     let ids = tree_ids(&runtime);
     let initial_builds = builds.get();
-    assert_eq!(rect_at(&runtime, &[1]).min.x, 24.0);
+    assert_eq!(rect_at(&runtime, &[1]).min.x, 20.0);
     assert_eq!(pointer(&mut runtime, 30.0, 10.0), [2]);
 
     let metrics = TextMetrics {
@@ -194,7 +194,7 @@ fn resize_metrics_and_scale_changes_preserve_deferred_components_and_ids() {
     };
     runtime.set_text_metrics(metrics);
     assert!(pointer(&mut runtime, 30.0, 10.0).is_empty());
-    assert_eq!(rect_at(&runtime, &[1]).min.x, 44.0);
+    assert_eq!(rect_at(&runtime, &[1]).min.x, 40.0);
     assert!(update(&mut runtime));
     runtime.set_text_metrics(metrics);
     assert!(!update(&mut runtime));
@@ -204,8 +204,8 @@ fn resize_metrics_and_scale_changes_preserve_deferred_components_and_ids() {
         assert!(runtime.set_viewport(viewport.clone()));
         assert!(update(&mut runtime));
         let content = rect_at(&runtime, &[1]);
-        assert_close(content.min.x, 44.0);
-        assert_close(content.size().width, viewport.logical_size.width - 44.0);
+        assert_close(content.min.x, 40.0);
+        assert_close(content.size().width, viewport.logical_size.width - 40.0);
         assert_close(content.max.x, viewport.logical_size.width);
         assert_close(content.size().height, viewport.logical_size.height);
         assert_eq!(tree_ids(&runtime), ids);
@@ -304,11 +304,11 @@ fn signal_content_changes_relayout_the_full_root_including_siblings() {
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);
-    assert_eq!(rect_at(&runtime, &[1]).min.x, 14.0);
+    assert_eq!(rect_at(&runtime, &[1]).min.x, 10.0);
     exposed.borrow().as_ref().unwrap().set("longer".to_owned());
     assert!(update(&mut runtime));
-    assert_eq!(rect_at(&runtime, &[1]).min.x, 64.0);
-    assert_eq!(rect_at(&runtime, &[1]).size().width, 136.0);
+    assert_eq!(rect_at(&runtime, &[1]).min.x, 60.0);
+    assert_eq!(rect_at(&runtime, &[1]).size().width, 140.0);
     assert_eq!(tree_ids(&runtime), ids);
     assert!(!update(&mut runtime));
 }

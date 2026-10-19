@@ -49,7 +49,8 @@ fn full_visible_registry_is_discoverable_with_effective_bindings_hidden_intents_
         assert!(!palette_command_supported(command));
     }
     replace(&mut runtime, "terminal.paste");
-    assert!(painted(&runtime).contains("Ctrl+V"));
+    let text = painted(&runtime);
+    assert!(text.contains("Ctrl\nV"), "{text:?}");
     let mut raw = harbor_config::RawKeybindings::default();
     raw.entries.insert("terminal.paste".into(), vec![]);
     controller.publish_keybindings(validate_keybindings(&raw).unwrap());

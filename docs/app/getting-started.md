@@ -27,6 +27,8 @@ Harbor first attempts a configured shell, if any. Windows defaults are tried in 
 
 Background output marks a tab unread; activation clears the indicator. Closing an active tab selects its right neighbor, otherwise its left neighbor. Tabs are sessions, not split panes or named launch profiles.
 
+To discover these and other existing actions, press **Ctrl+Shift+P**, type part of a command label or ID, select with Up/Down and press Enter. Escape closes the palette after cancelling any active IME composition. See [palette behavior and verification limits](commands.md#command-palette).
+
 ## 3. Review, select, copy, and paste
 
 In ordinary terminal review, use the wheel or scrollbar to inspect retained history. Drag to select cells; double-click selects a word and triple-click a logical line. **Ctrl+Shift+C** copies selection (empty text if there is none). **Ctrl+C** copies a nonempty selection, otherwise reaches the child as interrupt input. A successful terminal copy clears selection. PageUp/PageDown and Home/End review the primary buffer; in alternate-screen applications these commands pass through instead. Mouse reporting enabled by the child can take precedence over local selection/scrolling.
