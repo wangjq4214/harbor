@@ -2,6 +2,7 @@
 
 **Status:** Completed
 **Date:** 2026-09-26
+**Superseded in part by:** [ADR 0073](./0073-session-history-accounting-and-text-unit-overflow.md), only the unqualified source-text retention of exceptionally large text units beyond a fixed protective limit. This newly approved exception is not implemented; ordinary unit/width/fallback policy remains applicable.
 
 ## Context
 

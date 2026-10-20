@@ -438,7 +438,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Synonyms:** logical anchor, stable content anchor
 
 ### Reflow Capacity Eviction
-- **Definition:** After reflow, enforce physical-row capacity oldest-first; mark partial retained lines head-truncated, invalidate evicted anchors and move evicted review to oldest retained content.
+- **Definition:** After reflow, enforce physical-row capacity oldest-first; mark partial retained lines head-truncated, invalidate evicted anchors and move evicted review to oldest retained content. The selected extension adds an independent retained-history-content byte limit with the same oldest-first direction, distinct from measured process/GPU memory; [ADR 0072](./adr/0072-dual-bounded-terminal-history.md) records that direction and [ADR 0073](./adr/0073-session-history-accounting-and-text-unit-overflow.md) defines per-session UTF-8 history accounting, live reload and the exceptional oversized-unit safety policy. These records do not establish implementation.
 - **Synonyms:** reflow eviction
 - **Relationships:**
   - references Content Anchor
