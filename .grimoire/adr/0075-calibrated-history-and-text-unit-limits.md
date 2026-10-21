@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-10-21
-**Sources:** Owner accepted the recommended contract from the [2026-10-21 calibration capture](../../docs/developer/evidence/0031/calibration/README.md) on 2026-10-21, following [T0001](../../.grimoire/ticket/0019-bounded-history-and-performance-budgets/T0001-measurement-and-calibration.md).
+**Sources:** Owner accepted the recommended calibration contract on 2026-10-21 (former 0019/T0001); the retained rationale/results and closure disposition are summarized in [Spec 0031](../spec/0031-bounded-history-and-performance-budgets.md#delivery-and-closure-summary).
 **Refines:** [ADR 0072](./0072-dual-bounded-terminal-history.md) and [ADR 0073](./0073-session-history-accounting-and-text-unit-overflow.md), supplying the numeric values both deliberately left to measurement. Their policy, accounting, reload and protective-exception semantics are unchanged.
 
 ## Context
@@ -31,6 +31,6 @@ Adopted regression bounds, applicable to the same machine class and explicitly m
 
 - T0002 and T0003 gain the numbers they were blocked on; neither may substitute a different value without a superseding record.
 - The default becomes 4000 rows rather than the historical 1000, quadrupling retained-ring storage to the 18–37 MB class at typical widths. Users who want the old footprint set the row cap explicitly.
-- These bounds say nothing about native output-to-present latency, resize-to-correct-frame, idle CPU/GPU, process/GPU residency or atlas pressure. T0004's numerical integrated acceptance remains blocked on those measurements and must not infer them from these microbenchmarks.
+- These bounds say nothing about native output-to-present latency, resize-to-correct-frame, idle CPU/GPU, process/GPU residency or atlas pressure. Those native measurements were not completed; the owner waived the remaining T0004 acceptance at closure, without treating these microbenchmarks as native proof.
 - The 1024-byte limit rests on a scalar-aligned prefix model, not on implemented unit recognition, streaming admission or discard recovery; T0002 owns proving the real policy keeps the approved semantics.
 - Values describe the measured machine class. Running the recorded battery on materially different hardware is the calibration, not assume-and-ship.

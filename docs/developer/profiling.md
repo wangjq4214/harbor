@@ -2,7 +2,7 @@
 
 Use comparable captures to identify a bottleneck, change one ownership path, then repeat the workload. This guide contains procedures, not captured results or optimization priorities. The [architecture map](architecture.md) helps locate allocation and lifecycle owners.
 
-For Spec 0031/T0001, use the [history calibration protocol](history-calibration.md) and [current evidence ledger](evidence/0031/README.md). The package includes repeated candidate/parser/prepare probes and [limited native GUI observations](evidence/0031/gui-20261020/README.md), including a Unicode responsiveness issue. Full host/native coverage and all shipping numeric selections remain incomplete; these observations do not unblock numerical shipping gates.
+For Spec 0031, see the [consolidated delivery/closure summary](../../.grimoire/spec/0031-bounded-history-and-performance-budgets.md#delivery-and-closure-summary). Capacity/per-unit values and microbenchmark bounds were adopted; protection and configurable history are implemented. Standard gates and limited Windows smoke passed, but full native thresholds/matrix were not established and were waived by the owner. Raw issue-specific evidence was removed rather than merged. The [history calibration protocol](history-calibration.md) remains available for optional future measurement.
 
 ## Prepare a comparison
 

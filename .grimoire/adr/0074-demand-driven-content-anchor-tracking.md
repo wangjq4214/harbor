@@ -1,9 +1,9 @@
 # Demand-driven content-anchor tracking during ingest
 
 **Status:** Testing
-**Evidence:** [Stage-1 fix verification](../../docs/developer/evidence/0031/unicode-diagnosis/fix-0074-ingest.md) — ingestion cost and unit gates; native T0004 acceptance and T0001 recalibration remain open.
+**Results:** [Spec 0031 result summary](../spec/0031-bounded-history-and-performance-budgets.md#delivery-and-closure-summary) retains stage-1 ingestion measurements and gate outcomes; further T0004 native acceptance was waived by the owner. Raw evidence artifacts were deleted at the owner's request.
 **Date:** 2026-10-20
-**Sources:** [Evidence: Unicode responsiveness located cause](../../docs/developer/evidence/0031/unicode-diagnosis/README.md), user decision to fix before recalibrating the bounded-history budgets, and the user's choice of the incremental scope (gate idle work first, measure, then decide on incremental projection).
+**Sources:** [Spec 0031 result summary](../spec/0031-bounded-history-and-performance-budgets.md#delivery-and-closure-summary), user decision to fix before recalibrating the bounded-history budgets, and the user's choice of the incremental scope (gate idle work first, measure, then decide on incremental projection).
 **Related:** [ADR 0042](./0042-content-anchors-and-buffer-specific-resize.md) (anchor semantics, unchanged), [ADR 0072](./0072-dual-bounded-terminal-history.md) and [ADR 0073](./0073-session-history-accounting-and-text-unit-overflow.md) (configurable history, whose calibration depends on this cost), [Spec 0031 R5](../spec/0031-bounded-history-and-performance-budgets.md).
 
 ## Context

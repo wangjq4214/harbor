@@ -38,7 +38,7 @@ These identifiers preserve references used by existing issues/specifications wit
 | N12 | Kitty graphics | Not implemented; transport feasibility, static-image subset, limits and lifecycle need separate delivery. |
 | N13 | Theme and glass-style UI | Local primitives/search composition exist; unified product themes and chrome remain. |
 | N14 | Liquid-glass refraction prototype | Bounded local edge-refraction primitive exists; measured product-level go/no-go and broader visual work remain. |
-| N15 | History/performance budgets | Bounded content/search APIs exist; current measured budgets, multi-session residency and comparable captures remain. |
+| N15 | History/performance budgets | Configurable dual history caps and 1024-byte text-unit protection implemented; closed by owner-approved waiver of remaining measurement/acceptance. [Spec 0031](../../.grimoire/spec/0031-bounded-history-and-performance-budgets.md#delivery-and-closure-summary) retains results/limits; panes remain separate under #158. |
 | N16 | Diagnostics, acceptance and packaging | Logs/notices, MSI/ZIP and release workflows exist; integrated runtime, installer and published/downloaded-release closure remain. |
 | N17 | Later workspace/platform work | Cross-window movement, restoration, persistent sessions and native Unix remain deferred. |
 

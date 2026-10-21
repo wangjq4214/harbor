@@ -1,7 +1,0 @@
-adapter=AdapterInfo { name: "AMD Radeon RX 7900 XT", vendor: 4098, device: 29772, device_type: DiscreteGpu, device_pci_bus_id: "", driver: "AMD proprietary driver", driver_info: "26.10.1 (LLPC)", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 64, transient_saves_memory: Some(false), limit_bucket: None }
-font=Consolas requested; cell=9x19 ascent=15; grid=80x24; dpi=96; profile=release
-clean: samples=2000 median_ns=4700 p95_ns=5300
-one_cell: samples=2000 median_ns=2371200 p95_ns=2706900
-full: samples=2000 median_ns=2375900 p95_ns=2819900
-presentation_stats=PresentationStats { native: SequenceCacheStats { shapes: 0, negative_shapes: 0, rasters: 0, pixel_bytes: 0, shape_calls: 0, raster_calls: 0, offscreen_creations: 0 }, cached_requests: 0, cached_pixel_bytes: 0, color_atlas_bytes: 0, color_atlas_revision: 1 }
-ordinary R8 texture=2048x2048=4194304 bytes; grid text vertices=368640 bytes; microbenchmark excludes draw/PTY/readback

@@ -1,8 +1,0 @@
-command=./target/release/examples/output_ingest_probe.exe target/unicode-diagnosis/heart_vs16-2000.bin 4096 3 parser
-start_utc=2026-10-20T08:47:15.006Z
-end_utc=2026-10-20T08:47:19.881Z
-exit_code=0
-boundary=ingestion_only grid=107x32 bytes=30000 chunks=8 chunk_mode=4096 rounds=3
-boundary=parser_screen round=0 elapsed_ns=1726682700 tail_prefix="001999"
-boundary=parser_screen round=1 elapsed_ns=1489488200 tail_prefix="001999"
-boundary=parser_screen round=2 elapsed_ns=1498424000 tail_prefix="001999"

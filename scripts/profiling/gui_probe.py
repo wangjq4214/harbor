@@ -44,7 +44,7 @@ def main():
     write("\x1b]0;Harbor synthetic probe\x07\x1b[?25l")
     write("HARBOR GUI PROBE schema=1\n")
     write(f"Python={sys.version.split()[0]} child_pid={os.getpid()}\n")
-    write("Commands: latin colored unicode dirty sustain grid alt primary quit\nREADY\n")
+    write("Commands: latin colored unicode dirty sustain grid alt primary small N oversize quit\nREADY\n")
     while True:
         try:
             command = input().strip()
@@ -72,6 +72,33 @@ def main():
                 write("BUSY\n")
             else:
                 emit(command)
+        elif command.startswith("small "):
+            try:
+                count = int(command.split()[1])
+            except (IndexError, ValueError):
+                count = 0
+            if not 1 <= count <= 200_000:
+                write("small expects a bounded row count 1..200000\nREADY\n")
+            elif JOB is not None and JOB.is_alive():
+                write("BUSY\n")
+            else:
+                emit("latin", count)
+        elif command == "oversize":
+            if JOB is not None and JOB.is_alive():
+                write("BUSY\n")
+            else:
+                # Deterministic oversized single units (>1024 UTF-8 source bytes),
+                # each followed by an independent unit. Bounded output, no shell.
+                combining = "e" + "\u0301" * 2_000
+                zwj = "\U0001f469\u200d\U0001f4bb" + "\u200d\U0001f469" * 2_000
+                write("BEGIN oversize\n")
+                write(f"combining_source_bytes={len(combining.encode())}\n")
+                sys.stdout.buffer.write((combining + " MARKER-COMBINING-END\r\n").encode())
+                sys.stdout.buffer.flush()
+                write(f"zwj_source_bytes={len(zwj.encode())}\n")
+                sys.stdout.buffer.write((zwj + " MARKER-ZWJ-END\r\n").encode())
+                sys.stdout.buffer.flush()
+                write("DONE oversize\nREADY\n")
         elif command:
             write("Unknown synthetic command (no shell execution)\nREADY\n")
     write("\x1b[?25h")
