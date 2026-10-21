@@ -14,6 +14,8 @@ mod cursor;
 mod default_colors;
 mod edit;
 mod focus_reporting;
+#[cfg(test)]
+mod history_tests;
 mod hyperlink;
 mod reader;
 mod synchronized_output;
@@ -88,6 +90,8 @@ impl From<bool> for ModeStatus {
 /// parse byte streams; `TerminalParser` calls these methods after recognizing control sequences.
 #[derive(Debug)]
 pub struct Screen {
+    /// Accepted primary policy, retained even while alternate backing has zero history.
+    history_limits: harbor_config::HistoryLimits,
     /// Ring-buffer scrollback storage.
     normal: NormalBuf,
     /// Ordered semantic edits awaiting terminal-owned selection reconciliation.
@@ -149,6 +153,8 @@ struct RectangularSelectionProjection {
 
 #[derive(Debug)]
 pub(crate) struct PreparedScreenResize {
+    history_limits: harbor_config::HistoryLimits,
+    immediate_saved_primary: Vec<PreparedScreenResize>,
     normal: NormalBuf,
     anchor_mutations: AnchorMutationBatch,
     review_anchor: Option<ContentAnchor>,
@@ -251,10 +257,20 @@ impl Screen {
     }
 
     pub(crate) fn with_palette(rows: usize, cols: usize, palette: Palette) -> Self {
+        Self::with_palette_and_history(rows, cols, palette, harbor_config::HistoryLimits::default())
+    }
+
+    pub(crate) fn with_palette_and_history(
+        rows: usize,
+        cols: usize,
+        palette: Palette,
+        limits: harbor_config::HistoryLimits,
+    ) -> Self {
         let rows = rows.max(1);
         let cols = cols.max(1);
         Self {
-            normal: NormalBuf::new(rows, cols),
+            history_limits: limits,
+            normal: NormalBuf::with_history_limits(rows, cols, limits),
             anchor_mutations: AnchorMutationBatch::default(),
             review_anchor: None,
             external_anchor_interest: false,
@@ -270,6 +286,18 @@ impl Screen {
             synchronized_output: SynchronizedOutput::default(),
             default_colors: DefaultColors::new(palette),
         }
+    }
+
+    pub fn history_limits(&self) -> harbor_config::HistoryLimits {
+        self.history_limits
+    }
+
+    /// Primary scrollback only, including primary saved behind alternate.
+    pub fn history_content_bytes(&self) -> usize {
+        self.saved_primary.as_deref().map_or_else(
+            || self.normal.history_content_bytes(),
+            Screen::history_content_bytes,
+        )
     }
 
     pub(crate) fn active_palette(&self) -> Palette {
@@ -549,6 +577,8 @@ impl Screen {
             requested_rows,
             requested_cols,
             ReflowViewport::PullHistory,
+            self.history_limits,
+            &self.normal,
         )
     }
 
@@ -557,6 +587,8 @@ impl Screen {
         requested_rows: usize,
         requested_cols: usize,
         viewport: ReflowViewport,
+        limits: harbor_config::HistoryLimits,
+        normal_source: &NormalBuf,
     ) -> Result<PreparedPrimaryResize, PreparationError> {
         let cursor_floor = Some(
             self.cursor
@@ -578,13 +610,14 @@ impl Screen {
                 )));
             }
         }
-        let prepared = PreparedPrimaryResize::prepare_geometry_with_viewport(
-            &self.normal,
+        let prepared = PreparedPrimaryResize::prepare_geometry_with_limits(
+            normal_source,
             requested_rows,
             requested_cols,
             cursor_floor,
             viewport,
             &cursor_retentions,
+            limits,
         )?;
         let live_cursor = prepared
             .source_cursor_anchor(self.live_cursor_position(), self.cursor.modes.pending_wrap)
@@ -1111,7 +1144,17 @@ impl Screen {
         let default_colors = self.default_colors;
         // Save the primary screen (cells + scrollback + cursor + pen + modes),
         // carrying its parked alternate buffer along to the fresh screen.
-        let mut primary = std::mem::replace(self, Self::new(rows, cols));
+        let mut alternate = Self::with_palette_and_history(
+            rows,
+            cols,
+            Palette::default(),
+            harbor_config::HistoryLimits {
+                max_rows: 0,
+                max_bytes: 0,
+            },
+        );
+        alternate.history_limits = self.history_limits;
+        let mut primary = std::mem::replace(self, alternate);
         let parked = primary.parked_alt.take();
         // Install the alternate screen: clear it, or restore the persistent one.
         if clear {
@@ -1185,24 +1228,59 @@ impl Screen {
         cols: usize,
         viewport: ReflowViewport,
     ) -> Result<PreparedScreenResize, PreparationError> {
+        self.prepare_resize_with_history(rows, cols, viewport, self.history_limits)
+    }
+
+    pub(crate) fn prepare_resize_with_history(
+        &self,
+        rows: usize,
+        cols: usize,
+        viewport: ReflowViewport,
+        limits: harbor_config::HistoryLimits,
+    ) -> Result<PreparedScreenResize, PreparationError> {
         let role = if self.is_alt() {
             BufferRole::Alternate
         } else {
             BufferRole::Primary
         };
-        self.prepare_resize_for_role(rows.max(1), cols.max(2), role, viewport)
+        self.prepare_resize_for_role(rows.max(1), cols.max(2), role, viewport, limits, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_resize_for_role(
         &self,
         rows: usize,
         cols: usize,
         role: BufferRole,
         viewport: ReflowViewport,
+        limits: harbor_config::HistoryLimits,
+        normal_source: Option<&NormalBuf>,
     ) -> Result<PreparedScreenResize, PreparationError> {
         let (mut normal, cursor, review_anchor, rectangular_selection) = match role {
+            BufferRole::Primary
+                if rows == self.rows() && cols == self.cols() && limits != self.history_limits =>
+            {
+                let normal = normal_source
+                    .unwrap_or(&self.normal)
+                    .prepare_history_limits(limits)?;
+                let projection = ContentProjection::build(&normal)?;
+                let review_anchor = if normal.view_offset() == 0 {
+                    None
+                } else {
+                    self.review_anchor
+                        .filter(|a| projection.resolve_selection(*a).is_some())
+                        .or_else(|| projection.oldest_anchor())
+                };
+                (normal, self.cursor.clone(), review_anchor, None)
+            }
             BufferRole::Primary => {
-                let prepared = self.prepare_primary_resize_with_viewport(rows, cols, viewport)?;
+                let prepared = self.prepare_primary_resize_with_viewport(
+                    rows,
+                    cols,
+                    viewport,
+                    limits,
+                    normal_source.unwrap_or(&self.normal),
+                )?;
                 let (normal, live_cursor, saved_cursor, review) = prepared.into_screen_parts();
                 let projection = ContentProjection::build(&normal)?;
                 let live_top = normal
@@ -1336,25 +1414,51 @@ impl Screen {
         let hyperlinks = self.hyperlinks.prepare_retained(&reachable)?;
         let projection = ContentProjection::build(&normal)?;
 
-        let deferred_primary_source = if viewport == ReflowViewport::PreserveLiveTop {
-            self.saved_primary
-                .as_deref()
-                .map(Screen::content_projection)
-                .transpose()?
-        } else {
-            None
-        };
+        let mut immediate_saved_primary = Vec::new();
         let mut saved_primary = Vec::new();
+        let mut deferred_primary_source = None;
         if let Some(saved) = self.saved_primary.as_deref() {
             saved_primary
                 .try_reserve_exact(1)
                 .map_err(|_| PreparationError::AllocationFailed)?;
-            saved_primary.push(saved.prepare_resize_for_role(
-                rows,
-                cols,
-                BufferRole::Primary,
-                viewport,
-            )?);
+            if viewport == ReflowViewport::PreserveLiveTop {
+                if limits != saved.history_limits {
+                    immediate_saved_primary
+                        .try_reserve_exact(1)
+                        .map_err(|_| PreparationError::AllocationFailed)?;
+                    immediate_saved_primary.push(saved.prepare_resize_for_role(
+                        saved.rows(),
+                        saved.cols(),
+                        BufferRole::Primary,
+                        viewport,
+                        limits,
+                        None,
+                    )?);
+                }
+                let source = immediate_saved_primary
+                    .first()
+                    .map_or(&saved.normal, |p| &p.normal);
+                deferred_primary_source = Some(ContentProjection::build(source)?);
+                // Deferred geometry must use the already-trimmed source, never resurrect
+                // content evicted by the immediate accepted shrink.
+                saved_primary.push(saved.prepare_resize_for_role(
+                    rows,
+                    cols,
+                    BufferRole::Primary,
+                    viewport,
+                    limits,
+                    Some(source),
+                )?);
+            } else {
+                saved_primary.push(saved.prepare_resize_for_role(
+                    rows,
+                    cols,
+                    BufferRole::Primary,
+                    viewport,
+                    limits,
+                    None,
+                )?);
+            }
         }
         let mut parked_alt = Vec::new();
         if let Some(alt) = self.parked_alt.as_deref() {
@@ -1366,10 +1470,14 @@ impl Screen {
                 cols,
                 BufferRole::Alternate,
                 viewport,
+                limits,
+                None,
             )?);
         }
 
         Ok(PreparedScreenResize {
+            history_limits: limits,
+            immediate_saved_primary,
             normal,
             anchor_mutations: AnchorMutationBatch::default(),
             review_anchor,
@@ -1386,6 +1494,8 @@ impl Screen {
 
     pub(crate) fn commit_resize(&mut self, prepared: PreparedScreenResize) {
         let PreparedScreenResize {
+            history_limits,
+            mut immediate_saved_primary,
             normal,
             anchor_mutations,
             review_anchor,
@@ -1399,6 +1509,7 @@ impl Screen {
             mut parked_alt,
         } = prepared;
         self.normal = normal;
+        self.history_limits = history_limits;
         self.anchor_mutations = anchor_mutations;
         self.review_anchor = review_anchor;
         self.cursor = cursor;
@@ -1406,6 +1517,12 @@ impl Screen {
         self.hyperlinks = hyperlinks;
 
         if deferred_primary_source.is_some() {
+            if let (Some(primary), Some(prepared)) = (
+                self.saved_primary.as_deref_mut(),
+                immediate_saved_primary.pop(),
+            ) {
+                primary.commit_resize(prepared);
+            }
             self.deferred_primary_resize = saved_primary;
         } else {
             self.deferred_primary_resize.clear();
@@ -2204,7 +2321,11 @@ impl Screen {
 
         let rows = self.normal.rows();
         let cols = self.normal.cols();
-        self.normal.reset_all_retained();
+        if self.normal.history_limits() != self.history_limits {
+            self.normal = NormalBuf::with_history_limits(rows, cols, self.history_limits);
+        } else {
+            self.normal.reset_all_retained();
+        }
         self.cursor.reset(rows, cols);
         self.pen_state.reset(cols);
         self.hyperlinks.clear();

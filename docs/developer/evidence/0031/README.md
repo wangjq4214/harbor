@@ -2,6 +2,10 @@
 
 **Source:** [T0001](../../../../.grimoire/ticket/0019-bounded-history-and-performance-budgets/T0001-measurement-and-calibration.md), [Spec 0031 R4–R6](../../../../.grimoire/spec/0031-bounded-history-and-performance-budgets.md), ADRs [0072](../../../../.grimoire/adr/0072-dual-bounded-terminal-history.md)/[0073](../../../../.grimoire/adr/0073-session-history-accounting-and-text-unit-overflow.md). **Capture date:** 2026-10-20. **Result:** partial tooling/probe delivery; T0001 is **not complete**. No shipping numeric choices or current-scope performance acceptance are established. T0002/T0003/T0004 numeric gates remain **BLOCKED**. No production protection or configuration was implemented. One production optimization was later made against the measured bottleneck — [ADR 0074](../../../../.grimoire/adr/0074-demand-driven-content-anchor-tracking.md) stage 1, verified in [fix-0074-ingest.md](unicode-diagnosis/fix-0074-ingest.md); it supplies no numeric gate.
 
+## T0003 functional implementation
+
+The [T0003 history-budget report](t0003-history-budgets.md) records configurable dual caps, coherent existing/future-session reload, saved-primary handling, regression coverage and passing standard gates on the changed build. It supersedes historical statements below that no history configuration is implemented; it does not replace the calibration capture or establish T0004 performance/resource acceptance.
+
 ## Unicode responsiveness: cause located
 
 The later [Unicode diagnosis](unicode-diagnosis/README.md) locates the burst's cost in the ingest path: a full retained-content projection rebuild per accepted PTY feed, and two per width-promotion event. VS16 promoting a width-1 glyph to width 2 makes the measured workload pay that on every row (pure-model median 3.997 s versus 0.041 s with the promotion removed; 91–92 % of the time inside the rebuild). Stage 1 of the fix is applied later in [fix-0074-ingest.md](unicode-diagnosis/fix-0074-ingest.md). This supersedes the "root cause unconfirmed" wording below; the GUI timings themselves remain valid observations but their producer-side attribution is a recorded negative result.

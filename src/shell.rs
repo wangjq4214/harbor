@@ -112,6 +112,9 @@ pub(crate) fn accept_configuration(
     if font_changed {
         live.push("terminal fonts");
     }
+    if candidate.history != accepted.history {
+        live.push("history");
+    }
     let mut parts = Vec::new();
     if !live.is_empty() {
         parts.push(format!("applied live: {}", live.join(", ")));
@@ -1053,6 +1056,7 @@ impl Shell {
             backdrop_style,
         );
         let font_settings = settings.font.clone();
+        let history = settings.history;
         let shell_command = crate::tab_coordinator::configured_shell(&settings.shell);
         let event_proxy = self.event_proxy.clone();
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
@@ -1101,6 +1105,7 @@ impl Shell {
                     surface.format,
                     shell_command,
                     font_settings,
+                    history,
                     font_warnings,
                     metrics,
                     appearance,

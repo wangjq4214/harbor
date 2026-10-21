@@ -93,6 +93,7 @@ fn next_app_action(
 struct TerminalConfiguration {
     shell_command: ShellCommand,
     font_settings: harbor_config::FontSettings,
+    history: harbor_config::HistoryLimits,
     // Effective selection warnings survive no-change reloads until the font
     // request changes successfully; silence must not imply the request took effect.
     font_warnings: Vec<String>,
@@ -126,8 +127,9 @@ impl TerminalConfiguration {
         mut preflight: impl FnMut(usize, ReloadStage) -> anyhow::Result<()>,
     ) -> anyhow::Result<Vec<String>> {
         let font_changed = settings.font != self.font_settings;
+        let history_changed = settings.history != self.history;
         let colors_changed = settings.colors != self.appearance.palette();
-        if !font_changed && !self.geometry_recovery_pending {
+        if !font_changed && !history_changed && !self.geometry_recovery_pending {
             if colors_changed {
                 let targets = tabs.configuration_targets();
                 anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
@@ -151,7 +153,8 @@ impl TerminalConfiguration {
                         cols: terminal.screen().cols(),
                     };
                     // Same-size preparation owns exclusive model access without a resize/barrier.
-                    palettes.push(terminal.prepare_configuration_resize(size)?);
+                    palettes
+                        .push(terminal.prepare_configuration_with_history(size, settings.history)?);
                 }
                 for palette in palettes {
                     palette.commit(settings.colors, None, scale);
@@ -241,7 +244,7 @@ impl TerminalConfiguration {
                     )
                 })?;
                 terminal
-                    .prepare_configuration_resize(size)
+                    .prepare_configuration_with_history(size, settings.history)
                     .with_context(|| {
                         format!(
                             "session {}: reader barrier/model preparation",
@@ -293,6 +296,7 @@ impl TerminalConfiguration {
         }
         self.font_warnings = warnings.clone();
         self.font_settings = settings.font.clone();
+        self.history = settings.history;
         self.metrics = metrics;
         self.appearance = TerminalAppearance::from_palette(settings.colors);
         self.shell_command = configured_shell(&settings.shell);
@@ -312,8 +316,12 @@ impl TerminalConfiguration {
         backdrop_available: bool,
         clipboard_delivery: harbor_terminal::ClipboardDelivery,
     ) -> anyhow::Result<(Terminal, TerminalRenderPipeline)> {
-        let mut terminal =
-            Terminal::new_headless_with_appearance(size.rows, size.cols, self.appearance);
+        let mut terminal = Terminal::new_headless_with_history(
+            size.rows,
+            size.cols,
+            self.appearance,
+            self.history,
+        );
         terminal.set_backdrop_available(backdrop_available);
         terminal.set_clipboard_delivery(clipboard_delivery);
         let renderer = TerminalRenderPipeline::new(
@@ -345,6 +353,7 @@ impl TerminalTabFactory {
         format: wgpu::TextureFormat,
         shell_command: ShellCommand,
         font_settings: harbor_config::FontSettings,
+        history: harbor_config::HistoryLimits,
         font_warnings: Vec<String>,
         metrics: TextMetrics,
         appearance: TerminalAppearance,
@@ -359,6 +368,7 @@ impl TerminalTabFactory {
             configuration: TerminalConfiguration {
                 shell_command,
                 font_settings,
+                history,
                 font_warnings,
                 geometry_recovery_pending: false,
                 metrics,

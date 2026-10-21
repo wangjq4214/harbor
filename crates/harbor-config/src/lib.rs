@@ -33,12 +33,38 @@ pub const SCROLLBAR_BORDER_RADIUS: f32 = 3.0;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Settings {
     pub font: FontSettings,
+    pub history: HistoryLimits,
     pub shell: ShellSettings,
     pub colors: Palette,
     pub keybindings: RawKeybindings,
     pub clipboard: ClipboardSettings,
 }
 
+/// Independent per-session primary-history bounds; bytes measure retained UTF-8 text,
+/// not allocated memory. Zero is a zero allowance, never means unlimited.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HistoryLimits {
+    pub max_rows: usize,
+    pub max_bytes: usize,
+}
+
+impl HistoryLimits {
+    pub const MAX_ROWS: usize = 16_000;
+    pub const MAX_BYTES: usize = 16 * 1024 * 1024;
+
+    pub fn is_valid(self) -> bool {
+        self.max_rows <= Self::MAX_ROWS && self.max_bytes <= Self::MAX_BYTES
+    }
+}
+
+impl Default for HistoryLimits {
+    fn default() -> Self {
+        Self {
+            max_rows: 4_000,
+            max_bytes: 4 * 1024 * 1024,
+        }
+    }
+}
 /// Startup policy for host-authorized OSC 52 system clipboard writes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Osc52WritePolicy {
@@ -357,13 +383,21 @@ fn parse_document(document: Value) -> SettingsLoad {
     };
     warn_unknown(
         root,
-        &["font", "shell", "colors", "keybindings", "clipboard"],
+        &[
+            "font",
+            "shell",
+            "colors",
+            "keybindings",
+            "clipboard",
+            "history",
+        ],
         "",
         &mut diagnostics,
     );
 
     let mut settings = Settings::default();
     parse_font(root.get("font"), &mut settings.font, &mut diagnostics);
+    parse_history(root.get("history"), &mut settings.history, &mut diagnostics);
     parse_shell(root.get("shell"), &mut settings.shell, &mut diagnostics);
     parse_clipboard(
         root.get("clipboard"),
@@ -388,6 +422,39 @@ fn parse_document(document: Value) -> SettingsLoad {
     }
 }
 
+fn parse_history(
+    value: Option<&Value>,
+    settings: &mut HistoryLimits,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(value) = value else { return };
+    let Some(table) = value.as_table() else {
+        diagnostics.push(error("history must be a table; using history defaults"));
+        return;
+    };
+    warn_unknown(table, &["max_rows", "max_bytes"], "history", diagnostics);
+    for (key, target, maximum) in [
+        ("max_rows", &mut settings.max_rows, HistoryLimits::MAX_ROWS),
+        (
+            "max_bytes",
+            &mut settings.max_bytes,
+            HistoryLimits::MAX_BYTES,
+        ),
+    ] {
+        if let Some(value) = table.get(key) {
+            match value
+                .as_integer()
+                .and_then(|v| usize::try_from(v).ok())
+                .filter(|v| *v <= maximum)
+            {
+                Some(value) => *target = value,
+                None => diagnostics.push(error(format!(
+                    "history.{key} must be an integer from 0 to {maximum}; using default"
+                ))),
+            }
+        }
+    }
+}
 fn parse_clipboard(
     value: Option<&Value>,
     settings: &mut ClipboardSettings,
@@ -1339,5 +1406,81 @@ mod tests {
         assert_eq!(style.tint_opacity, 0.06);
         assert_eq!(style.luminosity_opacity, 1.0);
         assert_eq!(style.fallback, [0.1176, 0.1176, 0.1176]);
+    }
+
+    #[test]
+    fn history_limits_defaults_boundaries_and_independent_startup_recovery() {
+        assert_eq!(
+            parse("").settings.history,
+            HistoryLimits {
+                max_rows: 4000,
+                max_bytes: 4 * 1024 * 1024
+            }
+        );
+        for (rows, bytes) in [(0, 0), (1, 1), (16000, 16 * 1024 * 1024)] {
+            let loaded = parse(&format!(
+                "[history]\nmax_rows = {rows}\nmax_bytes = {bytes}"
+            ));
+            assert!(loaded.diagnostics.is_empty());
+            assert_eq!(
+                loaded.settings.history,
+                HistoryLimits {
+                    max_rows: rows,
+                    max_bytes: bytes
+                }
+            );
+        }
+        for bad in ["-1", "16001", "1.5", "true", "'secret'"] {
+            let source = format!("[history]\nmax_rows = {bad}\nmax_bytes = 42\nunknown = true");
+            let loaded = parse(&source);
+            assert_eq!(loaded.settings.history.max_rows, 4000);
+            assert_eq!(loaded.settings.history.max_bytes, 42);
+            assert!(
+                loaded
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.level == DiagnosticLevel::Error)
+            );
+            assert!(
+                loaded
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.level == DiagnosticLevel::Warning)
+            );
+            assert!(!format!("{:?}", loaded.diagnostics).contains("secret"));
+        }
+        assert_eq!(
+            parse("history = []").settings.history,
+            HistoryLimits::default()
+        );
+    }
+
+    #[test]
+    fn history_invalid_live_candidates_never_expose_fallback_settings() {
+        let dir = test_directory();
+        let path = dir.join("config.toml");
+        for source in [
+            "history = 1",
+            "[history]\nmax_bytes = 16777217",
+            "[history]\nmax_rows = -1",
+            "[history]\nmax_rows = 1\n[font]\nsize = -1",
+            "not toml",
+        ] {
+            fs::write(&path, source).unwrap();
+            assert!(load_candidate_from_path(&path).is_err(), "{source}");
+        }
+        fs::write(&path, "[history]\nmax_rows = 1").unwrap();
+        assert_eq!(
+            load_candidate_from_path(&path).unwrap().settings.history,
+            HistoryLimits {
+                max_rows: 1,
+                ..Default::default()
+            }
+        );
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            load_candidate_from_path(&path).unwrap_err().io_kind,
+            Some(std::io::ErrorKind::NotFound)
+        );
     }
 }

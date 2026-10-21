@@ -14,6 +14,7 @@ pub struct ConfigurationResize<'a> {
     new: TerminalSize,
     pty_required: bool,
     prepared: Option<(PreparedScreenResize, PreparedPointerResize)>,
+    recovery: Option<(PreparedScreenResize, PreparedPointerResize)>,
     _barrier: Option<ResizeBarrier>,
     pty_changed: bool,
 }
@@ -23,6 +24,16 @@ impl Terminal {
         &mut self,
         size: TerminalSize,
     ) -> anyhow::Result<ConfigurationResize<'_>> {
+        let limits = self.screen.history_limits();
+        self.prepare_configuration_with_history(size, limits)
+    }
+
+    pub fn prepare_configuration_with_history(
+        &mut self,
+        size: TerminalSize,
+        limits: harbor_config::HistoryLimits,
+    ) -> anyhow::Result<ConfigurationResize<'_>> {
+        anyhow::ensure!(limits.is_valid(), "invalid history limits");
         let new = TerminalSize {
             rows: size.rows.max(1),
             cols: size.cols.max(2),
@@ -37,11 +48,26 @@ impl Terminal {
         } else {
             None
         };
-        let prepared = if old != new {
+        // Pre-prepare compensation geometry under the ACCEPTED budget. A rejected
+        // shrink must never be installed, even if native compensation also fails.
+        let history_changed = limits != self.screen.history_limits();
+        let recovery = if old != new && history_changed {
             let screen = self.screen.prepare_resize_with_viewport(
                 new.rows,
                 new.cols,
                 self.io.reflow_viewport(),
+            )?;
+            let pointer = self.pointer.prepare_resize(&screen);
+            Some((screen, pointer))
+        } else {
+            None
+        };
+        let prepared = if old != new || history_changed {
+            let screen = self.screen.prepare_resize_with_history(
+                new.rows,
+                new.cols,
+                self.io.reflow_viewport(),
+                limits,
             )?;
             let pointer = self.pointer.prepare_resize(&screen);
             Some((screen, pointer))
@@ -53,6 +79,7 @@ impl Terminal {
             old,
             new,
             prepared,
+            recovery,
             pty_required,
             _barrier: barrier,
             pty_changed: false,
@@ -105,6 +132,9 @@ impl ConfigurationResize<'_> {
         }
         self.pty_changed = false;
         if let Err(error) = effect(self.terminal, self.old) {
+            if let Some(recovery) = self.recovery.take() {
+                self.prepared = Some(recovery);
+            }
             self.install_geometry();
             anyhow::bail!(
                 "compensating PTY resize to {}x{} failed: {error:#}; model reconciled to last successful PTY geometry {}x{}; session needs recovery",
@@ -343,5 +373,76 @@ mod tests {
         assert_eq!(after.snapshot.cells, before.snapshot.cells);
         assert_eq!(after.snapshot.dirty_ranges, before.snapshot.dirty_ranges);
         assert_eq!(after.appearance.palette(), before.appearance.palette());
+    }
+
+    #[test]
+    fn history_rejected_shrink_uses_accepted_limits_even_on_compensation_failure() {
+        let old = harbor_config::HistoryLimits {
+            max_rows: 12,
+            max_bytes: 100,
+        };
+        let shrink = harbor_config::HistoryLimits {
+            max_rows: 0,
+            max_bytes: 0,
+        };
+        for compensation_fails in [false, true] {
+            let make = || {
+                let mut t =
+                    Terminal::new_headless_with_history(2, 8, TerminalAppearance::default(), old);
+                t.put_str(&"marker\r\n".repeat(9));
+                t
+            };
+            let mut a = make();
+            let mut b = make();
+            let before_a = a.screen.history_content_bytes();
+            let before_b = b.screen.history_content_bytes();
+            let size = TerminalSize { rows: 3, cols: 6 };
+            let mut expected = make();
+            expected.resize(size.rows, size.cols); // Existing bounded geometry policy, accepted budget.
+            let mut txs = vec![
+                a.prepare_configuration_with_history(size, shrink).unwrap(),
+                b.prepare_configuration_with_history(size, shrink).unwrap(),
+            ];
+            let mut count = 0;
+            let error = resize_group_with(&mut txs, |_, _, _| {
+                count += 1;
+                if count == 2 || (compensation_fails && count == 3) {
+                    anyhow::bail!("injected native failure");
+                }
+                Ok(())
+            })
+            .unwrap_err();
+            assert_eq!(error.failures.len(), if compensation_fails { 2 } else { 1 });
+            drop(txs);
+            assert_eq!(a.screen.history_limits(), old);
+            assert_eq!(b.screen.history_limits(), old);
+            assert_eq!(b.screen.history_content_bytes(), before_b);
+            assert_eq!(
+                a.screen.history_content_bytes(),
+                if compensation_fails {
+                    expected.screen.history_content_bytes()
+                } else {
+                    before_a
+                }
+            );
+            assert!(
+                a.screen.history_content_bytes() > 0,
+                "rejected zero budget must not evict"
+            );
+            // Retry accepts both sessions, while merely preparing/dropping remains non-destructive.
+            let tx = a.prepare_configuration_with_history(size, shrink).unwrap();
+            drop(tx);
+            assert!(a.screen.history_content_bytes() > 0);
+            let mut txs = vec![
+                a.prepare_configuration_with_history(size, shrink).unwrap(),
+                b.prepare_configuration_with_history(size, shrink).unwrap(),
+            ];
+            resize_configuration_group(&mut txs).unwrap();
+            for tx in txs {
+                tx.commit(Palette::default(), None, 1.0);
+            }
+            assert_eq!(a.screen.history_content_bytes(), 0);
+            assert_eq!(b.screen.history_content_bytes(), 0);
+        }
     }
 }

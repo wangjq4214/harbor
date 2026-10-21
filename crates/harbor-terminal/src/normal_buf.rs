@@ -1,5 +1,6 @@
 use crate::damage::{DamageTracker, DirtyRange};
 use crate::screen::Cell;
+use harbor_config::HistoryLimits;
 
 /// Stable identity of retained content belonging to one logical terminal line.
 ///
@@ -111,8 +112,10 @@ pub struct NormalBuf {
     view_offset: usize,
     /// Damage tracker.
     damage_tracker: DamageTracker,
-    /// Maximum scrollback row count (hard-coded for now).
+    /// Maximum physical scrollback row count.
     max_scrollback: usize,
+    max_history_bytes: usize,
+    history_bytes: usize,
     /// Monotonically increasing scrollback generation base.
     /// Incremented when ring-buffer wraparound evicts old rows.
     history_start: u64,
@@ -134,6 +137,8 @@ impl PartialEq for NormalBuf {
             && self.view_offset == other.view_offset
             && self.damage_tracker == other.damage_tracker
             && self.max_scrollback == other.max_scrollback
+            && self.max_history_bytes == other.max_history_bytes
+            && self.history_bytes == other.history_bytes
             && self.history_start == other.history_start
     }
 }
@@ -169,13 +174,14 @@ impl NormalBuf {
     pub(crate) fn row_version(&self, generation: u64) -> Option<u64> {
         Some(self.row_versions[self.ring_row_at_generation(generation)?])
     }
-    const DEFAULT_MAX_SCROLLBACK: usize = 1000;
 
     pub fn new(rows: usize, cols: usize) -> Self {
-        Self::with_max_scrollback(rows, cols, Self::DEFAULT_MAX_SCROLLBACK)
+        Self::with_history_limits(rows, cols, HistoryLimits::default())
     }
 
-    fn with_max_scrollback(rows: usize, cols: usize, max_scrollback: usize) -> Self {
+    pub fn with_history_limits(rows: usize, cols: usize, limits: HistoryLimits) -> Self {
+        assert!(limits.is_valid(), "invalid history limits");
+        let max_scrollback = limits.max_rows;
         let rows = rows.max(1);
         let cols = cols.max(1);
         let total_rows = max_scrollback
@@ -210,12 +216,25 @@ impl NormalBuf {
             visible_start: max_scrollback,
             scroll_count: 0,
             max_scrollback,
+            max_history_bytes: limits.max_bytes,
+            history_bytes: 0,
             view_offset: 0,
             history_start: 0,
             damage_tracker: DamageTracker::new(rows, cols),
         }
     }
 
+    #[cfg(test)]
+    fn with_max_scrollback(rows: usize, cols: usize, max_scrollback: usize) -> Self {
+        Self::with_history_limits(
+            rows,
+            cols,
+            HistoryLimits {
+                max_rows: max_scrollback,
+                ..HistoryLimits::default()
+            },
+        )
+    }
     #[cfg(test)]
     pub(crate) fn new_for_test(rows: usize, cols: usize, max_scrollback: usize) -> Self {
         Self::with_max_scrollback(rows, cols, max_scrollback)
@@ -258,6 +277,104 @@ impl NormalBuf {
     pub(crate) fn max_scrollback(&self) -> usize {
         self.max_scrollback
     }
+    pub fn history_limits(&self) -> HistoryLimits {
+        HistoryLimits {
+            max_rows: self.max_scrollback,
+            max_bytes: self.max_history_bytes,
+        }
+    }
+
+    pub fn history_content_bytes(&self) -> usize {
+        self.history_bytes
+    }
+
+    /// Only retained source cells count: unwritten tail padding and wide continuation
+    /// slots have no source bytes. Interior and explicit/styled spaces do count.
+    pub(crate) fn row_source_bytes(cells: &[Cell], extent: usize) -> usize {
+        cells[..extent]
+            .iter()
+            .filter(|cell| !cell.wide_continuation)
+            .map(|cell| cell.ch.len_utf8() + cell.suffix.len())
+            .sum()
+    }
+
+    fn ring_source_bytes(&self, row: usize) -> usize {
+        let start = row * self.cols;
+        Self::row_source_bytes(
+            &self.cells[start..start + self.cols],
+            self.row_metadata[row].meaningful_extent,
+        )
+    }
+
+    fn enforce_history_limits(&mut self) {
+        while self.scroll_count > 0
+            && (self.scroll_count > self.max_scrollback
+                || self.history_bytes > self.max_history_bytes)
+        {
+            let oldest =
+                (self.visible_start + self.total_rows - self.scroll_count) % self.total_rows;
+            let next = (oldest + 1) % self.total_rows;
+            self.history_bytes -= self.ring_source_bytes(oldest);
+            if self.row_metadata[oldest].logical_line_id == self.row_metadata[next].logical_line_id
+                && self.row_metadata[next].soft_wrapped
+            {
+                self.row_metadata[next].head_truncated = true;
+                self.touch_ring_row(next);
+            }
+            // Release evicted suffix allocations as well as removing their identity.
+            let start = oldest * self.cols;
+            self.cells[start..start + self.cols].fill(Cell::default());
+            self.cell_state[start..start + self.cols].fill(CellState::default());
+            self.scroll_count -= 1;
+            self.history_start += 1;
+        }
+        self.view_offset = self.view_offset.min(self.scroll_count);
+    }
+
+    /// Detached retention-only rebuild. Geometry and source generations do not change.
+    pub(crate) fn prepare_history_limits(
+        &self,
+        limits: HistoryLimits,
+    ) -> Result<Self, crate::primary_reflow::PreparationError> {
+        use crate::primary_reflow::{PreparationError, ReflowedRow};
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(self.scroll_count + self.visible_rows)
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        for row in self.retained_rows() {
+            rows.push(ReflowedRow {
+                cells: row.cells.to_vec(),
+                cell_state: row.cell_state.to_vec(),
+                metadata: row.metadata,
+            });
+        }
+        let mut dropped = self.scroll_count.saturating_sub(limits.max_rows);
+        let mut bytes: usize = rows[dropped..self.scroll_count]
+            .iter()
+            .map(|row| Self::row_source_bytes(&row.cells, row.metadata.meaningful_extent))
+            .sum();
+        while bytes > limits.max_bytes && dropped < self.scroll_count {
+            bytes -= Self::row_source_bytes(
+                &rows[dropped].cells,
+                rows[dropped].metadata.meaningful_extent,
+            );
+            dropped += 1;
+        }
+        if dropped > 0
+            && rows[dropped - 1].metadata.logical_line_id == rows[dropped].metadata.logical_line_id
+        {
+            rows[dropped].metadata.head_truncated = true;
+        }
+        Self::from_reflowed_rows(
+            &rows[dropped..],
+            self.visible_rows,
+            self.cols,
+            limits,
+            self.next_logical_line_id,
+            self.history_start + dropped as u64,
+            self.view_offset,
+        )
+    }
+
     pub(crate) fn fill_is_meaningful(cell: Cell) -> bool {
         CellState::fresh_fill(&cell).is_meaningful()
     }
@@ -777,7 +894,10 @@ impl NormalBuf {
             &prepared_rows,
             rows,
             cols,
-            0,
+            HistoryLimits {
+                max_rows: 0,
+                max_bytes: 0,
+            },
             next_logical_line_id,
             history_start,
             0,
@@ -790,12 +910,13 @@ impl NormalBuf {
         retained: &[crate::primary_reflow::ReflowedRow],
         visible_rows: usize,
         cols: usize,
-        max_scrollback: usize,
+        limits: HistoryLimits,
         mut next_logical_line_id: u64,
         history_start: u64,
         view_offset: usize,
     ) -> Result<Self, crate::primary_reflow::PreparationError> {
         use crate::primary_reflow::PreparationError;
+        let max_scrollback = limits.max_rows;
 
         let total_rows = max_scrollback
             .checked_add(visible_rows)
@@ -886,6 +1007,11 @@ impl NormalBuf {
             view_offset: view_offset.min(scroll_count),
             damage_tracker: DamageTracker::new(visible_rows, cols),
             max_scrollback,
+            max_history_bytes: limits.max_bytes,
+            history_bytes: retained[..scroll_count]
+                .iter()
+                .map(|row| Self::row_source_bytes(&row.cells, row.metadata.meaningful_extent))
+                .sum(),
             history_start,
         })
     }
@@ -1084,43 +1210,16 @@ impl NormalBuf {
         );
 
         let n = n.min(self.visible_rows);
-        let old_sc = self.scroll_count;
-        let overflow = old_sc.saturating_add(n).saturating_sub(self.max_scrollback);
-        let truncated_head_ring = if overflow > 0 {
-            let oldest_ring = (self.visible_start + self.total_rows - old_sc) % self.total_rows;
-            let last_removed_ring = (oldest_ring + overflow - 1) % self.total_rows;
-            let new_oldest_ring = (oldest_ring + overflow) % self.total_rows;
-            let removed = self.row_metadata[last_removed_ring];
-            let retained = self.row_metadata[new_oldest_ring];
-            (removed.logical_line_id == retained.logical_line_id && retained.soft_wrapped)
-                .then_some(new_oldest_ring)
-        } else {
-            None
-        };
-        self.scroll_count = (self.scroll_count + n).min(self.max_scrollback);
-        self.visible_start = (self.visible_start + n) % self.total_rows;
-        if old_sc + n > self.max_scrollback {
-            self.history_start += (old_sc + n - self.max_scrollback) as u64;
+        let reviewing = self.view_offset > 0;
+        for _ in 0..n {
+            self.history_bytes += self.ring_source_bytes(self.visible_start);
+            self.scroll_count += 1;
+            self.visible_start = (self.visible_start + 1) % self.total_rows;
+            self.enforce_history_limits();
+            // Blank the newly exposed row after eviction, before its slot is reused.
+            self.fill_row_with(self.visible_rows - 1, cell.clone());
         }
-        if let Some(ring_row) = truncated_head_ring {
-            self.row_metadata[ring_row].head_truncated = true;
-            self.touch_ring_row(ring_row);
-        }
-        // Blank newly exposed rows and give each reused slot a never-before-used ID.
-        let state = CellState::fresh_fill(&cell);
-        for i in 0..n {
-            let display_row = self.visible_rows - 1 - i;
-            let row = self.display_to_ring(display_row);
-            let start = row * self.cols;
-            self.cells[start..start + self.cols].fill(cell.clone());
-            self.cell_state[start..start + self.cols].fill(state);
-            let mut metadata = self.fresh_metadata();
-            metadata.meaningful_extent = if state.is_meaningful() { self.cols } else { 0 };
-            self.row_metadata[row] = metadata;
-            self.touch_ring_row(row);
-            self.repair_following_soft_chain(display_row);
-        }
-        if self.view_offset > 0 {
+        if reviewing {
             self.view_offset = (self.view_offset + n).min(self.scroll_count);
         }
         // TODO: row remapping would reduce this to O(n)
@@ -1241,6 +1340,12 @@ impl NormalBuf {
         self.content_generation = crate::read_model::fresh_identity();
         self.content_revision = 0;
         self.row_versions = vec![0; new_total];
+        self.history_bytes = self
+            .retained_rows()
+            .take(self.scroll_count)
+            .map(|row| Self::row_source_bytes(row.cells, row.metadata.meaningful_extent))
+            .sum();
+        self.enforce_history_limits();
 
         tracing::debug!(
             new_visible_start = self.visible_start,
@@ -1302,6 +1407,7 @@ impl NormalBuf {
         }
         self.visible_start = self.max_scrollback;
         self.scroll_count = 0;
+        self.history_bytes = 0;
         self.view_offset = 0;
         self.history_start = 0;
     }

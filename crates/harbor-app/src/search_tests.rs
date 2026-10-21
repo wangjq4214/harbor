@@ -200,6 +200,20 @@ fn buffers_reset_resize_erase_and_structural_edits_refresh_in_real_host_path() {
 fn partial_eviction_whole_eviction_and_ring_reuse_never_keep_targets() {
     let mut tabs = TabManager::new();
     create(&mut tabs, 2, 3);
+    {
+        let terminal = tabs.active_terminal().unwrap();
+        let mut terminal = terminal.lock().unwrap();
+        let tx = terminal
+            .prepare_configuration_with_history(
+                harbor_terminal::TerminalSize { rows: 2, cols: 3 },
+                harbor_config::HistoryLimits {
+                    max_rows: 1000,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        tx.commit(harbor_config::Palette::default(), None, 1.0);
+    }
     let terminal = tabs.active_terminal().unwrap();
     terminal.lock().unwrap().put_str(&"abc".repeat(1002));
     tabs.set_search_query("abcabc");
@@ -495,4 +509,37 @@ fn application_exposes_result_limits_and_releases_work_on_empty_or_invalid_queri
     assert_eq!(published(&tabs), 0);
     assert!(!tabs.navigate_search(false));
     assert_eq!(tabs.search_status(), "No Result");
+}
+
+#[test]
+fn history_budget_reload_invalidates_old_search_targets_and_refreshes_survivors() {
+    let mut tabs = setup(&format!("needle\r\n{}live", "new\r\n".repeat(8)));
+    tabs.set_search_query("needle");
+    complete(&mut tabs);
+    assert_eq!(published(&tabs), 1);
+    let terminal = tabs.active_terminal().unwrap();
+    {
+        let mut terminal = terminal.lock().unwrap();
+        let size = harbor_terminal::TerminalSize {
+            rows: terminal.screen().rows(),
+            cols: terminal.screen().cols(),
+        };
+        let tx = terminal
+            .prepare_configuration_with_history(
+                size,
+                harbor_config::HistoryLimits {
+                    max_rows: 1,
+                    max_bytes: 3,
+                },
+            )
+            .unwrap();
+        tx.commit(harbor_config::Palette::default(), None, 1.0);
+    }
+    assert!(!tabs.navigate_search(false));
+    complete(&mut tabs);
+    assert_eq!(published(&tabs), 0);
+    tabs.set_search_query("live");
+    complete(&mut tabs);
+    assert_eq!(published(&tabs), 1);
+    assert!(tabs.navigate_search(false));
 }

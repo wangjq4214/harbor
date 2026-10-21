@@ -1,10 +1,19 @@
 # Copy to ~/.harbor/config.toml. Watched by default; Ctrl+Shift+R reloads manually.
-# Colors, bindings and terminal-only fonts apply live. Shell/env/directory affect new tabs only.
+# History, colors, bindings and terminal-only fonts apply live. Shell/env/directory affect new tabs only.
 # A rejected reload retains the last accepted configuration. Saves/replacements are coalesced; widget HMR is unrelated.
 
 [font]
 family = "Cascadia Mono"
 size = 24.0
+
+# Per-session primary scrollback, including primary saved behind alternate.
+# Physical rows: 0..16000, default 4000. UTF-8 source bytes: 0..16777216, default 4 MiB.
+# Zero is a zero allowance, never unlimited. Oldest whole rows are evicted first.
+# Live/alternate text is excluded; these bytes do NOT measure process/GPU memory.
+# Accepted live shrink is immediate and irreversible; growth cannot recover evicted text.
+[history]
+max_rows = 4000
+max_bytes = 4194304
 
 [shell]
 program = "pwsh.exe"

@@ -161,8 +161,23 @@ impl Terminal {
         cols: usize,
         appearance: TerminalAppearance,
     ) -> Self {
+        Self::new_headless_with_history(
+            rows,
+            cols,
+            appearance,
+            harbor_config::HistoryLimits::default(),
+        )
+    }
+
+    /// GPU/PTY-free construction with independently validated per-session history bounds.
+    pub fn new_headless_with_history(
+        rows: usize,
+        cols: usize,
+        appearance: TerminalAppearance,
+        history: harbor_config::HistoryLimits,
+    ) -> Self {
         Self {
-            screen: Screen::with_palette(rows, cols, appearance.palette()),
+            screen: Screen::with_palette_and_history(rows, cols, appearance.palette(), history),
             read_session: read_model::SessionId(read_model::fresh_identity()),
             io: TerminalIo::new_headless(),
             pointer: PointerInteraction::new(),

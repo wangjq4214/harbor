@@ -32,7 +32,7 @@ Harbor watches the selected file by default and coalesces saves before reloading
 
 | Options | Accepted effect |
 | --- | --- |
-| `font.*`, `colors.*`, `keybindings.*` | Live for applicable existing and future terminal/application resources |
+| `history.*`, `font.*`, `colors.*`, `keybindings.*` | Live for applicable existing and future terminal/application resources |
 | `shell.program`, `shell.args`, `shell.environment`, `shell.directory` | First startup child, then **new sessions only** after reload; existing children are unchanged |
 | `clipboard.osc52_write` | **Restart required**, including for new tabs in the running process |
 | Portable marker/path choice | **Restart required**; not a TOML setting |
@@ -47,6 +47,21 @@ Live terminal-font changes do not change UI fonts or restart shells. Resizing ca
 | `font.size` | Finite integer/float, inclusive **6–144** | `24.0` | `24.0` |
 
 An unavailable font family can fall back to a system font with a warning. Missing-character fallback is separate from primary grid metrics. There is no UI-font, font-file, or profile option.
+
+## History limits
+
+| Option | Type / accepted values | Default | Startup invalid-value recovery |
+| --- | --- | --- | --- |
+| `history.max_rows` | Integer, inclusive **0–16000**, physical history rows | `4000` | `4000` |
+| `history.max_bytes` | Integer, inclusive **0–16777216**, UTF-8 source-content bytes | `4194304` (4 MiB) | `4194304` |
+
+The caps are independent **per session**, not shared between tabs. Zero is a zero allowance, never unlimited. Negative, fractional, wrong-type or over-maximum values are invalid. Startup recovers each invalid field independently (a non-table `history` restores both defaults); manual/watched reload rejects the whole candidate.
+
+Only primary scrollback counts, including primary history saved behind an alternate screen. Live viewport and alternate-screen text are excluded. Counted source text includes multibyte characters, admitted combining/variation-selector/ZWJ suffixes and retained spaces, but not wide continuation slots or unwritten tail padding. These bytes are **not allocated memory**: grid/metadata capacity, temporary preparation, native fonts and GPU storage are separate costs. The calibrated defaults/maxima are recorded in [ADR 0075](../../.grimoire/adr/0075-calibrated-history-and-text-unit-limits.md); no unlimited history or process/GPU ceiling is promised. To retain the historical row allowance, set `max_rows = 1000`.
+
+Exceeding either cap evicts the **oldest whole physical rows** until both hold; ordinary text units are not split to fit bytes. Output and primary resize/reflow enforce the same caps, so width/height/font changes can cause eviction even without new output. Alternate resize stays rectangular without scrollback, and existing ConPTY live-primary geometry policy remains in effect.
+
+Accepted manual or watched changes apply to active/hidden existing sessions, saved primary and future sessions without recreating terminals or PTYs. Shrink evicts immediately upon successful complete acceptance; later growth cannot restore discarded text. A rejected candidate never installs its smaller budget. If native geometry compensation itself fails, diagnostics identify recovery-needed sessions: old settings/budgets remain accepted, but ordinary bounded geometry recovery may still reflow/evict/clip content, not restore the previous geometry or text.
 
 ## Shell launch options
 

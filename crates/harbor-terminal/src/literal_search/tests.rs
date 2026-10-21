@@ -135,7 +135,15 @@ fn meaningful_blanks_are_searchable_but_capacity_and_wide_edge_padding_are_not()
 
 #[test]
 fn long_lines_cross_many_batches_and_keep_retained_suffix_absolute_offsets() {
-    let mut t = Terminal::new_headless(2, 3);
+    let mut t = Terminal::new_headless_with_history(
+        2,
+        3,
+        crate::TerminalAppearance::default(),
+        harbor_config::HistoryLimits {
+            max_rows: 1000,
+            ..Default::default()
+        },
+    );
     t.put_str(&"abc".repeat(1002));
     t.put_str("mnopqr");
     let mut gate = LiteralSearch::default();
@@ -262,7 +270,15 @@ fn erase_structural_edits_and_ring_reuse_never_leave_actionable_old_text() {
             Rejection::StaleText
         );
     }
-    let mut t = Terminal::new_headless(2, 3);
+    let mut t = Terminal::new_headless_with_history(
+        2,
+        3,
+        crate::TerminalAppearance::default(),
+        harbor_config::HistoryLimits {
+            max_rows: 1000,
+            ..Default::default()
+        },
+    );
     t.put_str(&"abc".repeat(1002));
     let mut gate = LiteralSearch::default();
     let result = search(&mut gate, &t, "abc", retained(5));

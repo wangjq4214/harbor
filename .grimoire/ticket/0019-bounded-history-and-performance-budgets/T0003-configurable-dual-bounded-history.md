@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0003
 **Source:** [Spec 0031 R1–R2 and R4](../../spec/0031-bounded-history-and-performance-budgets.md), [ADRs 0072](../../adr/0072-dual-bounded-terminal-history.md)/[0073](../../adr/0073-session-history-accounting-and-text-unit-overflow.md), existing [resize contract](../../spec/0014-content-preserving-resize-reflow.md) and [configuration reference](../../../docs/app/configuration.md).
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
