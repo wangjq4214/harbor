@@ -189,6 +189,9 @@ fn promotion_reports_neighbor_deletion_to_content_anchors() {
     use crate::content_anchor::{Affinity, AnchorMutation};
     use crate::selection_model::GenPos;
     let mut screen = Screen::new(1, 6);
+    // Promotion reports its neighbour deletion only through the captured
+    // edit anchor, which requires a registered anchor consumer.
+    screen.set_external_anchor_interest(true);
     let mut parser = TerminalParser::default();
     feed(&mut parser, &mut screen, b"abX");
     let (_, before) = screen.finish_anchor_mutations(None).unwrap();

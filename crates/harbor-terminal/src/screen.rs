@@ -94,6 +94,9 @@ pub struct Screen {
     anchor_mutations: AnchorMutationBatch,
     /// Canonical top-left retained content while reviewing scrollback.
     review_anchor: Option<ContentAnchor>,
+    /// Whether an external owner (a pointer selection) needs content-anchor
+    /// reconciliation for the bytes being parsed.
+    external_anchor_interest: bool,
     /// Cursor position, scroll region, margins, and terminal modes.
     cursor: CursorEngine,
     /// Pen state, tab stops, character-set designations, and saved-pen snapshot.
@@ -254,6 +257,7 @@ impl Screen {
             normal: NormalBuf::new(rows, cols),
             anchor_mutations: AnchorMutationBatch::default(),
             review_anchor: None,
+            external_anchor_interest: false,
             cursor: CursorEngine::new(rows, cols),
             pen_state: PenState::new(cols),
             hyperlinks: HyperlinkRegistry::default(),
@@ -698,6 +702,9 @@ impl Screen {
         affected_cells: usize,
         dropped_cells: Option<(usize, usize)>,
     ) -> Option<EditAnchorCapture> {
+        if !self.tracks_content_anchors() {
+            return None;
+        }
         let projection = self.content_projection().ok()?;
         let position = self.live_cursor_position();
         let anchor = projection.to_anchor(position, Affinity::Before)?;
@@ -2132,6 +2139,30 @@ impl Screen {
                 .saved
                 .as_ref()
                 .is_some_and(|saved| saved.anchor.is_some())
+    }
+
+    /// Registers or clears an external consumer of content-anchor mutations.
+    ///
+    /// The I/O owner sets this before parsing a feed: selection state lives with
+    /// the pointer, so `Screen` never queries the pointer directly.
+    pub(crate) fn set_external_anchor_interest(&mut self, active: bool) {
+        self.external_anchor_interest = active;
+    }
+
+    /// Whether anything currently needs content-anchor bookkeeping.
+    ///
+    /// Anchor mutations, and the projection that resolves them, exist only for a
+    /// selection, a saved cursor anchor and a review anchor. Projecting the whole
+    /// retained buffer without one costs a full rebuild per accepted feed and two
+    /// per width promotion, so both recording paths check this first.
+    pub(crate) fn tracks_content_anchors(&self) -> bool {
+        self.external_anchor_interest || self.requires_anchor_baseline()
+    }
+
+    /// Drops mutations no consumer will read, matching one reconciliation pass
+    /// without building a projection for it.
+    pub(crate) fn discard_anchor_mutations(&mut self) {
+        let _ = std::mem::take(&mut self.anchor_mutations);
     }
 
     // ── scroll_region_up_one (coordinator) ─────────────────────────────

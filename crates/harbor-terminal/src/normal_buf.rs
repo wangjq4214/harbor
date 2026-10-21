@@ -1341,6 +1341,11 @@ impl<'a> Iterator for CellsIter<'a> {
 
 impl<'a> ExactSizeIterator for CellsIter<'a> {}
 
+// Non-shipping capacity/storage probes; no production history settings are exposed.
+#[cfg(test)]
+#[path = "history_calibration.rs"]
+mod calibration;
+
 #[cfg(test)]
 mod tests {
     use super::*;
