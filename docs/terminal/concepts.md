@@ -10,10 +10,12 @@ The [streaming parser](../../crates/harbor-parser/src/core.rs) accepts arbitrari
 
 The [cell model](../../crates/harbor-terminal/src/model.rs) stores a leading scalar in `Cell::ch` and original trailing scalars in `Cell::suffix`. Combining marks, variation selectors and supported ZWJ continuations can extend one retained unit. A unit is not necessarily one Unicode scalar, byte or occupied cell, nor a promise of complete Unicode grapheme segmentation or complex-script shaping.
 
+**Oversized-input safety exception:** live primary and alternate admission allow at most **1024 UTF-8 source bytes per unit**, including the leading scalar ([ADR 0075](../../.grimoire/adr/0075-calibrated-history-and-text-unit-limits.md)). Before the first extension that would exceed this cap, admission freezes the scalar-aligned prefix; further extensions of that unit are discarded, even if a smaller scalar would fit. The next independent unit resumes normal admission. Fragmenting PTY reads cannot bypass the cap. Copy, read/search, rendering and reflow use only that surviving prefix; dropped text is not recoverable or replaced by synthetic/orphan source. This deliberate exceptional-input loss is separate from font fallback and does not fix the known no-wrap final-column selector-width discrepancy. See [focused evidence](../developer/evidence/0031/text-admission/README.md).
+
 | Representation | Meaning |
 | --- | --- |
 | UTF-8 bytes | Transport/source encoding; byte positions are not terminal columns. |
-| Retained text unit | Complete lead-plus-suffix source text with model-assigned width. Content APIs never split it to satisfy a page budget. |
+| Retained text unit | Admitted lead-plus-suffix source text with model-assigned width. Content APIs never split it to satisfy a page budget. |
 | Lead cell | Carries source text, width, colors, attributes, protection and optional hyperlink ID. |
 | Wide continuation | The second occupied cell of a width-two unit: width zero, `wide_continuation = true`; not a second copied/searchable character. |
 | Presentation cue | An isolated combining mark may need a dotted circle for display. The synthetic cue is not source text. |

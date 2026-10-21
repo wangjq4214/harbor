@@ -588,6 +588,13 @@ impl NormalBuf {
         &self.cells[actual_row * self.cols + col]
     }
 
+    /// Updates bounded input-tail bookkeeping without changing source content,
+    /// row versions or damage. Dropped extensions cannot affect content readers.
+    pub(crate) fn discard_text_extension(&mut self, row: usize, col: usize, ch: char) {
+        let index = self.display_to_ring(row) * self.cols + col;
+        self.cells[index].discard_text_extension(ch);
+    }
+
     /// Returns a mutable reference to the cell at `(display_row, col)`.
     ///
     /// Safe to call only when `view_offset == 0` (writing to live view).

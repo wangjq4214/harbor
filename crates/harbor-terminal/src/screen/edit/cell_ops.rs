@@ -837,6 +837,7 @@ impl CellOps {
         let cell = Cell {
             ch: fill_char,
             suffix: String::new(),
+            text_overflow: Default::default(),
             width: 1,
             isolated_mark: false,
             wide_continuation: false,

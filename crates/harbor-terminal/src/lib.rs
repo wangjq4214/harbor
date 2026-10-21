@@ -10,6 +10,8 @@ mod damage;
 #[cfg(test)]
 mod engine_tests;
 mod input;
+#[cfg(test)]
+mod text_admission_tests;
 pub use configuration::{
     ConfigurationResize, ResizeGroupError, resize_configuration_group,
     resize_configuration_group_with_check,
@@ -47,7 +49,7 @@ pub use harbor_text::{AtlasGlyph, FontBook, TextMetrics, load_system_fonts, load
 use io::TerminalIo;
 pub use layout::RenderViewport;
 pub use model::should_confirm_multiline;
-pub use model::{DirtyRange, UnderlineStyle};
+pub use model::{DirtyRange, TextUnitOverflow, UnderlineStyle};
 pub use model::{
     InputModes, MouseEncoding, MouseTrackingMode, PasteDisposition, TerminalSize, TerminalSnapshot,
     UpdateDamage, safe_preview_line,

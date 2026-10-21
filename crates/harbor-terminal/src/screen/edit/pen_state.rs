@@ -236,6 +236,7 @@ impl PenState {
         Cell {
             ch: ' ',
             suffix: String::new(),
+            text_overflow: Default::default(),
             width: 1,
             isolated_mark: false,
             wide_continuation: false,

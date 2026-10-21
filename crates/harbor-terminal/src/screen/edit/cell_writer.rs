@@ -26,12 +26,14 @@ impl CellWriter {
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,
         ch: char,
-    ) {
-        // 1. Decode the character through the active charset and measure width.
+    ) -> bool {
+        // Decode even suppressed input so single-shift invocation stays correct.
         let (ch, width) = Self::decode_char(pen_state, ch);
-        if Self::write_decoded_char(pen_state, normal, cursor, ch, width) {
+        let changed = Self::write_decoded_char(pen_state, normal, cursor, ch, width);
+        if changed {
             pen_state.charsets.last_char = Some(ch);
         }
+        changed
     }
 
     /// Writes a character produced by an internal screen operation.
@@ -70,7 +72,7 @@ impl CellWriter {
         (Self::is_combining_mark(ch)
             || Self::is_selector(ch)
             || ch == '\u{200d}'
-            || (normal.cell(base.0, base.1).suffix.ends_with('\u{200d}') && Self::is_emoji(ch)))
+            || (normal.cell(base.0, base.1).input_ends_with_zwj() && Self::is_emoji(ch)))
         .then_some(base)
     }
 
@@ -86,6 +88,9 @@ impl CellWriter {
     ) -> Option<(usize, usize)> {
         let (row, col) = Self::continuation_base(normal, cursor, ch)?;
         let base = normal.cell(row, col);
+        if !base.can_extend_text(ch) {
+            return None;
+        }
         (base.grid_width() == 1
             && ((ch == '\u{fe0f}' && Self::is_emoji(base.ch))
                 || (base.suffix.ends_with('\u{200d}') && Self::is_emoji(ch))))
@@ -119,6 +124,10 @@ impl CellWriter {
         width: usize,
     ) -> bool {
         if let Some((row, base_col)) = Self::continuation_base(normal, cursor, ch) {
+            if !normal.cell(row, base_col).can_extend_text(ch) {
+                normal.discard_text_extension(row, base_col, ch);
+                return false;
+            }
             let promote = Self::promotion_base(normal, cursor, ch).is_some();
             if promote {
                 if !Self::promote_unit(pen_state, normal, cursor, row, base_col) {
@@ -216,6 +225,7 @@ impl CellWriter {
             let mut trailing = cell;
             trailing.ch = ' ';
             trailing.suffix.clear();
+            trailing.text_overflow = Default::default();
             trailing.width = 0;
             trailing.isolated_mark = false;
             trailing.wide_continuation = true;
@@ -239,6 +249,7 @@ impl CellWriter {
             normal.write_meaningful_cell(row, col, cell.clone());
             cell.ch = ' ';
             cell.suffix.clear();
+            cell.text_overflow = Default::default();
             cell.width = 0;
             cell.isolated_mark = false;
             cell.wide_continuation = true;
@@ -376,6 +387,7 @@ impl CellWriter {
         let cell = crate::Cell {
             ch,
             suffix: String::new(),
+            text_overflow: Default::default(),
             width: width as u8,
             isolated_mark: false,
             wide_continuation: false,
@@ -395,6 +407,7 @@ impl CellWriter {
                 crate::Cell {
                     ch: ' ',
                     suffix: String::new(),
+                    text_overflow: Default::default(),
                     width: 0,
                     isolated_mark: false,
                     wide_continuation: true,

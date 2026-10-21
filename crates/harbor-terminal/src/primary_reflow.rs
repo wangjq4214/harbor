@@ -989,6 +989,7 @@ fn continuation_cell(base: &Cell) -> Cell {
     Cell {
         ch: ' ',
         suffix: String::new(),
+        text_overflow: Default::default(),
         width: 0,
         isolated_mark: false,
         wide_continuation: true,

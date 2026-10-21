@@ -1904,7 +1904,9 @@ impl Screen {
             pen_state,
             ..
         } = self;
-        CellWriter::write_char(pen_state, normal, cursor, ch);
+        if !CellWriter::write_char(pen_state, normal, cursor, ch) {
+            return;
+        }
         normal.repair_following_soft_chain(cursor.cursor.y);
         let cursor_after = (
             self.cursor.cursor.x,

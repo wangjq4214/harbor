@@ -602,7 +602,9 @@ fn cancellation_after_read_and_during_scan_has_finite_work_and_releases_resource
     // Inject cancellation at the post-read observation and inside one very
     // large complete text unit. The public step uses the identical atomic check.
     let mut large = Terminal::new_headless(2, 8);
-    large.put_str(&format!("a{}", "\u{301}".repeat(2000)));
+    large.put_str("a");
+    // Defensive consumer fixture deliberately bypasses bounded PTY admission.
+    large.screen.cell_mut(0, 0).suffix = "\u{301}".repeat(2000);
     for (cancel_on_check, expected_scan) in [(2, 0), (5, CANCEL_SCAN_BYTES)] {
         let mut job = gate
             .start(&large, "z", retained(2), ReadBudget::default())
@@ -649,7 +651,9 @@ fn amortized_scan_work_stays_linear_on_repeated_prefixes_and_large_units() {
     // A complete unit may exceed the query bound, but the read/scan bound still
     // applies, and matches map to one unit without retaining its source string.
     let mut t = Terminal::new_headless(2, 8);
-    t.put_str(&format!("a{}", "\u{301}".repeat(2000)));
+    t.put_str("a");
+    // Keep oversized stored-content defense coverage, independent of admission.
+    t.screen.cell_mut(0, 0).suffix = "\u{301}".repeat(2000);
     let result = search(&mut gate, &t, "a", retained(2));
     // tiny() cannot copy that indivisible unit: explicit partial, not no-match.
     assert!(matches!(
