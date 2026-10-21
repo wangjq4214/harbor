@@ -1,0 +1,6 @@
+command=./target/release/examples/output_ingest_probe.exe target/unicode-diagnosis/no_vs16-2000.bin 4096 3 engine
+exit_code=0
+boundary=ingestion_only grid=107x32 bytes=76000 chunks=19 chunk_mode=4096 rounds=3
+boundary=terminal_engine round=0 elapsed_ns=72691100 tail_prefix="001999"
+boundary=terminal_engine round=1 elapsed_ns=77420700 tail_prefix="001999"
+boundary=terminal_engine round=2 elapsed_ns=78075600 tail_prefix="001999"

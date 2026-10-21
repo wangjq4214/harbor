@@ -24,7 +24,7 @@ If the calibrated budgets are missed, record FAIL and the measured bottleneck. R
 
 ## Dependencies and coordination
 
-- **Blocked by:** T0001's usable measurement/calibration output and declared thresholds; T0002's shipping protection; T0003's shipping dual bounds/reload.
+- **Blocked by:** T0002's shipping protection and T0003's shipping dual bounds/reload, plus the native measurement/threshold set that T0001 has not supplied (output-to-present, resize latency, idle CPU/GPU, residency, atlas). The capacity/per-unit values and microbenchmark regression bounds were adopted on 2026-10-21 ([ADR 0075](../../adr/0075-calibrated-history-and-text-unit-limits.md)) and are usable now; native acceptance must not be inferred from them.
 - **Blocks:** Current-scope delivery/acceptance claims, not pane capability.
 - **Coordination risks:** Mixed font/budget reload and native recovery, instrumentation overhead, hidden-session retirement and separate GPU/native lifetimes require careful phase attribution.
 

@@ -23,7 +23,7 @@ Keep startup invalid-value recovery and strict manual/watched candidate behavior
 
 ## Dependencies and coordination
 
-- **Blocked by:** T0001's measured defaults, maximum accepted settings and resource rationale for numeric-dependent shipping work.
+- **Blocked by:** nothing for the numeric values — default 4000 / maximum 16000 rows and default 4 MiB / maximum 16 MiB content bytes were adopted on 2026-10-21 ([ADR 0075](../../adr/0075-calibrated-history-and-text-unit-limits.md), [calibration capture](../../../docs/developer/evidence/0031/calibration/README.md)). Native resource acceptance remains T0004's.
 - **Blocks:** T0004 integrated dual-cap/reload and resource acceptance.
 - **Coordination risks:** T0002 shares text/cell/screen surfaces. Consume the same admitted-prefix contract and coordinate accounting/edits; T0002 is not a semantic prerequisite for implementing history-only enforcement. Do not claim whole-process boundedness from this ticket.
 

@@ -1,0 +1,83 @@
+[
+  {
+    "cycle": 1,
+    "width": 1500,
+    "height": 900,
+    "request_utc": "2026-10-20T08:26:05.607Z",
+    "tool_end_utc": "2026-10-20T08:26:05.700Z",
+    "result": "Set and verified the requested window frame.",
+    "limit": "API round trip, not geometry-to-correct-present latency"
+  },
+  {
+    "cycle": 1,
+    "width": 900,
+    "height": 600,
+    "request_utc": "2026-10-20T08:26:05.700Z",
+    "tool_end_utc": "2026-10-20T08:26:05.789Z",
+    "result": "Set and verified the requested window frame.",
+    "limit": "API round trip, not geometry-to-correct-present latency"
+  },
+  {
+    "cycle": 1,
+    "width": 1100,
+    "height": 700,
+    "request_utc": "2026-10-20T08:26:05.790Z",
+    "tool_end_utc": "2026-10-20T08:26:05.836Z",
+    "result": "Set and verified the requested window frame.",
+    "limit": "API round trip, not geometry-to-correct-present latency"
+  },
+  {
+    "cycle": 2,
+    "width": 1500,
+    "height": 900,
+    "request_utc": "2026-10-20T08:26:05.953Z",
+    "tool_end_utc": "2026-10-20T08:26:05.990Z",
+    "result": "Set and verified the requested window frame.",
+    "limit": "API round trip, not geometry-to-correct-present latency"
+  },
+  {
+    "cycle": 2,
+    "width": 900,
+    "height": 600,
+    "request_utc": "2026-10-20T08:26:05.990Z",
+    "tool_end_utc": "2026-10-20T08:26:06.083Z",
+    "result": "Set and verified the requested window frame.",
+    "limit": "API round trip, not geometry-to-correct-present latency"
+  },
+  {
+    "cycle": 2,
+    "width": 1100,
+    "height": 700,
+    "request_utc": "2026-10-20T08:26:06.083Z",
+    "tool_end_utc": "2026-10-20T08:26:06.129Z",
+    "result": "Set and verified the requested window frame.",
+    "limit": "API round trip, not geometry-to-correct-present latency"
+  },
+  {
+    "cycle": 3,
+    "width": 1500,
+    "height": 900,
+    "request_utc": "2026-10-20T08:26:06.234Z",
+    "tool_end_utc": "2026-10-20T08:26:06.276Z",
+    "result": "Set and verified the requested window frame.",
+    "limit": "API round trip, not geometry-to-correct-present latency"
+  },
+  {
+    "cycle": 3,
+    "width": 900,
+    "height": 600,
+    "request_utc": "2026-10-20T08:26:06.276Z",
+    "tool_end_utc": "2026-10-20T08:26:06.367Z",
+    "result": "Set and verified the requested window frame.",
+    "limit": "API round trip, not geometry-to-correct-present latency"
+  },
+  {
+    "cycle": 3,
+    "width": 1100,
+    "height": 700,
+    "request_utc": "2026-10-20T08:26:06.367Z",
+    "tool_end_utc": "2026-10-20T08:26:06.408Z",
+    "result": "Set and verified the requested window frame.",
+    "limit": "API round trip, not geometry-to-correct-present latency"
+  }
+]

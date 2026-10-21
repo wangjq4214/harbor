@@ -1,0 +1,8 @@
+command=./target/release/examples/output_ingest_probe.exe target/unicode-diagnosis/combining-2000.bin 4096 3 parser
+start_utc=2026-10-20T08:47:20.009Z
+end_utc=2026-10-20T08:47:20.206Z
+exit_code=0
+boundary=ingestion_only grid=107x32 bytes=24000 chunks=6 chunk_mode=4096 rounds=3
+boundary=parser_screen round=0 elapsed_ns=37463000 tail_prefix="001999"
+boundary=parser_screen round=1 elapsed_ns=37610900 tail_prefix="001999"
+boundary=parser_screen round=2 elapsed_ns=37383300 tail_prefix="001999"

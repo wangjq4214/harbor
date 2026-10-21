@@ -2,7 +2,7 @@
 
 **Source:** [Spec 0031](../../spec/0031-bounded-history-and-performance-budgets.md), [ADR 0072](../../adr/0072-dual-bounded-terminal-history.md), [ADR 0073](../../adr/0073-session-history-accounting-and-text-unit-overflow.md), and [issue #166](https://github.com/wangjq4214/harbor/issues/166).
 **Ticket folder:** `.grimoire/ticket/0019-bounded-history-and-performance-budgets/`
-**State:** Ready to start T0001; implementation and runtime acceptance are not complete. Numeric-dependent shipping work waits for calibration.
+**State:** T0001 supplied a repeatable deterministic calibration battery, and the owner adopted its numeric contract on 2026-10-21 ([ADR 0075](../../adr/0075-calibrated-history-and-text-unit-limits.md)). T0002/T0003 implementation and runtime acceptance are not complete; native output/presentation, resize-latency and resource measurements remain unsupplied, so T0004's numerical acceptance is still blocked. See the [evidence ledger](../../../docs/developer/evidence/0031/README.md).
 
 ## Overview
 

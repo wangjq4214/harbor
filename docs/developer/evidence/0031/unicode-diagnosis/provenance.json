@@ -1,0 +1,69 @@
+{
+  "utc": "2026-10-20T09:01:57.5390902Z",
+  "revision": "8a92562191cecd1d358dc4c774e31242c78c04e3",
+  "gui_exe_sha256": "3D2BA50A698CCE701A715195D56AC2587D9DBB2DA5815B86B7A1005C073E077B",
+  "measured_probe_sha256": "5851F13B55788A484B97522C85D613BC1459B182CF9483140538C09428B35446",
+  "source_hashes": [
+    {
+      "name": "screen.rs",
+      "Hash": "34BA035832252EACE79AFFB544D05DE6E114918BBEAF2A8371CBFC6AE7C668E5"
+    },
+    {
+      "name": "content_anchor.rs",
+      "Hash": "ACA1A5D0384D0490045D034E9271636EB32CBA6AE0C6EE50E0E4CA4B49C79FD8"
+    },
+    {
+      "name": "projection_diagnostics.rs",
+      "Hash": "9D2E8D8060593BF1D2E5B4F8D1B362C22717EE0BF09D650069AAE1310C512652"
+    },
+    {
+      "name": "output_ingest_probe.rs",
+      "Hash": "EA6BD487F70C3A26AFA9AD2D9A64EC4C3CABB35FCD1101F089A685540A82C6AF"
+    },
+    {
+      "name": "unicode_diagnosis_input.py",
+      "Hash": "FAED74E20B39E673D74EC092397FDB1F028CEC05FC5DA0DDADB4E9B8994DC982"
+    },
+    {
+      "name": "gui_unicode_diagnosis.py",
+      "Hash": "1BED40CB2625A754E2F5367662F88EA3CF7224F6560B97EE68895608716777AB"
+    }
+  ],
+  "fixture_hashes": [
+    {
+      "name": "cjk-2000.bin",
+      "Hash": "ADE1CA572EED64815ECD6478019D5454CBC5DAF76A02CA31BC80BF73E5E68FC0"
+    },
+    {
+      "name": "combining-2000.bin",
+      "Hash": "66E250C67048F3D0C72F9EF74705776C661B7E3CA2CA368C6E34AB26AA7A2B12"
+    },
+    {
+      "name": "emoji-2000.bin",
+      "Hash": "31D498546DC23B0E3ED2CF74A325D06BCC6F2D5F4A477D6D08CF1B4987358483"
+    },
+    {
+      "name": "heart_vs16-2000.bin",
+      "Hash": "3188474A3C978A3AD7680EF0652E72362B098CFFAFD80EBD9BC402EEA7DF4678"
+    },
+    {
+      "name": "no_vs16-2000.bin",
+      "Hash": "46383F50689B3FEB8E52156320D9FAA57F75AFCC8957CBF44CA38EAA119626B8"
+    },
+    {
+      "name": "original-2000.bin",
+      "Hash": "4CE1A00D94D233593E95947A9BFA5291AE6E9F215F3F12F5C227CFD034F6315E"
+    },
+    {
+      "name": "wide_vs16-2000.bin",
+      "Hash": "9897F5AFCB00899B18259FC88264A37C1802F96AE80401A53491F32EC87659E1"
+    },
+    {
+      "name": "zwj-2000.bin",
+      "Hash": "377F2821254CC99220A7EF8B2090A9B2F18BF05AC7545C5691152BA718A46DC7"
+    }
+  ],
+  "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "python": "Python 3.12.10",
+  "cpu_logical_processors": 20
+}

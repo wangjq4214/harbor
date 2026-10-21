@@ -1,0 +1,50 @@
+[
+  {
+    "phase": "one-unicode-2",
+    "command": "unicode",
+    "begin_utc": "2026-10-20T08:16:47.840Z",
+    "key_dispatch_end_utc": "2026-10-20T08:16:48.273Z",
+    "screenshot_end_utc": "2026-10-20T08:17:53.754Z",
+    "sampler_exit": 0,
+    "screenshot_saved": true,
+    "disposition": "Observed final marker in matching screenshot; UTCs are observer/tool boundaries only"
+  },
+  {
+    "phase": "one-unicode-3",
+    "command": "unicode",
+    "begin_utc": "2026-10-20T08:17:53.754Z",
+    "key_dispatch_end_utc": "2026-10-20T08:17:54.303Z",
+    "screenshot_end_utc": "2026-10-20T08:18:59.564Z",
+    "sampler_exit": 0,
+    "screenshot_saved": true,
+    "disposition": "Observed final marker in matching screenshot; UTCs are observer/tool boundaries only"
+  },
+  {
+    "phase": "four-sustain",
+    "tab": 5,
+    "command": "sustain",
+    "dispatch_end_utc": "2026-10-20T08:20:07.969Z",
+    "disposition": "INVALID: command dispatch/topology not verified; unintended fifth session; do not count as output"
+  },
+  {
+    "phase": "four-sustain",
+    "tab": 4,
+    "command": "sustain",
+    "dispatch_end_utc": "2026-10-20T08:20:08.728Z",
+    "disposition": "INVALID: command dispatch/topology not verified; unintended fifth session; do not count as output"
+  },
+  {
+    "phase": "four-sustain",
+    "tab": 3,
+    "command": "sustain",
+    "dispatch_end_utc": "2026-10-20T08:20:09.458Z",
+    "disposition": "INVALID: command dispatch/topology not verified; unintended fifth session; do not count as output"
+  },
+  {
+    "phase": "four-sustain",
+    "tab": 1,
+    "command": "sustain",
+    "dispatch_end_utc": "2026-10-20T08:20:10.163Z",
+    "disposition": "INVALID: command dispatch/topology not verified; unintended fifth session; do not count as output"
+  }
+]

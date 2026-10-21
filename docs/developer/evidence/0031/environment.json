@@ -1,0 +1,28 @@
+{
+  "captured_utc": "2026-10-20T07:50:20.1815133Z",
+  "os_version": "10.0.26300",
+  "os_build": "26300",
+  "cpu": [
+    {
+      "Name": "13th Gen Intel(R) Core(TM) i5-13600KF",
+      "NumberOfCores": 14,
+      "NumberOfLogicalProcessors": 20
+    }
+  ],
+  "ram_bytes": 34183016448,
+  "gpu": [
+    {
+      "Name": "GameViewer Virtual Display Adapter",
+      "DriverVersion": "15.6.5.199"
+    },
+    {
+      "Name": "AMD Radeon RX 7900 XT",
+      "DriverVersion": "32.0.31041.1004"
+    }
+  ],
+  "conhost_file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+  "powershell": "7.6.6",
+  "wpr_present": true,
+  "wpa_present": true,
+  "presentmon_present": false
+}

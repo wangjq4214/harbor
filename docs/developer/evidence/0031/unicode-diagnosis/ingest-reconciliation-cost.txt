@@ -1,0 +1,15 @@
+command=cargo test --release -p harbor-terminal --lib ingest_reconciliation_cost_by_chunking -- --ignored --nocapture --test-threads=1
+exit_code=0
+   Compiling harbor-terminal v0.1.0 (D:\Code\harbor\crates\harbor-terminal)
+    Finished `release` profile [optimized] target(s) in 1m 45s
+     Running unittests src\lib.rs (target\release\deps\harbor_terminal-ad91a3c823ac5484.exe)
+
+running 1 test
+test content_anchor::diagnostics::ingest_reconciliation_cost_by_chunking ... case=engine_no_vs16 chunking=4096_byte chunks=19 round=0 projection_calls=19 projection_build_ns=31677000 total_ns=81415300
+case=engine_no_vs16 chunking=4096_byte chunks=19 round=1 projection_calls=19 projection_build_ns=32595500 total_ns=80193800
+case=engine_no_vs16 chunking=one_row chunks=2000 round=0 projection_calls=2000 projection_build_ns=2290653100 total_ns=2572805400
+case=engine_no_vs16 chunking=one_row chunks=2000 round=1 projection_calls=2000 projection_build_ns=1945098400 total_ns=2132702800
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1078 filtered out; finished in 4.87s
+

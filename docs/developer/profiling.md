@@ -2,6 +2,8 @@
 
 Use comparable captures to identify a bottleneck, change one ownership path, then repeat the workload. This guide contains procedures, not captured results or optimization priorities. The [architecture map](architecture.md) helps locate allocation and lifecycle owners.
 
+For Spec 0031/T0001, use the [history calibration protocol](history-calibration.md) and [current evidence ledger](evidence/0031/README.md). The package includes repeated candidate/parser/prepare probes and [limited native GUI observations](evidence/0031/gui-20261020/README.md), including a Unicode responsiveness issue. Full host/native coverage and all shipping numeric selections remain incomplete; these observations do not unblock numerical shipping gates.
+
 ## Prepare a comparison
 
 Record the commit and dirty-tree changes, build profile/features, machine/OS, GPU/backend, fonts, DPI, viewport/grid, session/window counts, configuration, exact workload and dwell time. Use identical settings before and after. Separate cold startup from warmed-cache runs and repeat runs to expose variability.

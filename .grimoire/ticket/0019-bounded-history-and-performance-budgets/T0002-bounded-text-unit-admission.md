@@ -22,7 +22,7 @@ Choose internal mechanics within existing ownership boundaries. The exception do
 
 ## Dependencies and coordination
 
-- **Blocked by:** T0001's usable measured protective limit/rationale before shipping acceptance.
+- **Blocked by:** nothing for the numeric limit — the 1024-byte protective limit and its rationale were adopted on 2026-10-21 ([ADR 0075](../../adr/0075-calibrated-history-and-text-unit-limits.md), [calibration capture](../../../docs/developer/evidence/0031/calibration/README.md)). Real unit recognition, streaming admission and discard recovery remain this ticket's own work.
 - **Blocks:** T0004 integrated protection/consumer/runtime acceptance.
 - **Coordination risks:** Shared cell/screen/tests with T0003. Agree how admitted text is consumed by history UTF-8 accounting; parallel work is permitted after calibration, with shared-file coordination rather than an artificial blocker.
 

@@ -1,0 +1,77 @@
+{
+  "revision": "8a92562191cecd1d358dc4c774e31242c78c04e3",
+  "runs": [
+    {
+      "file": "candidates-1.txt",
+      "command": "cargo test --release -p harbor-terminal --lib calibration -- --ignored --nocapture --test-threads=1",
+      "start_utc": "2026-10-20T07:49:02.563Z",
+      "end_utc": "2026-10-20T07:49:05.395Z",
+      "exit_code": 0,
+      "truncated": false
+    },
+    {
+      "file": "osc-1.txt",
+      "command": "cargo test --release -p harbor-terminal --lib osc_throughput_probe -- --ignored --nocapture --test-threads=1",
+      "start_utc": "2026-10-20T07:49:05.395Z",
+      "end_utc": "2026-10-20T07:49:06.119Z",
+      "exit_code": 0,
+      "truncated": false
+    },
+    {
+      "file": "prepare-1.txt",
+      "command": "./target/release/examples/monospace_prepare.exe",
+      "start_utc": "2026-10-20T07:49:06.119Z",
+      "end_utc": "2026-10-20T07:49:18.554Z",
+      "exit_code": 0,
+      "truncated": false
+    },
+    {
+      "file": "candidates-2.txt",
+      "command": "cargo test --release -p harbor-terminal --lib calibration -- --ignored --nocapture --test-threads=1",
+      "start_utc": "2026-10-20T07:49:18.554Z",
+      "end_utc": "2026-10-20T07:49:21.403Z",
+      "exit_code": 0,
+      "truncated": false
+    },
+    {
+      "file": "osc-2.txt",
+      "command": "cargo test --release -p harbor-terminal --lib osc_throughput_probe -- --ignored --nocapture --test-threads=1",
+      "start_utc": "2026-10-20T07:49:21.403Z",
+      "end_utc": "2026-10-20T07:49:22.099Z",
+      "exit_code": 0,
+      "truncated": false
+    },
+    {
+      "file": "prepare-2.txt",
+      "command": "./target/release/examples/monospace_prepare.exe",
+      "start_utc": "2026-10-20T07:49:22.099Z",
+      "end_utc": "2026-10-20T07:49:34.045Z",
+      "exit_code": 0,
+      "truncated": false
+    },
+    {
+      "file": "candidates-3.txt",
+      "command": "cargo test --release -p harbor-terminal --lib calibration -- --ignored --nocapture --test-threads=1",
+      "start_utc": "2026-10-20T07:49:34.045Z",
+      "end_utc": "2026-10-20T07:49:36.873Z",
+      "exit_code": 0,
+      "truncated": false
+    },
+    {
+      "file": "osc-3.txt",
+      "command": "cargo test --release -p harbor-terminal --lib osc_throughput_probe -- --ignored --nocapture --test-threads=1",
+      "start_utc": "2026-10-20T07:49:36.874Z",
+      "end_utc": "2026-10-20T07:49:37.596Z",
+      "exit_code": 0,
+      "truncated": false
+    },
+    {
+      "file": "prepare-3.txt",
+      "command": "./target/release/examples/monospace_prepare.exe",
+      "start_utc": "2026-10-20T07:49:37.596Z",
+      "end_utc": "2026-10-20T07:49:49.792Z",
+      "exit_code": 0,
+      "truncated": false
+    }
+  ]
+}

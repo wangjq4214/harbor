@@ -1,0 +1,20 @@
+[
+  {
+    "action": "close_active_tab",
+    "request_utc": "2026-10-20T08:27:10.566Z",
+    "tool_end_utc": "2026-10-20T08:27:10.619Z",
+    "expected_remaining": 3
+  },
+  {
+    "action": "close_active_tab",
+    "request_utc": "2026-10-20T08:27:10.910Z",
+    "tool_end_utc": "2026-10-20T08:27:10.988Z",
+    "expected_remaining": 2
+  },
+  {
+    "action": "close_active_tab",
+    "request_utc": "2026-10-20T08:27:11.277Z",
+    "tool_end_utc": "2026-10-20T08:27:11.358Z",
+    "expected_remaining": 1
+  }
+]

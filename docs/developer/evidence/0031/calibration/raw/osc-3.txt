@@ -1,0 +1,9 @@
+    Finished `release` profile [optimized] target(s) in 0.20s
+     Running unittests src\lib.rs (target\release\deps\harbor_terminal-ad91a3c823ac5484.exe)
+
+running 1 test
+test parser::osc_benchmark::osc_throughput_probe ... OSC throughput: median 98.57 MiB/s, samples [0.0326868, 0.032719, 0.0328255, 0.0329359, 0.0329898, 0.0331506, 0.0331652, 0.0333209, 0.0333913] s, bytes/sample 3409920, rounds 30, input bytes 113664
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1079 filtered out; finished in 0.33s
+

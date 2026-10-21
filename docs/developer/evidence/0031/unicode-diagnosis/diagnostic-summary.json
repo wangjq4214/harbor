@@ -1,0 +1,136 @@
+{
+  "boundary": "Pure parser+Screen, release, 2000 rows, 107x32, default 1000-row history, 4096-byte chunks, no PTY/GPU/fonts",
+  "parser": [
+    {
+      "case": "original",
+      "samples": 3,
+      "min_ns": 3878608200,
+      "median_ns": 3996652300,
+      "max_ns": 4269582300
+    },
+    {
+      "case": "no_vs16",
+      "samples": 3,
+      "min_ns": 40784300,
+      "median_ns": 41256600,
+      "max_ns": 41910000
+    },
+    {
+      "case": "wide_vs16",
+      "samples": 3,
+      "min_ns": 40911600,
+      "median_ns": 41372600,
+      "max_ns": 45985600
+    },
+    {
+      "case": "heart_vs16",
+      "samples": 3,
+      "min_ns": 1489488200,
+      "median_ns": 1498424000,
+      "max_ns": 1726682700
+    },
+    {
+      "case": "combining",
+      "samples": 3,
+      "min_ns": 37383300,
+      "median_ns": 37463000,
+      "max_ns": 37610900
+    },
+    {
+      "case": "zwj",
+      "samples": 3,
+      "min_ns": 38611700,
+      "median_ns": 38871000,
+      "max_ns": 39651900
+    },
+    {
+      "case": "cjk",
+      "samples": 3,
+      "min_ns": 38081000,
+      "median_ns": 38094300,
+      "max_ns": 38361200
+    },
+    {
+      "case": "emoji",
+      "samples": 3,
+      "min_ns": 37979100,
+      "median_ns": 38222600,
+      "max_ns": 38342600
+    }
+  ],
+  "projection_instrumented": [
+    {
+      "case": "original",
+      "round": 0,
+      "projection_calls": 4000,
+      "projection_build_ns": 4158507600,
+      "total_ns": 4540898000,
+      "build_percent": 91.5789696223082
+    },
+    {
+      "case": "original",
+      "round": 1,
+      "projection_calls": 4000,
+      "projection_build_ns": 3819364400,
+      "total_ns": 4138402800,
+      "build_percent": 92.29078426101974
+    },
+    {
+      "case": "original",
+      "round": 2,
+      "projection_calls": 4000,
+      "projection_build_ns": 3653457200,
+      "total_ns": 3949193600,
+      "build_percent": 92.5114737347898
+    },
+    {
+      "case": "no_vs16",
+      "round": 0,
+      "projection_calls": 0,
+      "projection_build_ns": 0,
+      "total_ns": 40955800,
+      "build_percent": 0
+    },
+    {
+      "case": "no_vs16",
+      "round": 1,
+      "projection_calls": 0,
+      "projection_build_ns": 0,
+      "total_ns": 46742100,
+      "build_percent": 0
+    },
+    {
+      "case": "no_vs16",
+      "round": 2,
+      "projection_calls": 0,
+      "projection_build_ns": 0,
+      "total_ns": 41396800,
+      "build_percent": 0
+    },
+    {
+      "case": "wide_vs16",
+      "round": 0,
+      "projection_calls": 0,
+      "projection_build_ns": 0,
+      "total_ns": 40842900,
+      "build_percent": 0
+    },
+    {
+      "case": "wide_vs16",
+      "round": 1,
+      "projection_calls": 0,
+      "projection_build_ns": 0,
+      "total_ns": 41023700,
+      "build_percent": 0
+    },
+    {
+      "case": "wide_vs16",
+      "round": 2,
+      "projection_calls": 0,
+      "projection_build_ns": 0,
+      "total_ns": 41524800,
+      "build_percent": 0
+    }
+  ],
+  "interpretation": "Projection percentages apply to instrumented pure-model diagnostic, not directly to GUI CPU attribution. GUI small sequential producer results have carryover/backpressure contamination; see README."
+}

@@ -1,0 +1,19 @@
+{
+  "recorded_utc": "2026-10-20T08:32:04.5241777Z",
+  "application_sha256": "3D2BA50A698CCE701A715195D56AC2587D9DBB2DA5815B86B7A1005C073E077B",
+  "release_build_sha256": "3D2BA50A698CCE701A715195D56AC2587D9DBB2DA5815B86B7A1005C073E077B",
+  "fixture_sha256": "045C9FFD5B8FC0FDA70C15F055FD44907BCCD983D885715E9AD7714B6E738C63",
+  "workload_sha256": "9EA0772E98A37C3C69CC7F9AE1359793794DEACBA67B16CCE448C8BD1FBDA585",
+  "config_sha256": "D84649557E4EBEB1E40D510F52DDFE5B5DAE80B6AF180C2CDCDCED587DD25B5B",
+  "conpty_sha256": "39FBA2713E2495117B1591AE8C32A3B904BEA7AA66069CF7815E2844C76D75D8",
+  "dpi_for_window": 144,
+  "loaded_conpty_version": "1.24.2607.10001",
+  "loaded_dxgi_version": "10.0.26100.9711",
+  "loaded_d3d12_version": "10.0.26100.9549",
+  "gpu_adapter_backend_limit": "DXGI/D3D12 modules observed; actual adapter/backend was not independently captured. Do not copy Vulkan adapter metadata from the prepare microbenchmark.",
+  "font_limit": "Consolas requested at 16 then 20 then 16; actual primary/fallback font files were not captured",
+  "host": "Windows 11 10.0.26300, i5-13600KF, 20 logical processors, 34183016448 bytes RAM; see ../environment.json",
+  "python_version": "3.12.10",
+  "observer": "Computer Use CUA driver plus PowerShell 7.6.6 explicit-PID process sampler",
+  "configuration_isolation": "Owned target/gui-calibration-20261020 portable fixture; user configuration untouched. Release logs still use home .harbor; no home logs read/shared."
+}

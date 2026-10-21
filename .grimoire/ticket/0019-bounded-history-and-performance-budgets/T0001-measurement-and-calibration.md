@@ -2,7 +2,15 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec 0031 R4–R6](../../spec/0031-bounded-history-and-performance-budgets.md), [ADR 0072](../../adr/0072-dual-bounded-terminal-history.md), [ADR 0073](../../adr/0073-session-history-accounting-and-text-unit-overflow.md).
-**Status:** Todo
+**Status:** In progress — numeric contract adopted ([ADR 0075](../../adr/0075-calibrated-history-and-text-unit-limits.md)); native/host-matrix gaps remain
+
+## Execution evidence (partial)
+
+The [2026-10-20 evidence ledger](../../../docs/developer/evidence/0031/README.md) preserves repeated test-only history/Unicode candidate observations, parser/prepare captures, source/environment provenance and explicit gaps. The [protocol](../../../docs/developer/history-calibration.md) supplies synthetic workloads, process sampling and phase/topology instructions. No acceptance box is checked: end-to-end/native/GPU coverage and every required shipping numeric selection remain incomplete. T0002/T0003/T0004 numerical gates remain blocked; this is not a completed calibration outcome.
+
+The [2026-10-21 calibration capture](../../../docs/developer/evidence/0031/calibration/README.md) repeats the deterministic candidate battery on the ADR 0074 stage-1 build (three processes per command, raw stdout preserved) and derives a recommended numeric contract with rationale: default 4000 / maximum 16000 history rows, default 4 MiB / maximum 16 MiB retained content bytes, a 1024-byte fixed per-unit protective limit, and microbenchmark-scope regression bounds for ingest, OSC, prepare and ring construction. The owner adopted those values on 2026-10-21 as [ADR 0075](../../adr/0075-calibrated-history-and-text-unit-limits.md), so T0002/T0003 may consume them; this ticket still does not implement them. The native output/presentation, resize-latency, idle CPU/GPU, residency and effects/lifecycle rows are still unsupplied, so T0004's numerical integrated acceptance remains blocked independently of the value decision.
+
+Subsequent [Computer Use measurements](../../../docs/developer/evidence/0031/gui-20261020/README.md) add nine real output bursts, limited active/hidden sessions, font reload/resize and process-retirement samples. Unicode produced a long responsiveness interruption; an all-hidden-output automation attempt was invalidated. This extends baseline evidence but does not supply the full R5 matrix, exact presentation latency, GPU residency or required numerical contract.
 
 ## Goal
 
@@ -35,6 +43,12 @@ Cover Spec 0031 R5's one-visible and active-plus-hidden-tab matrix, recording or
 - [ ] Bounded text-unit probes include ordinary combining/VS/ZWJ controls and exceptional growth. The selected limit supports the approved prefix/discard policy without redefining normal Unicode semantics.
 - [ ] Required values are usable by downstream work; any unsupplied value or missing measurement keeps the corresponding gate visibly incomplete rather than delegating calibration again without an outcome.
 - [ ] Summary and supporting artifacts meet R6 confidentiality/provenance/retrievability requirements. Relevant checks and standard gates are run or explicitly accounted for.
+
+**Status of these boxes (2026-10-21):** none is checked yet; three are partially met, and the rest are not.
+`Durable calibration supplies…` is met for the capacity, per-unit and microbenchmark-threshold values — adopted in [ADR 0075](../../adr/0075-calibrated-history-and-text-unit-limits.md) — and unmet for native/resource thresholds.
+`Repeated measurements report distributions…` is met for the deterministic battery (3 processes × 7 observations per case, first samples preserved, microbenchmark median/p95, no DHAT-derived latency claims) and unsupplied for host cold/warm and peak/settled phases.
+`Required values are usable by downstream work` is met for T0002/T0003's numbers and unmet where T0004 needs native thresholds.
+`Another maintainer can repeat…` holds for the deterministic battery only; the host-workload, sampler and GPU rows have no recorded capture yet.
 
 ## Out of scope
 

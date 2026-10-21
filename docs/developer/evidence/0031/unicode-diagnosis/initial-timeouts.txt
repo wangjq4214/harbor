@@ -1,0 +1,19 @@
+Preliminary probes, retained as partial observations, NOT successful complete benchmark runs.
+
+1. Command: ./target/release/examples/output_ingest_probe.exe target/unicode-diagnosis/latin.bin row 3
+   Tool timeout: 150 seconds. Process was stopped by the command timeout; subsequent Get-Process found no output_ingest_probe process.
+   Captured stdout before timeout:
+boundary=ingestion_only grid=107x32 bytes=1620000 chunks=20000 chunk_mode=row rounds=3
+boundary=parser_screen round=0 elapsed_ns=533072500 tail_prefix="019999"
+boundary=parser_screen round=1 elapsed_ns=526284700 tail_prefix="019999"
+boundary=parser_screen round=2 elapsed_ns=522676600 tail_prefix="019999"
+boundary=terminal_engine round=0 elapsed_ns=129397277800 tail_prefix="019999"
+   Remaining engine rounds were not completed. This exposed a separate chunk-boundary reconciliation cost, not a direct comparison with the GUI's native chunk distribution.
+
+2. Command: ./target/release/examples/output_ingest_probe.exe target/unicode-diagnosis/unicode.bin 4096 3
+   Tool timeout: 90 seconds. Captured stdout before timeout:
+boundary=ingestion_only grid=107x32 bytes=820000 chunks=201 chunk_mode=4096 rounds=3
+boundary=parser_screen round=0 elapsed_ns=58045934900 tail_prefix="019999"
+   Only the first parser sample completed. This reproduced the long Unicode cost without any renderer, PTY or font initialization. Later experiments reduced input to 2000 rows and selected one boundary, enabling complete three-sample captures.
+
+The stdout above is transcribed from the command tool's timeout error output in this execution; no missing samples or completion statuses are inferred.

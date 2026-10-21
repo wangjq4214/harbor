@@ -1,0 +1,42 @@
+Commands: rustc -Vv; cargo -V; python --version; git rev-parse HEAD; git status --short; git hash-object (paths below, in order); git diff -- crates/harbor-terminal/src/normal_buf.rs
+Hash order: Cargo.lock, history_calibration.rs, normal_buf.rs, monospace_prepare.rs, osc_benchmark.rs, workload.py, sample_process.ps1 (full paths in README).
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+binary: rustc
+commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+commit-date: 2026-07-14
+host: x86_64-pc-windows-msvc
+release: 1.97.1
+LLVM version: 22.1.6
+cargo 1.97.1 (c980f4866 2026-06-30)
+Python 3.12.10
+8a92562191cecd1d358dc4c774e31242c78c04e3
+ M crates/harbor-terminal/src/normal_buf.rs
+?? crates/harbor-terminal/src/history_calibration.rs
+?? docs/developer/evidence/
+?? scripts/profiling/sample_process.ps1
+?? scripts/profiling/test_sample_process.ps1
+?? scripts/profiling/test_workload.py
+?? scripts/profiling/workload.py
+182a7af925f89b88027025a3fea55413cd6643fa
+baf9a9e1c44be204df7b8d6c3e83e3fc933cac6a
+fc21bc82562322ff621a0e355cd44e88dd0ac423
+5ae8a05a4152580549efd5e383f72ec0121346ad
+616ad386c4cf3021583ca2b566daca965309cac5
+b86eebe01f5b2f74e30434e77da32d46dbd72a5d
+6dfcf5344d9f42a6bb241a0833952d94e1600fa7
+diff --git a/crates/harbor-terminal/src/normal_buf.rs b/crates/harbor-terminal/src/normal_buf.rs
+index b997b42..fc21bc8 100644
+--- a/crates/harbor-terminal/src/normal_buf.rs
++++ b/crates/harbor-terminal/src/normal_buf.rs
+@@ -1341,6 +1341,11 @@ impl<'a> Iterator for CellsIter<'a> {
+ 
+ impl<'a> ExactSizeIterator for CellsIter<'a> {}
+ 
++// Non-shipping capacity/storage probes; no production history settings are exposed.
++#[cfg(test)]
++#[path = "history_calibration.rs"]
++mod calibration;
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;

@@ -1,0 +1,188 @@
+    Finished `release` profile [optimized] target(s) in 0.20s
+     Running unittests src\lib.rs (target\release\deps\harbor_terminal-ad91a3c823ac5484.exe)
+
+running 2 tests
+test normal_buf::calibration::calibration_history_candidates ... candidate_only; blank primary ring; grid rows=24; repetitions=7; bytes are owned array capacities, not process peaks; sizes Cell=56 CellState=1 RowMetadata=40 row_version=8
+rows=1000 cols=80 components_bytes=[4587520, 81920, 40960, 8192] modeled_old_plus_new_backing_bytes=9523542 construct_ns=[652300, 800500, 656000, 673800, 665200, 674000, 790000] rectangular_resize_ns=[1115900, 1081000, 1040500, 1034000, 1066600, 1094800, 1248700]
+content_model rows=1000 cols=80 source_bytes_per_col=1 cap_bytes=1048576 retained_rows=1000 retained_source_bytes=80000
+content_model rows=1000 cols=80 source_bytes_per_col=1 cap_bytes=4194304 retained_rows=1000 retained_source_bytes=80000
+content_model rows=1000 cols=80 source_bytes_per_col=1 cap_bytes=16777216 retained_rows=1000 retained_source_bytes=80000
+content_model rows=1000 cols=80 source_bytes_per_col=3 cap_bytes=1048576 retained_rows=1000 retained_source_bytes=240000
+content_model rows=1000 cols=80 source_bytes_per_col=3 cap_bytes=4194304 retained_rows=1000 retained_source_bytes=240000
+content_model rows=1000 cols=80 source_bytes_per_col=3 cap_bytes=16777216 retained_rows=1000 retained_source_bytes=240000
+rows=4000 cols=80 components_bytes=[18027520, 321920, 160960, 32192] modeled_old_plus_new_backing_bytes=37342542 construct_ns=[2749700, 2724800, 3047800, 2957900, 2954600, 2464900, 2941800] rectangular_resize_ns=[4476100, 4684200, 4683700, 4424800, 4065000, 4428200, 4158200]
+content_model rows=4000 cols=80 source_bytes_per_col=1 cap_bytes=1048576 retained_rows=4000 retained_source_bytes=320000
+content_model rows=4000 cols=80 source_bytes_per_col=1 cap_bytes=4194304 retained_rows=4000 retained_source_bytes=320000
+content_model rows=4000 cols=80 source_bytes_per_col=1 cap_bytes=16777216 retained_rows=4000 retained_source_bytes=320000
+content_model rows=4000 cols=80 source_bytes_per_col=3 cap_bytes=1048576 retained_rows=4000 retained_source_bytes=960000
+content_model rows=4000 cols=80 source_bytes_per_col=3 cap_bytes=4194304 retained_rows=4000 retained_source_bytes=960000
+content_model rows=4000 cols=80 source_bytes_per_col=3 cap_bytes=16777216 retained_rows=4000 retained_source_bytes=960000
+rows=16000 cols=80 components_bytes=[71787520, 1281920, 640960, 128192] modeled_old_plus_new_backing_bytes=148618542 construct_ns=[10898300, 10749600, 10772900, 11174900, 10114900, 11172100, 10735700] rectangular_resize_ns=[15745200, 15490600, 16798000, 15539100, 17654000, 16060300, 15792500]
+content_model rows=16000 cols=80 source_bytes_per_col=1 cap_bytes=1048576 retained_rows=13107 retained_source_bytes=1048560
+content_model rows=16000 cols=80 source_bytes_per_col=1 cap_bytes=4194304 retained_rows=16000 retained_source_bytes=1280000
+content_model rows=16000 cols=80 source_bytes_per_col=1 cap_bytes=16777216 retained_rows=16000 retained_source_bytes=1280000
+content_model rows=16000 cols=80 source_bytes_per_col=3 cap_bytes=1048576 retained_rows=4369 retained_source_bytes=1048560
+content_model rows=16000 cols=80 source_bytes_per_col=3 cap_bytes=4194304 retained_rows=16000 retained_source_bytes=3840000
+content_model rows=16000 cols=80 source_bytes_per_col=3 cap_bytes=16777216 retained_rows=16000 retained_source_bytes=3840000
+rows=1000 cols=160 components_bytes=[9175040, 163840, 40960, 8192] modeled_old_plus_new_backing_bytes=18889782 construct_ns=[1436700, 1393100, 1459300, 1447500, 1448500, 1616700, 1580100] rectangular_resize_ns=[2332300, 2219900, 2321600, 2317200, 2513100, 2271100, 2260900]
+content_model rows=1000 cols=160 source_bytes_per_col=1 cap_bytes=1048576 retained_rows=1000 retained_source_bytes=160000
+content_model rows=1000 cols=160 source_bytes_per_col=1 cap_bytes=4194304 retained_rows=1000 retained_source_bytes=160000
+content_model rows=1000 cols=160 source_bytes_per_col=1 cap_bytes=16777216 retained_rows=1000 retained_source_bytes=160000
+content_model rows=1000 cols=160 source_bytes_per_col=3 cap_bytes=1048576 retained_rows=1000 retained_source_bytes=480000
+content_model rows=1000 cols=160 source_bytes_per_col=3 cap_bytes=4194304 retained_rows=1000 retained_source_bytes=480000
+content_model rows=1000 cols=160 source_bytes_per_col=3 cap_bytes=16777216 retained_rows=1000 retained_source_bytes=480000
+rows=4000 cols=160 components_bytes=[36055040, 643840, 160960, 32192] modeled_old_plus_new_backing_bytes=74068782 construct_ns=[5851200, 5946400, 6126400, 5879200, 6607000, 5923800, 6013600] rectangular_resize_ns=[9999200, 9097600, 8958300, 8535900, 9375700, 9478600, 9053000]
+content_model rows=4000 cols=160 source_bytes_per_col=1 cap_bytes=1048576 retained_rows=4000 retained_source_bytes=640000
+content_model rows=4000 cols=160 source_bytes_per_col=1 cap_bytes=4194304 retained_rows=4000 retained_source_bytes=640000
+content_model rows=4000 cols=160 source_bytes_per_col=1 cap_bytes=16777216 retained_rows=4000 retained_source_bytes=640000
+content_model rows=4000 cols=160 source_bytes_per_col=3 cap_bytes=1048576 retained_rows=2184 retained_source_bytes=1048320
+content_model rows=4000 cols=160 source_bytes_per_col=3 cap_bytes=4194304 retained_rows=4000 retained_source_bytes=1920000
+content_model rows=4000 cols=160 source_bytes_per_col=3 cap_bytes=16777216 retained_rows=4000 retained_source_bytes=1920000
+rows=16000 cols=160 components_bytes=[143575040, 2563840, 640960, 128192] modeled_old_plus_new_backing_bytes=294784782 construct_ns=[21062100, 19827100, 31570000, 24017900, 24341900, 23520100, 24063800] rectangular_resize_ns=[30104200, 32111200, 34859600, 32158600, 32015500, 37499800, 34712800]
+content_model rows=16000 cols=160 source_bytes_per_col=1 cap_bytes=1048576 retained_rows=6553 retained_source_bytes=1048480
+content_model rows=16000 cols=160 source_bytes_per_col=1 cap_bytes=4194304 retained_rows=16000 retained_source_bytes=2560000
+content_model rows=16000 cols=160 source_bytes_per_col=1 cap_bytes=16777216 retained_rows=16000 retained_source_bytes=2560000
+content_model rows=16000 cols=160 source_bytes_per_col=3 cap_bytes=1048576 retained_rows=2184 retained_source_bytes=1048320
+content_model rows=16000 cols=160 source_bytes_per_col=3 cap_bytes=4194304 retained_rows=8738 retained_source_bytes=4194240
+content_model rows=16000 cols=160 source_bytes_per_col=3 cap_bytes=16777216 retained_rows=16000 retained_source_bytes=7680000
+ok
+test normal_buf::calibration::calibration_text_unit_candidates ... candidate_only; grid=80x2; parser+engine feed timing excludes construction/PTY/render; full current retention versus scalar-aligned prefix MODEL; sample order retained
+unit=combining_control source_bytes=3 alternate=false chunk=1 suffix_capacity_bytes=8 feed_ns=[35500, 5200, 4300, 3400, 4800, 3900, 3500]
+unit=combining_control source_bytes=3 alternate=false chunk=7 suffix_capacity_bytes=8 feed_ns=[3800, 5200, 2200, 2200, 1900, 2200, 1900]
+unit=combining_control source_bytes=3 alternate=false chunk=4096 suffix_capacity_bytes=8 feed_ns=[1800, 2800, 1700, 1500, 1700, 1400, 2700]
+unit=combining_control source_bytes=3 alternate=true chunk=1 suffix_capacity_bytes=8 feed_ns=[3800, 2600, 2900, 2900, 3200, 3500, 5900]
+unit=combining_control source_bytes=3 alternate=true chunk=7 suffix_capacity_bytes=8 feed_ns=[2300, 2200, 2000, 2100, 2100, 2000, 2000]
+unit=combining_control source_bytes=3 alternate=true chunk=4096 suffix_capacity_bytes=8 feed_ns=[2100, 3200, 4500, 2800, 2500, 2500, 2400]
+prefix_model unit=combining_control source_bytes=3 limit_bytes=64 admitted_bytes=3 discarded_bytes=0
+prefix_model unit=combining_control source_bytes=3 limit_bytes=256 admitted_bytes=3 discarded_bytes=0
+prefix_model unit=combining_control source_bytes=3 limit_bytes=1024 admitted_bytes=3 discarded_bytes=0
+unit=selector_control source_bytes=6 alternate=false chunk=1 suffix_capacity_bytes=8 feed_ns=[18200, 6500, 6200, 5500, 10500, 8200, 5900]
+unit=selector_control source_bytes=6 alternate=false chunk=7 suffix_capacity_bytes=8 feed_ns=[4300, 4400, 4600, 2900, 3100, 4000, 3000]
+unit=selector_control source_bytes=6 alternate=false chunk=4096 suffix_capacity_bytes=8 feed_ns=[3600, 3600, 3500, 2700, 3700, 3700, 3700]
+unit=selector_control source_bytes=6 alternate=true chunk=1 suffix_capacity_bytes=8 feed_ns=[7200, 6900, 6400, 6900, 6200, 6900, 6600]
+unit=selector_control source_bytes=6 alternate=true chunk=7 suffix_capacity_bytes=8 feed_ns=[4800, 4400, 5000, 5600, 4800, 5200, 4200]
+unit=selector_control source_bytes=6 alternate=true chunk=4096 suffix_capacity_bytes=8 feed_ns=[4300, 4700, 4200, 5600, 4800, 6400, 4400]
+prefix_model unit=selector_control source_bytes=6 limit_bytes=64 admitted_bytes=6 discarded_bytes=0
+prefix_model unit=selector_control source_bytes=6 limit_bytes=256 admitted_bytes=6 discarded_bytes=0
+prefix_model unit=selector_control source_bytes=6 limit_bytes=1024 admitted_bytes=6 discarded_bytes=0
+unit=zwj_control source_bytes=11 alternate=false chunk=1 suffix_capacity_bytes=8 feed_ns=[18200, 8400, 7700, 6200, 6200, 11500, 5900]
+unit=zwj_control source_bytes=11 alternate=false chunk=7 suffix_capacity_bytes=8 feed_ns=[3600, 5100, 3200, 2400, 2900, 2700, 2500]
+unit=zwj_control source_bytes=11 alternate=false chunk=4096 suffix_capacity_bytes=8 feed_ns=[2900, 2000, 2500, 1900, 3300, 2100, 2000]
+unit=zwj_control source_bytes=11 alternate=true chunk=1 suffix_capacity_bytes=8 feed_ns=[10800, 8100, 6500, 6300, 6400, 7000, 7700]
+unit=zwj_control source_bytes=11 alternate=true chunk=7 suffix_capacity_bytes=8 feed_ns=[6200, 5500, 5300, 4100, 4500, 4300, 5400]
+unit=zwj_control source_bytes=11 alternate=true chunk=4096 suffix_capacity_bytes=8 feed_ns=[5300, 4000, 3900, 3000, 3700, 3500, 3500]
+prefix_model unit=zwj_control source_bytes=11 limit_bytes=64 admitted_bytes=11 discarded_bytes=0
+prefix_model unit=zwj_control source_bytes=11 limit_bytes=256 admitted_bytes=11 discarded_bytes=0
+prefix_model unit=zwj_control source_bytes=11 limit_bytes=1024 admitted_bytes=11 discarded_bytes=0
+unit=combining_growth source_bytes=65 alternate=false chunk=1 suffix_capacity_bytes=64 feed_ns=[36700, 36200, 33300, 33300, 31900, 33000, 32000]
+unit=combining_growth source_bytes=65 alternate=false chunk=7 suffix_capacity_bytes=64 feed_ns=[9700, 9000, 10100, 9800, 9500, 8800, 9600]
+unit=combining_growth source_bytes=65 alternate=false chunk=4096 suffix_capacity_bytes=64 feed_ns=[5100, 5400, 9100, 5200, 6500, 5300, 9400]
+unit=combining_growth source_bytes=65 alternate=true chunk=1 suffix_capacity_bytes=64 feed_ns=[34200, 36300, 35600, 35400, 33000, 35200, 48800]
+unit=combining_growth source_bytes=65 alternate=true chunk=7 suffix_capacity_bytes=64 feed_ns=[10700, 10200, 9700, 9300, 9200, 9300, 9600]
+unit=combining_growth source_bytes=65 alternate=true chunk=4096 suffix_capacity_bytes=64 feed_ns=[7000, 6000, 5300, 5600, 5200, 5200, 4700]
+prefix_model unit=combining_growth source_bytes=65 limit_bytes=64 admitted_bytes=63 discarded_bytes=2
+prefix_model unit=combining_growth source_bytes=65 limit_bytes=256 admitted_bytes=65 discarded_bytes=0
+prefix_model unit=combining_growth source_bytes=65 limit_bytes=1024 admitted_bytes=65 discarded_bytes=0
+unit=selector_growth source_bytes=99 alternate=false chunk=1 suffix_capacity_bytes=128 feed_ns=[55500, 50900, 41900, 41000, 37400, 34600, 34000]
+unit=selector_growth source_bytes=99 alternate=false chunk=7 suffix_capacity_bytes=128 feed_ns=[11100, 11900, 10700, 10300, 10800, 10300, 10500]
+unit=selector_growth source_bytes=99 alternate=false chunk=4096 suffix_capacity_bytes=128 feed_ns=[6800, 6400, 6000, 7000, 6400, 11700, 8300]
+unit=selector_growth source_bytes=99 alternate=true chunk=1 suffix_capacity_bytes=128 feed_ns=[36400, 36300, 34000, 35800, 36100, 35100, 39400]
+unit=selector_growth source_bytes=99 alternate=true chunk=7 suffix_capacity_bytes=128 feed_ns=[14700, 14100, 13500, 12300, 12100, 12400, 12400]
+unit=selector_growth source_bytes=99 alternate=true chunk=4096 suffix_capacity_bytes=128 feed_ns=[11800, 9900, 7400, 7300, 8400, 8000, 7900]
+prefix_model unit=selector_growth source_bytes=99 limit_bytes=64 admitted_bytes=63 discarded_bytes=36
+prefix_model unit=selector_growth source_bytes=99 limit_bytes=256 admitted_bytes=99 discarded_bytes=0
+prefix_model unit=selector_growth source_bytes=99 limit_bytes=1024 admitted_bytes=99 discarded_bytes=0
+unit=zwj_growth source_bytes=228 alternate=false chunk=1 suffix_capacity_bytes=256 feed_ns=[147700, 102500, 104700, 98200, 99000, 100900, 98800]
+unit=zwj_growth source_bytes=228 alternate=false chunk=7 suffix_capacity_bytes=256 feed_ns=[26000, 27800, 24200, 24400, 25900, 23800, 25700]
+unit=zwj_growth source_bytes=228 alternate=false chunk=4096 suffix_capacity_bytes=256 feed_ns=[14700, 11300, 10600, 10500, 11200, 11300, 10400]
+unit=zwj_growth source_bytes=228 alternate=true chunk=1 suffix_capacity_bytes=256 feed_ns=[99900, 98900, 98700, 100400, 99000, 97600, 102900]
+unit=zwj_growth source_bytes=228 alternate=true chunk=7 suffix_capacity_bytes=256 feed_ns=[25700, 27400, 26600, 27800, 31100, 27700, 31500]
+unit=zwj_growth source_bytes=228 alternate=true chunk=4096 suffix_capacity_bytes=256 feed_ns=[11800, 12900, 11200, 11400, 11300, 10800, 11000]
+prefix_model unit=zwj_growth source_bytes=228 limit_bytes=64 admitted_bytes=63 discarded_bytes=165
+prefix_model unit=zwj_growth source_bytes=228 limit_bytes=256 admitted_bytes=228 discarded_bytes=0
+prefix_model unit=zwj_growth source_bytes=228 limit_bytes=1024 admitted_bytes=228 discarded_bytes=0
+unit=combining_growth source_bytes=257 alternate=false chunk=1 suffix_capacity_bytes=256 feed_ns=[134200, 119000, 116500, 116300, 119200, 114800, 114200]
+unit=combining_growth source_bytes=257 alternate=false chunk=7 suffix_capacity_bytes=256 feed_ns=[29800, 28600, 29600, 28600, 29800, 28500, 30500]
+unit=combining_growth source_bytes=257 alternate=false chunk=4096 suffix_capacity_bytes=256 feed_ns=[12800, 13200, 14300, 12900, 13600, 13200, 13600]
+unit=combining_growth source_bytes=257 alternate=true chunk=1 suffix_capacity_bytes=256 feed_ns=[124800, 111900, 109700, 111800, 108100, 113400, 107900]
+unit=combining_growth source_bytes=257 alternate=true chunk=7 suffix_capacity_bytes=256 feed_ns=[30300, 28500, 30000, 30300, 29700, 28700, 34800]
+unit=combining_growth source_bytes=257 alternate=true chunk=4096 suffix_capacity_bytes=256 feed_ns=[15700, 12900, 13500, 12300, 12600, 12800, 12600]
+prefix_model unit=combining_growth source_bytes=257 limit_bytes=64 admitted_bytes=63 discarded_bytes=194
+prefix_model unit=combining_growth source_bytes=257 limit_bytes=256 admitted_bytes=255 discarded_bytes=2
+prefix_model unit=combining_growth source_bytes=257 limit_bytes=1024 admitted_bytes=257 discarded_bytes=0
+unit=selector_growth source_bytes=387 alternate=false chunk=1 suffix_capacity_bytes=512 feed_ns=[147600, 142700, 245000, 241300, 208800, 137800, 137900]
+unit=selector_growth source_bytes=387 alternate=false chunk=7 suffix_capacity_bytes=512 feed_ns=[35100, 34200, 33900, 34400, 33900, 38800, 35000]
+unit=selector_growth source_bytes=387 alternate=false chunk=4096 suffix_capacity_bytes=512 feed_ns=[14700, 14000, 15300, 20700, 16100, 17300, 15000]
+unit=selector_growth source_bytes=387 alternate=true chunk=1 suffix_capacity_bytes=512 feed_ns=[144000, 140500, 134700, 136300, 135100, 135300, 152600]
+unit=selector_growth source_bytes=387 alternate=true chunk=7 suffix_capacity_bytes=512 feed_ns=[40500, 34800, 34500, 35700, 35400, 35300, 35200]
+unit=selector_growth source_bytes=387 alternate=true chunk=4096 suffix_capacity_bytes=512 feed_ns=[15500, 18000, 16400, 15700, 14900, 17400, 15700]
+prefix_model unit=selector_growth source_bytes=387 limit_bytes=64 admitted_bytes=63 discarded_bytes=324
+prefix_model unit=selector_growth source_bytes=387 limit_bytes=256 admitted_bytes=255 discarded_bytes=132
+prefix_model unit=selector_growth source_bytes=387 limit_bytes=1024 admitted_bytes=387 discarded_bytes=0
+unit=zwj_growth source_bytes=900 alternate=false chunk=1 suffix_capacity_bytes=1024 feed_ns=[356600, 345200, 347800, 355100, 489500, 351900, 343100]
+unit=zwj_growth source_bytes=900 alternate=false chunk=7 suffix_capacity_bytes=1024 feed_ns=[85000, 80500, 81800, 81500, 87900, 87500, 88600]
+unit=zwj_growth source_bytes=900 alternate=false chunk=4096 suffix_capacity_bytes=1024 feed_ns=[34200, 33600, 34000, 33700, 33700, 54600, 51000]
+unit=zwj_growth source_bytes=900 alternate=true chunk=1 suffix_capacity_bytes=1024 feed_ns=[339200, 342900, 339700, 335700, 332700, 335000, 445600]
+unit=zwj_growth source_bytes=900 alternate=true chunk=7 suffix_capacity_bytes=1024 feed_ns=[86000, 83300, 82500, 81000, 83400, 83500, 80400]
+unit=zwj_growth source_bytes=900 alternate=true chunk=4096 suffix_capacity_bytes=1024 feed_ns=[37600, 34900, 33900, 39700, 33200, 33100, 32700]
+prefix_model unit=zwj_growth source_bytes=900 limit_bytes=64 admitted_bytes=63 discarded_bytes=837
+prefix_model unit=zwj_growth source_bytes=900 limit_bytes=256 admitted_bytes=256 discarded_bytes=644
+prefix_model unit=zwj_growth source_bytes=900 limit_bytes=1024 admitted_bytes=900 discarded_bytes=0
+unit=combining_growth source_bytes=1025 alternate=false chunk=1 suffix_capacity_bytes=1024 feed_ns=[406900, 395000, 398900, 392300, 398700, 399800, 391100]
+unit=combining_growth source_bytes=1025 alternate=false chunk=7 suffix_capacity_bytes=1024 feed_ns=[104200, 101300, 101000, 100000, 99700, 99400, 99600]
+unit=combining_growth source_bytes=1025 alternate=false chunk=4096 suffix_capacity_bytes=1024 feed_ns=[43300, 43400, 42800, 43300, 44400, 45500, 44500]
+unit=combining_growth source_bytes=1025 alternate=true chunk=1 suffix_capacity_bytes=1024 feed_ns=[403100, 401100, 386700, 407500, 388000, 389900, 394000]
+unit=combining_growth source_bytes=1025 alternate=true chunk=7 suffix_capacity_bytes=1024 feed_ns=[101300, 102300, 103000, 99600, 99800, 101100, 158000]
+unit=combining_growth source_bytes=1025 alternate=true chunk=4096 suffix_capacity_bytes=1024 feed_ns=[42600, 42600, 42400, 43100, 42200, 42200, 45300]
+prefix_model unit=combining_growth source_bytes=1025 limit_bytes=64 admitted_bytes=63 discarded_bytes=962
+prefix_model unit=combining_growth source_bytes=1025 limit_bytes=256 admitted_bytes=255 discarded_bytes=770
+prefix_model unit=combining_growth source_bytes=1025 limit_bytes=1024 admitted_bytes=1023 discarded_bytes=2
+unit=selector_growth source_bytes=1539 alternate=false chunk=1 suffix_capacity_bytes=2048 feed_ns=[599900, 587700, 580900, 592700, 579100, 585500, 581300]
+unit=selector_growth source_bytes=1539 alternate=false chunk=7 suffix_capacity_bytes=2048 feed_ns=[136800, 132000, 134400, 220600, 143600, 135900, 141700]
+unit=selector_growth source_bytes=1539 alternate=false chunk=4096 suffix_capacity_bytes=2048 feed_ns=[51000, 49000, 49000, 49800, 48700, 47900, 50700]
+unit=selector_growth source_bytes=1539 alternate=true chunk=1 suffix_capacity_bytes=2048 feed_ns=[581200, 581700, 586500, 586300, 580900, 580700, 576900]
+unit=selector_growth source_bytes=1539 alternate=true chunk=7 suffix_capacity_bytes=2048 feed_ns=[135700, 140800, 140700, 141800, 143500, 135100, 133800]
+unit=selector_growth source_bytes=1539 alternate=true chunk=4096 suffix_capacity_bytes=2048 feed_ns=[50100, 49800, 49700, 52700, 50000, 49100, 47600]
+prefix_model unit=selector_growth source_bytes=1539 limit_bytes=64 admitted_bytes=63 discarded_bytes=1476
+prefix_model unit=selector_growth source_bytes=1539 limit_bytes=256 admitted_bytes=255 discarded_bytes=1284
+prefix_model unit=selector_growth source_bytes=1539 limit_bytes=1024 admitted_bytes=1023 discarded_bytes=516
+unit=zwj_growth source_bytes=3588 alternate=false chunk=1 suffix_capacity_bytes=4096 feed_ns=[1456400, 1419000, 1450000, 1443700, 1406400, 1424800, 1423000]
+unit=zwj_growth source_bytes=3588 alternate=false chunk=7 suffix_capacity_bytes=4096 feed_ns=[327900, 328400, 323400, 323500, 329100, 364900, 326400]
+unit=zwj_growth source_bytes=3588 alternate=false chunk=4096 suffix_capacity_bytes=4096 feed_ns=[129300, 123700, 124900, 124800, 125000, 124200, 124700]
+unit=zwj_growth source_bytes=3588 alternate=true chunk=1 suffix_capacity_bytes=4096 feed_ns=[1393300, 1439400, 1469900, 1378800, 1409600, 1432100, 1410800]
+unit=zwj_growth source_bytes=3588 alternate=true chunk=7 suffix_capacity_bytes=4096 feed_ns=[336500, 329300, 327300, 324800, 323500, 324500, 508500]
+unit=zwj_growth source_bytes=3588 alternate=true chunk=4096 suffix_capacity_bytes=4096 feed_ns=[126200, 129600, 127000, 131600, 127400, 127300, 127500]
+prefix_model unit=zwj_growth source_bytes=3588 limit_bytes=64 admitted_bytes=63 discarded_bytes=3525
+prefix_model unit=zwj_growth source_bytes=3588 limit_bytes=256 admitted_bytes=256 discarded_bytes=3332
+prefix_model unit=zwj_growth source_bytes=3588 limit_bytes=1024 admitted_bytes=1022 discarded_bytes=2566
+unit=combining_growth source_bytes=8193 alternate=false chunk=1 suffix_capacity_bytes=8192 feed_ns=[3494100, 3533300, 3472100, 3448200, 3488500, 3474300, 3547600]
+unit=combining_growth source_bytes=8193 alternate=false chunk=7 suffix_capacity_bytes=8192 feed_ns=[828500, 831000, 830100, 905300, 833700, 840700, 828000]
+unit=combining_growth source_bytes=8193 alternate=false chunk=4096 suffix_capacity_bytes=8192 feed_ns=[308800, 308600, 316800, 319400, 406500, 322400, 313600]
+unit=combining_growth source_bytes=8193 alternate=true chunk=1 suffix_capacity_bytes=8192 feed_ns=[3623200, 3435700, 3443900, 3535300, 3463100, 3465200, 3475400]
+unit=combining_growth source_bytes=8193 alternate=true chunk=7 suffix_capacity_bytes=8192 feed_ns=[846800, 829700, 834400, 817600, 844400, 839200, 825200]
+unit=combining_growth source_bytes=8193 alternate=true chunk=4096 suffix_capacity_bytes=8192 feed_ns=[312700, 312000, 319400, 325400, 316200, 322100, 314100]
+prefix_model unit=combining_growth source_bytes=8193 limit_bytes=64 admitted_bytes=63 discarded_bytes=8130
+prefix_model unit=combining_growth source_bytes=8193 limit_bytes=256 admitted_bytes=255 discarded_bytes=7938
+prefix_model unit=combining_growth source_bytes=8193 limit_bytes=1024 admitted_bytes=1023 discarded_bytes=7170
+unit=selector_growth source_bytes=12291 alternate=false chunk=1 suffix_capacity_bytes=16384 feed_ns=[5200100, 5194700, 5216700, 5302100, 5250000, 5319900, 5309500]
+unit=selector_growth source_bytes=12291 alternate=false chunk=7 suffix_capacity_bytes=16384 feed_ns=[1160000, 1137800, 1129700, 1136000, 1165900, 1121800, 1136400]
+unit=selector_growth source_bytes=12291 alternate=false chunk=4096 suffix_capacity_bytes=16384 feed_ns=[370400, 370700, 359300, 361100, 447100, 355400, 370600]
+unit=selector_growth source_bytes=12291 alternate=true chunk=1 suffix_capacity_bytes=16384 feed_ns=[5413400, 5052600, 5124400, 5016300, 5124600, 5079300, 5004800]
+unit=selector_growth source_bytes=12291 alternate=true chunk=7 suffix_capacity_bytes=16384 feed_ns=[1154100, 1107800, 1132800, 1106400, 1140800, 1144200, 1110200]
+unit=selector_growth source_bytes=12291 alternate=true chunk=4096 suffix_capacity_bytes=16384 feed_ns=[357000, 362900, 355700, 413800, 394300, 357900, 370500]
+prefix_model unit=selector_growth source_bytes=12291 limit_bytes=64 admitted_bytes=63 discarded_bytes=12228
+prefix_model unit=selector_growth source_bytes=12291 limit_bytes=256 admitted_bytes=255 discarded_bytes=12036
+prefix_model unit=selector_growth source_bytes=12291 limit_bytes=1024 admitted_bytes=1023 discarded_bytes=11268
+unit=zwj_growth source_bytes=28676 alternate=false chunk=1 suffix_capacity_bytes=32768 feed_ns=[16003100, 16056000, 15946200, 16127700, 16007800, 15976700, 15941000]
+unit=zwj_growth source_bytes=28676 alternate=false chunk=7 suffix_capacity_bytes=32768 feed_ns=[3217000, 3245900, 3211800, 3186400, 3189100, 3286000, 3203000]
+unit=zwj_growth source_bytes=28676 alternate=false chunk=4096 suffix_capacity_bytes=32768 feed_ns=[995600, 1033400, 994900, 992100, 987400, 981100, 988100]
+unit=zwj_growth source_bytes=28676 alternate=true chunk=1 suffix_capacity_bytes=32768 feed_ns=[15417300, 15458500, 15641800, 15369800, 15444100, 15366600, 15697000]
+unit=zwj_growth source_bytes=28676 alternate=true chunk=7 suffix_capacity_bytes=32768 feed_ns=[3184000, 3511600, 3127800, 3157000, 3400700, 3169800, 3162400]
+unit=zwj_growth source_bytes=28676 alternate=true chunk=4096 suffix_capacity_bytes=32768 feed_ns=[1011800, 1004200, 1738000, 1013700, 1004600, 998500, 1676800]
+prefix_model unit=zwj_growth source_bytes=28676 limit_bytes=64 admitted_bytes=63 discarded_bytes=28613
+prefix_model unit=zwj_growth source_bytes=28676 limit_bytes=256 admitted_bytes=256 discarded_bytes=28420
+prefix_model unit=zwj_growth source_bytes=28676 limit_bytes=1024 admitted_bytes=1022 discarded_bytes=27654
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1075 filtered out; finished in 2.43s
+
