@@ -113,7 +113,7 @@ fn palette_geometry(runtime: &Runtime) -> (Rect, Rect) {
     let panel = items
         .iter()
         .find_map(|item| match item.primitive {
-            Primitive::BackdropRefract { rect, .. } => Some(rect),
+            Primitive::BackdropMaterial { rect, .. } => Some(rect),
             _ => None,
         })
         .expect("palette panel");
@@ -280,7 +280,7 @@ fn palette_rows_fill_the_panel_with_right_aligned_keycaps_and_translucent_select
         let panel = items
             .iter()
             .find_map(|item| match item.primitive {
-                Primitive::BackdropRefract { rect, .. } => Some(rect),
+                Primitive::BackdropMaterial { rect, .. } => Some(rect),
                 _ => None,
             })
             .unwrap();
@@ -385,12 +385,14 @@ fn palette_uses_shared_local_blur_with_a_distinct_inset_editor() {
         let panel = items
             .iter()
             .find_map(|item| match item.primitive {
-                Primitive::BackdropRefract {
+                Primitive::BackdropMaterial {
                     rect,
                     sigma,
                     refraction,
+                    material,
                     corner_radii,
                 } => {
+                    assert_eq!(Some(material), shared.material);
                     assert_eq!(sigma, shared.blur_sigma);
                     assert_eq!(refraction, shared.refraction);
                     assert_eq!(corner_radii, [12.0; 4]);

@@ -190,7 +190,7 @@ fn idle_notification_expiry_removes_glass_without_changing_terminal_focus_or_all
             .unwrap()
             .added
             .iter()
-            .any(|item| matches!(item.primitive, Primitive::BackdropRefract { .. }))
+            .any(|item| matches!(item.primitive, Primitive::BackdropMaterial { .. }))
     );
     assert_eq!(
         controller.advance_notifications(deadline - std::time::Duration::from_millis(1)),
@@ -205,7 +205,7 @@ fn idle_notification_expiry_removes_glass_without_changing_terminal_focus_or_all
             .added
             .iter()
             .chain(&delta.modified)
-            .any(|item| matches!(item.primitive, Primitive::BackdropRefract { .. }))
+            .any(|item| matches!(item.primitive, Primitive::BackdropMaterial { .. }))
     );
     assert_eq!(controller.latest_terminal_allocation(), allocation);
     assert_eq!(runtime.input().focused(), focused);
@@ -1802,7 +1802,7 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
         }));
         let items: Vec<_> = delta.added.iter().chain(&delta.modified).collect();
         assert!(items.iter().any(|item| matches!(&item.primitive,
-            Primitive::BackdropRefract { rect, sigma: 8.0, refraction, .. }
+            Primitive::BackdropMaterial { rect, sigma: 8.0, refraction, .. }
                 if *rect == panel && refraction.width() == 12.0 && refraction.displacement() == 10.0)));
         let surface = items
             .iter()
@@ -1835,12 +1835,11 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
             }),
             "faint black veil supports light text without adding a colored tint"
         );
-        assert!(items.iter().any(|item| matches!(&item.primitive,
-            Primitive::PaintedBorder { rect, paint: harbor_widget::Paint::LinearGradient(gradient), corner_radii, width }
-                if *rect == panel && *corner_radii == [12.0; 4]
-                && gradient.stops()[0].color().a > gradient.stops()[1].color().a
-                && gradient.stops().iter().all(|stop| stop.color().a > 0.0 && stop.color().a <= 0.35)
-                && *width > 1.0 && *width < 1.5)));
+        assert!(
+            !items.iter().any(|item| matches!(&item.primitive,
+            Primitive::PaintedBorder { rect, .. } if *rect == panel)),
+            "shader rim replaces the old gradient stroke rather than doubling it"
+        );
         assert!(!items.iter().any(|item| matches!(&item.primitive,
             Primitive::OuterShadow { occluder_rect, .. } if *occluder_rect == panel)));
         let (status_origin, _) = items
@@ -1934,7 +1933,7 @@ fn configuration_notice_stays_below_search_and_returns_when_search_closes() {
             .iter()
             .chain(&delta.modified)
             .find_map(|item| match &item.primitive {
-                Primitive::BackdropRefract {
+                Primitive::BackdropMaterial {
                     rect, corner_radii, ..
                 } if *corner_radii == [6.0; 4] => Some(rect.min.y),
                 _ => None,

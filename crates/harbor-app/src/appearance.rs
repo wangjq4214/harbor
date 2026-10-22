@@ -1,7 +1,7 @@
 //! Product appearance recipes. Generic paint/filter mechanisms live in harbor-widget.
 use harbor_widget::{
-    BackdropFilter, Border, BorderRadius, BoxDecoration, ClipBehavior, DecoratedBox,
-    EdgeRefraction, GradientStop, LinearGradient, Paint,
+    BackdropFilter, BackdropMaterial, Border, BorderRadius, BoxDecoration, ClipBehavior,
+    DecoratedBox, EdgeRefraction, GradientStop, LinearGradient, Paint,
     layout::Point,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -35,6 +35,7 @@ pub(crate) fn glass_icon_button_style(cx: &BuildCx) -> harbor_widget::theme::Con
 pub(crate) struct GlassAppearance {
     pub blur_sigma: f32,
     pub refraction: EdgeRefraction,
+    pub material: Option<BackdropMaterial>,
     pub radius: BorderRadius,
     pub panel_fill: Paint,
     pub panel_border: Border,
@@ -75,40 +76,29 @@ impl Default for GlassAppearance {
             ],
         )
         .unwrap();
-        let edge = LinearGradient::new(
-            Point::ZERO,
-            Point::new(0.45, 1.0),
-            &[
-                GradientStop::new(
-                    0.0,
-                    Color {
-                        a: 0.32,
-                        ..Color::WHITE
-                    },
-                ),
-                GradientStop::new(
-                    0.45,
-                    Color {
-                        a: 0.03,
-                        ..Color::WHITE
-                    },
-                ),
-                GradientStop::new(
-                    1.0,
-                    Color {
-                        a: 0.18,
-                        ..Color::WHITE
-                    },
-                ),
-            ],
-        )
-        .unwrap();
         Self {
             blur_sigma: 8.0,
             refraction: EdgeRefraction::new(12.0, 10.0).unwrap(),
             radius: BorderRadius::all(12.0).unwrap(),
             panel_fill: surface.into(),
-            panel_border: Border::with_paint(edge.into(), 1.25).unwrap(),
+            // The shader now paints the geometric rim; don't double it with a border.
+            panel_border: Border::all(Color::TRANSPARENT, 0.0).unwrap(),
+            // Adapt the reference dark Regular tone toward identity to retain the
+            // existing faint/translucent panels. All three consumers share this.
+            material: Some(
+                BackdropMaterial::new(
+                    21.8,
+                    -0.25,
+                    [
+                        0.105 * 0.35,
+                        1.0 + (0.83 - 1.0) * 0.35,
+                        -0.2091 * 0.35,
+                        1.0648,
+                    ],
+                    [0.30, 0.22],
+                )
+                .unwrap(),
+            ),
             input_fill: Color {
                 a: 0.07,
                 ..Color::BLACK
@@ -169,6 +159,7 @@ impl GlassAppearance {
             .unwrap()
             .border_radius(self.radius)
             .edge_refraction(self.refraction)
+            .material(self.material)
             .child(card)
             .build(cx)
     }
@@ -212,6 +203,7 @@ mod tests {
         let local = GlassAppearance {
             blur_sigma: 4.0,
             refraction: EdgeRefraction::default(),
+            material: None,
             radius: BorderRadius::all(20.0).unwrap(),
             panel_fill: Paint::Solid(Color {
                 a: 0.2,

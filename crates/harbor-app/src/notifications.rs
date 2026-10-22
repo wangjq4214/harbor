@@ -444,12 +444,14 @@ mod tests {
                 .iter()
                 .enumerate()
                 .find_map(|(i, item)| match item.primitive {
-                    Primitive::BackdropRefract {
+                    Primitive::BackdropMaterial {
                         rect,
                         sigma,
                         corner_radii,
                         refraction,
-                    } if sigma == appearance.blur_sigma
+                        material,
+                    } if Some(material) == appearance.material
+                        && sigma == appearance.blur_sigma
                         && refraction == appearance.refraction
                         && corner_radii == [6.0; 4] =>
                     {

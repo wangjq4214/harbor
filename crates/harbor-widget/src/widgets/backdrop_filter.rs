@@ -48,6 +48,68 @@ impl EdgeRefraction {
     }
 }
 
+/// Opt-in background material, independent of product controls or layout.
+/// Frost mixes a wider Gaussian with the base blur: negative mix darkens,
+/// positive mix lightens. Tone is [offset, slope, quadratic, saturation] on
+/// straight RGB; rim is [highlight, shade]. All inputs must be finite.
+/// Sigma is capped at 64dp, mix at [-1,1], tone coefficients at [-2,2],
+/// saturation at [0,2], and rim intensities at [0,1].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackdropMaterial {
+    frost: [f32; 2],
+    tone: [f32; 4],
+    rim: [f32; 2],
+}
+
+impl BackdropMaterial {
+    pub fn new(
+        fill_sigma: f32,
+        fill_mix: f32,
+        tone: [f32; 4],
+        rim: [f32; 2],
+    ) -> Result<Self, DecorationError> {
+        for (field, values) in [
+            ("material.frost", &[fill_sigma, fill_mix][..]),
+            ("material.tone", &tone[..]),
+            ("material.rim", &rim[..]),
+        ] {
+            if values.iter().any(|v| !v.is_finite()) {
+                return Err(DecorationError::NonFinite { field });
+            }
+        }
+        for (field, value) in [
+            ("material.sigma", fill_sigma),
+            ("material.saturation", tone[3]),
+            ("material.highlight", rim[0]),
+            ("material.shade", rim[1]),
+        ] {
+            if value < 0.0 {
+                return Err(DecorationError::Negative { field });
+            }
+        }
+        Ok(Self {
+            frost: [fill_sigma.min(64.0), fill_mix.clamp(-1.0, 1.0)],
+            tone: [
+                tone[0].clamp(-2.0, 2.0),
+                tone[1].clamp(-2.0, 2.0),
+                tone[2].clamp(-2.0, 2.0),
+                tone[3].min(2.0),
+            ],
+            rim: [rim[0].min(1.0), rim[1].min(1.0)],
+        })
+    }
+
+    pub fn frost(self) -> [f32; 2] {
+        self.frost
+    }
+    pub fn tone(self) -> [f32; 4] {
+        self.tone
+    }
+    pub fn rim(self) -> [f32; 2] {
+        self.rim
+    }
+}
+
 /// Locally blurs pixels painted before this wrapper; its child stays sharp.
 ///
 /// Use [`crate::runtime::Runtime::encode_frame`] to render scenes with filters.
@@ -59,6 +121,7 @@ pub struct BackdropFilter {
     sigma: f32,
     radius: BorderRadius,
     refraction: EdgeRefraction,
+    material: Option<BackdropMaterial>,
     child: Option<View>,
 }
 
@@ -78,6 +141,7 @@ impl BackdropFilter {
             sigma: sigma.min(64.0),
             radius: BorderRadius::default(),
             refraction: EdgeRefraction::default(),
+            material: None,
             child: None,
         })
     }
@@ -85,6 +149,13 @@ impl BackdropFilter {
     /// Opt-in edge/corner refraction of the backdrop, never of the child.
     pub fn edge_refraction(mut self, refraction: EdgeRefraction) -> Self {
         self.refraction = refraction;
+        self
+    }
+
+    /// Opt into nonlinear edge refraction, geometric rim and frost/tone.
+    /// None retains the legacy blur/refraction path.
+    pub fn material(mut self, material: Option<BackdropMaterial>) -> Self {
+        self.material = material;
         self
     }
 
@@ -134,7 +205,7 @@ impl AnyView for BackdropFilter {
     }
 
     fn paint_primitives(&self, rect: Rect, _: &TextMetrics) -> Vec<Primitive> {
-        if (self.sigma == 0.0 && !self.refraction.enabled())
+        if (self.material.is_none() && self.sigma == 0.0 && !self.refraction.enabled())
             || rect.size().width <= 0.0
             || rect.size().height <= 0.0
         {
@@ -143,6 +214,15 @@ impl AnyView for BackdropFilter {
         let Ok(radius) = self.radius.normalize(rect.size()) else {
             return Vec::new();
         };
+        if let Some(material) = self.material {
+            return vec![Primitive::BackdropMaterial {
+                rect,
+                sigma: self.sigma,
+                corner_radii: radius.as_array(),
+                refraction: self.refraction,
+                material,
+            }];
+        }
         if self.refraction.enabled() {
             return vec![Primitive::BackdropRefract {
                 rect,
@@ -163,6 +243,53 @@ impl AnyView for BackdropFilter {
 mod tests {
     use super::*;
     use crate::runtime::DEFAULT_TEXT_METRICS;
+
+    #[test]
+    fn material_is_validated_bounded_and_opt_in_without_layout_or_hit_changes() {
+        let identity = [0.0, 1.0, 0.0, 1.0];
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(BackdropMaterial::new(invalid, 0.0, identity, [0.0; 2]).is_err());
+            assert!(BackdropMaterial::new(1.0, invalid, identity, [0.0; 2]).is_err());
+            for index in 0..4 {
+                let mut tone = identity;
+                tone[index] = invalid;
+                assert!(BackdropMaterial::new(1.0, 0.0, tone, [0.0; 2]).is_err());
+            }
+            assert!(BackdropMaterial::new(1.0, 0.0, identity, [invalid, 0.0]).is_err());
+            assert!(BackdropMaterial::new(1.0, 0.0, identity, [0.0, invalid]).is_err());
+        }
+        assert!(BackdropMaterial::new(-1.0, 0.0, identity, [0.0; 2]).is_err());
+        assert!(BackdropMaterial::new(1.0, 0.0, identity, [-1.0, 0.0]).is_err());
+        assert!(BackdropMaterial::new(1.0, 0.0, [0.0, 1.0, 0.0, -1.0], [0.0; 2]).is_err());
+        let bounded = BackdropMaterial::new(
+            f32::MAX,
+            -f32::MAX,
+            [f32::MAX, -f32::MAX, f32::MAX, f32::MAX],
+            [f32::MAX; 2],
+        )
+        .unwrap();
+        assert_eq!(bounded.frost(), [64.0, -1.0]);
+        assert_eq!(bounded.tone(), [2.0, -2.0, 2.0, 2.0]);
+        assert_eq!(bounded.rim(), [1.0; 2]);
+        let size = Size::new(40.0, 20.0);
+        let rect = Rect::from_min_size(Point::ZERO, size);
+        let material = BackdropFilter::new(0.0).unwrap().material(Some(bounded));
+        assert!(matches!(
+            material.paint_primitives(rect, &DEFAULT_TEXT_METRICS)[0],
+            Primitive::BackdropMaterial { .. }
+        ));
+        assert_eq!(
+            material.layout_children(BoxConstraints::loose(size), &[size], &DEFAULT_TEXT_METRICS),
+            (size, vec![Point::ZERO])
+        );
+        assert!(!material.hit_test(Point::ZERO, rect));
+        assert!(
+            material
+                .material(None)
+                .paint_primitives(rect, &DEFAULT_TEXT_METRICS)
+                .is_empty()
+        );
+    }
 
     #[test]
     fn refraction_validates_bounds_and_is_opt_in_without_layout_or_input_changes() {

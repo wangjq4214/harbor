@@ -363,7 +363,9 @@ impl FrameEncoder {
         assert!(
             !scene.scene_graph.items().iter().any(|item| matches!(
                 item.primitive,
-                Primitive::BackdropBlur { .. } | Primitive::BackdropRefract { .. }
+                Primitive::BackdropBlur { .. }
+                    | Primitive::BackdropRefract { .. }
+                    | Primitive::BackdropMaterial { .. }
             )),
             "BackdropFilter requires Runtime::encode_frame"
         );
@@ -395,7 +397,9 @@ impl FrameEncoder {
             && items.iter().any(|i| {
                 matches!(
                     i.primitive,
-                    Primitive::BackdropBlur { .. } | Primitive::BackdropRefract { .. }
+                    Primitive::BackdropBlur { .. }
+                        | Primitive::BackdropRefract { .. }
+                        | Primitive::BackdropMaterial { .. }
                 )
             })
         {
@@ -414,7 +418,9 @@ impl FrameEncoder {
         for (index, item) in items.iter().enumerate() {
             if !matches!(
                 item.primitive,
-                Primitive::BackdropBlur { .. } | Primitive::BackdropRefract { .. }
+                Primitive::BackdropBlur { .. }
+                    | Primitive::BackdropRefract { .. }
+                    | Primitive::BackdropMaterial { .. }
             ) {
                 continue;
             }
@@ -552,7 +558,9 @@ impl FrameEncoder {
                         tr.encode_item(pass, item.id);
                     }
                 }
-                Primitive::BackdropBlur { .. } | Primitive::BackdropRefract { .. } => {
+                Primitive::BackdropBlur { .. }
+                | Primitive::BackdropRefract { .. }
+                | Primitive::BackdropMaterial { .. } => {
                     quad_run.flush(renderer, pass);
                 }
                 _ => {
