@@ -21,6 +21,19 @@ pub struct ScreenHandler<'a> {
     pub clipboard_delivery: crate::ClipboardDelivery,
 }
 
+impl ScreenHandler<'_> {
+    /// Queues a cursor-position report in private (`?`) or standard form.
+    fn push_cpr(&mut self, private: bool) {
+        let (row, col) = self.screen.cpr_coordinates();
+        let reply = if private {
+            format!("\x1b[?{row};{col}R")
+        } else {
+            format!("\x1b[{row};{col}R")
+        };
+        self.screen.push_reply(reply.as_bytes());
+    }
+}
+
 impl VtHandler for ScreenHandler<'_> {
     fn print(&mut self, ch: char) {
         self.screen.write_char(ch);
@@ -71,9 +84,7 @@ impl VtHandler for ScreenHandler<'_> {
                         let mode = params.get_or(0, 0);
                         if mode == 6 {
                             // Private CPR (Cursor Position Report)
-                            let (row, col) = self.screen.cpr_coordinates();
-                            let reply = format!("\x1b[?{};{}R", row, col);
-                            self.screen.push_reply(reply.as_bytes());
+                            self.push_cpr(true);
                         }
                     }
                     _ => {
@@ -203,9 +214,7 @@ impl VtHandler for ScreenHandler<'_> {
                     }
                     6 => {
                         // Standard CPR
-                        let (row, col) = self.screen.cpr_coordinates();
-                        let reply = format!("\x1b[{};{}R", row, col);
-                        self.screen.push_reply(reply.as_bytes());
+                        self.push_cpr(false);
                     }
                     _ => {}
                 }

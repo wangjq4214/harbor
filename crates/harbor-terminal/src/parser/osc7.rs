@@ -1,3 +1,4 @@
+use super::hex;
 use crate::WorkingDirectoryMetadata;
 
 const SCHEME: &[u8] = b"file://";
@@ -55,7 +56,7 @@ fn valid_host(authority: &[u8]) -> bool {
         if byte == b'%' {
             if authority
                 .get(index + 1..index + 3)
-                .is_none_or(|digits| digits.iter().any(|digit| hex(*digit).is_none()))
+                .is_none_or(|digits| digits.iter().any(|digit| hex::digit(*digit).is_none()))
             {
                 return false;
             }
@@ -99,8 +100,8 @@ fn strict_percent_decode(raw: &[u8]) -> Option<Vec<u8>> {
     let mut index = 0;
     while index < raw.len() {
         let byte = if raw[index] == b'%' {
-            let high = hex(*raw.get(index + 1)?)?;
-            let low = hex(*raw.get(index + 2)?)?;
+            let high = hex::digit(*raw.get(index + 1)?)?;
+            let low = hex::digit(*raw.get(index + 2)?)?;
             index += 3;
             (high << 4) | low
         } else {
@@ -117,15 +118,6 @@ fn strict_percent_decode(raw: &[u8]) -> Option<Vec<u8>> {
         decoded.push(byte);
     }
     Some(decoded)
-}
-
-fn hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

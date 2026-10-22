@@ -1,7 +1,9 @@
 //! Streaming VT parser: bridge between `harbor_parser` core and `Screen`.
 
+mod dcs;
 mod device_attributes;
 mod handlers;
+mod hex;
 mod mode_query;
 mod osc;
 mod osc133;

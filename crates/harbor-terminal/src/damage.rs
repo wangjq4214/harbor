@@ -56,9 +56,8 @@ impl DamageTracker {
     pub fn mark_row_dirty(&mut self, row: usize) {
         if row < self.rows {
             let start = row * self.cols;
-            let end = start + self.cols;
-            self.grid[start..end].fill(true);
-            self.dirty_row_bits[row / 64] |= 1u64 << (row % 64);
+            self.grid[start..start + self.cols].fill(true);
+            self.mark_row_bit(row);
         }
     }
 
@@ -66,27 +65,27 @@ impl DamageTracker {
         let start_row = start_row.min(self.rows);
         let end_row = end_row.min(self.rows);
         if start_row < end_row {
-            let start = start_row * self.cols;
-            let end = end_row * self.cols;
-            self.grid[start..end].fill(true);
+            self.grid[start_row * self.cols..end_row * self.cols].fill(true);
             for row in start_row..end_row {
-                self.dirty_row_bits[row / 64] |= 1u64 << (row % 64);
+                self.mark_row_bit(row);
             }
         }
     }
 
     pub fn mark_range_dirty(&mut self, row: usize, start_col: usize, end_col: usize) {
         if row < self.rows {
-            let cols = self.cols;
-            let start_col = start_col.min(cols);
-            let end_col = end_col.min(cols);
+            let start_col = start_col.min(self.cols);
+            let end_col = end_col.min(self.cols);
             if start_col < end_col {
-                let start = row * cols + start_col;
-                let end = row * cols + end_col;
-                self.grid[start..end].fill(true);
-                self.dirty_row_bits[row / 64] |= 1u64 << (row % 64);
+                self.grid[row * self.cols + start_col..row * self.cols + end_col].fill(true);
+                self.mark_row_bit(row);
             }
         }
+    }
+
+    /// Records that `row` owns at least one dirty cell.
+    fn mark_row_bit(&mut self, row: usize) {
+        self.dirty_row_bits[row / 64] |= 1u64 << (row % 64);
     }
 
     pub fn dirty_ranges(&self) -> Vec<DirtyRange> {
