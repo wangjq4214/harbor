@@ -5,6 +5,10 @@ use crate::normal_buf::{LogicalLineId, NormalBuf};
 use crate::selection_model::GenPos;
 
 use std::collections::HashMap;
+#[cfg(test)]
+#[path = "projection_diagnostics.rs"]
+mod diagnostics;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Affinity {
     Before,
@@ -217,6 +221,8 @@ pub(crate) struct ContentProjection {
 
 impl ContentProjection {
     pub(crate) fn build(normal: &NormalBuf) -> Result<Self, DecodeError> {
+        #[cfg(test)]
+        let _diagnostic_timer = diagnostics::build_timer();
         let mut lines: Vec<ProjectedLine> = Vec::new();
         let mut line_indices: HashMap<LogicalLineId, usize> = HashMap::new();
         for row in normal.retained_rows() {

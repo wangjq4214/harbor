@@ -164,6 +164,27 @@ impl PreparedPrimaryResize {
         viewport: ReflowViewport,
         retained_cursors: &[CursorRetention],
     ) -> Result<Self, PreparationError> {
+        Self::prepare_geometry_with_limits(
+            normal,
+            requested_rows,
+            requested_cols,
+            cursor_floor,
+            viewport,
+            retained_cursors,
+            normal.history_limits(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_geometry_with_limits(
+        normal: &NormalBuf,
+        requested_rows: usize,
+        requested_cols: usize,
+        cursor_floor: Option<usize>,
+        viewport: ReflowViewport,
+        retained_cursors: &[CursorRetention],
+        limits: harbor_config::HistoryLimits,
+    ) -> Result<Self, PreparationError> {
         let target_rows = requested_rows.max(1);
         let cols = requested_cols.max(MIN_REFLOW_COLS);
         let active_count = normal.active_retained_row_count(cursor_floor);
@@ -313,11 +334,21 @@ impl PreparedPrimaryResize {
             );
         }
 
-        let budget = normal
-            .max_scrollback()
+        let budget = limits
+            .max_rows
             .checked_add(target_rows)
             .ok_or(PreparationError::ArithmeticOverflow)?;
-        let capacity_dropped_rows = rows.len().saturating_sub(budget);
+        let mut capacity_dropped_rows = rows.len().saturating_sub(budget);
+        let history_end = rows.len().saturating_sub(target_rows);
+        let mut bytes: usize = rows[capacity_dropped_rows..history_end]
+            .iter()
+            .map(|row| NormalBuf::row_source_bytes(&row.cells, row.metadata.meaningful_extent))
+            .sum();
+        while bytes > limits.max_bytes && capacity_dropped_rows < history_end {
+            let row = &rows[capacity_dropped_rows];
+            bytes -= NormalBuf::row_source_bytes(&row.cells, row.metadata.meaningful_extent);
+            capacity_dropped_rows += 1;
+        }
         let cutoff_splits_line = capacity_dropped_rows > 0
             && capacity_dropped_rows < rows.len()
             && rows[capacity_dropped_rows - 1].metadata.logical_line_id
@@ -373,7 +404,7 @@ impl PreparedPrimaryResize {
             &rows,
             target_rows,
             cols,
-            normal.max_scrollback(),
+            limits,
             next_logical_line_id,
             generation_base,
             0,
@@ -989,6 +1020,7 @@ fn continuation_cell(base: &Cell) -> Cell {
     Cell {
         ch: ' ',
         suffix: String::new(),
+        text_overflow: Default::default(),
         width: 0,
         isolated_mark: false,
         wide_continuation: true,

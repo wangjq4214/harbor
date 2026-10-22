@@ -437,8 +437,14 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Durable logical position: Logical Line Identity, offset and before/after affinity; physical generation/column is only a projection. Overwrite preserves offset, earlier insert/delete adjusts it by affinity, movement/reflow preserves identity, and line destruction/eviction invalidates it.
 - **Synonyms:** logical anchor, stable content anchor
 
+### Content Anchor Consumer
+- **Definition:** Anything that resolves a Content Anchor and therefore needs mutation bookkeeping: a pointer selection, a saved cursor position and the viewport review position. With none present the Screen records no anchor mutation and builds no Content Projection, so ingest cost does not grow with retained history; the I/O owner registers selection interest with the Screen before parsing a feed instead of the Screen querying the pointer. [ADR 0074](./adr/0074-demand-driven-content-anchor-tracking.md)
+- **Synonyms:** anchor tracking interest
+- **Relationships:**
+  - references Content Anchor
+
 ### Reflow Capacity Eviction
-- **Definition:** After reflow, enforce physical-row capacity oldest-first; mark partial retained lines head-truncated, invalidate evicted anchors and move evicted review to oldest retained content.
+- **Definition:** After reflow, enforce physical-row capacity oldest-first; mark partial retained lines head-truncated, invalidate evicted anchors and move evicted review to oldest retained content. The selected extension adds an independent retained-history-content byte limit with the same oldest-first direction, distinct from measured process/GPU memory; [ADR 0072](./adr/0072-dual-bounded-terminal-history.md) records that direction and [ADR 0073](./adr/0073-session-history-accounting-and-text-unit-overflow.md) defines per-session UTF-8 history accounting, live reload and the exceptional oversized-unit safety policy. These records do not establish implementation.
 - **Synonyms:** reflow eviction
 - **Relationships:**
   - references Content Anchor

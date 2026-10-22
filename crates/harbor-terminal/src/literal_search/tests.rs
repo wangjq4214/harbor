@@ -135,7 +135,15 @@ fn meaningful_blanks_are_searchable_but_capacity_and_wide_edge_padding_are_not()
 
 #[test]
 fn long_lines_cross_many_batches_and_keep_retained_suffix_absolute_offsets() {
-    let mut t = Terminal::new_headless(2, 3);
+    let mut t = Terminal::new_headless_with_history(
+        2,
+        3,
+        crate::TerminalAppearance::default(),
+        harbor_config::HistoryLimits {
+            max_rows: 1000,
+            ..Default::default()
+        },
+    );
     t.put_str(&"abc".repeat(1002));
     t.put_str("mnopqr");
     let mut gate = LiteralSearch::default();
@@ -262,7 +270,15 @@ fn erase_structural_edits_and_ring_reuse_never_leave_actionable_old_text() {
             Rejection::StaleText
         );
     }
-    let mut t = Terminal::new_headless(2, 3);
+    let mut t = Terminal::new_headless_with_history(
+        2,
+        3,
+        crate::TerminalAppearance::default(),
+        harbor_config::HistoryLimits {
+            max_rows: 1000,
+            ..Default::default()
+        },
+    );
     t.put_str(&"abc".repeat(1002));
     let mut gate = LiteralSearch::default();
     let result = search(&mut gate, &t, "abc", retained(5));
@@ -602,7 +618,9 @@ fn cancellation_after_read_and_during_scan_has_finite_work_and_releases_resource
     // Inject cancellation at the post-read observation and inside one very
     // large complete text unit. The public step uses the identical atomic check.
     let mut large = Terminal::new_headless(2, 8);
-    large.put_str(&format!("a{}", "\u{301}".repeat(2000)));
+    large.put_str("a");
+    // Defensive consumer fixture deliberately bypasses bounded PTY admission.
+    large.screen.cell_mut(0, 0).suffix = "\u{301}".repeat(2000);
     for (cancel_on_check, expected_scan) in [(2, 0), (5, CANCEL_SCAN_BYTES)] {
         let mut job = gate
             .start(&large, "z", retained(2), ReadBudget::default())
@@ -649,7 +667,9 @@ fn amortized_scan_work_stays_linear_on_repeated_prefixes_and_large_units() {
     // A complete unit may exceed the query bound, but the read/scan bound still
     // applies, and matches map to one unit without retaining its source string.
     let mut t = Terminal::new_headless(2, 8);
-    t.put_str(&format!("a{}", "\u{301}".repeat(2000)));
+    t.put_str("a");
+    // Keep oversized stored-content defense coverage, independent of admission.
+    t.screen.cell_mut(0, 0).suffix = "\u{301}".repeat(2000);
     let result = search(&mut gate, &t, "a", retained(2));
     // tiny() cannot copy that indivisible unit: explicit partial, not no-match.
     assert!(matches!(

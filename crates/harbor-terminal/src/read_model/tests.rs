@@ -460,7 +460,15 @@ fn mutations_invalidate_row_proofs_but_not_unrelated_surviving_rows() {
 
 #[test]
 fn partial_eviction_preserves_absolute_offsets_and_ring_reuse_never_aliases() {
-    let mut t = Terminal::new_headless(2, 3);
+    let mut t = Terminal::new_headless_with_history(
+        2,
+        3,
+        crate::TerminalAppearance::default(),
+        harbor_config::HistoryLimits {
+            max_rows: 1000,
+            ..Default::default()
+        },
+    );
     // Fill the real bounded ring (1000 history + 2 live rows) with one line.
     t.put_str(&"abc".repeat(1002));
     let old = t

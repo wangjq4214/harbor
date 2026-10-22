@@ -4149,7 +4149,7 @@ fn alt_screen_resize_while_parked_resizes_persisted_buffer() {
 }
 
 #[test]
-fn prepared_alt_resize_is_rectangular_repairs_wide_edge_and_drops_history() {
+fn prepared_alt_resize_is_rectangular_repairs_wide_edge_and_keeps_zero_history() {
     let mut screen = Screen::new(2, 4);
     screen.enter_alt(false);
     screen.set_cursor_position(1, 3);
@@ -4157,7 +4157,7 @@ fn prepared_alt_resize_is_rectangular_repairs_wide_edge_and_drops_history() {
     for _ in 0..4 {
         screen.newline();
     }
-    assert!(screen.scroll_count() > 0);
+    assert_eq!(screen.scroll_count(), 0);
 
     let prepared = screen.prepare_resize(1, 3).unwrap();
     screen.commit_resize(prepared);

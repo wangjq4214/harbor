@@ -33,6 +33,7 @@ impl Fixture {
             geometry_recovery_pending: false,
             shell_command: ShellCommand::default(),
             font_settings: accepted.font.clone(),
+            history: accepted.history,
             font_warnings: Vec::new(),
             metrics,
             appearance: TerminalAppearance::from_palette(accepted.colors),
@@ -837,6 +838,7 @@ fn font_reload_accepts_bounded_eviction_and_resizes_active_and_parked_alternate(
     let mut f = Fixture::new();
     let mut baseline = f.accepted.clone();
     baseline.font.size += 2.0;
+    baseline.history.max_rows = 1000; // Explicit fixture, independent of shipping default.
     f.reload(baseline, None).unwrap();
     let targets = f.tabs.configuration_targets();
     let old_size = f.tabs.last_broadcast_size().unwrap();
@@ -966,3 +968,155 @@ mod session_launch_tests;
 #[cfg(windows)]
 #[path = "configuration_watch_tests.rs"]
 mod configuration_watch_tests;
+
+#[test]
+fn history_manual_reload_is_atomic_across_hidden_saved_primary_and_future_sessions() {
+    let mut f = Fixture::new();
+    let targets = f.tabs.configuration_targets();
+    for (index, (_, terminal, _)) in targets.iter().enumerate() {
+        let mut terminal = terminal.lock().unwrap();
+        terminal.put_str(&"history-marker\r\n".repeat(25));
+        if index == 1 {
+            terminal.put_str("\x1b[?1049hALT");
+        }
+    }
+    let before: Vec<_> = targets
+        .iter()
+        .map(|(_, t, _)| t.lock().unwrap().screen().history_content_bytes())
+        .collect();
+    assert!(before.iter().all(|b| *b > 20));
+    let mut candidate = f.candidate();
+    candidate.history = harbor_config::HistoryLimits {
+        max_rows: 2,
+        max_bytes: 20,
+    };
+    assert!(
+        f.reload(candidate.clone(), Some(ReloadStage::Model))
+            .is_err()
+    );
+    assert_eq!(f.policy.history, f.accepted.history);
+    for (index, (_, t, _)) in targets.iter().enumerate() {
+        assert_eq!(
+            t.lock().unwrap().screen().history_content_bytes(),
+            before[index]
+        );
+    }
+    let summary = f.reload(candidate.clone(), None).unwrap();
+    assert!(summary.contains("history"));
+    assert_eq!(f.accepted, candidate);
+    assert_eq!(f.policy.history, candidate.history);
+    let counts: Vec<_> = targets
+        .iter()
+        .map(|(_, t, _)| {
+            let mut t = t.lock().unwrap();
+            assert_eq!(t.screen().history_limits(), candidate.history);
+            assert!(t.screen().history_content_bytes() <= 20);
+            t.put_str("\x1b[?1049l");
+            assert!(t.screen().scroll_count() <= 2);
+            t.screen().history_content_bytes()
+        })
+        .collect();
+    let mut growth = candidate.clone();
+    growth.history = harbor_config::HistoryLimits::default();
+    f.reload(growth, None).unwrap();
+    for (index, (_, t, _)) in targets.iter().enumerate() {
+        assert_eq!(
+            t.lock().unwrap().screen().history_content_bytes(),
+            counts[index]
+        );
+    }
+    let (new, _) = f
+        .policy
+        .prepare_new_terminal(
+            TerminalGpuAccess::new(&f.device, &f.queue, wgpu::TextureFormat::Rgba8Unorm),
+            load_system_fonts(&f.policy.font_settings).unwrap(),
+            f.tabs.last_broadcast_size().unwrap(),
+            (640, 320),
+            false,
+            harbor_terminal::ClipboardDelivery::Discard,
+        )
+        .unwrap();
+    assert_eq!(new.screen().history_limits(), f.accepted.history);
+    for ((id, original, _), (current_id, current, _)) in
+        targets.iter().zip(f.tabs.configuration_targets())
+    {
+        assert_eq!(*id, current_id);
+        assert!(
+            Arc::ptr_eq(original, &current),
+            "sessions must not be recreated"
+        );
+    }
+}
+
+#[test]
+fn history_watched_path_rejects_missing_malformed_and_invalid_then_accepts_shrink() {
+    use crate::configuration_watch::{ConfigurationWatch, WatchEvent};
+    let mut f = Fixture::new();
+    let targets = f.tabs.configuration_targets();
+    for (_, t, _) in &targets {
+        t.lock().unwrap().put_str(&"old-marker\r\n".repeat(25));
+    }
+    let before: Vec<_> = targets
+        .iter()
+        .map(|(_, t, _)| t.lock().unwrap().screen().history_content_bytes())
+        .collect();
+    let path =
+        std::env::temp_dir().join(format!("harbor-history-watch-{}.toml", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let apply_path = |f: &mut Fixture| {
+        crate::shell::reload_configuration_from_path(
+            Some(&path),
+            &mut f.accepted,
+            &f.clipboard,
+            |settings, bindings| {
+                let result = f.policy.apply(
+                    &mut f.tabs,
+                    &f.ui,
+                    TerminalGpuAccess::new(&f.device, &f.queue, wgpu::TextureFormat::Rgba8Unorm),
+                    settings,
+                    1.0,
+                    (640, 320),
+                    |_, _| Ok(()),
+                )?;
+                f.ui.publish_keybindings(bindings);
+                Ok(result)
+            },
+        )
+    };
+    assert!(apply_path(&mut f).unwrap().is_none());
+    for source in [
+        "[history",
+        "[history]\nmax_rows = 0\n[font]\nsize = -1",
+        "[history]\nmax_bytes = -1",
+    ] {
+        std::fs::write(&path, source).unwrap();
+        assert!(apply_path(&mut f).is_err());
+        assert_eq!(f.policy.history, harbor_config::HistoryLimits::default());
+        for (index, (_, t, _)) in targets.iter().enumerate() {
+            assert_eq!(
+                t.lock().unwrap().screen().history_content_bytes(),
+                before[index]
+            );
+        }
+    }
+    let (send, recv) = std::sync::mpsc::channel();
+    let watch =
+        ConfigurationWatch::start(Some(path.clone()), move || send.send(()).is_ok()).unwrap();
+    std::fs::write(&path, "[history]\nmax_rows = 1\nmax_bytes = 10").unwrap();
+    recv.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(matches!(watch.take_pending(), Some(WatchEvent::Reload)));
+    assert!(
+        apply_path(&mut f)
+            .unwrap()
+            .unwrap()
+            .summary
+            .contains("history")
+    );
+    assert_eq!(f.policy.history, f.accepted.history);
+    for (_, t, _) in targets {
+        assert!(t.lock().unwrap().screen().history_content_bytes() <= 10);
+    }
+    drop(watch);
+    std::fs::remove_file(path).unwrap();
+}

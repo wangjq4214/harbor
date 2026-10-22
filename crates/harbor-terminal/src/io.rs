@@ -587,20 +587,25 @@ impl TerminalIo {
     ) {
         let mut remaining = bytes;
         while !remaining.is_empty() {
-            let before_projection = (pointer.has_selection_state()
-                || screen.requires_anchor_baseline())
-            .then(|| screen.content_projection().ok())
-            .flatten();
+            screen.set_external_anchor_interest(pointer.has_selection_state());
+            let before_projection = screen
+                .tracks_content_anchors()
+                .then(|| screen.content_projection().ok())
+                .flatten();
             let result = parser.put_bytes(screen, remaining);
             remaining = &remaining[result.consumed..];
-            match screen.finish_anchor_mutations(before_projection.as_ref()) {
-                Ok((mutations, projection)) => {
-                    pointer.reconcile_selection(&mutations, &projection);
+            if screen.tracks_content_anchors() {
+                match screen.finish_anchor_mutations(before_projection.as_ref()) {
+                    Ok((mutations, projection)) => {
+                        pointer.reconcile_selection(&mutations, &projection);
+                    }
+                    Err(error) => {
+                        tracing::error!(generation = error.generation, column = error.column, kind = ?error.kind, "content anchor reconciliation failed");
+                        pointer.clear();
+                    }
                 }
-                Err(error) => {
-                    tracing::error!(generation = error.generation, column = error.column, kind = ?error.kind, "content anchor reconciliation failed");
-                    pointer.clear();
-                }
+            } else {
+                screen.discard_anchor_mutations();
             }
             if let Some(action) = result.alt_request {
                 *suppress_scroll_snap = false;

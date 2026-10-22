@@ -107,6 +107,17 @@ pub(crate) const fn is_selector(ch: char) -> bool {
 
 // ── Cell ──────────────────────────────────────────────────────────────────────
 
+/// Fixed UTF-8 source-byte ceiling, including the leading scalar (ADR 0075).
+pub(crate) const MAX_TEXT_UNIT_BYTES: usize = 1024;
+
+/// Bounded admission bookkeeping, not retained or recoverable source text.
+/// Cloning a cell preserves this state; replacing its text resets it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TextUnitOverflow {
+    // None before overflow; afterwards remember only the latest input tail.
+    tail_is_zwj: Option<bool>,
+}
+
 /// One visible terminal grid cell.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cell {
@@ -114,6 +125,8 @@ pub struct Cell {
     pub ch: char,
     /// Original trailing scalars, never including a synthetic presentation cue.
     pub suffix: String,
+    /// Overflow recognition state; content consumers use only `ch` and `suffix`.
+    pub text_overflow: TextUnitOverflow,
     /// Assigned grid width of this text unit (zero for a wide continuation).
     pub width: u8,
     /// An isolated combining mark needs a display-only dotted-circle cue.
@@ -139,6 +152,7 @@ impl Default for Cell {
         Self {
             ch: ' ',
             suffix: String::new(),
+            text_overflow: TextUnitOverflow::default(),
             width: 1,
             isolated_mark: false,
             wide_continuation: false,
@@ -153,6 +167,21 @@ impl Default for Cell {
 }
 
 impl Cell {
+    pub(crate) fn can_extend_text(&self, ch: char) -> bool {
+        self.text_overflow.tail_is_zwj.is_none()
+            && self.suffix.len() <= MAX_TEXT_UNIT_BYTES - self.ch.len_utf8() - ch.len_utf8()
+    }
+
+    pub(crate) fn input_ends_with_zwj(&self) -> bool {
+        self.text_overflow
+            .tail_is_zwj
+            .unwrap_or_else(|| self.suffix.ends_with('\u{200d}'))
+    }
+
+    pub(crate) fn discard_text_extension(&mut self, ch: char) {
+        self.text_overflow.tail_is_zwj = Some(ch == '\u{200d}');
+    }
+
     /// Grid width, including legacy callers constructing a wide `ch` directly.
     pub fn grid_width(&self) -> u8 {
         if self.width == 1 && unicode_width::UnicodeWidthChar::width(self.ch) == Some(2) {
@@ -200,6 +229,7 @@ impl Cell {
     ) {
         self.ch = ch;
         self.suffix.clear();
+        self.text_overflow = TextUnitOverflow::default();
         self.width = unicode_width::UnicodeWidthChar::width(ch)
             .unwrap_or(1)
             .clamp(1, 2) as u8;

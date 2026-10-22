@@ -119,8 +119,10 @@ def prepare(root: Path, files: list[Path]) -> Path:
     for path in (package, marker, manifest, lockfile, library.parent, library):
         if path.is_symlink():
             raise ValueError(f"Refusing generated-package symlink: {path}")
-    if package.exists() and any(package.iterdir()):
-        if not marker.is_file() or marker.read_text(encoding="utf-8") != OWNER:
+    if package.exists() and (not marker.is_file() or marker.read_text(encoding="utf-8") != OWNER):
+        # rust-cache prunes generated files but leaves empty directory trees.
+        # Those contain no foreign data; files and symlinks still require ownership.
+        if any(path.is_symlink() or not path.is_dir() for path in package.rglob("*")):
             raise ValueError(f"Refusing non-owned generated directory: {package}")
     library.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(OWNER, encoding="utf-8")

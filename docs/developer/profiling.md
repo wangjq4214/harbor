@@ -2,6 +2,8 @@
 
 Use comparable captures to identify a bottleneck, change one ownership path, then repeat the workload. This guide contains procedures, not captured results or optimization priorities. The [architecture map](architecture.md) helps locate allocation and lifecycle owners.
 
+For Spec 0031, see the [consolidated delivery/closure summary](../../.grimoire/spec/0031-bounded-history-and-performance-budgets.md#delivery-and-closure-summary). Capacity/per-unit values and microbenchmark bounds were adopted; protection and configurable history are implemented. Standard gates and limited Windows smoke passed, but full native thresholds/matrix were not established and were waived by the owner. Raw issue-specific evidence was removed rather than merged. The [history calibration protocol](history-calibration.md) remains available for optional future measurement.
+
 ## Prepare a comparison
 
 Record the commit and dirty-tree changes, build profile/features, machine/OS, GPU/backend, fonts, DPI, viewport/grid, session/window counts, configuration, exact workload and dwell time. Use identical settings before and after. Separate cold startup from warmed-cache runs and repeat runs to expose variability.
