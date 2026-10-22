@@ -150,6 +150,13 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 ### Widget Backdrop Edge Refraction
 - **Definition:** Optional widget-owned local background displacement concentrated near edges and rounded corners, fading to zero in the center while leaving foreground and hit testing unchanged. Application-owned glass recipes choose its parameters; blur-only consumers keep existing behavior. See [ADR 0068](./adr/0068-local-backdrop-edge-refraction.md).
 
+### Native Glass Material
+- **Definition:** Selected native Rust/wgpu adaptation of Glass-HQ/liquid-glass material algorithms over in-window content, extending widget-owned backdrop rendering while retaining application-owned presets. Edge displacement, outline-normal highlights/side shading and blur/tone processing are the material scope, not the upstream web control or motion system. [ADR 0076](./adr/0076-native-liquid-glass-material-port.md) records the direction; initial native implementation exists, while full visual acceptance remains separate.
+- **Relationships:**
+  - extends Widget Backdrop Edge Refraction
+  - depends on Widget Local Backdrop Blur
+  - references Windows Acrylic Backdrop
+
 ### DecoratedBox
 - **Definition:** A general wrapper widget that applies BoxDecoration and ClipBehavior to one child without adding Terminal-specific visual properties.
 - **Relationships:**

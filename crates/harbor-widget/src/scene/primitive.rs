@@ -464,6 +464,14 @@ pub enum Primitive {
         corner_radii: [f32; 4],
         refraction: crate::EdgeRefraction,
     },
+    /// Opt-in material on the existing local backdrop, before sharp foreground.
+    BackdropMaterial {
+        rect: Rect,
+        sigma: f32,
+        corner_radii: [f32; 4],
+        refraction: crate::EdgeRefraction,
+        material: crate::BackdropMaterial,
+    },
     External {
         draw: ExternalDrawId,
         rect: crate::layout::Rect,

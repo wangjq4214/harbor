@@ -22,6 +22,7 @@ pub(super) struct PaletteState {
     pub input: TextEditingController,
     pub selected: usize,
     pub pending: bool,
+    pub focus: FocusHandle,
 }
 
 // Retained by the editor's Fiber, not application state. Root replacement must
@@ -38,8 +39,8 @@ impl Drop for PaletteEditorLifetime {
             .store
             .state()
             .read()
-            .palette
-            .as_ref()
+            .popups
+            .get::<PaletteState>()
             .is_some_and(|palette| palette.generation == self.generation && palette.pending);
         if pending {
             self.controller.close_palette(self.generation);
@@ -164,13 +165,14 @@ impl WorkspaceUiController {
                 .active_bridge
                 .as_ref()
                 .is_some_and(|bridge| bridge.is_alt_screen()),
-            search_open: state.search.open
-                && state.search.source
+            search_open: state.popups.get::<SearchUiState>().is_some_and(|search| {
+                Some(search.source)
                     == tabs
                         .snapshots
                         .iter()
                         .find(|tab| tab.active)
-                        .map(|tab| tab.id),
+                        .map(|tab| tab.id)
+            }),
         }
     }
 
@@ -180,21 +182,25 @@ impl WorkspaceUiController {
             .store
             .state()
             .read()
-            .palette
-            .as_ref()
+            .popups
+            .get::<PaletteState>()
             .map(|palette| palette.generation);
         generation.is_some_and(|generation| self.close_palette(generation))
     }
     pub fn palette_is_open(&self) -> bool {
-        self.store.state().read().palette.is_some()
+        self.store
+            .state()
+            .read()
+            .popups
+            .get::<PaletteState>()
+            .is_some()
     }
 
     pub fn open_palette(&self) -> FocusHandle {
         let mut state = self.store.state().read().clone();
-        if state.palette.is_none() {
-            state.palette_generation += 1;
-            state.palette = Some(PaletteState {
-                generation: state.palette_generation,
+        if state.popups.get::<PaletteState>().is_none() {
+            let focus = state.popups.open(|generation| PaletteState {
+                generation,
                 target: self
                     .tabs
                     .state
@@ -206,23 +212,18 @@ impl WorkspaceUiController {
                 input: TextEditingController::new(""),
                 selected: 0,
                 pending: false,
+                focus: self.palette_focus,
             });
             self.store.set_state(state);
+            return focus;
         }
         self.palette_focus
     }
 
     pub fn close_palette(&self, generation: u64) -> bool {
         let mut state = self.store.state().read().clone();
-        if state
-            .palette
-            .as_ref()
-            .is_none_or(|palette| palette.generation != generation)
-        {
+        if state.popups.get::<PaletteState>().is_none() || !state.popups.close(generation) {
             return false;
-        }
-        if let Some(palette) = state.palette.take() {
-            palette.input.set_text("");
         }
         self.store.set_state(state);
         true
@@ -238,7 +239,10 @@ impl WorkspaceUiController {
             return Ok(());
         };
         let state = self.store.state().read();
-        let palette = state.palette.as_ref().ok_or("Palette is closed")?;
+        let palette = state
+            .popups
+            .get::<PaletteState>()
+            .ok_or("Palette is closed")?;
         if palette.generation != generation || !palette.pending || palette.target != target {
             return Err("Palette request expired");
         }
@@ -253,7 +257,10 @@ impl WorkspaceUiController {
                 alternate_screen: tabs
                     .active_bridge()
                     .is_some_and(|bridge| bridge.is_alt_screen()),
-                search_open: state.search.open && state.search.source == target,
+                search_open: state
+                    .popups
+                    .get::<SearchUiState>()
+                    .is_some_and(|search| Some(search.source) == target),
             },
         )
     }
@@ -306,36 +313,42 @@ impl WorkspaceUiController {
 
     fn palette_changed(&self, generation: u64) {
         let mut state = self.store.state().read().clone();
-        if let Some(palette) = &mut state.palette
-            && palette.generation == generation
-            && !palette.pending
+        if state
+            .popups
+            .get::<PaletteState>()
+            .is_some_and(|palette| palette.generation == generation && !palette.pending)
         {
-            palette.selected = 0;
+            state
+                .popups
+                .update::<PaletteState>(|palette| palette.selected = 0);
             self.store.set_state(state);
         }
     }
 
     fn palette_navigate(&self, generation: u64, down: bool) {
         let mut state = self.store.state().read().clone();
-        if let Some(palette) = &mut state.palette
-            && palette.generation == generation
-            && !palette.pending
+        if state
+            .popups
+            .get::<PaletteState>()
+            .is_some_and(|palette| palette.generation == generation && !palette.pending)
         {
-            let count = candidates(&palette.input.text()).len();
-            palette.selected = if count == 0 {
-                0
-            } else if down {
-                (palette.selected.min(count - 1) + 1) % count
-            } else {
-                (palette.selected.min(count - 1) + count - 1) % count
-            };
+            state.popups.update::<PaletteState>(|palette| {
+                let count = candidates(&palette.input.text()).len();
+                palette.selected = if count == 0 {
+                    0
+                } else if down {
+                    (palette.selected.min(count - 1) + 1) % count
+                } else {
+                    (palette.selected.min(count - 1) + count - 1) % count
+                };
+            });
             self.store.set_state(state);
         }
     }
 
     fn palette_submit(&self, generation: u64) {
         let mut state = self.store.state().read().clone();
-        let Some(palette) = &mut state.palette else {
+        let Some(palette) = state.popups.get::<PaletteState>() else {
             return;
         };
         if palette.generation != generation || palette.pending {
@@ -366,24 +379,41 @@ impl WorkspaceUiController {
                 target: palette.target,
             },
         };
-        palette.pending = true;
+        state
+            .popups
+            .update::<PaletteState>(|palette| palette.pending = true);
         self.store.set_state(state);
         self.store.dispatcher().dispatch(request);
     }
 }
 
-pub(super) fn palette_panel(
+impl crate::popups::Popup for PaletteState {
+    fn build(
+        &self,
+        cx: &mut BuildCx,
+        ui: &WorkspaceUiController,
+        bindings: &ResolvedKeybindings,
+        _: u64,
+    ) -> View {
+        palette_panel(cx, ui, bindings, self)
+    }
+    fn focus(&self) -> FocusHandle {
+        self.focus
+    }
+    fn close(&self) {
+        self.input.set_text("");
+    }
+    fn blocks_shortcuts(&self) -> bool {
+        true
+    }
+}
+
+fn palette_panel(
     cx: &mut BuildCx,
     controller: &WorkspaceUiController,
     bindings: &ResolvedKeybindings,
+    palette: &PaletteState,
 ) -> View {
-    let palette = controller
-        .store
-        .state()
-        .read()
-        .palette
-        .clone()
-        .expect("open palette");
     let generation = palette.generation;
     let changed = controller.clone();
     let navigate = controller.clone();

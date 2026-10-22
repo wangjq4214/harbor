@@ -166,7 +166,7 @@ fn alternate_scroll_is_disabled_rechecked_at_submit_and_drain_then_shortcuts_pas
 }
 
 #[test]
-fn palette_search_reuses_query_navigates_matches_and_honors_destination_after_teardown() {
+fn palette_replaces_search_clears_results_and_honors_fresh_search_destination() {
     let (mut tabs, controller, mut runtime, bytes) = fixture();
     tabs.active_terminal()
         .unwrap()
@@ -174,28 +174,30 @@ fn palette_search_reuses_query_navigates_matches_and_honors_destination_after_te
         .unwrap()
         .put_str("needle\r\nneedle\r\nother\r\nlive\r\n");
     let request = submit(&controller, &mut runtime, "terminal.search");
-    assert_eq!(request.command, AppCommand::SearchOpen);
     controller
         .take_palette_request(request, &tabs, false)
         .unwrap();
     runtime.clear_focus();
     let outcome = tabs.execute_search_command(request.command, &controller);
-    assert_eq!(outcome.completion, Ok(CommandCompletion::Applied));
     let focus = outcome
         .focus_for_source(request.source, &controller)
         .unwrap();
     assert_eq!(focus, controller.search_focus());
-    runtime.request_focus(&focus); // same pre-reconciliation order as Host
+    runtime.request_focus(&focus); // Host requests the destination before reconciliation.
     runtime.update(Instant::now());
     up(&mut runtime, Key::Enter, Modifiers::default());
-    assert_eq!(
-        tabs.execute_search_command(AppCommand::SearchNext, &controller)
-            .completion,
-        Ok(CommandCompletion::Unchanged)
-    );
     replace(&mut runtime, "needle");
-    assert_eq!(controller.search_query().unwrap().1, "needle");
+    let old_editor = controller
+        .store
+        .state()
+        .read()
+        .popups
+        .get::<SearchUiState>()
+        .unwrap()
+        .input
+        .clone();
     for action in controller.drain_actions() {
+        assert!(controller.popup_request_is_current(action));
         assert_eq!(action.command, AppCommand::SearchChanged);
         tabs.execute_search_command(action.command, &controller);
     }
@@ -205,51 +207,57 @@ fn palette_search_reuses_query_navigates_matches_and_honors_destination_after_te
         }
     }
     assert_eq!(tabs.active_bridge().unwrap().decoration_ranges().len(), 2);
+    assert!(tabs.navigate_search(false));
+
+    open(&controller, &mut runtime);
+    assert!(controller.search_query().is_none());
+    assert_eq!(old_editor.text(), "");
+    assert!(
+        tabs.active_bridge().unwrap().decoration_ranges().is_empty(),
+        "retirement clears highlights before another Host search tick"
+    );
+    assert_eq!(tabs.search_status(), "No Result");
+    assert!(!tabs.navigate_search(false));
     for id in [
         "terminal.search-next",
         "terminal.search-previous",
-        "terminal.search",
+        "terminal.search-close",
     ] {
-        let request = submit(&controller, &mut runtime, id);
-        controller
-            .take_palette_request(request, &tabs, false)
-            .unwrap();
-        runtime.clear_focus();
-        let outcome = tabs.execute_search_command(request.command, &controller);
-        assert_eq!(outcome.completion, Ok(CommandCompletion::Applied));
-        assert_eq!(
-            outcome.focus_for_source(request.source, &controller),
-            Some(controller.search_focus())
-        );
-        if request.command != AppCommand::SearchOpen {
-            assert_eq!(
-                outcome.focus_for_source(CommandSource::Direct, &controller),
-                None
-            );
-        }
-        runtime.request_focus(
-            &outcome
-                .focus_for_source(request.source, &controller)
-                .unwrap(),
-        );
-        runtime.update(Instant::now());
-        up(&mut runtime, Key::Enter, Modifiers::default());
-        assert_eq!(controller.search_query().unwrap().1, "needle");
+        replace(&mut runtime, id);
+        assert!(painted(&runtime).contains("Search is closed"));
+        tap(&mut runtime, Key::Enter);
+        assert!(controller.drain_actions().is_empty());
     }
-    let request = submit(&controller, &mut runtime, "terminal.search-close");
+
+    replace(&mut runtime, "terminal.search");
+    tap(&mut runtime, Key::Enter);
+    let request = take_one(&controller);
     controller
         .take_palette_request(request, &tabs, false)
         .unwrap();
+    runtime.clear_focus();
     let outcome = tabs.execute_search_command(request.command, &controller);
-    assert_eq!(
-        outcome.focus_for_source(request.source, &controller),
-        Some(controller.terminal_focus())
+    assert_eq!(outcome.completion, Ok(CommandCompletion::Applied));
+    runtime.request_focus(
+        &outcome
+            .focus_for_source(request.source, &controller)
+            .unwrap(),
     );
+    runtime.update(Instant::now());
+    assert!(!controller.palette_is_open());
+    assert_eq!(controller.search_query().unwrap().1, "");
+    assert!(painted(&runtime).contains("No Result"));
+    up(&mut runtime, Key::Enter, Modifiers::default());
+    assert!(!tabs.navigate_search(false));
+
+    tap(&mut runtime, Key::Escape);
+    let request = take_one(&controller);
+    assert!(controller.popup_request_is_current(request));
+    let outcome = tabs.execute_search_command(request.command, &controller);
+    assert_eq!(outcome.focus, Some(controller.terminal_focus()));
     runtime.request_focus(&controller.terminal_focus());
     runtime.update(Instant::now());
-    up(&mut runtime, Key::Enter, Modifiers::default());
-    assert!(controller.search_query().is_none());
-    assert!(tabs.active_bridge().unwrap().decoration_ranges().is_empty());
+    assert!(!controller.popup_is_open());
     assert!(bytes.lock().unwrap().is_empty());
     tap(&mut runtime, Key::Character('x'));
     assert_eq!(&*bytes.lock().unwrap(), b"x");
@@ -269,21 +277,19 @@ fn palette_closed_search_and_changed_search_context_reject_without_leaking() {
         tap(&mut runtime, Key::Enter);
         assert!(controller.drain_actions().is_empty());
     }
-    controller.open_search(TabId(999));
-    replace(&mut runtime, "terminal.search-next");
-    assert!(painted(&runtime).contains("Search is closed"));
+    // Replacing a submitted palette with search expires that request, even if
+    // both transitions happen before a frame; it must not tear down the search.
+    replace(&mut runtime, "terminal.search");
     tap(&mut runtime, Key::Enter);
-    assert!(controller.drain_actions().is_empty());
-    controller.open_search(tabs.active_id().unwrap());
-    replace(&mut runtime, "terminal.search-next");
-    tap(&mut runtime, Key::Enter);
-    assert_eq!(input(&controller).text(), "terminal.search-next");
     let request = take_one(&controller);
-    controller.close_search();
+    controller.open_search(tabs.active_id().unwrap());
     assert_eq!(
         controller.take_palette_request(request, &tabs, false),
-        Err("Search is closed")
+        Err("Palette is closed")
     );
+    assert!(controller.search_query().is_some());
+    runtime.request_focus(&controller.search_focus());
+    runtime.update(Instant::now());
     assert!(bytes.lock().unwrap().is_empty());
 }
 

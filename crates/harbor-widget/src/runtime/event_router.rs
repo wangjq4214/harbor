@@ -27,6 +27,9 @@ pub(crate) struct EventRouter {
     pending_clipboard: Option<String>,
     pending_editor_clipboard: Option<crate::effects::EditorClipboardRequest>,
     clipboard_target: Option<(u64, FiberId)>,
+    // Outer Some means a preedit may still commit. Inner None quarantines a
+    // retired owner, even if focus later returns to that same mounted target.
+    ime_target: Option<Option<FiberId>>,
     pending_cursor: Option<CursorEffect>,
     hover_path: Vec<FiberId>,
     last_cursor: Option<CursorShape>,
@@ -46,6 +49,7 @@ impl EventRouter {
             pending_clipboard: None,
             pending_editor_clipboard: None,
             clipboard_target: None,
+            ime_target: None,
             pending_cursor: None,
             hover_path: Vec::new(),
             last_cursor: None,
@@ -55,6 +59,12 @@ impl EventRouter {
             last_focus_scope: None,
             pending_external_input: Vec::new(),
             consumed_shortcuts: Vec::new(),
+        }
+    }
+
+    pub(crate) fn retire_ime_from(&mut self, previous: &Self) {
+        if previous.ime_target.is_some() {
+            self.ime_target = Some(None);
         }
     }
 
@@ -198,6 +208,19 @@ impl EventRouter {
         event: &UiEvent,
     ) -> bool {
         match event {
+            UiEvent::ImePreedit(preedit) if !preedit.text.is_empty() => {
+                self.ime_target = Some(self.focused_event_target(arena));
+            }
+            UiEvent::Keyboard(KeyboardEvent::Ime(_)) => {
+                if let Some(owner) = self.ime_target.take()
+                    && (owner.is_none() || owner != self.focused_event_target(arena))
+                {
+                    return true;
+                }
+            }
+            UiEvent::Focus(FocusEvent::Lost) if self.ime_target.is_some() => {
+                self.ime_target = Some(None);
+            }
             UiEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
                 if let Some(index) = self.consumed_shortcuts.iter().position(|shortcut| {
                     shortcut.key == KeyChord::new(*key, Default::default()).key
@@ -468,6 +491,9 @@ impl EventRouter {
         self.input.focused = next;
         self.input.focus_visible = next_visible;
         if previous != next {
+            if self.ime_target.is_some() {
+                self.ime_target = Some(None);
+            }
             for press in &mut self.consumed_shortcuts {
                 press.editor = None;
             }

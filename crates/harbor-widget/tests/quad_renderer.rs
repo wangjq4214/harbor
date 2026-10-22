@@ -27,7 +27,15 @@ use std::time::Instant;
 /// Tries to create a wgpu Device + Queue. Returns `None` when no adapter is
 /// available (headless CI, etc.), so GPU tests degrade gracefully.
 fn try_create_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    if let Ok(backend) = std::env::var("HARBOR_TEST_BACKEND") {
+        descriptor.backends = match backend.as_str() {
+            "dx12" => wgpu::Backends::DX12,
+            "vulkan" => wgpu::Backends::VULKAN,
+            _ => panic!("HARBOR_TEST_BACKEND must be dx12 or vulkan"),
+        };
+    }
+    let instance = wgpu::Instance::new(descriptor);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
@@ -35,6 +43,7 @@ fn try_create_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         apply_limit_buckets: false,
     }))
     .ok()?;
+    eprintln!("GPU test adapter: {:?}", adapter.get_info());
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("test-device"),
         required_features: wgpu::Features::empty(),
@@ -3389,6 +3398,22 @@ fn encode_filter_frame(
     runtime: &mut Runtime,
     viewport: Viewport,
 ) -> Vec<u8> {
+    encode_filter_frame_format(
+        device,
+        queue,
+        runtime,
+        viewport,
+        wgpu::TextureFormat::Bgra8Unorm,
+    )
+}
+
+fn encode_filter_frame_format(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    runtime: &mut Runtime,
+    viewport: Viewport,
+    format: wgpu::TextureFormat,
+) -> Vec<u8> {
     let size = viewport.physical_size.0;
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("backdrop pixel evidence"),
@@ -3400,14 +3425,14 @@ fn encode_filter_frame(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
+        format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = target.create_view(&Default::default());
     let mut encoder = device.create_command_encoder(&Default::default());
     runtime.encode_frame(
-        draw_gpu(device, queue),
+        ExternalDrawGpu::new(device, queue, format),
         &mut encoder,
         harbor_widget::renderer::FrameTarget {
             view: &view,
@@ -3418,6 +3443,52 @@ fn encode_filter_frame(
     );
     queue.submit(Some(encoder.finish()));
     read_texture_sized(device, queue, &target, size)
+}
+
+#[test]
+fn backdrop_material_tone_is_applied_in_srgb_for_both_attachment_formats() {
+    use harbor_widget::{BackdropFilter, BackdropMaterial};
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for sRGB material");
+        return;
+    };
+    let srgb = |v: f32| {
+        if v <= 0.0031308 {
+            12.92 * v
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        }
+    };
+    for format in [
+        wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+    ] {
+        let mut runtime = Runtime::new();
+        runtime.init_renderer(&device, format);
+        let viewport = Viewport::new(32, 32, 1.0);
+        runtime.set_viewport(viewport.clone());
+        let gray = Color {
+            r: 0.25,
+            g: 0.25,
+            b: 0.25,
+            a: 1.0,
+        };
+        let material = BackdropMaterial::new(0.0, 0.0, [0.1, 0.5, 0.0, 1.0], [0.0; 2]).unwrap();
+        runtime.set_root(material_test_scene(
+            gray,
+            gray,
+            BackdropFilter::new(0.0).unwrap().material(Some(material)),
+        ));
+        runtime.update(Instant::now());
+        let pixels = encode_filter_frame_format(&device, &queue, &mut runtime, viewport, format);
+        let input = if format.is_srgb() { srgb(0.25) } else { 0.25 };
+        let expected = ((0.1 + 0.5 * input) * 255.0).round() as i32;
+        assert!(
+            (i32::from(bgra(&pixels, 16, 16)[0]) - expected).abs() <= 2,
+            "{format:?}"
+        );
+        assert_eq!(bgra(&pixels, 16, 16)[3], 255);
+    }
 }
 
 #[test]
@@ -3483,7 +3554,9 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
         eprintln!("SKIP: no GPU adapter for backdrop pixel readback");
         return;
     };
-    for displacement in [0.0, 1.0] {
+    let material =
+        harbor_widget::BackdropMaterial::new(5.0, 0.25, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+    for (displacement, material) in [(0.0, None), (1.0, None), (1.0, Some(material))] {
         let green = create_solid_pipeline_rgb(&device, 0.0, 1.0, 0.0);
         let blue = create_solid_pipeline_rgb(&device, 0.0, 0.0, 1.0);
         let red = create_solid_pipeline_rgb(&device, 1.0, 0.0, 0.0);
@@ -3521,6 +3594,7 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
                                 .edge_refraction(
                                     harbor_widget::EdgeRefraction::new(4.0, displacement).unwrap(),
                                 )
+                                .material(material)
                                 .border_radius(BorderRadius::all(6.0).unwrap())
                                 .child(SizedBox::new(Size::new(24.0, 24.0))),
                         ),
@@ -3583,7 +3657,9 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
         eprintln!("SKIP: no GPU adapter for backdrop alpha/resize");
         return;
     };
-    for displacement in [0.0, 1.0] {
+    let material =
+        harbor_widget::BackdropMaterial::new(5.0, 0.25, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+    for (displacement, material) in [(0.0, None), (1.0, None), (1.0, Some(material))] {
         let mut runtime = Runtime::new();
         runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
         let translucent = Color {
@@ -3607,6 +3683,7 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
                                 .edge_refraction(
                                     harbor_widget::EdgeRefraction::new(4.0, displacement).unwrap(),
                                 )
+                                .material(material)
                                 .child(SizedBox::new(Size::new(24.0, 24.0))),
                         ),
                     ),
@@ -3758,4 +3835,215 @@ fn transparent_icon_button_has_no_zero_width_border_fill() {
             "transparent idle/hover/pressed button is not a fill"
         );
     }
+}
+
+fn material_test_scene(start: Color, end: Color, filter: harbor_widget::BackdropFilter) -> Stack {
+    use harbor_widget::{GradientStop, LinearGradient};
+    let ramp = LinearGradient::new(
+        Point::ZERO,
+        Point::new(1.0, 1.0),
+        &[GradientStop::new(0.0, start), GradientStop::new(1.0, end)],
+    )
+    .unwrap();
+    Stack::new()
+        .child(
+            DecoratedBox::new(BoxDecoration::new().try_paint(ramp.into()).unwrap())
+                .child(SizedBox::new(Size::new(32.0, 32.0))),
+        )
+        .child(
+            Padding::all(4.0).child(
+                filter
+                    .border_radius(BorderRadius::all(6.0).unwrap())
+                    .child(SizedBox::new(Size::new(24.0, 24.0))),
+            ),
+        )
+        .child(
+            Padding::new(4.0, 0.0, 0.0, 14.0)
+                .child(SizedBox::new(Size::new(4.0, 2.0)).color(Color::RED)),
+        )
+}
+
+#[test]
+fn backdrop_material_nonlinear_profile_preserves_center_foreground_and_live_updates() {
+    use harbor_widget::{BackdropFilter, BackdropMaterial, EdgeRefraction};
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for native material profile");
+        return;
+    };
+    let material = BackdropMaterial::new(0.0, 0.0, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    for scale in [1.0, 1.5, 2.0] {
+        let viewport = Viewport::new((32.0 * scale) as u32, (32.0 * scale) as u32, scale);
+        runtime.set_viewport(viewport.clone());
+        for alpha in [0.5, 1.0] {
+            let start = Color {
+                a: alpha,
+                ..Color::BLACK
+            };
+            let end = Color {
+                a: alpha,
+                ..Color::WHITE
+            };
+            let filter = |strength, material| {
+                BackdropFilter::new(0.0)
+                    .unwrap()
+                    .edge_refraction(EdgeRefraction::new(5.0, strength).unwrap())
+                    .material(material)
+            };
+            let mut render = |f, a, b| {
+                runtime.set_root(material_test_scene(a, b, f));
+                runtime.update(Instant::now());
+                encode_filter_frame(&device, &queue, &mut runtime, viewport.clone())
+            };
+            let base = render(filter(0.0, None), start, end);
+            let old = render(filter(3.0, None), start, end);
+            let new = render(filter(3.0, Some(material)), start, end);
+            let at =
+                |data: &[u8], x: f32, y: f32| bgra(data, (x * scale) as u32, (y * scale) as u32);
+            let b = i32::from(at(&base, 5.0, 16.0)[0]);
+            let o = i32::from(at(&old, 5.0, 16.0)[0]);
+            let n = i32::from(at(&new, 5.0, 16.0)[0]);
+            assert!(
+                b < n && n < o,
+                "nonlinear lens differs from old smoothstep: {b} < {n} < {o}"
+            );
+            for (x, y) in [(16.0, 16.0), (2.0, 16.0), (4.0, 4.0), (15.0, 5.0)] {
+                assert_eq!(
+                    at(&base, x, y),
+                    at(&new, x, y),
+                    "center/outside/cutout/foreground"
+                );
+            }
+            assert_eq!(at(&new, 5.0, 16.0)[3], at(&base, 5.0, 16.0)[3]);
+            let retained = render(filter(3.0, Some(material)), start, end);
+            assert_eq!(
+                new, retained,
+                "material does not compound across retained frames"
+            );
+            let live = render(filter(3.0, Some(material)), end, start);
+            assert_ne!(at(&live, 5.0, 16.0), at(&new, 5.0, 16.0));
+            assert_eq!(at(&live, 15.0, 5.0), at(&new, 15.0, 5.0));
+            let disabled = render(filter(3.0, None), start, end);
+            assert_eq!(old, disabled, "removing material restores legacy output");
+        }
+    }
+}
+
+#[test]
+fn backdrop_material_rim_responds_to_normals_and_tone_preserves_transparent_alpha() {
+    use harbor_widget::{BackdropFilter, BackdropMaterial};
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for material rim/tone");
+        return;
+    };
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    for scale in [1.0, 1.5, 2.0] {
+        let viewport = Viewport::new((32.0 * scale) as u32, (32.0 * scale) as u32, scale);
+        runtime.set_viewport(viewport.clone());
+        for alpha in [0.0, 0.5, 1.0] {
+            let gray = Color {
+                r: 0.4,
+                g: 0.4,
+                b: 0.4,
+                a: alpha,
+            };
+            let mut render = |tone, rim| {
+                let m = BackdropMaterial::new(0.0, 0.0, tone, rim).unwrap();
+                runtime.set_root(material_test_scene(
+                    gray,
+                    gray,
+                    BackdropFilter::new(0.0).unwrap().material(Some(m)),
+                ));
+                runtime.update(Instant::now());
+                encode_filter_frame(&device, &queue, &mut runtime, viewport.clone())
+            };
+            let identity = [0.0, 1.0, 0.0, 1.0];
+            let base = render(identity, [0.0; 2]);
+            let toned = render([0.1, 0.8, -0.1, 1.05], [0.0; 2]);
+            let rim = render(identity, [0.7, 0.6]);
+            let at =
+                |data: &[u8], x: f32, y: f32| bgra(data, (x * scale) as u32, (y * scale) as u32);
+            assert_eq!(at(&toned, 16.0, 16.0)[3], at(&base, 16.0, 16.0)[3]);
+            let expected = ((0.1 + 0.8 * 0.4 - 0.1 * 0.4 * 0.4) * alpha * 255.0_f32).round() as i32;
+            assert!((i32::from(at(&toned, 16.0, 16.0)[0]) - expected).abs() <= 2);
+            assert_eq!(at(&rim, 16.0, 16.0), at(&base, 16.0, 16.0));
+            assert_eq!(at(&rim, 2.0, 16.0), at(&base, 2.0, 16.0));
+            assert_eq!(
+                at(&rim, 15.0, 5.0),
+                [0, 0, 255, 255],
+                "foreground stays sharp over rim"
+            );
+            if alpha > 0.0 {
+                assert!(
+                    at(&rim, 12.0, 4.0)[0] > at(&base, 12.0, 4.0)[0],
+                    "top highlight"
+                );
+                assert!(
+                    at(&rim, 4.0, 16.0)[0] < at(&base, 4.0, 16.0)[0],
+                    "side shade scale={scale} alpha={alpha}: {:?} -> {:?}",
+                    at(&base, 4.0, 16.0),
+                    at(&rim, 4.0, 16.0)
+                );
+            }
+            for pixel in rim.chunks_exact(4) {
+                assert!(
+                    pixel[..3].iter().all(|c| *c <= pixel[3]),
+                    "premultiplied rim"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn backdrop_material_broad_frost_blurs_both_axes_and_releases_when_disabled() {
+    use harbor_widget::{BackdropFilter, BackdropMaterial};
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for broad material frost");
+        return;
+    };
+    let mut runtime = Runtime::new();
+    runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    let viewport = Viewport::new(32, 32, 1.0);
+    runtime.set_viewport(viewport.clone());
+    let mut render = |mix| {
+        let material = BackdropMaterial::new(5.0, mix, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+        let root = Stack::new()
+            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::BLACK))
+            .child(
+                Padding::new(15.0, 0.0, 0.0, 15.0)
+                    .child(SizedBox::new(Size::new(2.0, 2.0)).color(Color::WHITE)),
+            )
+            .child(
+                BackdropFilter::new(0.5)
+                    .unwrap()
+                    .material(Some(material))
+                    .child(SizedBox::new(Size::new(32.0, 32.0))),
+            );
+        runtime.set_root(root);
+        runtime.update(Instant::now());
+        encode_filter_frame(&device, &queue, &mut runtime, viewport.clone())
+    };
+    let base = render(0.0);
+    let light = render(1.0);
+    let dark = render(-1.0);
+    assert!(
+        bgra(&light, 20, 16)[0] > bgra(&base, 20, 16)[0],
+        "wide horizontal support"
+    );
+    assert!(
+        bgra(&light, 16, 20)[0] > bgra(&base, 16, 20)[0],
+        "wide vertical support"
+    );
+    assert!(
+        bgra(&dark, 16, 16)[0] < bgra(&base, 16, 16)[0],
+        "dark frost mixes a broader field"
+    );
+    assert_eq!(
+        base,
+        render(0.0),
+        "turning frost off doesn't retain stale broad pixels"
+    );
 }

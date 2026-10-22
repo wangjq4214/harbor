@@ -74,8 +74,8 @@ fn input(controller: &WorkspaceUiController) -> TextEditingController {
         .store
         .state()
         .read()
-        .palette
-        .as_ref()
+        .popups
+        .get::<palette::PaletteState>()
         .unwrap()
         .input
         .clone()
@@ -113,7 +113,7 @@ fn palette_geometry(runtime: &Runtime) -> (Rect, Rect) {
     let panel = items
         .iter()
         .find_map(|item| match item.primitive {
-            Primitive::BackdropRefract { rect, .. } => Some(rect),
+            Primitive::BackdropMaterial { rect, .. } => Some(rect),
             _ => None,
         })
         .expect("palette panel");
@@ -280,7 +280,7 @@ fn palette_rows_fill_the_panel_with_right_aligned_keycaps_and_translucent_select
         let panel = items
             .iter()
             .find_map(|item| match item.primitive {
-                Primitive::BackdropRefract { rect, .. } => Some(rect),
+                Primitive::BackdropMaterial { rect, .. } => Some(rect),
                 _ => None,
             })
             .unwrap();
@@ -385,12 +385,14 @@ fn palette_uses_shared_local_blur_with_a_distinct_inset_editor() {
         let panel = items
             .iter()
             .find_map(|item| match item.primitive {
-                Primitive::BackdropRefract {
+                Primitive::BackdropMaterial {
                     rect,
                     sigma,
                     refraction,
+                    material,
                     corner_radii,
                 } => {
+                    assert_eq!(Some(material), shared.material);
                     assert_eq!(sigma, shared.blur_sigma);
                     assert_eq!(refraction, shared.refraction);
                     assert_eq!(corner_radii, [12.0; 4]);
@@ -443,8 +445,8 @@ fn palette_filters_navigates_and_executes_one_real_tab_reduction_without_pty_inp
             .store
             .state()
             .read()
-            .palette
-            .as_ref()
+            .popups
+            .get::<palette::PaletteState>()
             .unwrap()
             .selected,
         1
@@ -593,8 +595,8 @@ fn palette_ime_preedit_confirmation_escape_and_clipboard_are_editor_owned() {
         .store
         .state()
         .read()
-        .palette
-        .as_ref()
+        .popups
+        .get::<palette::PaletteState>()
         .unwrap()
         .selected;
     runtime.dispatch(UiEvent::ImePreedit(ImePreedit::new("界", None)));
@@ -604,8 +606,8 @@ fn palette_ime_preedit_confirmation_escape_and_clipboard_are_editor_owned() {
             .store
             .state()
             .read()
-            .palette
-            .as_ref()
+            .popups
+            .get::<palette::PaletteState>()
             .unwrap()
             .selected,
         initial_selected
@@ -740,8 +742,8 @@ fn palette_close_focus_loss_and_root_replacement_reject_late_clipboard_and_ime()
         .store
         .state()
         .read()
-        .palette
-        .as_ref()
+        .popups
+        .get::<palette::PaletteState>()
         .unwrap()
         .generation;
     controller.close_palette(generation);
@@ -913,3 +915,6 @@ fn palette_native_ime_confirmation_and_close_gestures_do_not_replay_into_termina
 
 #[path = "palette_terminal_tests.rs"]
 mod terminal_actions;
+
+#[path = "popup_tests.rs"]
+mod popups;

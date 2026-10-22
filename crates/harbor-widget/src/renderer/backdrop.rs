@@ -20,6 +20,8 @@ struct Params {
     shape: [f32; 4],
     radii: [f32; 4],
     settings: [f32; 4],
+    material: [f32; 4], // physical fill sigma, signed frost mix, highlight, shade
+    tone: [f32; 4],
     clip_rect0: [f32; 4],
     clip_radii0: [f32; 4],
     clip_rect1: [f32; 4],
@@ -35,24 +37,39 @@ struct Region {
 
 impl Region {
     fn new(item: &SceneItem, viewport: &Viewport) -> Option<Self> {
-        let (rect, sigma, corner_radii, refraction) = match item.primitive {
+        let (rect, sigma, corner_radii, refraction, material) = match item.primitive {
             Primitive::BackdropBlur {
                 rect,
                 sigma,
                 corner_radii,
-            } => (rect, sigma, corner_radii, crate::EdgeRefraction::default()),
+            } => (
+                rect,
+                sigma,
+                corner_radii,
+                crate::EdgeRefraction::default(),
+                None,
+            ),
             Primitive::BackdropRefract {
                 rect,
                 sigma,
                 corner_radii,
                 refraction,
-            } => (rect, sigma, corner_radii, refraction),
+            } => (rect, sigma, corner_radii, refraction, None),
+            Primitive::BackdropMaterial {
+                rect,
+                sigma,
+                corner_radii,
+                refraction,
+                material,
+            } => (rect, sigma, corner_radii, refraction, Some(material)),
             _ => return None,
         };
         if !viewport.is_drawable()
+            || !viewport.scale_factor.is_finite()
+            || viewport.scale_factor <= 0.0
             || !sigma.is_finite()
             || sigma < 0.0
-            || (sigma == 0.0 && !refraction.enabled())
+            || (material.is_none() && sigma == 0.0 && !refraction.enabled())
         {
             return None;
         }
@@ -67,6 +84,11 @@ impl Region {
         let shape =
             crate::scene::clip::RoundedClip::new(rect, radius, ClipBehavior::AntiAlias).ok()?;
         let size = rect.size();
+        let frost = material.map_or([0.0; 2], |m| m.frost());
+        let rim = material.map_or([0.0; 2], |m| m.rim());
+        let fill_sigma = (f64::from(frost[0]) * f64::from(viewport.scale_factor)).min(f64::from(
+            viewport.physical_size.0.max(viewport.physical_size.1),
+        )) as f32;
         if !size.width.is_finite() || !size.height.is_finite() {
             return None;
         }
@@ -93,7 +115,7 @@ impl Region {
         // Expand the sampled crop, not the destination. Clamp before integer
         // arithmetic so even extreme finite scales cannot overflow dimensions.
         let displacement = f64::from(refraction.displacement()) * f64::from(viewport.scale_factor);
-        let support = (f64::from(sigma) * 3.0 + displacement)
+        let support = (f64::from(sigma.max(fill_sigma)) * 3.0 + displacement)
             .ceil()
             .min(f64::from(u32::MAX)) as u32;
         let x = destination.x.saturating_sub(support);
@@ -137,16 +159,31 @@ impl Region {
                 clip_radii0: clips.clip_radii0,
                 clip_rect1: clips.clip_rect1,
                 clip_radii1: clips.clip_radii1,
-                clip_meta: clips.clip_meta,
+                material: [fill_sigma, frost[1], rim[0], rim[1]],
+                tone: material.map_or([0.0, 1.0, 0.0, 1.0], |m| m.tone()),
+                clip_meta: [
+                    clips.clip_meta[0],
+                    clips.clip_meta[1],
+                    clips.clip_meta[2],
+                    u32::from(material.is_some()),
+                ],
             },
         })
     }
+}
+
+struct FrostTarget {
+    horizontal: wgpu::TextureView,
+    vertical: wgpu::TextureView,
+    horizontal_group: wgpu::BindGroup,
+    vertical_group: wgpu::BindGroup,
 }
 
 struct FilterTarget {
     size: (u32, u32),
     snapshot: wgpu::Texture,
     horizontal: wgpu::TextureView,
+    frost: Option<FrostTarget>,
     params: wgpu::Buffer,
     horizontal_group: wgpu::BindGroup,
     composite_group: wgpu::BindGroup,
@@ -158,6 +195,8 @@ pub(crate) struct BackdropRenderer {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     horizontal: wgpu::RenderPipeline,
+    fill_horizontal: wgpu::RenderPipeline,
+    fill_vertical: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
     blit: wgpu::RenderPipeline,
     frame: Option<FrameTarget>,
@@ -188,6 +227,7 @@ impl BackdropRenderer {
             entries: &[
                 texture_entry(0),
                 texture_entry(1),
+                texture_entry(4),
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -256,6 +296,8 @@ impl BackdropRenderer {
             layout,
             sampler,
             horizontal,
+            fill_horizontal: pipeline("fs_fill_horizontal"),
+            fill_vertical: pipeline("fs_fill_vertical"),
             composite,
             blit,
             frame: None,
@@ -290,12 +332,17 @@ impl BackdropRenderer {
         device: &wgpu::Device,
         source: &wgpu::TextureView,
         original: &wgpu::TextureView,
+        fill: &wgpu::TextureView,
         params: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("retained local backdrop bindings"),
             layout: &self.layout,
             entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(fill),
+                },
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(source),
@@ -350,7 +397,7 @@ impl BackdropRenderer {
                 contents: bytemuck::bytes_of(&Params::zeroed()),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-            let blit_group = self.group(device, &view, &view, &params);
+            let blit_group = self.group(device, &view, &view, &view, &params);
             self.frame = Some(FrameTarget {
                 size: viewport.physical_size,
                 texture,
@@ -358,9 +405,17 @@ impl BackdropRenderer {
                 blit_group,
             });
         }
-        for (id, region) in regions {
+        for (id, mut region) in regions {
+            if self.format.is_srgb() {
+                region.params.clip_meta[3] |= 2;
+            }
             let size = (region.crop.width, region.crop.height);
-            if self.filters.get(&id).is_none_or(|f| f.size != size) {
+            let needs_frost = region.params.material[0] > 0.0 && region.params.material[1] != 0.0;
+            if self
+                .filters
+                .get(&id)
+                .is_none_or(|f| f.size != size || f.frost.is_some() != needs_frost)
+            {
                 let snapshot = self.texture(
                     device,
                     size,
@@ -381,14 +436,54 @@ impl BackdropRenderer {
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                let horizontal_group = self.group(device, &snapshot_view, &snapshot_view, &params);
-                let composite_group = self.group(device, &horizontal, &snapshot_view, &params);
+                let horizontal_group = self.group(
+                    device,
+                    &snapshot_view,
+                    &snapshot_view,
+                    &snapshot_view,
+                    &params,
+                );
+                let frost = needs_frost.then(|| {
+                    let view = || {
+                        self.texture(
+                            device,
+                            size,
+                            wgpu::TextureUsages::RENDER_ATTACHMENT
+                                | wgpu::TextureUsages::TEXTURE_BINDING,
+                        )
+                        .create_view(&Default::default())
+                    };
+                    let fill_h = view();
+                    let fill_v = view();
+                    FrostTarget {
+                        horizontal_group: self.group(
+                            device,
+                            &snapshot_view,
+                            &snapshot_view,
+                            &snapshot_view,
+                            &params,
+                        ),
+                        vertical_group: self.group(
+                            device,
+                            &fill_h,
+                            &snapshot_view,
+                            &snapshot_view,
+                            &params,
+                        ),
+                        horizontal: fill_h,
+                        vertical: fill_v,
+                    }
+                });
+                let fill = frost.as_ref().map_or(&snapshot_view, |f| &f.vertical);
+                let composite_group =
+                    self.group(device, &horizontal, &snapshot_view, fill, &params);
                 self.filters.insert(
                     id,
                     FilterTarget {
                         size,
                         snapshot,
                         horizontal,
+                        frost,
                         params,
                         horizontal_group,
                         composite_group,
@@ -445,6 +540,22 @@ impl BackdropRenderer {
             pass.set_bind_group(0, &filter.horizontal_group, &[]);
             pass.draw(0..3, 0..1);
         }
+        if let Some(frost) = &filter.frost {
+            for (view, pipeline, group) in [
+                (
+                    &frost.horizontal,
+                    &self.fill_horizontal,
+                    &frost.horizontal_group,
+                ),
+                (&frost.vertical, &self.fill_vertical, &frost.vertical_group),
+            ] {
+                let mut pass =
+                    begin_pass(encoder, view, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
         let mut pass = begin_pass(encoder, &frame.view, wgpu::LoadOp::Load);
         let scissor = filter.region.destination;
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
@@ -493,6 +604,36 @@ pub(crate) fn begin_pass<'a>(
 mod tests {
     use super::*;
     use crate::layout::{Rect, Size};
+    #[test]
+    fn material_support_uses_broader_sigma_and_never_expands_the_clip_destination() {
+        let item = SceneItem {
+            id: 1,
+            paint_order: 0,
+            clips: vec![],
+            primitive: Primitive::BackdropMaterial {
+                rect: Rect::from_min_size(Point::new(100.0, 100.0), Size::new(20.0, 10.0)),
+                sigma: 2.0,
+                corner_radii: [2.0; 4],
+                refraction: crate::EdgeRefraction::new(64.0, 4.0).unwrap(),
+                material: crate::BackdropMaterial::new(
+                    10.0,
+                    -0.3,
+                    [0.0, 1.0, 0.0, 1.0],
+                    [0.3, 0.2],
+                )
+                .unwrap(),
+            },
+        };
+        for scale in [1.0, 1.5, 2.0] {
+            let r = Region::new(&item, &Viewport::new(400, 400, scale)).unwrap();
+            assert_eq!(r.destination.x, (100.0 * scale) as u32);
+            assert_eq!(r.crop.x, (66.0 * scale) as u32);
+            assert_eq!(r.params.material, [10.0 * scale, -0.3, 0.3, 0.2]);
+            assert_eq!(r.params.settings, [2.0 * scale, scale, 5.0, 4.0]);
+            assert_eq!(r.params.clip_meta[3], 1);
+        }
+    }
+
     #[test]
     fn refraction_expands_sample_support_only_and_clamps_small_shape_band() {
         let item = SceneItem {

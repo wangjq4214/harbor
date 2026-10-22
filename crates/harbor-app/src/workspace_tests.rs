@@ -190,7 +190,7 @@ fn idle_notification_expiry_removes_glass_without_changing_terminal_focus_or_all
             .unwrap()
             .added
             .iter()
-            .any(|item| matches!(item.primitive, Primitive::BackdropRefract { .. }))
+            .any(|item| matches!(item.primitive, Primitive::BackdropMaterial { .. }))
     );
     assert_eq!(
         controller.advance_notifications(deadline - std::time::Duration::from_millis(1)),
@@ -205,7 +205,7 @@ fn idle_notification_expiry_removes_glass_without_changing_terminal_focus_or_all
             .added
             .iter()
             .chain(&delta.modified)
-            .any(|item| matches!(item.primitive, Primitive::BackdropRefract { .. }))
+            .any(|item| matches!(item.primitive, Primitive::BackdropMaterial { .. }))
     );
     assert_eq!(controller.latest_terminal_allocation(), allocation);
     assert_eq!(runtime.input().focused(), focused);
@@ -1600,7 +1600,17 @@ fn search_editor_publishes_initial_no_result_instead_of_an_immediate_busy_hint()
     controller.publish_search_status("1 / 3");
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("needle".into())));
     runtime.update(Instant::now());
-    assert_eq!(controller.store.state().read().search.status, "No Result");
+    assert_eq!(
+        controller
+            .store
+            .state()
+            .read()
+            .popups
+            .get::<SearchUiState>()
+            .unwrap()
+            .status,
+        "No Result"
+    );
     assert_eq!(controller.search_query().unwrap().1, "needle");
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::Character('a'),
@@ -1611,7 +1621,17 @@ fn search_editor_publishes_initial_no_result_instead_of_an_immediate_busy_hint()
         modifiers: Modifiers::default(),
     }));
     runtime.update(Instant::now());
-    assert_eq!(controller.store.state().read().search.status, "No Result");
+    assert_eq!(
+        controller
+            .store
+            .state()
+            .read()
+            .popups
+            .get::<SearchUiState>()
+            .unwrap()
+            .status,
+        "No Result"
+    );
     assert_eq!(controller.search_query().unwrap().1, "");
 }
 
@@ -1802,7 +1822,7 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
         }));
         let items: Vec<_> = delta.added.iter().chain(&delta.modified).collect();
         assert!(items.iter().any(|item| matches!(&item.primitive,
-            Primitive::BackdropRefract { rect, sigma: 8.0, refraction, .. }
+            Primitive::BackdropMaterial { rect, sigma: 8.0, refraction, .. }
                 if *rect == panel && refraction.width() == 12.0 && refraction.displacement() == 10.0)));
         let surface = items
             .iter()
@@ -1835,12 +1855,11 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
             }),
             "faint black veil supports light text without adding a colored tint"
         );
-        assert!(items.iter().any(|item| matches!(&item.primitive,
-            Primitive::PaintedBorder { rect, paint: harbor_widget::Paint::LinearGradient(gradient), corner_radii, width }
-                if *rect == panel && *corner_radii == [12.0; 4]
-                && gradient.stops()[0].color().a > gradient.stops()[1].color().a
-                && gradient.stops().iter().all(|stop| stop.color().a > 0.0 && stop.color().a <= 0.35)
-                && *width > 1.0 && *width < 1.5)));
+        assert!(
+            !items.iter().any(|item| matches!(&item.primitive,
+            Primitive::PaintedBorder { rect, .. } if *rect == panel)),
+            "shader rim replaces the old gradient stroke rather than doubling it"
+        );
         assert!(!items.iter().any(|item| matches!(&item.primitive,
             Primitive::OuterShadow { occluder_rect, .. } if *occluder_rect == panel)));
         let (status_origin, _) = items
@@ -1882,7 +1901,10 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
             }
             assert_eq!(
                 controller.drain_actions(),
-                [AppCommandRequest::shortcut(command)]
+                [AppCommandRequest::popup(
+                    command,
+                    controller.store.state().read().popups.generation().unwrap()
+                )]
             );
         }
         // Blank overlay space still permits normal terminal interaction.
@@ -1934,7 +1956,7 @@ fn configuration_notice_stays_below_search_and_returns_when_search_closes() {
             .iter()
             .chain(&delta.modified)
             .find_map(|item| match &item.primitive {
-                Primitive::BackdropRefract {
+                Primitive::BackdropMaterial {
                     rect, corner_radii, ..
                 } if *corner_radii == [6.0; 4] => Some(rect.min.y),
                 _ => None,
@@ -2096,7 +2118,15 @@ fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_
     runtime.request_focus(&controller.search_focus());
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("a".repeat(128))));
     controller.drain_actions();
-    let input = controller.store.state().read().search.input.clone();
+    let input = controller
+        .store
+        .state()
+        .read()
+        .popups
+        .get::<SearchUiState>()
+        .unwrap()
+        .input
+        .clone();
     input.set_selection(TextSelection {
         anchor: 125,
         extent: 128,
@@ -2108,7 +2138,10 @@ fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_
     );
     assert_eq!(
         controller.drain_actions(),
-        [AppCommandRequest::shortcut(AppCommand::SearchChanged)]
+        [AppCommandRequest::popup(
+            AppCommand::SearchChanged,
+            controller.store.state().read().popups.generation().unwrap()
+        )]
     );
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::Character('a'),
@@ -2134,7 +2167,10 @@ fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_
     assert_eq!(controller.search_query().unwrap().1, "needle");
     assert_eq!(
         controller.drain_actions(),
-        [AppCommandRequest::shortcut(AppCommand::SearchChanged)]
+        [AppCommandRequest::popup(
+            AppCommand::SearchChanged,
+            controller.store.state().read().popups.generation().unwrap()
+        )]
     );
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::Character('z'),

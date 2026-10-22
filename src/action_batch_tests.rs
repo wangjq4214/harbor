@@ -195,13 +195,9 @@ fn admission_rechecks_context_and_stale_requests_never_steal_new_editor_focus() 
 #[test]
 fn palette_admission_is_one_shot_and_keeps_command_specific_focus_destination() {
     let (mut tabs, ui, mut runtime, bytes) = fixture();
-    for command in [AppCommand::SearchOpen, AppCommand::SearchClose] {
-        let query = if command == AppCommand::SearchOpen {
-            "terminal.search"
-        } else {
-            "terminal.search-close"
-        };
-        submit(&ui, &mut runtime, query);
+    for _ in 0..2 {
+        let command = AppCommand::SearchOpen;
+        submit(&ui, &mut runtime, "terminal.search");
         let requests = ui.drain_actions();
         assert_eq!(requests.len(), 1);
         let (request, clear) =
@@ -214,18 +210,48 @@ fn palette_admission_is_one_shot_and_keeps_command_specific_focus_destination() 
         assert!(!ui.palette_is_open());
         let outcome = tabs.execute_search_command(request.command, &ui);
         let focus = outcome.focus_for_source(request.source, &ui).unwrap();
-        assert_eq!(
-            focus,
-            if command == AppCommand::SearchOpen {
-                ui.search_focus()
-            } else {
-                ui.terminal_focus()
-            }
-        );
+        assert_eq!(focus, ui.search_focus());
         assert!(matches!(
             next_app_action(&mut requests.into_iter(), &ui, &tabs, false),
             Some(AppActionAdmission::Rejected { .. })
         ));
     }
+    assert!(bytes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn retired_search_editor_intents_are_dropped_and_stale_palette_cannot_refocus_over_search() {
+    let (mut tabs, ui, mut runtime, bytes) = fixture();
+    tabs.execute_search_command(AppCommand::SearchOpen, &ui);
+    runtime.request_focus(&ui.search_focus());
+    runtime.update(Instant::now());
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("needle".into())));
+    key(&mut runtime, Key::Enter, Modifiers::default());
+    key(&mut runtime, Key::Escape, Modifiers::default());
+    let requests = ui.drain_actions();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests
+            .iter()
+            .all(|r| matches!(r.source, CommandSource::Popup { .. }))
+    );
+    ui.open_palette();
+    assert!(next_app_action(&mut requests.clone().into_iter(), &ui, &tabs, false).is_none());
+    ui.open_search(tabs.active_id().unwrap());
+    assert!(next_app_action(&mut requests.into_iter(), &ui, &tabs, false).is_none());
+    assert_eq!(ui.search_query().unwrap().1, "");
+
+    submit(&ui, &mut runtime, "terminal.search");
+    let pending = ui.drain_actions();
+    assert_eq!(pending.len(), 1);
+    ui.open_search(tabs.active_id().unwrap());
+    match next_app_action(&mut pending.into_iter(), &ui, &tabs, false).unwrap() {
+        AppActionAdmission::Rejected {
+            restore_terminal_focus,
+            ..
+        } => assert!(!restore_terminal_focus),
+        _ => panic!("retired palette executed"),
+    }
+    assert!(ui.search_query().is_some());
     assert!(bytes.lock().unwrap().is_empty());
 }

@@ -3,6 +3,7 @@
 **Spec ID:** 0027
 **Status:** Read model, literal consumer and current-session integration implemented; integrated Windows/performance acceptance pending.
 **Sources:** [#175](https://github.com/wangjq4214/harbor/issues/175), initial literal slice of [#159](https://github.com/wangjq4214/harbor/issues/159), approved current-session entry/highlights/navigation. [#160](https://github.com/wangjq4214/harbor/issues/160) supplies future shell compatibility, not full workflow delivery.
+**Lifecycle extension:** [Spec 0033](./0033-exclusive-extensible-application-popups.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md) require search to close and clear its query, results, highlights and pending work when another participating popup replaces it. Reopening starts empty; existing provenance, bounded cancellation and no-stale-publication requirements remain unchanged. This selects behavior, not implementation acceptance.
 
 ## Requirements
 ### R1 — Bounded read-only content

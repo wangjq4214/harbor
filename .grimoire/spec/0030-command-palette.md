@@ -4,6 +4,8 @@
 **Status:** Draft; approved direction, not implemented or runtime-accepted.
 **Date:** 2026-10-18
 **Sources:** [Issue #156](https://github.com/wangjq4214/harbor/issues/156); the user's 2026-10-18 approval of the proposed defaults and Spec → Slice route.
+**Material extension:** [ADR 0070](../adr/0070-shared-application-glass-presets-with-local-overrides.md) defines shared panel presets and a distinguishable editor; [spec 0032](./0032-native-liquid-glass-material.md) selects the native liquid-glass upgrade without changing this spec's command, editing or focus contracts. These links do not establish runtime acceptance.
+**Lifecycle extension:** [Spec 0033](./0033-exclusive-extensible-application-popups.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md) select exclusive, extensible popup management: opening the palette closes and clears search; search-close/next/previous availability follows that closed state, while search-open creates a fresh focused panel. No hidden-search retention or automatic restoration is required. Other command, editing and operation-destination contracts remain unchanged; this is not implementation evidence.
 
 ## Requirements
 

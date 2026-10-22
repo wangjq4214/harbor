@@ -314,3 +314,49 @@ fn unicode_deletion_through_runtime_and_rebuild_preserves_history() {
     assert_eq!(c.text(), "a👨‍👩‍👧‍👦e\u{301}");
     assert!(runtime.input().captor(1).is_none());
 }
+
+#[test]
+fn ime_commit_stays_with_its_composition_owner_across_focus_and_root_replacement() {
+    for transition in ["focus", "return", "root"] {
+        let a = TextEditingController::new("");
+        let b = TextEditingController::new("");
+        let af = FocusHandle::new();
+        let bf = FocusHandle::new();
+        let mut runtime = mount(
+            harbor_widget::Column::new()
+                .child(TextField::new(a.clone()).focus_handle(af))
+                .child(TextField::new(b.clone()).focus_handle(bf)),
+        );
+        runtime.request_focus(&af);
+        runtime.dispatch(UiEvent::ImePreedit(ImePreedit::new("old", None)));
+        match transition {
+            "root" => {
+                runtime.set_root(TextField::new(b.clone()).focus_handle(bf));
+                runtime.request_focus(&bf);
+            }
+            "return" => {
+                runtime.request_focus(&bf);
+                runtime.request_focus(&af);
+            }
+            _ => {
+                runtime.request_focus(&bf);
+            }
+        }
+        update(&mut runtime);
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("late".into())));
+        assert_eq!(a.text(), "", "{transition}");
+        assert_eq!(b.text(), "", "{transition}");
+        // A new composition binds to the new focus; fencing an old commit must
+        // not disable ordinary IME editing in the destination.
+        runtime.dispatch(UiEvent::ImePreedit(ImePreedit::new("new", None)));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("新".into())));
+        assert_eq!(
+            if transition == "return" {
+                a.text()
+            } else {
+                b.text()
+            },
+            "新"
+        );
+    }
+}
