@@ -6,7 +6,7 @@ use crate::command::{
 };
 use crate::tab_manager::{TabId, TabManager, TabSnapshot};
 use harbor_widget::{
-    Alignment, Column, ConstrainedBox, DecoratedBox, KeyChord,
+    Alignment, Column, ConstrainedBox, DecoratedBox, KeyChord, ScrollController, ScrollView,
     decoration::{Border, BorderRadius, BoxDecoration},
     layout::{BoxConstraints, Size},
     scene::primitive::Primitive,
@@ -23,6 +23,8 @@ pub(super) struct PaletteState {
     pub selected: usize,
     pub pending: bool,
     pub focus: FocusHandle,
+    scroll: ScrollController,
+    row_height: std::rc::Rc<std::cell::Cell<f32>>,
 }
 
 // Retained by the editor's Fiber, not application state. Root replacement must
@@ -99,12 +101,17 @@ struct PaletteRowHeight {
     shortcut_rows: usize,
 }
 
+impl PaletteRowHeight {
+    fn height(shortcut_rows: usize, metrics: &TextMetrics) -> f32 {
+        let shortcuts_height = shortcut_rows as f32 * (metrics.line_height + 2.0)
+            + shortcut_rows.saturating_sub(1) as f32 * 2.0;
+        (metrics.line_height * 2.0).max(shortcuts_height)
+    }
+}
+
 impl PrimitiveLeaf for PaletteRowHeight {
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
-        let shortcuts_height = self.shortcut_rows as f32 * (metrics.line_height + 2.0)
-            + self.shortcut_rows.saturating_sub(1) as f32 * 2.0;
-        let height = (metrics.line_height * 2.0).max(shortcuts_height);
-        constraints.constrain(Size::new(0.0, height))
+        constraints.constrain(Size::new(0.0, Self::height(self.shortcut_rows, metrics)))
     }
 
     fn paint_primitives(&self, _rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
@@ -213,6 +220,8 @@ impl WorkspaceUiController {
                 selected: 0,
                 pending: false,
                 focus: self.palette_focus,
+                scroll: ScrollController::new(),
+                row_height: Default::default(),
             });
             self.store.set_state(state);
             return focus;
@@ -318,9 +327,10 @@ impl WorkspaceUiController {
             .get::<PaletteState>()
             .is_some_and(|palette| palette.generation == generation && !palette.pending)
         {
-            state
-                .popups
-                .update::<PaletteState>(|palette| palette.selected = 0);
+            state.popups.update::<PaletteState>(|palette| {
+                palette.selected = 0;
+                palette.scroll.jump_to(0.0);
+            });
             self.store.set_state(state);
         }
     }
@@ -341,6 +351,9 @@ impl WorkspaceUiController {
                 } else {
                     (palette.selected.min(count - 1) + count - 1) % count
                 };
+                let height = palette.row_height.get();
+                let start = palette.selected as f32 * (height + 4.0);
+                palette.scroll.reveal_range(start, start + height);
             });
             self.store.set_state(state);
         }
@@ -446,6 +459,21 @@ fn palette_panel(
     let entries = candidates(&palette.input.text());
     let snapshots = controller.tabs.state.read().snapshots.clone();
     let foreground = cx.theme().button.normal.foreground;
+    let shortcut_rows = candidates("")
+        .iter()
+        .map(|entry| {
+            bindings
+                .bindings()
+                .filter(|(_, command)| *command == entry.command)
+                .count()
+        })
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let entries_count = entries.len();
+    let mut rows = Column::new()
+        .cross_axis_alignment(Alignment::Stretch)
+        .gap(4.0);
     let mut content = Column::new()
         .cross_axis_alignment(Alignment::Stretch)
         .gap(4.0)
@@ -453,27 +481,14 @@ fn palette_panel(
             input.keyed(format!("palette-editor-{generation}")),
         ));
     if entries.is_empty() {
-        content = content.child(
+        rows = rows.child(
             TextLabel::new("No matching commands")
                 .color(foreground)
                 .build(cx),
         );
     } else {
         let context = controller.palette_context();
-        let shortcut_rows = candidates("")
-            .iter()
-            .map(|entry| {
-                bindings
-                    .bindings()
-                    .filter(|(_, command)| *command == entry.command)
-                    .count()
-            })
-            .max()
-            .unwrap_or(1)
-            .max(1);
-        // Keep the selected row visible without giving keyboard focus to a second editor/list.
-        let start = palette.selected.saturating_sub(4);
-        for (index, entry) in entries.iter().enumerate().skip(start).take(5) {
+        for (index, entry) in entries.iter().enumerate() {
             let reason = availability(entry.command, palette.target, &snapshots, context).err();
             let mut labels = Column::new().cross_axis_alignment(Alignment::Stretch);
             labels = labels.child(
@@ -504,12 +519,29 @@ fn palette_panel(
                 })
                 .unwrap()
                 .border_radius(BorderRadius::all(6.0).unwrap());
-            content = content.child(
+            rows = rows.child(
                 DecoratedBox::new(decoration)
                     .child(Padding::new(6.0, 8.0, 6.0, 8.0).child(row).build(cx))
                     .build(cx),
             );
         }
+        let row_height = palette.row_height.clone();
+        // Uniform rows let committed content geometry determine the exact row height.
+        let rows = harbor_widget::LayoutObserver::new(move |rect| {
+            row_height.set((rect.size().height + 4.0) / entries_count as f32 - 4.0);
+        })
+        .child(rows.build(cx))
+        .build(cx);
+        content = content.child(
+            Expanded::new()
+                .child(
+                    ScrollView::new()
+                        .controller(palette.scroll.clone())
+                        .child(rows)
+                        .build(cx),
+                )
+                .build(cx),
+        );
         content = content.child(
             TextLabel::new(format!(
                 "{} / {} · ↑↓ select · Enter run · Esc close",
@@ -520,7 +552,35 @@ fn palette_panel(
             .build(cx),
         );
     }
-    let content = Padding::all(8.0).child(content.build(cx)).build(cx);
+    if entries.is_empty() {
+        content = content.child(
+            Expanded::new()
+                .child(
+                    ScrollView::new()
+                        .controller(palette.scroll.clone())
+                        .child(rows.build(cx))
+                        .build(cx),
+                )
+                .build(cx),
+        );
+    }
+    let visible = entries.len().min(5);
+    let content = ConstrainedBox::new()
+        .max_height_with(move |metrics| {
+            let editor = metrics.line_height + 12.0;
+            if visible == 0 {
+                editor + 4.0 + metrics.line_height
+            } else {
+                editor
+                    + 8.0
+                    + metrics.line_height
+                    + visible as f32 * (PaletteRowHeight::height(shortcut_rows, metrics) + 12.0)
+                    + visible.saturating_sub(1) as f32 * 4.0
+            }
+        })
+        .child(content.build(cx))
+        .build(cx);
+    let content = Padding::all(8.0).child(content).build(cx);
     let card = appearance.panel(cx, content);
     Portal::new()
         .child(

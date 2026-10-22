@@ -11,7 +11,7 @@ use harbor_widget::widgets::button::Button;
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::winit::{WindowPresenter, WinitAdapter};
-use harbor_widget::{ConstrainedBox, ScrollArea, ScrollController, layout::Size};
+use harbor_widget::{ConstrainedBox, ScrollController, ScrollView, layout::Size};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -38,7 +38,7 @@ fn should_route_wheel_invalidation_as_a_handled_redraw_effect() {
             .max_width(200.0)
             .max_height(200.0)
             .child(
-                ScrollArea::new()
+                ScrollView::new()
                     .controller(offset.clone())
                     .child(SizedBox::new(Size::new(200.0, 400.0))),
             ),
@@ -251,7 +251,7 @@ fn should_not_request_redraw_when_wheel_is_clamped_at_scroll_boundary() {
             .max_width(200.0)
             .max_height(200.0)
             .child(
-                ScrollArea::new()
+                ScrollView::new()
                     .controller(offset.clone())
                     .child(SizedBox::new(Size::new(200.0, 20.0))),
             ),

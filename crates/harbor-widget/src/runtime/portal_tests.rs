@@ -327,7 +327,7 @@ fn failed_escaped_measurement_does_not_partially_commit_ordinary_geometry() {
 }
 
 #[test]
-fn focusing_escaped_content_does_not_scroll_its_declaring_scroll_area() {
+fn focusing_escaped_content_does_not_scroll_its_declaring_scroll_view() {
     let scroll = crate::ScrollController::new();
     let handle = crate::FocusHandle::new();
     let content =
@@ -343,7 +343,7 @@ fn focusing_escaped_content_does_not_scroll_its_declaring_scroll_area() {
             .max_width(100.0)
             .max_height(50.0)
             .child(
-                crate::ScrollArea::new()
+                crate::ScrollView::new()
                     .controller(scroll.clone())
                     .child(content),
             ),

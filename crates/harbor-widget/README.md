@@ -129,7 +129,7 @@ See [`tests/native_host_smoke.rs`](tests/native_host_smoke.rs) for a compact lif
 
 - **Layout:** `Row`, `Column`, `Flex`, `Flexible`, `Expanded`, `Padding`, `SizedBox`, `ConstrainedBox`, `Align`, and `Stack`.
 - **Controls and editing:** `Button`, `IconButton`, `InteractiveRegion`, `MouseRegion`, `Focus`, `FocusScope`, `Shortcuts`, `Actions`, `TextEditingController`, `EditableText`, and `TextField`.
-- **Presentation and overlays:** `TextLabel`, `Icon`, `DecoratedBox`, `Separator`, `ThemeProvider`, `ScrollArea`, `Notification`, and `Portal`. `Paint`/`LinearGradient` support fills and border strokes; `BackdropFilter` supports local blur with optional `EdgeRefraction`.
+- **Presentation and overlays:** `TextLabel`, `Icon`, `DecoratedBox`, `Separator`, `ThemeProvider`, `ScrollView`, `Notification`, and `Portal`. `Paint`/`LinearGradient` support fills and border strokes; `BackdropFilter` supports local blur with optional `EdgeRefraction`.
 - **State:** `BuildCx::use_state`, `Signal`, `Store`, and `Dispatcher`.
 - **External rendering:** `CustomPaint` registers draw, scheduling, IME, input, and unmount callbacks for a renderer owned outside the widget crate.
 

@@ -7,7 +7,7 @@
 ## Requirements
 ### R1 — Retain Reusable Widget Mechanisms
 Ownership depends on a meaningful non-terminal contract without Harbor business types, not consumer count/artwork names or generic callback/action parameters.
-Retain in harbor-widget: Align/Padding/SizedBox/ConstrainedBox/Stack; Flex/Row/Column/Flexible/Expanded/Spacer; DecoratedBox/Separator/TextLabel/Icon/Lucide artwork; InteractiveRegion/MouseRegion/Focus/FocusScope; Button/IconButton; ScrollArea/ScrollController/LayoutObserver; Actions<A>/Shortcuts<A>/ThemeProvider; CustomPaint/Portal; Signal/Store<S,A>/Dispatcher<A>, generic theme/style tokens/defaults.
+Retain in harbor-widget: Align/Padding/SizedBox/ConstrainedBox/Stack; Flex/Row/Column/Flexible/Expanded/Spacer; DecoratedBox/Separator/TextLabel/Icon/Lucide artwork; InteractiveRegion/MouseRegion/Focus/FocusScope; Button/IconButton; ScrollView/ScrollController/LayoutObserver; Actions<A>/Shortcuts<A>/ThemeProvider; CustomPaint/Portal; Signal/Store<S,A>/Dispatcher<A>, generic theme/style tokens/defaults.
 No widget-owned tab/terminal models, config/watch policy, command meanings/defaults, reducers or application effects. Production dependencies point application → widgets, never widget → app/config/terminal. Generic host infrastructure remains R6.
 
 ### R2 — Application-Owned Confirmation Preview

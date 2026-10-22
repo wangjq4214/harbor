@@ -2,6 +2,8 @@ use crate::layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Po
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, View};
 
+type HeightResolver = std::rc::Rc<dyn Fn(&TextMetrics) -> f32>;
+
 /// Single-child bounds enforced inside the parent's authoritative interval.
 ///
 /// A fixed rail uses `min_width(200.0).max_width(200.0)`; `max_width` alone
@@ -11,6 +13,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 #[derive(Clone)]
 pub struct ConstrainedBox {
     bounds: BoxConstraints,
+    max_height_with: Option<HeightResolver>,
     child: Option<View>,
 }
 
@@ -24,6 +27,7 @@ impl ConstrainedBox {
     pub fn new() -> Self {
         Self {
             bounds: BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
+            max_height_with: None,
             child: None,
         }
     }
@@ -46,6 +50,27 @@ impl ConstrainedBox {
     pub fn max_height(mut self, height: f32) -> Self {
         self.bounds.max.height = height;
         self
+    }
+
+    /// Caps height using the Runtime's current logical text metrics.
+    /// The result must be nonnegative and finite (or positive infinity).
+    /// This additional cap cannot relax static bounds or the parent's constraints.
+    pub fn max_height_with(mut self, height: impl Fn(&TextMetrics) -> f32 + 'static) -> Self {
+        self.max_height_with = Some(std::rc::Rc::new(height));
+        self
+    }
+
+    fn effective_bounds(&self, metrics: &TextMetrics) -> BoxConstraints {
+        let mut bounds = self.bounds;
+        if let Some(height) = &self.max_height_with {
+            let height = height(metrics);
+            bounds.max.height = if height.is_nan() {
+                height
+            } else {
+                bounds.max.height.min(height)
+            };
+        }
+        bounds
     }
 
     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
@@ -71,8 +96,8 @@ impl crate::WithChildren for ConstrainedBox {
 }
 
 impl AnyView for ConstrainedBox {
-    fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        self.bounds
+    fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
+        self.effective_bounds(metrics)
             .enforce(constraints)
             .map(|bounds| bounds.min)
             .unwrap_or(Size::ZERO)
@@ -82,9 +107,9 @@ impl AnyView for ConstrainedBox {
         &self,
         constraints: BoxConstraints,
         children: &mut dyn ChildMeasurer,
-        _metrics: &TextMetrics,
+        metrics: &TextMetrics,
     ) -> Result<ParentLayout, LayoutError> {
-        let bounds = self.bounds.enforce(constraints)?;
+        let bounds = self.effective_bounds(metrics).enforce(constraints)?;
         let mut size = bounds.min;
         let mut placements = Vec::with_capacity(children.len());
         for index in 0..children.len() {
