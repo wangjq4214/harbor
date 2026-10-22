@@ -50,10 +50,10 @@ impl EdgeRefraction {
 
 /// Opt-in background material, independent of product controls or layout.
 /// Frost mixes a wider Gaussian with the base blur: negative mix darkens,
-/// positive mix lightens. Tone is [offset, slope, quadratic, saturation] on
-/// straight RGB; rim is [highlight, shade]. All inputs must be finite.
-/// Sigma is capped at 64dp, mix at [-1,1], tone coefficients at [-2,2],
-/// saturation at [0,2], and rim intensities at [0,1].
+/// positive mix lightens. Tone is `[offset, slope, quadratic, saturation]` on
+/// straight RGB; rim is `[highlight, shade]`. All inputs must be finite.
+/// Sigma is capped at 64dp, mix at `[-1,1]`, tone coefficients at `[-2,2]`,
+/// saturation at `[0,2]`, and rim intensities at `[0,1]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BackdropMaterial {
     frost: [f32; 2],
