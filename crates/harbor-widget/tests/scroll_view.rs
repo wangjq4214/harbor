@@ -1,5 +1,6 @@
 use harbor_widget::input::event::{
-    Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
+    Key, KeyboardEvent, Modifiers, PointerBoundaryEvent, PointerBoundaryKind, PointerButton,
+    PointerEvent, PointerPhase, UiEvent,
 };
 use harbor_widget::layout::{Point, Rect, Size};
 use harbor_widget::renderer::Viewport;
@@ -491,6 +492,116 @@ fn thumb(runtime: &Runtime) -> Option<(Rect, u32)> {
             } if color.a == 0.35 || color.a == 0.6 => Some((rect, item.paint_order)),
             _ => None,
         })
+}
+
+fn track(runtime: &Runtime) -> Option<Rect> {
+    let delta = runtime.pending_delta().unwrap();
+    delta
+        .added
+        .iter()
+        .chain(&delta.modified)
+        .find_map(|item| match item.primitive {
+            harbor_widget::scene::primitive::Primitive::Quad { rect, color, .. }
+                if color.a == 0.06 =>
+            {
+                Some(rect)
+            }
+            _ => None,
+        })
+}
+
+#[test]
+fn scrollbar_expands_only_over_its_track_without_moving_content() {
+    let controller = ScrollController::new();
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(
+        ScrollView::new()
+            .controller(controller.clone())
+            .child(SizedBox::new(Size::new(100.0, 400.0))),
+    );
+    update(&mut runtime);
+    let resting = thumb(&runtime).unwrap().0;
+    let content = child_rect(&runtime);
+    assert_eq!(resting.size().width, 3.0);
+    assert!(track(&runtime).is_none());
+
+    pointer(&mut runtime, 50.0, 10.0, PointerPhase::Move, 1);
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0, resting);
+    assert!(track(&runtime).is_none());
+
+    // The invisible track is a stable, wider target, not just the thin thumb.
+    pointer(&mut runtime, 91.0, 10.0, PointerPhase::Move, 1);
+    update(&mut runtime);
+    let expanded = thumb(&runtime).unwrap().0;
+    assert_eq!(expanded.size().width, 6.0);
+    assert_eq!(expanded.max, resting.max);
+    assert_eq!(expanded.size().height, resting.size().height);
+    assert_eq!(track(&runtime).unwrap().size(), Size::new(10.0, 100.0));
+    assert_eq!(child_rect(&runtime), content);
+    assert_eq!(controller.offset(), 0.0);
+
+    // Moving down the track, away from the thumb, must not collapse it.
+    pointer(&mut runtime, 91.0, 90.0, PointerPhase::Move, 1);
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 6.0);
+
+    pointer(&mut runtime, 50.0, 90.0, PointerPhase::Move, 1);
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0, resting);
+    assert!(track(&runtime).is_none());
+    assert_eq!(child_rect(&runtime), content);
+}
+
+#[test]
+fn scrollbar_boundary_and_drag_lifecycle_restore_the_thin_thumb() {
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(ScrollView::new().child(SizedBox::new(Size::new(100.0, 400.0))));
+    update(&mut runtime);
+
+    let boundary = |kind, position| {
+        UiEvent::PointerBoundary(PointerBoundaryEvent {
+            pointer_id: 7,
+            position,
+            kind,
+        })
+    };
+    runtime.dispatch(boundary(
+        PointerBoundaryKind::Enter,
+        Some(Point::new(91.0, 5.0)),
+    ));
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 6.0);
+    runtime.dispatch(boundary(PointerBoundaryKind::Leave, None));
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 3.0);
+    assert!(track(&runtime).is_none());
+
+    pointer(&mut runtime, 91.0, 5.0, PointerPhase::Move, 7);
+    pointer(&mut runtime, 91.0, 5.0, PointerPhase::Down, 7);
+    update(&mut runtime);
+    assert!(runtime.input().captor(7).is_some());
+    pointer(&mut runtime, -50.0, 70.0, PointerPhase::Move, 7);
+    runtime.dispatch(boundary(PointerBoundaryKind::Leave, None));
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 6.0);
+    assert!(track(&runtime).is_some());
+
+    pointer(&mut runtime, -50.0, 70.0, PointerPhase::Up, 7);
+    update(&mut runtime);
+    assert!(runtime.input().captor(7).is_none());
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 3.0);
+    assert!(track(&runtime).is_none());
+
+    let y = thumb(&runtime).unwrap().0.min.y + 5.0;
+    pointer(&mut runtime, 91.0, y, PointerPhase::Down, 7);
+    pointer(&mut runtime, 91.0, y, PointerPhase::Cancel, 7);
+    update(&mut runtime);
+    assert!(runtime.input().captor(7).is_none());
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 3.0);
+    assert!(track(&runtime).is_none());
 }
 
 #[test]

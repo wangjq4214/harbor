@@ -1,5 +1,7 @@
 use crate::decoration::{BorderRadius, ClipBehavior};
-use crate::input::event::{Key, KeyboardEvent, PointerButton, PointerEvent, PointerPhase, UiEvent};
+use crate::input::event::{
+    Key, KeyboardEvent, PointerBoundaryKind, PointerButton, PointerEvent, PointerPhase, UiEvent,
+};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size};
 use crate::scene::clip::RoundedClip;
@@ -184,6 +186,7 @@ impl ScrollController {
 
 /// A hard-clipped, single-child vertical viewport with an overflow-only overlay scrollbar.
 /// The thumb can be dragged; clicking its track pages the viewport without changing focus.
+/// At rest only a thin thumb is painted; hovering the track or interacting expands it.
 ///
 /// Positive wheel deltas follow the platform convention and move content toward
 /// the start (decreasing the offset); negative deltas move toward the end.
@@ -235,9 +238,10 @@ impl ScrollView {
 
 impl Component for ScrollView {
     fn build(&self, cx: &mut BuildCx) -> View {
-        // Keep this hook before the optional controller hook so switching controller
+        // Keep these hooks before the optional controller hook so switching controller
         // ownership never changes the type occupying an existing hook slot.
         let gesture = cx.use_state(|| Rc::new(Cell::new(None))).read().clone();
+        let hovered = cx.use_state(|| Rc::new(Cell::new(false))).read().clone();
         let controller = self.controller.clone().unwrap_or_else(|| {
             let state = cx.use_state(ScrollController::new);
             state.read().clone()
@@ -249,6 +253,7 @@ impl Component for ScrollView {
                 line_step: self.line_step,
                 scrollbar_color: cx.theme().button.normal.foreground,
                 gesture,
+                hovered,
             },
             self.child.iter().cloned().collect(),
             None,
@@ -272,6 +277,7 @@ struct ScrollViewport {
     line_step: f32,
     scrollbar_color: Color,
     gesture: Rc<Cell<Option<ScrollbarGesture>>>,
+    hovered: Rc<Cell<bool>>,
 }
 
 impl AnyView for ScrollViewport {
@@ -330,28 +336,40 @@ impl AnyView for ScrollViewport {
         let Some(geometry) = ScrollbarGeometry::new(rect, self.controller.metrics()) else {
             return Vec::new();
         };
-        vec![
-            Primitive::Quad {
+        let expanded = self.hovered.get() || self.gesture.get().is_some();
+        let mut primitives = Vec::with_capacity(2);
+        if expanded {
+            primitives.push(Primitive::Quad {
                 rect: geometry.track,
                 color: Color {
                     a: 0.06,
                     ..self.scrollbar_color
                 },
                 corner_radius: 3.0,
-            },
-            Primitive::Quad {
-                rect: geometry.thumb,
-                color: Color {
-                    a: if self.gesture.get().is_some() {
-                        0.6
-                    } else {
-                        0.35
-                    },
-                    ..self.scrollbar_color
+            });
+        }
+        let mut thumb = geometry.thumb;
+        if !expanded {
+            // Keep the hit target and content layout unchanged when the thumb narrows.
+            thumb.min.x = thumb.max.x - thumb.size().width.min(3.0);
+        }
+        primitives.push(Primitive::Quad {
+            rect: thumb,
+            color: Color {
+                a: if self.gesture.get().is_some() {
+                    0.6
+                } else {
+                    0.35
                 },
-                corner_radius: 3.0,
+                ..self.scrollbar_color
             },
-        ]
+            corner_radius: 3.0,
+        });
+        primitives
+    }
+
+    fn accepts_pointer_boundaries(&self) -> bool {
+        true
     }
 
     fn descendant_clip(&self, rect: Rect) -> Option<RoundedClip> {
@@ -367,6 +385,26 @@ impl AnyView for ScrollViewport {
     }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {
+        let position = match event {
+            UiEvent::Pointer(pointer) => {
+                Some((pointer.phase != PointerPhase::Cancel).then_some(pointer.position))
+            }
+            UiEvent::PointerBoundary(boundary) => Some(
+                (boundary.kind == PointerBoundaryKind::Enter)
+                    .then_some(boundary.position)
+                    .flatten(),
+            ),
+            _ => None,
+        };
+        if let Some(position) = position {
+            let hovered = position.is_some_and(|point| {
+                ScrollbarGeometry::new(rect, self.controller.metrics())
+                    .is_some_and(|geometry| geometry.track.contains(point))
+            });
+            if self.hovered.replace(hovered) != hovered {
+                ctx.invalidate_paint();
+            }
+        }
         // The overlay owns its track even when a descendant control would consume the press.
         if let UiEvent::Pointer(pointer) = event
             && self.handle_scrollbar(pointer, ctx, rect)
@@ -610,6 +648,7 @@ mod tests {
             line_step: DEFAULT_SCROLL_LINE_STEP,
             scrollbar_color: Color::WHITE,
             gesture: Rc::new(Cell::new(None)),
+            hovered: Rc::new(Cell::new(false)),
         };
         let viewport = Rect::from_min_size(Point::new(5.0, 100.0), Size::new(50.0, 40.0));
         let child = Rect::from_min_size(Point::new(5.0, 80.0), Size::new(50.0, 100.0));
