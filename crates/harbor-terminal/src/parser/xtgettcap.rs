@@ -5,8 +5,9 @@
 //! returns more data than xterm, which stops at the first unrecognized name.
 //!
 //! Numeric capabilities use hex-encoded decimal values, not name-only booleans.
-//! A shared bounded DCS collector can be extracted once a third query family arrives.
 
+use super::dcs::{Completion, DcsCollector};
+use super::hex;
 use crate::screen::Screen;
 use harbor_parser::Params;
 
@@ -45,57 +46,43 @@ fn lookup(name: &[u8]) -> Option<CapabilityValue> {
 }
 
 /// One active XTGETTCAP request collected across streaming DCS callbacks.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct XtgettcapRequest {
-    active: bool,
-    overflow: bool,
-    pt: Vec<u8>,
+    collector: DcsCollector,
+}
+
+impl Default for XtgettcapRequest {
+    fn default() -> Self {
+        Self {
+            collector: DcsCollector::new(MAX_PT),
+        }
+    }
 }
 
 impl XtgettcapRequest {
     /// Begin collecting when the DCS introducer is exactly `DCS + q`.
     pub(super) fn hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {
-        self.clear();
-        self.active =
-            params.len() == 1 && params.get(0).is_none() && intermediates == b"+" && action == b'q';
+        self.collector.hook(params, intermediates, action, b'+');
     }
 
     /// Append a payload byte while under the local Pt bound.
     pub(super) fn put(&mut self, byte: u8) {
-        if !self.active {
-            return;
-        }
-        if self.pt.len() < MAX_PT {
-            self.pt.push(byte);
-        } else {
-            self.overflow = true;
-        }
+        self.collector.put(byte);
     }
 
     /// Complete the request: cancel silently, or queue one success/failure reply.
     pub(super) fn finish(&mut self, screen: &mut Screen, terminated: bool) {
-        if !self.active || !terminated {
-            self.clear();
-            return;
-        }
-        let reply = if self.overflow {
-            failure_frame()
-        } else {
-            build_reply(&self.pt)
+        let reply = match self.collector.complete(terminated) {
+            Completion::Silent => return,
+            Completion::Overflow => failure_frame(),
+            Completion::Payload(pt) => build_reply(&pt),
         };
         screen.push_reply(&reply);
-        self.clear();
     }
 
     /// Drop any pending request (e.g. when APC/PM/SOS starts).
     pub(super) fn cancel(&mut self) {
-        self.clear();
-    }
-
-    fn clear(&mut self) {
-        self.active = false;
-        self.overflow = false;
-        self.pt.clear();
+        self.collector.cancel();
     }
 }
 
@@ -115,16 +102,16 @@ fn build_reply(pt: &[u8]) -> Vec<u8> {
         if frame.len() > PREFIX.len() {
             frame.push(b';');
         }
-        append_hex(&mut frame, &name);
+        hex::encode_upper(&mut frame, &name);
         match value {
             CapabilityValue::Bool => {}
             CapabilityValue::Str(value) => {
                 frame.push(b'=');
-                append_hex(&mut frame, value);
+                hex::encode_upper(&mut frame, value);
             }
             CapabilityValue::Number(value) => {
                 frame.push(b'=');
-                append_hex(&mut frame, value.to_string().as_bytes());
+                hex::encode_upper(&mut frame, value.to_string().as_bytes());
             }
         }
         // Later names cannot make a growing reply fit. Drop the whole reply,
@@ -144,15 +131,6 @@ fn failure_frame() -> Vec<u8> {
     b"\x1bP0+r\x1b\\".to_vec()
 }
 
-const HEX: &[u8; 16] = b"0123456789ABCDEF";
-
-fn append_hex(out: &mut Vec<u8>, bytes: &[u8]) {
-    for &byte in bytes {
-        out.push(HEX[(byte >> 4) as usize]);
-        out.push(HEX[(byte & 0x0f) as usize]);
-    }
-}
-
 /// Decodes uppercase or lowercase hex pairs; rejects odd length and
 /// non-hex digits.
 fn hex_decode(input: &[u8]) -> Option<Vec<u8>> {
@@ -161,20 +139,11 @@ fn hex_decode(input: &[u8]) -> Option<Vec<u8>> {
     }
     let mut out = Vec::with_capacity(input.len() / 2);
     for pair in input.as_chunks::<2>().0 {
-        let hi = hex_value(pair[0])?;
-        let lo = hex_value(pair[1])?;
+        let hi = hex::digit(pair[0])?;
+        let lo = hex::digit(pair[1])?;
         out.push(hi << 4 | lo);
     }
     Some(out)
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -215,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn append_hex_uses_uppercase_digits_and_preserves_prefix() {
+    fn encode_upper_uses_uppercase_digits_and_preserves_prefix() {
         for (bytes, expected) in [
             (b"TN".as_slice(), b"544E".as_slice()),
             (b"RGB", b"524742"),
@@ -223,7 +192,7 @@ mod tests {
             (b"xterm-256color", b"787465726D2D323536636F6C6F72"),
         ] {
             let mut out = b"prefix".to_vec();
-            append_hex(&mut out, bytes);
+            hex::encode_upper(&mut out, bytes);
             assert_eq!(&out[..6], b"prefix");
             assert_eq!(&out[6..], expected);
         }
@@ -245,14 +214,23 @@ mod tests {
 
         let mut request = XtgettcapRequest::default();
         request.hook(&empty, b"+", b'q');
-        assert!(request.active);
+        assert!(request.collector.active);
 
         request.hook(&empty, b"$", b'q');
-        assert!(!request.active, "DECRQSS introducer must not activate");
+        assert!(
+            !request.collector.active,
+            "DECRQSS introducer must not activate"
+        );
         request.hook(&empty, b"+", b'p');
-        assert!(!request.active, "wrong final byte must not activate");
+        assert!(
+            !request.collector.active,
+            "wrong final byte must not activate"
+        );
         request.hook(&with_param, b"+", b'q');
-        assert!(!request.active, "parameterized DCS must not activate");
+        assert!(
+            !request.collector.active,
+            "parameterized DCS must not activate"
+        );
     }
 
     #[test]
@@ -261,8 +239,8 @@ mod tests {
         for _ in 0..=MAX_PT {
             request.put(b'x');
         }
-        assert!(request.overflow);
-        assert_eq!(request.pt.len(), MAX_PT);
+        assert!(request.collector.overflow);
+        assert_eq!(request.collector.payload.len(), MAX_PT);
     }
 
     #[test]
@@ -366,7 +344,7 @@ mod tests {
 
         // Assert — nothing was retained and no reply is queued.
         assert_eq!(screen.drain_replies(), Vec::<u8>::new());
-        assert!(!request.active);
+        assert!(!request.collector.active);
     }
 
     #[test]
@@ -378,15 +356,19 @@ mod tests {
         for _ in 0..MAX_PT {
             request.put(b'x');
         }
-        let at_bound_overflow = request.overflow;
-        let retained_at_bound = request.pt.len();
+        let at_bound_overflow = request.collector.overflow;
+        let retained_at_bound = request.collector.payload.len();
         request.put(b'x');
 
         // Assert — the bound is inclusive up to MAX_PT, then retention caps.
         assert!(!at_bound_overflow, "exactly MAX_PT bytes must not overflow");
         assert_eq!(retained_at_bound, MAX_PT);
-        assert!(request.overflow);
-        assert_eq!(request.pt.len(), MAX_PT, "retained bytes stay capped");
+        assert!(request.collector.overflow);
+        assert_eq!(
+            request.collector.payload.len(),
+            MAX_PT,
+            "retained bytes stay capped"
+        );
     }
 
     #[test]

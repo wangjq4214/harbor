@@ -1,7 +1,7 @@
 //! Whole-unit terminal projection, fitted geometry and lazy GPU composition.
 use super::{
     color_atlas::{COLOR_ATLAS_SIDE, COLOR_CACHE_ENTRIES, ColorAtlas},
-    gpu::{self, ColoredVertex, TerminalGpuAccess, TexturedVertex},
+    gpu::{self, ColoredVertex, TerminalGpuAccess, TexturedVertex, VertexBuffer},
     text::glyph_color_with_palette,
 };
 use crate::model::{Cell, TerminalSnapshot};
@@ -279,9 +279,7 @@ struct ColorGpu {
     texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     pipeline: wgpu::RenderPipeline,
-    buffer: wgpu::Buffer,
-    capacity: usize,
-    count: u32,
+    quads: VertexBuffer<TexturedVertex>,
 }
 impl ColorGpu {
     fn new(gpu: TerminalGpuAccess<'_>) -> Self {
@@ -332,9 +330,7 @@ impl ColorGpu {
             texture,
             bind_group,
             pipeline,
-            buffer: gpu::create_vertex_buffer_sized(device, 0),
-            capacity: 0,
-            count: 0,
+            quads: VertexBuffer::new(device),
         }
     }
     fn upload_full(&self, gpu: TerminalGpuAccess<'_>, atlas: &ColorAtlas) {
@@ -393,30 +389,16 @@ impl ColorGpu {
         );
     }
     fn upload_vertices(&mut self, gpu: TerminalGpuAccess<'_>, vertices: &[TexturedVertex]) {
-        if vertices.len() > self.capacity {
-            self.buffer = gpu::create_vertex_buffer_sized(gpu.device(), vertices.len());
-            self.capacity = vertices.len();
-        }
-        if !vertices.is_empty() {
-            gpu.write_buffer(&self.buffer, 0, bytemuck::cast_slice(vertices));
-        }
-        self.count = vertices.len() as u32;
+        self.quads.write(gpu, vertices);
     }
     fn draw(&self, pass: &mut wgpu::RenderPass) {
-        if self.count == 0 {
-            return;
-        }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.buffer.slice(..));
-        pass.draw(0..self.count, 0..1);
+        self.quads
+            .draw(pass, &self.pipeline, Some(&self.bind_group));
     }
 }
 struct MissingGpu {
     pipeline: wgpu::RenderPipeline,
-    buffer: wgpu::Buffer,
-    capacity: usize,
-    count: u32,
+    quads: VertexBuffer<ColoredVertex>,
 }
 impl MissingGpu {
     fn new(gpu: TerminalGpuAccess<'_>) -> Self {
@@ -426,27 +408,14 @@ impl MissingGpu {
                 gpu.format(),
                 "emoji missing cue",
             ),
-            buffer: gpu::create_colored_vertex_buffer(gpu.device(), &[]),
-            capacity: 0,
-            count: 0,
+            quads: VertexBuffer::new(gpu.device()),
         }
     }
     fn upload(&mut self, gpu: TerminalGpuAccess<'_>, vertices: &[ColoredVertex]) {
-        if vertices.len() > self.capacity {
-            self.buffer = gpu::create_colored_vertex_buffer(gpu.device(), vertices);
-            self.capacity = vertices.len();
-        } else if !vertices.is_empty() {
-            gpu.write_buffer(&self.buffer, 0, bytemuck::cast_slice(vertices));
-        }
-        self.count = vertices.len() as u32;
+        self.quads.write(gpu, vertices);
     }
     fn draw(&self, pass: &mut wgpu::RenderPass) {
-        if self.count == 0 {
-            return;
-        }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.buffer.slice(..));
-        pass.draw(0..self.count, 0..1);
+        self.quads.draw(pass, &self.pipeline, None);
     }
 }
 

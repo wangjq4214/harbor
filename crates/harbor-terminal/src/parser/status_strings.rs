@@ -1,5 +1,6 @@
 //! Bounded in-flight DECRQSS request and canonical status-string serialization.
 
+use super::dcs::{Completion, DcsCollector};
 use crate::model::{CellAttrs, CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
 use harbor_config::Color;
@@ -11,62 +12,46 @@ const MAX_PT: usize = 16;
 const MAX_REPLY: usize = 128;
 
 /// One active DECRQSS request collected across streaming DCS callbacks.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct DecrqssRequest {
-    active: bool,
-    overflow: bool,
-    pt: Vec<u8>,
+    collector: DcsCollector,
+}
+
+impl Default for DecrqssRequest {
+    fn default() -> Self {
+        Self {
+            collector: DcsCollector::new(MAX_PT),
+        }
+    }
 }
 
 impl DecrqssRequest {
     /// Begin collecting when the DCS introducer is exactly `DCS $ q`.
     pub(super) fn hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {
-        self.clear();
-        self.active =
-            params.len() == 1 && params.get(0).is_none() && intermediates == b"$" && action == b'q';
+        self.collector.hook(params, intermediates, action, b'$');
     }
 
     /// Append a payload byte while under the local Pt bound.
     pub(super) fn put(&mut self, byte: u8) {
-        if !self.active {
-            return;
-        }
-        if self.pt.len() < MAX_PT {
-            self.pt.push(byte);
-        } else {
-            self.overflow = true;
-        }
+        self.collector.put(byte);
     }
 
     /// Complete the request: cancel silently, or queue one success/failure reply.
     pub(super) fn finish(&mut self, screen: &mut Screen, terminated: bool) {
-        if !self.active || !terminated {
-            self.clear();
-            return;
-        }
-
-        let status = if self.overflow {
-            None
-        } else {
-            serialize_status(screen, &self.pt)
+        let reply = match self.collector.complete(terminated) {
+            Completion::Silent => return,
+            Completion::Overflow => failure_frame(),
+            Completion::Payload(pt) => serialize_status(screen, &pt)
+                .map(|status| success_frame(&status))
+                .filter(|frame| frame.len() <= MAX_REPLY)
+                .unwrap_or_else(failure_frame),
         };
-        let reply = status
-            .map(|status| success_frame(&status))
-            .filter(|frame| frame.len() <= MAX_REPLY)
-            .unwrap_or_else(failure_frame);
         screen.push_reply(&reply);
-        self.clear();
     }
 
     /// Drop any pending request (e.g. when APC/PM/SOS starts).
     pub(super) fn cancel(&mut self) {
-        self.clear();
-    }
-
-    fn clear(&mut self) {
-        self.active = false;
-        self.overflow = false;
-        self.pt.clear();
+        self.collector.cancel();
     }
 }
 

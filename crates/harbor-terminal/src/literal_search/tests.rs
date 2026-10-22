@@ -1,5 +1,5 @@
 use super::*;
-use crate::read_model::BufferKind;
+use crate::read_model::{BufferKind, MAX_READ_UNITS};
 
 fn retained(rows: usize) -> ReadScope {
     ReadScope::Retained {

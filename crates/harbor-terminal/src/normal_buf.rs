@@ -273,7 +273,7 @@ impl NormalBuf {
     pub fn history_start(&self) -> u64 {
         self.history_start
     }
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn max_scrollback(&self) -> usize {
         self.max_scrollback
     }
@@ -676,7 +676,6 @@ impl NormalBuf {
     }
 
     /// Returns the text content of a display row as a string.
-    #[allow(dead_code)]
     pub fn row_text(&self, row: usize) -> String {
         assert!(row < self.visible_rows, "terminal row out of bounds");
         let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
@@ -1014,31 +1013,6 @@ impl NormalBuf {
                 .sum(),
             history_start,
         })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn prepare_primary_resize(
-        &self,
-        requested_rows: usize,
-        requested_cols: usize,
-    ) -> Result<crate::primary_reflow::PreparedPrimaryResize, crate::primary_reflow::PreparationError>
-    {
-        self.prepare_primary_resize_with_cursor_floor(requested_rows, requested_cols, None)
-    }
-
-    pub(crate) fn prepare_primary_resize_with_cursor_floor(
-        &self,
-        requested_rows: usize,
-        requested_cols: usize,
-        cursor_floor: Option<usize>,
-    ) -> Result<crate::primary_reflow::PreparedPrimaryResize, crate::primary_reflow::PreparationError>
-    {
-        crate::primary_reflow::PreparedPrimaryResize::prepare_geometry_with_cursor_floor(
-            self,
-            requested_rows,
-            requested_cols,
-            cursor_floor,
-        )
     }
 
     /// Returns an iterator over all visible cells as `(display_row, col, ch)`.

@@ -4,7 +4,7 @@ use harbor_config::Palette;
 use anyhow::Result;
 use wgpu::util::DeviceExt;
 
-use super::gpu::{self, TerminalGpuAccess, TexturedVertex, UploadMode};
+use super::gpu::{self, TerminalGpuAccess, TexturedVertex, UploadMode, VertexBuffer};
 use crate::render::{RenderViewport, layout_preedit};
 use crate::{CellAttrs, Color, DirtyRange, Preedit};
 #[cfg(test)]
@@ -250,9 +250,7 @@ pub struct Text {
     atlas: GlyphAtlas,
     gpu_atlas: GpuGlyphAtlas,
     vertex_buffer: wgpu::Buffer,
-    overlay_vertex_buffer: wgpu::Buffer,
-    overlay_vertex_capacity: usize,
-    overlay_vertex_count: u32,
+    overlay: VertexBuffer<TexturedVertex>,
     dirty: bool,
     rows: usize,
     cols: usize,
@@ -344,7 +342,6 @@ impl Text {
             .and_then(|cells| cells.checked_mul(6))
             .expect("text vertex count overflow");
         let vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), max_vertices);
-        let overlay_vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), 0);
 
         let mut layer = Self {
             fonts,
@@ -352,9 +349,7 @@ impl Text {
             pipeline,
             atlas,
             gpu_atlas,
-            overlay_vertex_buffer,
-            overlay_vertex_capacity: 0,
-            overlay_vertex_count: 0,
+            overlay: VertexBuffer::new(gpu.device()),
             vertex_buffer,
             dirty: true,
             rows,
@@ -694,19 +689,7 @@ impl Text {
             ));
         }
 
-        if vertices.len() > self.overlay_vertex_capacity {
-            let replacement = gpu::create_vertex_buffer_sized(gpu.device(), vertices.len());
-            self.overlay_vertex_buffer = replacement;
-            self.overlay_vertex_capacity = vertices.len();
-        }
-        if !vertices.is_empty() {
-            gpu.write_buffer(
-                &self.overlay_vertex_buffer,
-                0,
-                bytemuck::cast_slice(&vertices),
-            );
-        }
-        self.overlay_vertex_count = vertices.len() as u32;
+        self.overlay.write(gpu, &vertices);
     }
 
     pub fn prepare_with_dirty(
@@ -847,12 +830,8 @@ impl Text {
         }
         self.sequences.draw(pass);
         // Transient preedit is above BOTH scalar and complete sequence paint.
-        if self.overlay_vertex_count > 0 {
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.gpu_atlas.bind_group, &[]);
-            pass.set_vertex_buffer(0, self.overlay_vertex_buffer.slice(..));
-            pass.draw(0..self.overlay_vertex_count, 0..1);
-        }
+        self.overlay
+            .draw(pass, &self.pipeline, Some(&self.gpu_atlas.bind_group));
     }
 }
 

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
-use crate::content_anchor::{Affinity, ContentAnchor};
+use crate::content_anchor::{Affinity, ContentAnchor, derive_anchor};
 use crate::logical_content::{
     self, DecodeError, LogicalAtomOffset, LogicalGlyph, LogicalLine, SourceSpan,
 };
@@ -131,7 +131,7 @@ pub(crate) struct PreparedPrimaryResize {
 }
 
 impl PreparedPrimaryResize {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn prepare_geometry(
         normal: &NormalBuf,
         requested_rows: usize,
@@ -140,6 +140,7 @@ impl PreparedPrimaryResize {
         Self::prepare_geometry_with_cursor_floor(normal, requested_rows, requested_cols, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_geometry_with_cursor_floor(
         normal: &NormalBuf,
         requested_rows: usize,
@@ -156,6 +157,7 @@ impl PreparedPrimaryResize {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_geometry_with_viewport(
         normal: &NormalBuf,
         requested_rows: usize,
@@ -334,63 +336,7 @@ impl PreparedPrimaryResize {
             );
         }
 
-        let budget = limits
-            .max_rows
-            .checked_add(target_rows)
-            .ok_or(PreparationError::ArithmeticOverflow)?;
-        let mut capacity_dropped_rows = rows.len().saturating_sub(budget);
-        let history_end = rows.len().saturating_sub(target_rows);
-        let mut bytes: usize = rows[capacity_dropped_rows..history_end]
-            .iter()
-            .map(|row| NormalBuf::row_source_bytes(&row.cells, row.metadata.meaningful_extent))
-            .sum();
-        while bytes > limits.max_bytes && capacity_dropped_rows < history_end {
-            let row = &rows[capacity_dropped_rows];
-            bytes -= NormalBuf::row_source_bytes(&row.cells, row.metadata.meaningful_extent);
-            capacity_dropped_rows += 1;
-        }
-        let cutoff_splits_line = capacity_dropped_rows > 0
-            && capacity_dropped_rows < rows.len()
-            && rows[capacity_dropped_rows - 1].metadata.logical_line_id
-                == rows[capacity_dropped_rows].metadata.logical_line_id;
-        let dropped_rows = capacity_dropped_rows;
-        let partial_head = cutoff_splits_line;
-        if dropped_rows > rows.len().saturating_sub(target_rows) {
-            return Err(PreparationError::Invariant(
-                "capacity eviction entered live viewport",
-            ));
-        }
-        if dropped_rows > 0 {
-            rows.drain(0..dropped_rows);
-        }
-        if partial_head {
-            let head = rows
-                .first_mut()
-                .ok_or(PreparationError::Invariant("capacity removed every row"))?;
-            head.metadata.head_truncated = true;
-        }
-
-        for line in lines.values_mut() {
-            let end = line
-                .first_row
-                .checked_add(line.row_count)
-                .ok_or(PreparationError::ArithmeticOverflow)?;
-            let retained_start = line.first_row.max(dropped_rows);
-            if retained_start < end {
-                line.retained_first_row = Some(retained_start - dropped_rows);
-                line.retained_row_count = end - retained_start;
-            } else {
-                line.retained_first_row = None;
-                line.retained_row_count = 0;
-            }
-            for atom in &mut line.atoms {
-                atom.position =
-                    (atom.source_position.row >= dropped_rows).then(|| ReflowPosition {
-                        row: atom.source_position.row - dropped_rows,
-                        col: atom.source_position.col,
-                    });
-            }
-        }
+        let dropped_rows = evict_history_overflow(&mut rows, &mut lines, target_rows, limits)?;
 
         let generation_base = normal
             .newest_generation_exclusive()
@@ -426,34 +372,28 @@ impl PreparedPrimaryResize {
         Ok(prepared)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn cols(&self) -> usize {
         self.cols
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn rows(&self) -> &[ReflowedRow] {
         &self.rows
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn target_rows(&self) -> usize {
         self.target_rows
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn dropped_rows(&self) -> usize {
         self.dropped_rows
     }
 
-    #[allow(dead_code)]
     pub(crate) fn normal(&self) -> &NormalBuf {
         &self.normal
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn into_normal(self) -> NormalBuf {
-        self.normal
     }
 
     pub(crate) fn into_screen_parts(
@@ -477,40 +417,22 @@ impl PreparedPrimaryResize {
         position: GenPos,
         affinity: Affinity,
     ) -> Option<ContentAnchor> {
-        if position.col >= self.source_cols {
-            return None;
-        }
         let (line_id, line) = self
             .lines
             .iter()
             .find(|(_, line)| line.source_generations.contains(&position.generation))?;
-        let covering = line.atoms.iter().find(|atom| {
-            atom.source_span.generation == position.generation
-                && position.col >= atom.source_span.start_col
-                && position.col <= atom.source_span.end_col
-        });
-        let (offset, projection_hint, prefer_previous_projection) = if let Some(atom) = covering {
-            (atom.atom_offset, None, false)
-        } else {
-            let next = line.atoms.iter().find(|atom| {
-                atom.source_span.generation > position.generation
-                    || (atom.source_span.generation == position.generation
-                        && atom.source_span.start_col > position.col)
-            });
-            let end_offset = line.atom_start.0.checked_add(line.atoms.len())?;
-            (
-                next.map_or(LogicalAtomOffset(end_offset), |atom| atom.atom_offset),
-                Some(position),
-                next.is_some(),
-            )
-        };
-        Some(ContentAnchor::from_logical_parts(
+        derive_anchor(
             *line_id,
-            offset,
+            line.atom_start,
+            self.source_cols,
+            position,
             affinity,
-            projection_hint,
-            prefer_previous_projection,
-        ))
+            line.atoms.len(),
+            |index| {
+                let atom = &line.atoms[index];
+                (atom.atom_offset, atom.source_span)
+            },
+        )
     }
 
     pub(crate) fn source_cursor_anchor(
@@ -875,6 +797,74 @@ fn cursor_retained_glyph_count(line: &LogicalLine, cursors: &[CursorRetention]) 
     })
 }
 
+/// Drops history rows beyond the row/byte budget and rebases retained line evidence.
+///
+/// Only rows before the live viewport are candidates; a cut that splits a logical
+/// line marks the surviving head truncated instead of dropping the whole line.
+fn evict_history_overflow(
+    rows: &mut Vec<ReflowedRow>,
+    lines: &mut HashMap<LogicalLineId, ReflowedLine>,
+    target_rows: usize,
+    limits: harbor_config::HistoryLimits,
+) -> Result<usize, PreparationError> {
+    let budget = limits
+        .max_rows
+        .checked_add(target_rows)
+        .ok_or(PreparationError::ArithmeticOverflow)?;
+    let mut dropped_rows = rows.len().saturating_sub(budget);
+    let history_end = rows.len().saturating_sub(target_rows);
+    let mut bytes: usize = rows[dropped_rows..history_end]
+        .iter()
+        .map(|row| NormalBuf::row_source_bytes(&row.cells, row.metadata.meaningful_extent))
+        .sum();
+    while bytes > limits.max_bytes && dropped_rows < history_end {
+        let row = &rows[dropped_rows];
+        bytes -= NormalBuf::row_source_bytes(&row.cells, row.metadata.meaningful_extent);
+        dropped_rows += 1;
+    }
+
+    if dropped_rows > rows.len().saturating_sub(target_rows) {
+        return Err(PreparationError::Invariant(
+            "capacity eviction entered live viewport",
+        ));
+    }
+    let partial_head = dropped_rows > 0
+        && dropped_rows < rows.len()
+        && rows[dropped_rows - 1].metadata.logical_line_id
+            == rows[dropped_rows].metadata.logical_line_id;
+    if dropped_rows > 0 {
+        rows.drain(0..dropped_rows);
+    }
+    if partial_head {
+        let head = rows
+            .first_mut()
+            .ok_or(PreparationError::Invariant("capacity removed every row"))?;
+        head.metadata.head_truncated = true;
+    }
+
+    for line in lines.values_mut() {
+        let end = line
+            .first_row
+            .checked_add(line.row_count)
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let retained_start = line.first_row.max(dropped_rows);
+        if retained_start < end {
+            line.retained_first_row = Some(retained_start - dropped_rows);
+            line.retained_row_count = end - retained_start;
+        } else {
+            line.retained_first_row = None;
+            line.retained_row_count = 0;
+        }
+        for atom in &mut line.atoms {
+            atom.position = (atom.source_position.row >= dropped_rows).then(|| ReflowPosition {
+                row: atom.source_position.row - dropped_rows,
+                col: atom.source_position.col,
+            });
+        }
+    }
+    Ok(dropped_rows)
+}
+
 fn pack_line(
     line: &LogicalLine,
     cols: usize,
@@ -974,7 +964,7 @@ fn pack_line(
         row.cells[col] = glyph.cell.clone();
         row.cell_state[col] = glyph.cell_state;
         if width == 2 {
-            row.cells[col + 1] = continuation_cell(&glyph.cell);
+            row.cells[col + 1] = Cell::wide_continuation_of(&glyph.cell);
             row.cell_state[col + 1] = glyph
                 .continuation_state
                 .ok_or(PreparationError::Invariant("wide glyph provenance missing"))?;
@@ -1014,23 +1004,6 @@ fn validate_glyph(glyph: &LogicalGlyph) -> Result<(), PreparationError> {
         ));
     }
     Ok(())
-}
-
-fn continuation_cell(base: &Cell) -> Cell {
-    Cell {
-        ch: ' ',
-        suffix: String::new(),
-        text_overflow: Default::default(),
-        width: 0,
-        isolated_mark: false,
-        wide_continuation: true,
-        fg: base.fg,
-        bg: base.bg,
-        attrs: base.attrs,
-        underline_color: base.underline_color,
-        protected: base.protected,
-        hyperlink: base.hyperlink,
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1102,7 +1075,7 @@ mod tests {
             ..Cell::default()
         };
         write(&mut normal, 0, 1, wide.clone());
-        write(&mut normal, 0, 2, continuation_cell(&wide));
+        write(&mut normal, 0, 2, Cell::wide_continuation_of(&wide));
         write(
             &mut normal,
             0,
@@ -1121,7 +1094,10 @@ mod tests {
         assert_eq!(prepared.rows()[0].cells[1], Cell::default());
         assert!(!prepared.rows()[0].cell_state[1].is_meaningful());
         assert_eq!(prepared.rows()[1].cells[0], wide);
-        assert_eq!(prepared.rows()[1].cells[1], continuation_cell(&wide));
+        assert_eq!(
+            prepared.rows()[1].cells[1],
+            Cell::wide_continuation_of(&wide)
+        );
         assert_eq!(prepared.rows()[1].metadata.logical_start, 1);
         assert_eq!(prepared.rows()[2].metadata.logical_start, 3);
         assert!(prepared.rows()[1].metadata.soft_wrapped);
@@ -1294,7 +1270,7 @@ mod tests {
         write(&mut normal, 0, 0, cells[0].clone());
         write(&mut normal, 0, 1, cells[1].clone());
         write(&mut normal, 0, 2, cells[2].clone());
-        write(&mut normal, 0, 3, continuation_cell(&cells[2]));
+        write(&mut normal, 0, 3, Cell::wide_continuation_of(&cells[2]));
         write(&mut normal, 0, 4, cells[3].clone());
 
         let narrow = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 3).unwrap();
@@ -1627,7 +1603,7 @@ mod tests {
                     },
                 );
                 write(&mut normal, 0, 1, cell.clone());
-                write(&mut normal, 0, 2, continuation_cell(&cell));
+                write(&mut normal, 0, 2, Cell::wide_continuation_of(&cell));
             } else {
                 for (col, ch) in "ABCDE".chars().enumerate() {
                     write(

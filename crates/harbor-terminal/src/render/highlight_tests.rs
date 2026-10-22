@@ -3,6 +3,7 @@ use crate::{
     Terminal,
     literal_search::{LiteralSearch, SearchStatus},
     read_model::{ReadBudget, ReadScope},
+    render::gpu,
 };
 
 fn raster(device: &wgpu::Device, queue: &wgpu::Queue, layer: &Highlights) -> Vec<u8> {
@@ -111,7 +112,7 @@ fn gpu_highlights_use_current_geometry_cache_and_remove_stale_text_without_cell_
     let mut viewport = RenderViewport::with_surface(8.0, 8.0, (64, 32), (64, 32));
     viewport.padding = 0.0;
     layer.prepare(gpu, &spans, viewport);
-    assert_eq!(layer.count, 6);
+    assert_eq!(layer.quads.count(), 6);
     let pixels = raster(&device, &queue, &layer);
     let pixel = |p: &[u8], x: usize, y: usize| p[(y * 64 + x) * 4..(y * 64 + x + 1) * 4].to_vec();
     assert!(pixel(&pixels, 17, 3)[0] > 0);
@@ -135,6 +136,6 @@ fn gpu_highlights_use_current_geometry_cache_and_remove_stale_text_without_cell_
     );
     t.put_str("\rX");
     layer.prepare(gpu, &t.project_content_ranges(results.ranges()), viewport);
-    assert_eq!(layer.count, 0);
+    assert_eq!(layer.quads.count(), 0);
     assert!(raster(&device, &queue, &layer).iter().all(|b| *b == 0));
 }

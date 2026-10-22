@@ -415,75 +415,7 @@ impl Terminal {
                 return Ok(outcome);
             }
             TerminalEvent::Pointer(pointer) => {
-                // Parse completed commands before choosing routing and coordinate units.
-                // Preserve a browsed viewport for local input as before.
-                if self.pointer.has_viewport()
-                    && self.screen.input_modes().mouse_tracking == MouseTrackingMode::Disabled
-                {
-                    self.io.set_suppress_scroll_snap(true);
-                }
-                self.ingest_screen(|io, screen, pointer| io.drain(screen, pointer));
-                if !self.pointer.has_viewport()
-                    || self.screen.input_modes().mouse_tracking
-                        != crate::model::MouseTrackingMode::Disabled
-                {
-                    let interrupted = self.pointer.cancel_local_pointer();
-                    outcome.redraw = interrupted.redraw;
-                    outcome.release_pointer = interrupted.release_pointer;
-                    let mut reported = self.pointer.prepare_mouse_event(*pointer);
-                    let modes = self.screen.input_modes();
-                    let position = if self.pointer.has_viewport() {
-                        self.pointer
-                            .report_position(reported.position, &self.screen.terminal_snapshot())
-                    } else {
-                        Some(reported.position)
-                    };
-                    let wrote = if let Some(position) = position {
-                        reported.position = position;
-                        if modes.mouse_tracking == MouseTrackingMode::Disabled {
-                            self.io.handle_current_event(
-                                &mut self.screen,
-                                TerminalEvent::Pointer(reported),
-                            )?
-                        } else {
-                            self.io.write_mouse_event(reported, modes)?
-                        }
-                    } else {
-                        false
-                    };
-                    outcome.capture_pointer = match pointer.phase {
-                        TerminalPointerPhase::Down => {
-                            self.pointer.begin_vt_capture(pointer.pointer_id);
-                            Some(pointer.pointer_id)
-                        }
-                        _ => None,
-                    };
-                    let vt_release = match pointer.phase {
-                        TerminalPointerPhase::Up | TerminalPointerPhase::Cancel
-                            if self.pointer.release_vt_or_pending(pointer.pointer_id) =>
-                        {
-                            Some(pointer.pointer_id)
-                        }
-                        _ => None,
-                    };
-                    outcome.release_pointer = vt_release.or(outcome.release_pointer);
-                    self.maybe_reset_blink(before, wrote);
-                    return Ok(outcome);
-                }
-                // Preserve the review position while applying local pointer
-                // intent; queued output must not snap it before hit testing.
-                self.io.set_suppress_scroll_snap(true);
-                outcome = self
-                    .pointer
-                    .handle_pointer(&mut self.screen, *pointer, Instant::now());
-                if outcome.capture_pointer.is_some() || outcome.redraw {
-                    self.io.set_suppress_scroll_snap(true);
-                }
-                if !self.pointer.has_active_pointer() && self.screen.view_offset() == 0 {
-                    self.io.set_suppress_scroll_snap(false);
-                }
-                self.maybe_reset_blink(before, false);
-                return Ok(outcome);
+                return self.handle_pointer_sample(*pointer, before);
             }
             TerminalEvent::Keyboard(TerminalKeyboardEvent::Ime(_)) => {
                 outcome.redraw = self.clear_preedit();
@@ -517,6 +449,82 @@ impl Terminal {
         let wrote =
             self.ingest_screen(|io, screen, pointer| io.handle_event(screen, pointer, event))?;
         self.maybe_reset_blink(before, wrote);
+        Ok(outcome)
+    }
+
+    /// Routes one pointer sample: VT reporting, local selection/scrollbar, or both.
+    ///
+    /// Queued output is parsed first so routing and coordinate units agree; local
+    /// pointer intent then preserves a browsed viewport instead of snapping it.
+    fn handle_pointer_sample(
+        &mut self,
+        pointer: TerminalPointerEvent,
+        before: (usize, usize),
+    ) -> anyhow::Result<TerminalEventOutcome> {
+        let mut outcome = TerminalEventOutcome::default();
+        if self.pointer.has_viewport()
+            && self.screen.input_modes().mouse_tracking == MouseTrackingMode::Disabled
+        {
+            self.io.set_suppress_scroll_snap(true);
+        }
+        self.ingest_screen(|io, screen, pointer| io.drain(screen, pointer));
+        if !self.pointer.has_viewport()
+            || self.screen.input_modes().mouse_tracking != crate::model::MouseTrackingMode::Disabled
+        {
+            let interrupted = self.pointer.cancel_local_pointer();
+            outcome.redraw = interrupted.redraw;
+            outcome.release_pointer = interrupted.release_pointer;
+            let mut reported = self.pointer.prepare_mouse_event(pointer);
+            let modes = self.screen.input_modes();
+            let position = if self.pointer.has_viewport() {
+                self.pointer
+                    .report_position(reported.position, &self.screen.terminal_snapshot())
+            } else {
+                Some(reported.position)
+            };
+            let wrote = if let Some(position) = position {
+                reported.position = position;
+                if modes.mouse_tracking == MouseTrackingMode::Disabled {
+                    self.io
+                        .handle_current_event(&mut self.screen, TerminalEvent::Pointer(reported))?
+                } else {
+                    self.io.write_mouse_event(reported, modes)?
+                }
+            } else {
+                false
+            };
+            outcome.capture_pointer = match pointer.phase {
+                TerminalPointerPhase::Down => {
+                    self.pointer.begin_vt_capture(pointer.pointer_id);
+                    Some(pointer.pointer_id)
+                }
+                _ => None,
+            };
+            let vt_release = match pointer.phase {
+                TerminalPointerPhase::Up | TerminalPointerPhase::Cancel
+                    if self.pointer.release_vt_or_pending(pointer.pointer_id) =>
+                {
+                    Some(pointer.pointer_id)
+                }
+                _ => None,
+            };
+            outcome.release_pointer = vt_release.or(outcome.release_pointer);
+            self.maybe_reset_blink(before, wrote);
+            return Ok(outcome);
+        }
+        // Preserve the review position while applying local pointer intent; queued
+        // output must not snap it before hit testing.
+        self.io.set_suppress_scroll_snap(true);
+        outcome = self
+            .pointer
+            .handle_pointer(&mut self.screen, pointer, Instant::now());
+        if outcome.capture_pointer.is_some() || outcome.redraw {
+            self.io.set_suppress_scroll_snap(true);
+        }
+        if !self.pointer.has_active_pointer() && self.screen.view_offset() == 0 {
+            self.io.set_suppress_scroll_snap(false);
+        }
+        self.maybe_reset_blink(before, false);
         Ok(outcome)
     }
 

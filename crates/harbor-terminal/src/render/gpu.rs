@@ -398,20 +398,119 @@ impl ColoredVertex {
     }
 }
 
+/// Grow-on-demand vertex buffer with an explicit draw count.
+///
+/// Retained quad layers all need the same buffer/capacity/count bookkeeping and
+/// offset-0 upload. Keeping that policy here means one growth rule and one draw
+/// path instead of one copy per layer.
+pub(crate) struct VertexBuffer<T> {
+    buffer: wgpu::Buffer,
+    /// Capacity in vertices, never smaller than one so wgpu always has a buffer.
+    capacity: usize,
+    count: u32,
+    _vertex: std::marker::PhantomData<T>,
+}
+
+impl<T: bytemuck::Pod> VertexBuffer<T> {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
+        Self {
+            buffer: create_sized_vertex_buffer::<T>(device, 1),
+            capacity: 1,
+            count: 0,
+            _vertex: std::marker::PhantomData,
+        }
+    }
+
+    /// Ensures room for `vertex_count` vertices without uploading anything.
+    pub(crate) fn reserve(&mut self, device: &wgpu::Device, vertex_count: usize) {
+        if vertex_count > self.capacity {
+            self.buffer = create_sized_vertex_buffer::<T>(device, vertex_count);
+            self.capacity = vertex_count;
+        }
+    }
+
+    /// Uploads `vertices` from offset 0 and makes them the drawn range.
+    pub(crate) fn write(&mut self, gpu: TerminalGpuAccess<'_>, vertices: &[T]) {
+        self.reserve(gpu.device(), vertices.len());
+        if !vertices.is_empty() {
+            gpu.write_buffer(&self.buffer, 0, bytemuck::cast_slice(vertices));
+        }
+        self.count = vertices.len() as u32;
+    }
+
+    /// Keeps the allocation but stops drawing.
+    pub(crate) fn clear(&mut self) {
+        self.count = 0;
+    }
+
+    /// Vertices currently scheduled for drawing.
+    #[cfg(test)]
+    pub(crate) fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// Backing buffer, for callers that must issue their own draw call.
+    #[cfg(test)]
+    pub(crate) fn buffer(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
+
+    pub(crate) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        pipeline: &wgpu::RenderPipeline,
+        bind_group: Option<&wgpu::BindGroup>,
+    ) {
+        if self.count == 0 {
+            return;
+        }
+        pass.set_pipeline(pipeline);
+        if let Some(bind_group) = bind_group {
+            pass.set_bind_group(0, bind_group, &[]);
+        }
+        pass.set_vertex_buffer(0, self.buffer.slice(..));
+        pass.draw(0..self.count, 0..1);
+    }
+}
+
+/// Uninitialized vertex storage: the CPU never stages a zero-filled array just to resize.
+fn create_sized_vertex_buffer<T>(device: &wgpu::Device, vertex_count: usize) -> wgpu::Buffer {
+    let byte_len = vertex_count
+        .max(1)
+        .checked_mul(std::mem::size_of::<T>())
+        .expect("vertex buffer size overflow");
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("terminal vertex buffer"),
+        size: byte_len as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 /// Creates a vertex buffer from a slice of `ColoredVertex`. Uploads one
-/// zero vertex when the slice is empty (wgpu requires non-zero buffers);
+/// default vertex when the slice is empty (wgpu requires non-zero buffers);
 /// the caller must set `vertex_count` to 0 to skip drawing.
 pub fn create_colored_vertex_buffer(
     device: &wgpu::Device,
     vertices: &[ColoredVertex],
 ) -> wgpu::Buffer {
+    create_vertex_buffer_from(device, vertices)
+}
+
+/// Creates a vertex buffer initialized from `vertices`, seeding one default
+/// vertex when empty because wgpu buffers cannot have zero length.
+fn create_vertex_buffer_from<T: bytemuck::Pod + Default>(
+    device: &wgpu::Device,
+    vertices: &[T],
+) -> wgpu::Buffer {
+    let placeholder = [T::default()];
     let vertices = if vertices.is_empty() {
-        &[ColoredVertex::default()]
+        &placeholder[..]
     } else {
         vertices
     };
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("colored vertex buffer"),
+        label: Some("vertex buffer"),
         contents: bytemuck::cast_slice(vertices),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
     })
@@ -512,36 +611,14 @@ pub fn create_texture_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGrou
 }
 
 /// Creates a vertex buffer from a slice of `TexturedVertex`. Uploads one
-/// zero vertex when the slice is empty (wgpu requires non-zero buffers);
+/// default vertex when the slice is empty (wgpu requires non-zero buffers);
 /// the caller must set `vertex_count` to 0 to skip drawing.
 pub fn create_vertex_buffer(device: &wgpu::Device, vertices: &[TexturedVertex]) -> wgpu::Buffer {
-    let vertices = if vertices.is_empty() {
-        &[TexturedVertex {
-            position: [0.0, 0.0],
-            tex_coords: [0.0, 0.0],
-            color: [1.0; 4],
-        }]
-    } else {
-        vertices
-    };
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("vertex buffer"),
-        contents: bytemuck::cast_slice(vertices),
-        // COPY_DST lets CursorLayer use queue.write_buffer for partial updates.
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-    })
+    create_vertex_buffer_from(device, vertices)
 }
-/// Creates an uninitialized vertex buffer of exactly `vertex_count` vertices.
+/// Creates an uninitialized vertex buffer of at least `vertex_count` vertices.
 ///
 /// This avoids allocating a temporary zero-filled CPU vertex array during resize.
 pub fn create_vertex_buffer_sized(device: &wgpu::Device, vertex_count: usize) -> wgpu::Buffer {
-    let byte_len = vertex_count
-        .checked_mul(std::mem::size_of::<TexturedVertex>())
-        .expect("vertex buffer size overflow");
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("vertex buffer"),
-        size: byte_len.max(std::mem::size_of::<TexturedVertex>()) as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
+    create_sized_vertex_buffer::<TexturedVertex>(device, vertex_count)
 }

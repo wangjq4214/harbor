@@ -1,3 +1,4 @@
+use super::hex;
 use crate::screen::DefaultColorSlot;
 use harbor_config::Rgba;
 
@@ -48,31 +49,22 @@ pub(super) fn parse_color(payload: &[u8]) -> Option<[u8; 3]> {
     parts.next().is_none().then_some(rgb)
 }
 
-fn parse_byte(hex: &[u8]) -> Option<u8> {
-    let high = hex_value(*hex.first()?)?;
-    let low = hex_value(*hex.get(1)?)?;
+fn parse_byte(digits: &[u8]) -> Option<u8> {
+    let high = hex::digit(*digits.first()?)?;
+    let low = hex::digit(*digits.get(1)?)?;
     Some((high << 4) | low)
 }
 
-fn parse_component(hex: &[u8]) -> Option<u8> {
-    if !(1..=4).contains(&hex.len()) {
+fn parse_component(digits: &[u8]) -> Option<u8> {
+    if !(1..=4).contains(&digits.len()) {
         return None;
     }
     let mut value = 0_u32;
-    for &digit in hex {
-        value = (value << 4) | u32::from(hex_value(digit)?);
+    for &digit in digits {
+        value = (value << 4) | u32::from(hex::digit(digit)?);
     }
-    let max = (1_u32 << (4 * hex.len())) - 1;
+    let max = (1_u32 << (4 * digits.len())) - 1;
     Some(((value * 255 + max / 2) / max) as u8)
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 pub(super) struct Reply {

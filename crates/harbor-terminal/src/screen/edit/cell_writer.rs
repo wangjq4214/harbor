@@ -247,13 +247,7 @@ impl CellWriter {
             let mut cell = normal.cell(row, col).clone();
             cell.width = 2;
             normal.write_meaningful_cell(row, col, cell.clone());
-            cell.ch = ' ';
-            cell.suffix.clear();
-            cell.text_overflow = Default::default();
-            cell.width = 0;
-            cell.isolated_mark = false;
-            cell.wide_continuation = true;
-            normal.write_meaningful_cell(row, col + 1, cell);
+            normal.write_meaningful_cell(row, col + 1, crate::Cell::wide_continuation_of(&cell));
             Self::advance_cursor(cursor, 1, right);
         }
         true
@@ -398,27 +392,11 @@ impl CellWriter {
             protected: pen_state.pen.protected,
             hyperlink: pen_state.active_hyperlink,
         };
+        let continuation = (width == 2 && cursor.cursor.x < right_limit)
+            .then(|| crate::Cell::wide_continuation_of(&cell));
         normal.write_meaningful_cell(cursor.cursor.y, cursor.cursor.x, cell);
-
-        if width == 2 && cursor.cursor.x < right_limit {
-            normal.write_meaningful_cell(
-                cursor.cursor.y,
-                cursor.cursor.x + 1,
-                crate::Cell {
-                    ch: ' ',
-                    suffix: String::new(),
-                    text_overflow: Default::default(),
-                    width: 0,
-                    isolated_mark: false,
-                    wide_continuation: true,
-                    fg: pen_state.pen.fg,
-                    bg: pen_state.pen.bg,
-                    attrs: pen_state.pen.attrs,
-                    underline_color: pen_state.pen.underline_color,
-                    protected: pen_state.pen.protected,
-                    hyperlink: pen_state.active_hyperlink,
-                },
-            );
+        if let Some(continuation) = continuation {
+            normal.write_meaningful_cell(cursor.cursor.y, cursor.cursor.x + 1, continuation);
         }
     }
 

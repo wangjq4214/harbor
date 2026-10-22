@@ -151,6 +151,15 @@ struct RectangularSelectionProjection {
     retained_cells: Vec<bool>,
 }
 
+/// Buffer-level result of preparing one resize role, before shared session state.
+#[derive(Debug)]
+struct RoleBuffers {
+    normal: NormalBuf,
+    cursor: CursorEngine,
+    review_anchor: Option<ContentAnchor>,
+    rectangular_selection: Option<RectangularSelectionProjection>,
+}
+
 #[derive(Debug)]
 pub(crate) struct PreparedScreenResize {
     history_limits: harbor_config::HistoryLimits,
@@ -567,7 +576,7 @@ impl Screen {
         ContentProjection::build(&self.normal)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn prepare_primary_resize(
         &self,
         requested_rows: usize,
@@ -1256,139 +1265,12 @@ impl Screen {
         limits: harbor_config::HistoryLimits,
         normal_source: Option<&NormalBuf>,
     ) -> Result<PreparedScreenResize, PreparationError> {
-        let (mut normal, cursor, review_anchor, rectangular_selection) = match role {
-            BufferRole::Primary
-                if rows == self.rows() && cols == self.cols() && limits != self.history_limits =>
-            {
-                let normal = normal_source
-                    .unwrap_or(&self.normal)
-                    .prepare_history_limits(limits)?;
-                let projection = ContentProjection::build(&normal)?;
-                let review_anchor = if normal.view_offset() == 0 {
-                    None
-                } else {
-                    self.review_anchor
-                        .filter(|a| projection.resolve_selection(*a).is_some())
-                        .or_else(|| projection.oldest_anchor())
-                };
-                (normal, self.cursor.clone(), review_anchor, None)
-            }
-            BufferRole::Primary => {
-                let prepared = self.prepare_primary_resize_with_viewport(
-                    rows,
-                    cols,
-                    viewport,
-                    limits,
-                    normal_source.unwrap_or(&self.normal),
-                )?;
-                let (normal, live_cursor, saved_cursor, review) = prepared.into_screen_parts();
-                let projection = ContentProjection::build(&normal)?;
-                let live_top = normal
-                    .history_start()
-                    .checked_add(
-                        u64::try_from(normal.scroll_count())
-                            .map_err(|_| PreparationError::ArithmeticOverflow)?,
-                    )
-                    .ok_or(PreparationError::ArithmeticOverflow)?;
-                let mut cursor = self.cursor.clone();
-                cursor.clamp_to_grid(rows, cols);
-                let PreparedProjection::Projected(live) = live_cursor else {
-                    return Err(PreparationError::UnresolvedLiveCursor);
-                };
-                cursor.cursor.y = usize::try_from(live.position.generation - live_top)
-                    .map_err(|_| PreparationError::ArithmeticOverflow)?;
-                cursor.cursor.x = live.position.col;
-                cursor.modes.pending_wrap = live.pending_wrap;
-                match saved_cursor {
-                    PreparedProjection::Projected(projected) => {
-                        if let Some(saved) = cursor.cursor.saved.as_mut() {
-                            saved.cursor_y =
-                                usize::try_from(projected.position.generation - live_top)
-                                    .map_err(|_| PreparationError::ArithmeticOverflow)?;
-                            saved.cursor_x = projected.position.col;
-                            saved.pending_wrap = projected.pending_wrap;
-                            saved.anchor = projection
-                                .cursor_anchor(projected.position, projected.pending_wrap);
-                        }
-                    }
-                    PreparedProjection::Absent | PreparedProjection::Invalid => {
-                        cursor.cursor.saved = None;
-                    }
-                }
-                let review_anchor = match review {
-                    PreparedProjection::Projected(position) => {
-                        projection.to_anchor(position, Affinity::Before)
-                    }
-                    PreparedProjection::Absent | PreparedProjection::Invalid => None,
-                };
-                (normal, cursor, review_anchor, None)
-            }
-            BufferRole::Alternate => {
-                let normal = self.normal.prepare_rectangular_resize(rows, cols)?;
-                let projection = ContentProjection::build(&normal)?;
-                let source_projection = ContentProjection::build(&self.normal)?;
-                let source_live_top = self
-                    .normal
-                    .history_start()
-                    .checked_add(
-                        u64::try_from(self.normal.scroll_count())
-                            .map_err(|_| PreparationError::ArithmeticOverflow)?,
-                    )
-                    .ok_or(PreparationError::ArithmeticOverflow)?;
-                let target_live_top = normal.history_start();
-                let copied_rows = self.normal.rows().min(rows);
-                let copied_cols = self.normal.cols().min(cols);
-                let retained_count = copied_rows
-                    .checked_mul(copied_cols)
-                    .ok_or(PreparationError::ArithmeticOverflow)?;
-                let mut retained_cells = Vec::new();
-                retained_cells
-                    .try_reserve_exact(retained_count)
-                    .map_err(|_| PreparationError::AllocationFailed)?;
-                for row in 0..copied_rows {
-                    let source_generation = source_live_top
-                        .checked_add(
-                            u64::try_from(row).map_err(|_| PreparationError::ArithmeticOverflow)?,
-                        )
-                        .ok_or(PreparationError::ArithmeticOverflow)?;
-                    let target_generation = target_live_top
-                        .checked_add(
-                            u64::try_from(row).map_err(|_| PreparationError::ArithmeticOverflow)?,
-                        )
-                        .ok_or(PreparationError::ArithmeticOverflow)?;
-                    for col in 0..copied_cols {
-                        retained_cells.push(
-                            self.normal.cell_at_generation(source_generation, col)
-                                == normal.cell_at_generation(target_generation, col),
-                        );
-                    }
-                }
-                let rectangular_selection = Some(RectangularSelectionProjection {
-                    source: source_projection,
-                    source_live_top,
-                    target_live_top,
-                    rows: copied_rows,
-                    cols: copied_cols,
-                    retained_cells,
-                });
-                let mut cursor = self.cursor.clone();
-                cursor.clamp_to_grid(rows, cols);
-                let live_top = normal.history_start();
-                if let Some(saved) = cursor.cursor.saved.as_mut() {
-                    let saved_position = GenPos::new(
-                        live_top
-                            .checked_add(
-                                u64::try_from(saved.cursor_y)
-                                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
-                            )
-                            .ok_or(PreparationError::ArithmeticOverflow)?,
-                        saved.cursor_x,
-                    );
-                    saved.anchor = projection.cursor_anchor(saved_position, saved.pending_wrap);
-                }
-                (normal, cursor, None, rectangular_selection)
-            }
-        };
+        let RoleBuffers {
+            mut normal,
+            cursor,
+            review_anchor,
+            rectangular_selection,
+        } = self.prepare_role_buffers(role, rows, cols, viewport, limits, normal_source)?;
         normal.mark_all_dirty();
         let pen_state = self.pen_state.prepare_resize(cols)?;
         let mut reachable = HashSet::new();
@@ -1489,6 +1371,179 @@ impl Screen {
             saved_primary,
             deferred_primary_source,
             parked_alt,
+        })
+    }
+
+    /// Prepares only the role-owned buffer contents; callers share session-level state.
+    fn prepare_role_buffers(
+        &self,
+        role: BufferRole,
+        rows: usize,
+        cols: usize,
+        viewport: ReflowViewport,
+        limits: harbor_config::HistoryLimits,
+        normal_source: Option<&NormalBuf>,
+    ) -> Result<RoleBuffers, PreparationError> {
+        match role {
+            BufferRole::Primary => {
+                self.prepare_primary_buffer(rows, cols, viewport, limits, normal_source)
+            }
+            BufferRole::Alternate => self.prepare_alternate_buffer(rows, cols),
+        }
+    }
+
+    /// Primary resize, or a geometry-preserving retrim of the history budget.
+    fn prepare_primary_buffer(
+        &self,
+        rows: usize,
+        cols: usize,
+        viewport: ReflowViewport,
+        limits: harbor_config::HistoryLimits,
+        normal_source: Option<&NormalBuf>,
+    ) -> Result<RoleBuffers, PreparationError> {
+        if rows == self.rows() && cols == self.cols() && limits != self.history_limits {
+            let normal = normal_source
+                .unwrap_or(&self.normal)
+                .prepare_history_limits(limits)?;
+            let projection = ContentProjection::build(&normal)?;
+            let review_anchor = if normal.view_offset() == 0 {
+                None
+            } else {
+                self.review_anchor
+                    .filter(|anchor| projection.resolve_selection(*anchor).is_some())
+                    .or_else(|| projection.oldest_anchor())
+            };
+            return Ok(RoleBuffers {
+                normal,
+                cursor: self.cursor.clone(),
+                review_anchor,
+                rectangular_selection: None,
+            });
+        }
+
+        let prepared = self.prepare_primary_resize_with_viewport(
+            rows,
+            cols,
+            viewport,
+            limits,
+            normal_source.unwrap_or(&self.normal),
+        )?;
+        let (normal, live_cursor, saved_cursor, review) = prepared.into_screen_parts();
+        let projection = ContentProjection::build(&normal)?;
+        let live_top = normal
+            .history_start()
+            .checked_add(
+                u64::try_from(normal.scroll_count())
+                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
+            )
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let mut cursor = self.cursor.clone();
+        cursor.clamp_to_grid(rows, cols);
+        let PreparedProjection::Projected(live) = live_cursor else {
+            return Err(PreparationError::UnresolvedLiveCursor);
+        };
+        cursor.cursor.y = usize::try_from(live.position.generation - live_top)
+            .map_err(|_| PreparationError::ArithmeticOverflow)?;
+        cursor.cursor.x = live.position.col;
+        cursor.modes.pending_wrap = live.pending_wrap;
+        match saved_cursor {
+            PreparedProjection::Projected(projected) => {
+                if let Some(saved) = cursor.cursor.saved.as_mut() {
+                    saved.cursor_y = usize::try_from(projected.position.generation - live_top)
+                        .map_err(|_| PreparationError::ArithmeticOverflow)?;
+                    saved.cursor_x = projected.position.col;
+                    saved.pending_wrap = projected.pending_wrap;
+                    saved.anchor =
+                        projection.cursor_anchor(projected.position, projected.pending_wrap);
+                }
+            }
+            PreparedProjection::Absent | PreparedProjection::Invalid => {
+                cursor.cursor.saved = None;
+            }
+        }
+        let review_anchor = match review {
+            PreparedProjection::Projected(position) => {
+                projection.to_anchor(position, Affinity::Before)
+            }
+            PreparedProjection::Absent | PreparedProjection::Invalid => None,
+        };
+        Ok(RoleBuffers {
+            normal,
+            cursor,
+            review_anchor,
+            rectangular_selection: None,
+        })
+    }
+
+    /// Alternate resize is rectangular: retained cells keep their position and content.
+    fn prepare_alternate_buffer(
+        &self,
+        rows: usize,
+        cols: usize,
+    ) -> Result<RoleBuffers, PreparationError> {
+        let normal = self.normal.prepare_rectangular_resize(rows, cols)?;
+        let projection = ContentProjection::build(&normal)?;
+        let source_projection = ContentProjection::build(&self.normal)?;
+        let source_live_top = self
+            .normal
+            .history_start()
+            .checked_add(
+                u64::try_from(self.normal.scroll_count())
+                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
+            )
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let target_live_top = normal.history_start();
+        let copied_rows = self.normal.rows().min(rows);
+        let copied_cols = self.normal.cols().min(cols);
+        let retained_count = copied_rows
+            .checked_mul(copied_cols)
+            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let mut retained_cells = Vec::new();
+        retained_cells
+            .try_reserve_exact(retained_count)
+            .map_err(|_| PreparationError::AllocationFailed)?;
+        for row in 0..copied_rows {
+            let source_generation = source_live_top
+                .checked_add(u64::try_from(row).map_err(|_| PreparationError::ArithmeticOverflow)?)
+                .ok_or(PreparationError::ArithmeticOverflow)?;
+            let target_generation = target_live_top
+                .checked_add(u64::try_from(row).map_err(|_| PreparationError::ArithmeticOverflow)?)
+                .ok_or(PreparationError::ArithmeticOverflow)?;
+            for col in 0..copied_cols {
+                retained_cells.push(
+                    self.normal.cell_at_generation(source_generation, col)
+                        == normal.cell_at_generation(target_generation, col),
+                );
+            }
+        }
+        let rectangular_selection = Some(RectangularSelectionProjection {
+            source: source_projection,
+            source_live_top,
+            target_live_top,
+            rows: copied_rows,
+            cols: copied_cols,
+            retained_cells,
+        });
+        let mut cursor = self.cursor.clone();
+        cursor.clamp_to_grid(rows, cols);
+        let live_top = normal.history_start();
+        if let Some(saved) = cursor.cursor.saved.as_mut() {
+            let saved_position = GenPos::new(
+                live_top
+                    .checked_add(
+                        u64::try_from(saved.cursor_y)
+                            .map_err(|_| PreparationError::ArithmeticOverflow)?,
+                    )
+                    .ok_or(PreparationError::ArithmeticOverflow)?,
+                saved.cursor_x,
+            );
+            saved.anchor = projection.cursor_anchor(saved_position, saved.pending_wrap);
+        }
+        Ok(RoleBuffers {
+            normal,
+            cursor,
+            review_anchor: None,
+            rectangular_selection,
         })
     }
 

@@ -1,13 +1,11 @@
-use super::gpu::{self, ColoredVertex, TerminalGpuAccess};
+use super::gpu::{ColoredVertex, TerminalGpuAccess, VertexBuffer};
 use crate::{RenderViewport, read_model::CellSpan};
 use std::sync::Arc;
 
 /// Prepared current-geometry overlay, independent of terminal cells/SGR/selection.
 pub(super) struct Highlights {
     pipeline: Arc<wgpu::RenderPipeline>,
-    buffer: wgpu::Buffer,
-    capacity: usize,
-    count: u32,
+    quads: VertexBuffer<ColoredVertex>,
     spans: Vec<CellSpan>,
     viewport: Option<RenderViewport>,
 }
@@ -16,9 +14,7 @@ impl Highlights {
     pub fn new(gpu: TerminalGpuAccess<'_>, pipeline: Arc<wgpu::RenderPipeline>) -> Self {
         Self {
             pipeline,
-            buffer: gpu::create_colored_vertex_buffer(gpu.device(), &[]),
-            capacity: 0,
-            count: 0,
+            quads: VertexBuffer::new(gpu.device()),
             spans: Vec::new(),
             viewport: None,
         }
@@ -50,25 +46,12 @@ impl Highlights {
                 sh,
             ));
         }
-        if vertices.len() > self.capacity {
-            self.capacity = vertices.len().max(64);
-            self.buffer = gpu::create_colored_vertex_buffer(
-                gpu.device(),
-                &vec![ColoredVertex::default(); self.capacity],
-            );
-        }
-        if !vertices.is_empty() {
-            gpu.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&vertices));
-        }
-        self.count = vertices.len() as u32;
+        self.quads.reserve(gpu.device(), vertices.len().max(64));
+        self.quads.write(gpu, &vertices);
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
-        if self.count > 0 {
-            pass.set_pipeline(&self.pipeline);
-            pass.set_vertex_buffer(0, self.buffer.slice(..));
-            pass.draw(0..self.count, 0..1);
-        }
+        self.quads.draw(pass, &self.pipeline, None);
     }
 }
 

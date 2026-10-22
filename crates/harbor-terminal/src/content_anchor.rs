@@ -57,6 +57,53 @@ impl ContentAnchor {
     }
 }
 
+/// Resolves the content anchor for one grid position of a single logical line.
+///
+/// `atom_at` yields each atom's logical offset and source span in retained order.
+/// A position inside a glyph's cell span belongs to that glyph. A position in the
+/// gap between glyphs - including unwritten trailing cells - anchors to the next
+/// glyph and keeps the position as a projection hint, so a later reflow can
+/// restore the gap instead of collapsing onto the previous glyph.
+pub(crate) fn derive_anchor(
+    line_id: LogicalLineId,
+    atom_start: LogicalAtomOffset,
+    cols: usize,
+    position: GenPos,
+    affinity: Affinity,
+    atom_count: usize,
+    atom_at: impl Fn(usize) -> (LogicalAtomOffset, SourceSpan),
+) -> Option<ContentAnchor> {
+    if position.col >= cols {
+        return None;
+    }
+    let covering = (0..atom_count).map(&atom_at).find(|(_, span)| {
+        span.generation == position.generation
+            && position.col >= span.start_col
+            && position.col <= span.end_col
+    });
+    let (offset, projection_hint, prefer_previous_projection) = if let Some((offset, _)) = covering
+    {
+        (offset, None, false)
+    } else {
+        let next = (0..atom_count).map(&atom_at).find(|(_, span)| {
+            span.generation > position.generation
+                || (span.generation == position.generation && span.start_col > position.col)
+        });
+        let offset = match next {
+            Some((offset, _)) => offset,
+            None => LogicalAtomOffset(atom_start.0.checked_add(atom_count)?),
+        };
+        (offset, Some(position), next.is_some())
+    };
+    Some(ContentAnchor::from_logical_parts(
+        line_id,
+        offset,
+        affinity,
+        projection_hint,
+        prefer_previous_projection,
+    ))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProjectedPosition {
     pub(crate) pos: GenPos,
@@ -268,42 +315,22 @@ impl ContentProjection {
     }
 
     pub(crate) fn to_anchor(&self, pos: GenPos, affinity: Affinity) -> Option<ContentAnchor> {
-        if pos.col >= self.cols {
-            return None;
-        }
         let line = self
             .lines
             .iter()
             .find(|line| line.generations.contains(&pos.generation))?;
-        let covering = line.atoms.iter().find(|atom| {
-            atom.source_span.generation == pos.generation
-                && pos.col >= atom.source_span.start_col
-                && pos.col <= atom.source_span.end_col
-        });
-        let (offset, projection_hint, prefer_previous_projection) = if let Some(atom) = covering {
-            (atom.offset, None, false)
-        } else {
-            let next = line.atoms.iter().find(|atom| {
-                atom.source_span.generation > pos.generation
-                    || (atom.source_span.generation == pos.generation
-                        && atom.source_span.start_col > pos.col)
-            });
-            (
-                next.map_or(
-                    LogicalAtomOffset(line.atom_start.0.checked_add(line.atoms.len())?),
-                    |atom| atom.offset,
-                ),
-                Some(pos),
-                next.is_some(),
-            )
-        };
-        Some(ContentAnchor {
-            line_id: line.line_id,
-            offset,
+        derive_anchor(
+            line.line_id,
+            line.atom_start,
+            self.cols,
+            pos,
             affinity,
-            projection_hint,
-            prefer_previous_projection,
-        })
+            line.atoms.len(),
+            |index| {
+                let atom = &line.atoms[index];
+                (atom.offset, atom.source_span)
+            },
+        )
     }
 
     pub(crate) fn cursor_anchor(&self, pos: GenPos, pending_wrap: bool) -> Option<ContentAnchor> {

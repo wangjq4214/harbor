@@ -719,39 +719,20 @@ impl CellOps {
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,
     ) {
-        normal.mark_rows_dirty(
-            cursor.scroll_region.top,
-            cursor.scroll_region.bottom.saturating_add(1),
-        );
-        if cursor.margins.enabled {
-            Self::scroll_margin_rect_up(
-                pen_state,
-                normal,
-                cursor,
-                cursor.scroll_region.top,
-                cursor.scroll_region.bottom,
-                1,
-            );
-        } else if cursor.scroll_region.top == 0 && cursor.scroll_region.bottom == normal.rows() - 1
-        {
+        let top = cursor.scroll_region.top;
+        let bottom = cursor.scroll_region.bottom;
+        // A full-screen index is the only scroll that advances scrollback: keep the
+        // O(1) ring-head move instead of copying rows inside the visible window.
+        if !cursor.margins.enabled && top == 0 && bottom == normal.rows().saturating_sub(1) {
+            normal.mark_rows_dirty(top, bottom.saturating_add(1));
             normal.scroll_up_full_screen(1, pen_state.erase_cell());
-        } else {
-            normal.sever_soft_wrap_after(cursor.scroll_region.bottom);
-            let tr = normal.total_rows();
-            let vis = normal.visible_start();
-            let src_start = (vis + cursor.scroll_region.top + 1) % tr;
-            let src_end = (vis + cursor.scroll_region.bottom + 1) % tr;
-            let dst = (vis + cursor.scroll_region.top) % tr;
-            normal.copy_ring_rows(src_start, src_end, dst);
-            normal.sever_soft_wrap(cursor.scroll_region.top);
-            normal.fill_row_with(cursor.scroll_region.bottom, pen_state.erase_cell());
-        }
-        if !cursor.margins.enabled {
-            for row in cursor.scroll_region.top..=cursor.scroll_region.bottom {
+            for row in top..=bottom {
                 Self::normalize_row_region(pen_state, normal, row, 0, normal.cols() - 1);
             }
+        } else {
+            Self::scroll_rows_up(pen_state, normal, cursor, top, bottom, 1);
         }
-        cursor.cursor.y = cursor.scroll_region.bottom;
+        cursor.cursor.y = bottom;
     }
 
     // ── DEC rectangle operations ──────────────────────────────────
@@ -836,17 +817,8 @@ impl CellOps {
 
         let cell = Cell {
             ch: fill_char,
-            suffix: String::new(),
-            text_overflow: Default::default(),
-            width: 1,
-            isolated_mark: false,
-            wide_continuation: false,
-            fg: pen_state.pen.fg,
-            bg: pen_state.pen.bg,
-            attrs: pen_state.pen.attrs,
-            underline_color: pen_state.pen.underline_color,
             protected: pen_state.pen.protected,
-            hyperlink: None,
+            ..pen_state.erase_cell()
         };
 
         for row in t..=b {

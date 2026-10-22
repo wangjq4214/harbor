@@ -2,24 +2,21 @@ use crate::model::{SelectionBounds, TerminalSnapshot};
 use harbor_config::Rgba;
 use std::sync::Arc;
 
-use super::gpu::{self, ColoredVertex, TerminalGpuAccess};
+use super::gpu::{ColoredVertex, TerminalGpuAccess, VertexBuffer};
 use crate::render::RenderViewport;
 
 // ── Selection (outer — GPU) ──────────────────────────────────────
 
 pub struct Selection {
     pipeline: Arc<wgpu::RenderPipeline>,
-    vertex_buffer: wgpu::Buffer,
-    /// Number of vertices to draw (0 when no selection).
-    vertex_count: u32,
-    /// Current vertex buffer capacity (rows * cols * 6).
-    vertex_cap: usize,
+    quads: VertexBuffer<ColoredVertex>,
     /// Current terminal-owned selection bounds.
     bounds: Option<SelectionBounds>,
     /// Last projection inputs used for the vertex upload.
     last_projection: Option<(u64, usize, usize, usize, usize, RenderViewport)>,
-    /// Whether vertex buffer needs re-upload.
+    /// Selection color, applied when the quads are rebuilt.
     color: Rgba,
+    /// Whether the retained quads need rebuilding before the next draw.
     dirty: bool,
 }
 
@@ -33,29 +30,14 @@ impl Selection {
         pipeline: Arc<wgpu::RenderPipeline>,
         color: Rgba,
     ) -> Self {
-        let vertex_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &[]);
+        let quads = VertexBuffer::new(gpu.device());
         Self {
             pipeline,
-            vertex_buffer,
-            vertex_count: 0,
-            vertex_cap: 0,
+            quads,
             bounds: None,
             last_projection: None,
             color,
             dirty: true,
-        }
-    }
-
-    /// Ensures the vertex buffer capacity can hold `rows * cols * 6` vertices.
-    fn ensure_capacity(&mut self, gpu: TerminalGpuAccess<'_>, rows: usize, cols: usize) {
-        let required = rows * cols * 6;
-        if required > self.vertex_cap {
-            let cap = required.max(64);
-            self.vertex_buffer = gpu::create_colored_vertex_buffer(
-                gpu.device(),
-                &vec![ColoredVertex::default(); cap],
-            );
-            self.vertex_cap = cap;
         }
     }
 
@@ -138,7 +120,7 @@ impl Selection {
         viewport: &RenderViewport,
     ) {
         let Some(snap) = snap else {
-            self.vertex_count = 0;
+            self.quads.clear();
             self.last_projection = None;
             self.dirty = false;
             return;
@@ -163,22 +145,16 @@ impl Selection {
         if let Some(bounds) = self.bounds {
             let rows = snap.rows;
             let cols = snap.cols;
-            self.ensure_capacity(gpu, rows, cols);
+            self.quads.reserve(gpu.device(), (rows * cols * 6).max(64));
 
             let verts = self.build_vertices(snap, viewport, bounds);
-            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
-            self.vertex_count = verts.len() as u32;
+            self.quads.write(gpu, &verts);
         } else {
-            self.vertex_count = 0;
+            self.quads.clear();
         }
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
-        if self.vertex_count == 0 {
-            return;
-        }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.draw(0..self.vertex_count, 0..1);
+        self.quads.draw(pass, &self.pipeline, None);
     }
 }

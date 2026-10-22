@@ -60,9 +60,8 @@ use std::sync::{
 
 use crate::Terminal;
 use crate::read_model::{
-    ActionTarget, ContentRange, ContentVersion, FragmentEnd, MAX_READ_PAYLOAD_BYTES, MAX_READ_ROWS,
-    MAX_READ_UNITS, ReadBudget, ReadContinuation, ReadError, ReadScope, TargetAction,
-    fresh_identity,
+    ActionTarget, ContentRange, ContentVersion, FragmentEnd, MAX_READ_ROWS, ReadBudget,
+    ReadContinuation, ReadError, ReadScope, TargetAction, fresh_identity,
 };
 
 pub const MAX_QUERY_BYTES: usize = MAX_READ_ROWS;
@@ -194,10 +193,6 @@ pub struct LiteralSearch {
     current: Option<CurrentQuery>,
 }
 
-fn same_generation(a: ContentVersion, b: ContentVersion) -> bool {
-    a.session == b.session && a.buffer == b.buffer && a.generation == b.generation
-}
-
 impl LiteralSearch {
     /// Invalid input leaves the current query intact. Starting valid work cancels
     /// the previous query; the returned job can be moved, but is not cloneable.
@@ -214,15 +209,7 @@ impl LiteralSearch {
         if query.len() > MAX_QUERY_BYTES {
             return Err(QueryError::TooLong);
         }
-        if budget.rows == 0
-            || budget.rows > MAX_READ_ROWS
-            || budget.units == 0
-            || budget.units > MAX_READ_UNITS
-            || budget.payload_bytes == 0
-            || budget.payload_bytes > MAX_READ_PAYLOAD_BYTES
-        {
-            return Err(QueryError::InvalidBudget);
-        }
+        budget.validate().map_err(|_| QueryError::InvalidBudget)?;
         let pattern = query.as_bytes().to_vec();
         let mut prefix = vec![0; pattern.len()];
         let mut matched = 0;
@@ -281,7 +268,11 @@ impl LiteralSearch {
         if current.provenance != results.provenance {
             return Err(Rejection::ObsoleteQuery);
         }
-        if !same_generation(results.provenance.content, terminal.content_version()) {
+        if !results
+            .provenance
+            .content
+            .same_generation(terminal.content_version())
+        {
             return Err(Rejection::WrongContent);
         }
         if matches!(
@@ -407,7 +398,12 @@ impl SearchJob {
         if cancelled() {
             return self.stop(SearchStatus::Cancelled);
         }
-        if !same_generation(self.results.provenance.content, terminal.content_version()) {
+        if !self
+            .results
+            .provenance
+            .content
+            .same_generation(terminal.content_version())
+        {
             return self.stop(SearchStatus::Stale);
         }
         if self.status() != SearchStatus::Running {

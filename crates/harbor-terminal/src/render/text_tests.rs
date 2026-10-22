@@ -172,7 +172,7 @@ fn ordinary_only_keeps_r8_and_never_shapes_or_allocates_color_resources() {
     assert_eq!(stats.color_atlas_bytes, 0);
     assert_eq!(stats.cached_requests, 0);
     assert!(layer.sequences.emoji_cells.is_empty());
-    assert!(layer.overlay_vertex_count > 0);
+    assert!(layer.overlay.count() > 0);
 }
 
 #[test]
@@ -499,13 +499,13 @@ fn complete_tiles_suppress_combining_overlays_and_conceal_removes_presentation()
     // A mark on a tile-represented cell must not be painted a second time.
     snap.cells[0].suffix.push('\u{301}');
     layer.prepare_preedit(gpu, None, &snap, &viewport);
-    assert_eq!(layer.overlay_vertex_count, 0);
+    assert_eq!(layer.overlay.count(), 0);
     snap.cells[0].attrs.set(CellAttrs::CONCEAL);
     layer.invalidate_projection();
     layer.prepare_with_dirty(gpu, &snap, &[], &viewport, None);
     layer.prepare_preedit(gpu, None, &snap, &viewport);
     assert!(layer.sequences.tile_cells.is_empty());
-    assert_eq!(layer.overlay_vertex_count, 0);
+    assert_eq!(layer.overlay.count(), 0);
     assert_eq!(
         read_draw(&device, &queue, |p| layer.draw(p)),
         read_draw(&device, &queue, |_| {})
@@ -579,15 +579,15 @@ fn preedit_paints_above_complete_tiles_at_an_overlapping_cursor() {
     let preedit = Preedit::new("M", None);
     layer.prepare_with_dirty(gpu, &snap, &[], &viewport, Some(&preedit));
     layer.prepare_preedit(gpu, Some(&preedit), &snap, &viewport);
-    assert!(layer.overlay_vertex_count > 0);
+    assert!(layer.overlay.count() > 0);
     let actual = read_draw(&device, &queue, |p| layer.draw(p));
     // An explicit scalar overlay drawn after a sequence-only frame is the reference.
     let expected = read_draw(&device, &queue, |pass| {
         layer.sequences.draw(pass);
         pass.set_pipeline(&layer.pipeline);
         pass.set_bind_group(0, &layer.gpu_atlas.bind_group, &[]);
-        pass.set_vertex_buffer(0, layer.overlay_vertex_buffer.slice(..));
-        pass.draw(0..layer.overlay_vertex_count, 0..1);
+        pass.set_vertex_buffer(0, layer.overlay.buffer().slice(..));
+        pass.draw(0..layer.overlay.count(), 0..1);
     });
     assert_eq!(actual, expected);
     assert_ne!(actual, before);

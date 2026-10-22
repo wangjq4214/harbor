@@ -393,10 +393,19 @@ mod tests {
         }
     }
 
+    /// One key with its normal, application-cursor, shift, and ctrl sequences.
+    type KeySequences = (
+        TerminalKey,
+        &'static [u8],
+        &'static [u8],
+        &'static [u8],
+        &'static [u8],
+    );
+
     #[test]
     fn cursor_and_home_end_keys_follow_xterm_modes_and_modifier_encoding() {
         // xterm-256color's kcu*1/khome/kend describe smkx (?1h) mode.
-        let keys: &[(TerminalKey, &[u8], &[u8], &[u8], &[u8])] = &[
+        let keys: &[KeySequences] = &[
             (
                 TerminalKey::ArrowUp,
                 b"\x1b[A",

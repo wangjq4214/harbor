@@ -79,7 +79,7 @@ pub struct ContentVersion {
 }
 
 impl ContentVersion {
-    fn same_generation(self, other: Self) -> bool {
+    pub(crate) fn same_generation(self, other: Self) -> bool {
         self.session == other.session
             && self.buffer == other.buffer
             && self.generation == other.generation
@@ -122,7 +122,7 @@ impl Default for ReadBudget {
 }
 
 impl ReadBudget {
-    fn validate(self) -> Result<(), ReadError> {
+    pub(crate) fn validate(self) -> Result<(), ReadError> {
         if self.rows == 0
             || self.rows > MAX_READ_ROWS
             || self.units == 0

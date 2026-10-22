@@ -98,6 +98,69 @@ fn rgb_color(r: Option<usize>, g: Option<usize>, b: Option<usize>) -> Option<Col
     }
 }
 
+/// Parsed result of one SGR 38/48 extended-color parameter group.
+enum ExtendedColor {
+    /// The field list ended mid-color: abandon the rest of this CSI.
+    Incomplete,
+    /// No usable color; skip this many additional fields and keep parsing.
+    Unsupported(usize),
+    /// A usable color plus the additional fields it consumed.
+    Color(Color, usize),
+}
+
+/// Resolves SGR 38/48 from either `;` fields or `:` sub-parameters of one slot.
+///
+/// The two spellings address the same extended form with different field bounds, so
+/// mode/range rules and field consumption live here once instead of in two copies.
+fn extended_color(params: &Params, i: usize, sub_params_len: usize) -> ExtendedColor {
+    if sub_params_len > 1 {
+        // Colon fields belong to this parameter; later parameters stay independent.
+        let color = match params.get_sub_param(i, 1) {
+            Some(5) => params
+                .get_sub_param(i, 2)
+                .filter(|&value| value <= 255)
+                .map(|value| Color::Indexed(value as u8)),
+            Some(2) => {
+                let (red, green, blue) = if sub_params_len >= 6 {
+                    (3, 4, 5)
+                } else {
+                    (2, 3, 4)
+                };
+                rgb_color(
+                    params.get_sub_param(i, red),
+                    params.get_sub_param(i, green),
+                    params.get_sub_param(i, blue),
+                )
+            }
+            _ => None,
+        };
+        return color.map_or(ExtendedColor::Unsupported(0), |color| {
+            ExtendedColor::Color(color, 0)
+        });
+    }
+
+    // An empty slot is unsupported, not incomplete: later SGR fields still apply.
+    // Params::get returns None for both empty slots and out-of-bounds indices.
+    match params.get(i + 1) {
+        Some(5) => match params.get(i + 2) {
+            Some(value) if value <= 255 => ExtendedColor::Color(Color::Indexed(value as u8), 2),
+            Some(_) => ExtendedColor::Unsupported(2),
+            None if i + 2 < params.len() => ExtendedColor::Unsupported(2),
+            None => ExtendedColor::Incomplete,
+        },
+        Some(2) if i + 4 < params.len() => {
+            rgb_color(params.get(i + 2), params.get(i + 3), params.get(i + 4))
+                .map_or(ExtendedColor::Unsupported(4), |color| {
+                    ExtendedColor::Color(color, 4)
+                })
+        }
+        Some(2) => ExtendedColor::Incomplete,
+        Some(_) => ExtendedColor::Unsupported(1),
+        None if i + 1 < params.len() => ExtendedColor::Unsupported(1),
+        None => ExtendedColor::Incomplete,
+    }
+}
+
 /// Horizontal tab stops.  `true` at column `c` means a tab stop is set.
 /// Default stops are at every 8th column.
 #[derive(Debug, Clone)]
@@ -320,87 +383,19 @@ impl PenState {
                 }
                 38 | 48 => {
                     let is_fg = n == 38;
-                    if sub_params_len > 1 {
-                        let sub = params.get_sub_param(i, 1).unwrap_or_default();
-                        match sub {
-                            5 => {
-                                if let Some(val) = params.get_sub_param(i, 2)
-                                    && val <= 255
-                                {
-                                    if is_fg {
-                                        self.pen.fg = Color::Indexed(val as u8);
-                                    } else {
-                                        self.pen.bg = Color::Indexed(val as u8);
-                                    }
-                                }
-                            }
-                            2 => {
-                                let (r_idx, g_idx, b_idx) = if sub_params_len >= 6 {
-                                    (3, 4, 5)
-                                } else {
-                                    (2, 3, 4)
-                                };
-                                if let (Some(r), Some(g), Some(b)) = (
-                                    params.get_sub_param(i, r_idx),
-                                    params.get_sub_param(i, g_idx),
-                                    params.get_sub_param(i, b_idx),
-                                ) && r <= 255
-                                    && g <= 255
-                                    && b <= 255
-                                {
-                                    if is_fg {
-                                        self.pen.fg = Color::Rgb(r as u8, g as u8, b as u8);
-                                    } else {
-                                        self.pen.bg = Color::Rgb(r as u8, g as u8, b as u8);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        if i + 1 >= params.len() {
-                            break;
-                        }
-                        let sub = params.get_or(i + 1, 0);
-                        match sub {
-                            5 => {
-                                if i + 2 >= params.len() {
-                                    break;
-                                }
-                                if let Some(val) = params.get(i + 2)
-                                    && val <= 255
-                                {
-                                    if is_fg {
-                                        self.pen.fg = Color::Indexed(val as u8);
-                                    } else {
-                                        self.pen.bg = Color::Indexed(val as u8);
-                                    }
-                                }
-                                i += 2;
-                            }
-                            2 => {
-                                if i + 4 >= params.len() {
-                                    break;
-                                }
-                                if let (Some(r), Some(g), Some(b)) =
-                                    (params.get(i + 2), params.get(i + 3), params.get(i + 4))
-                                    && r <= 255
-                                    && g <= 255
-                                    && b <= 255
-                                {
-                                    if is_fg {
-                                        self.pen.fg = Color::Rgb(r as u8, g as u8, b as u8);
-                                    } else {
-                                        self.pen.bg = Color::Rgb(r as u8, g as u8, b as u8);
-                                    }
-                                }
-                                i += 4;
-                            }
-                            _ => {
-                                i += 1;
-                            }
+                    let (color, consumed) = match extended_color(params, i, sub_params_len) {
+                        ExtendedColor::Incomplete => break,
+                        ExtendedColor::Unsupported(skip) => (None, skip),
+                        ExtendedColor::Color(color, skip) => (Some(color), skip),
+                    };
+                    if let Some(color) = color {
+                        if is_fg {
+                            self.pen.fg = color;
+                        } else {
+                            self.pen.bg = color;
                         }
                     }
+                    i += consumed;
                 }
                 _ => crate::model::apply_scalar_sgr(
                     n,

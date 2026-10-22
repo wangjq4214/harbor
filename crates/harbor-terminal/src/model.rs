@@ -200,6 +200,24 @@ impl Cell {
         text
     }
 
+    /// The hidden trailing half of a double-width unit painted with `base`'s style.
+    pub(crate) fn wide_continuation_of(base: &Cell) -> Self {
+        Self {
+            ch: ' ',
+            suffix: String::new(),
+            text_overflow: TextUnitOverflow::default(),
+            width: 0,
+            isolated_mark: false,
+            wide_continuation: true,
+            fg: base.fg,
+            bg: base.bg,
+            attrs: base.attrs,
+            underline_color: base.underline_color,
+            protected: base.protected,
+            hyperlink: base.hyperlink,
+        }
+    }
+
     /// Whether a blank carries normally visible styling worth retaining.
     ///
     /// Underlines/overlines paint spaces; hyperlink fallback and strike do not.
