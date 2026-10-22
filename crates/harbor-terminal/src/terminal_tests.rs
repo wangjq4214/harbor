@@ -788,6 +788,36 @@ fn sgr_indexed_out_of_range_ignored() {
 }
 
 #[test]
+fn sgr_empty_extended_color_fields_preserve_colors_and_apply_following_sgr() {
+    for params in ["38;5;", "48;5;", "38;", "48;"] {
+        let mut terminal = Terminal::new_headless(1, 4);
+        terminal.put_bytes(b"\x1b[1;31;42m");
+        terminal.put_bytes(format!("\x1b[{params};22mX").as_bytes());
+
+        let cell = terminal.screen().cell(0, 0);
+        assert_eq!(cell.ch, 'X', "params: {params}");
+        assert_eq!(cell.fg, Color::Named(1), "params: {params}");
+        assert_eq!(cell.bg, Color::Named(2), "params: {params}");
+        assert!(!cell.attrs.contains(CellAttrs::BOLD), "params: {params}");
+    }
+}
+
+#[test]
+fn sgr_incomplete_extended_colors_preserve_colors_and_attributes() {
+    for params in ["38", "48", "38;5", "48;5", "38;2;128;64", "48;2;128;64"] {
+        let mut terminal = Terminal::new_headless(1, 4);
+        terminal.put_bytes(b"\x1b[1;31;42m");
+        terminal.put_bytes(format!("\x1b[{params}mX").as_bytes());
+
+        let cell = terminal.screen().cell(0, 0);
+        assert_eq!(cell.ch, 'X', "params: {params}");
+        assert_eq!(cell.fg, Color::Named(1), "params: {params}");
+        assert_eq!(cell.bg, Color::Named(2), "params: {params}");
+        assert!(cell.attrs.contains(CellAttrs::BOLD), "params: {params}");
+    }
+}
+
+#[test]
 fn sgr_truecolor_missing_params_ignored() {
     let mut terminal = Terminal::new_headless(1, 4);
     terminal.put_bytes(b"\x1b[31ma");

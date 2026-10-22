@@ -139,10 +139,13 @@ fn extended_color(params: &Params, i: usize, sub_params_len: usize) -> ExtendedC
         });
     }
 
+    // An empty slot is unsupported, not incomplete: later SGR fields still apply.
+    // Params::get returns None for both empty slots and out-of-bounds indices.
     match params.get(i + 1) {
         Some(5) => match params.get(i + 2) {
             Some(value) if value <= 255 => ExtendedColor::Color(Color::Indexed(value as u8), 2),
             Some(_) => ExtendedColor::Unsupported(2),
+            None if i + 2 < params.len() => ExtendedColor::Unsupported(2),
             None => ExtendedColor::Incomplete,
         },
         Some(2) if i + 4 < params.len() => {
@@ -153,6 +156,7 @@ fn extended_color(params: &Params, i: usize, sub_params_len: usize) -> ExtendedC
         }
         Some(2) => ExtendedColor::Incomplete,
         Some(_) => ExtendedColor::Unsupported(1),
+        None if i + 1 < params.len() => ExtendedColor::Unsupported(1),
         None => ExtendedColor::Incomplete,
     }
 }
