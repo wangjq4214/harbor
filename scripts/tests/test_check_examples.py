@@ -200,6 +200,53 @@ class CheckExamplesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No Markdown selected"):
             check_examples.prepare(self.root, [])
 
+    def test_check_recovers_after_cache_prunes_generated_files(self):
+        self.put("docs/widget/a.md")
+        self.put("crates/harbor-widget/README.md")
+        self.put("crates/harbor-terminal/README.md")
+        self.assertEqual(self.invoke("--prepare-only", "--include-readmes")[0], 0)
+        package = self.root / "target/docs-examples"
+        # rust-cache removes files recursively but retains directory skeletons.
+        for path in package.rglob("*"):
+            if path.is_file():
+                path.unlink()
+        self.assertEqual(list(package.iterdir()), [package / "src"])
+        code, _, stderr = self.invoke("--include-readmes")
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual((package / ".check-examples-owned").read_text(encoding="utf-8"),
+                         check_examples.OWNER)
+        self.assertEqual((package / "Cargo.lock").read_bytes(),
+                         (self.root / "Cargo.lock").read_bytes())
+        self.assertEqual((package / "src/lib.rs").read_text(encoding="utf-8").count("pub mod "), 3)
+        self.cargo_run.assert_called_once()
+
+    def test_refuses_unowned_tree_containing_nested_files(self):
+        self.put("docs/widget/a.md")
+        existing = self.put("target/docs-examples/src/nested/keep.txt", "do not adopt")
+        code, _, stderr = self.invoke("--prepare-only")
+        self.assertEqual(code, 1)
+        self.assertIn("non-owned generated directory", stderr)
+        self.assertEqual(existing.read_text(encoding="utf-8"), "do not adopt")
+        self.assertFalse((existing.parents[2] / ".check-examples-owned").exists())
+        self.cargo_run.assert_not_called()
+
+    def test_refuses_unowned_tree_containing_directory_symlink(self):
+        self.put("docs/widget/a.md")
+        destination = self.root / "empty-external-directory"
+        destination.mkdir()
+        link = self.root / "target/docs-examples/nested/link"
+        link.parent.mkdir(parents=True)
+        try:
+            link.symlink_to(destination, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"Directory symlinks unavailable: {error}")
+        code, _, stderr = self.invoke("--prepare-only")
+        self.assertEqual(code, 1)
+        self.assertIn("non-owned generated directory", stderr)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(list(destination.iterdir()), [])
+        self.cargo_run.assert_not_called()
+
     def test_refuses_foreign_generated_directory_without_modifying_it(self):
         self.put("docs/widget/a.md")
         existing = self.put("target/docs-examples/Cargo.toml", "foreign manifest")
