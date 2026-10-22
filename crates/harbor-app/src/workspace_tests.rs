@@ -1600,7 +1600,17 @@ fn search_editor_publishes_initial_no_result_instead_of_an_immediate_busy_hint()
     controller.publish_search_status("1 / 3");
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("needle".into())));
     runtime.update(Instant::now());
-    assert_eq!(controller.store.state().read().search.status, "No Result");
+    assert_eq!(
+        controller
+            .store
+            .state()
+            .read()
+            .popups
+            .get::<SearchUiState>()
+            .unwrap()
+            .status,
+        "No Result"
+    );
     assert_eq!(controller.search_query().unwrap().1, "needle");
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::Character('a'),
@@ -1611,7 +1621,17 @@ fn search_editor_publishes_initial_no_result_instead_of_an_immediate_busy_hint()
         modifiers: Modifiers::default(),
     }));
     runtime.update(Instant::now());
-    assert_eq!(controller.store.state().read().search.status, "No Result");
+    assert_eq!(
+        controller
+            .store
+            .state()
+            .read()
+            .popups
+            .get::<SearchUiState>()
+            .unwrap()
+            .status,
+        "No Result"
+    );
     assert_eq!(controller.search_query().unwrap().1, "");
 }
 
@@ -1881,7 +1901,10 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
             }
             assert_eq!(
                 controller.drain_actions(),
-                [AppCommandRequest::shortcut(command)]
+                [AppCommandRequest::popup(
+                    command,
+                    controller.store.state().read().popups.generation().unwrap()
+                )]
             );
         }
         // Blank overlay space still permits normal terminal interaction.
@@ -2095,7 +2118,15 @@ fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_
     runtime.request_focus(&controller.search_focus());
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("a".repeat(128))));
     controller.drain_actions();
-    let input = controller.store.state().read().search.input.clone();
+    let input = controller
+        .store
+        .state()
+        .read()
+        .popups
+        .get::<SearchUiState>()
+        .unwrap()
+        .input
+        .clone();
     input.set_selection(TextSelection {
         anchor: 125,
         extent: 128,
@@ -2107,7 +2138,10 @@ fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_
     );
     assert_eq!(
         controller.drain_actions(),
-        [AppCommandRequest::shortcut(AppCommand::SearchChanged)]
+        [AppCommandRequest::popup(
+            AppCommand::SearchChanged,
+            controller.store.state().read().popups.generation().unwrap()
+        )]
     );
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::Character('a'),
@@ -2133,7 +2167,10 @@ fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_
     assert_eq!(controller.search_query().unwrap().1, "needle");
     assert_eq!(
         controller.drain_actions(),
-        [AppCommandRequest::shortcut(AppCommand::SearchChanged)]
+        [AppCommandRequest::popup(
+            AppCommand::SearchChanged,
+            controller.store.state().read().popups.generation().unwrap()
+        )]
     );
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::Character('z'),

@@ -4,6 +4,7 @@ mod appearance;
 pub mod command;
 pub mod confirmation;
 pub mod notifications;
+mod popups;
 mod search;
 pub use search::SearchCommandOutcome;
 pub mod tab_manager;

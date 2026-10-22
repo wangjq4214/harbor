@@ -543,3 +543,35 @@ fn history_budget_reload_invalidates_old_search_targets_and_refreshes_survivors(
     assert_eq!(published(&tabs), 1);
     assert!(tabs.navigate_search(false));
 }
+
+#[test]
+fn popup_retirement_revokes_pending_completion_and_busy_hint_before_the_next_work_step() {
+    let mut tabs = setup("needle other");
+    let ui = ui(&tabs);
+    ui.open_search(tabs.active_id().unwrap());
+    tabs.set_search_query("needle");
+    ui.bind_search_cancellation(tabs.search.cancellation.as_ref().unwrap().clone());
+    pending(&mut tabs);
+    let old = tabs.search.completion.take().unwrap();
+    let since = tabs.search.busy_since.unwrap();
+    ui.open_palette();
+    assert!(ui.search_query().is_none());
+    assert_eq!(tabs.search_status(), "No Result");
+    tabs.search.completion = Some(old);
+    let tick = tabs.advance_search_at(since + Duration::from_secs(1));
+    assert!(!tick.pending);
+    assert!(tick.changed);
+    assert!(tabs.search.job.is_none());
+    assert!(tabs.search.completion.is_none());
+    assert!(tabs.search.accepted.is_none());
+    assert!(tabs.search.busy_since.is_none());
+    assert!(tabs.search.query.is_empty());
+    assert_eq!(published(&tabs), 0);
+    assert!(!tabs.navigate_search(false));
+    ui.open_search(tabs.active_id().unwrap());
+    assert_eq!(ui.search_query().unwrap().1, "");
+    tabs.set_search_query("other");
+    ui.bind_search_cancellation(tabs.search.cancellation.as_ref().unwrap().clone());
+    complete(&mut tabs);
+    assert_eq!(published(&tabs), 1);
+}

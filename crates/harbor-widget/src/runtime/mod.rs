@@ -145,7 +145,9 @@ impl Runtime {
         self.external_ime_active = false;
         let old_external_eligible = std::mem::take(&mut self.external_eligible);
         let old_layout_notifications = std::mem::take(&mut self.pending_layout_notifications);
-        let old_events = std::mem::replace(&mut self.events, EventRouter::new());
+        let mut next_events = EventRouter::new();
+        next_events.retire_ime_from(&self.events);
+        let old_events = std::mem::replace(&mut self.events, next_events);
         remove_runtime(self.runtime_id);
         self.encoder.release_text_owner(self.runtime_id);
 

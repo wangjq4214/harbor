@@ -23,28 +23,45 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 struct SearchUiState {
-    open: bool,
-    source: Option<crate::tab_manager::TabId>,
+    source: crate::tab_manager::TabId,
     input: TextEditingController,
     status: String,
+    focus: FocusHandle,
+    cancellation: std::rc::Rc<std::cell::RefCell<Option<crate::search::SearchCancellation>>>,
 }
 
-impl Default for SearchUiState {
-    fn default() -> Self {
-        Self {
-            open: false,
-            source: None,
-            input: TextEditingController::with_acceptance("", |text| {
-                text.len() <= harbor_terminal::literal_search::MAX_QUERY_BYTES
-            }),
-            status: "No Result".into(),
+impl crate::popups::Popup for SearchUiState {
+    fn build(
+        &self,
+        cx: &mut BuildCx,
+        ui: &WorkspaceUiController,
+        _: &ResolvedKeybindings,
+        generation: u64,
+    ) -> View {
+        search_bar(cx, ui, self, generation)
+    }
+    fn focus(&self) -> FocusHandle {
+        self.focus
+    }
+    fn close(&self) {
+        self.input.set_text("");
+        if let Some(cancellation) = self.cancellation.borrow_mut().take() {
+            cancellation.cancel();
         }
+    }
+    fn notification_inset(&self) -> f32 {
+        SEARCH_PANEL_HEIGHT + SEARCH_PANEL_INSET
     }
 }
 
-fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
+fn search_bar(
+    cx: &mut BuildCx,
+    controller: &WorkspaceUiController,
+    search: &SearchUiState,
+    generation: u64,
+) -> View {
     let appearance = GlassAppearance::default();
-    let input = controller.store.state().read().search.input.clone();
+    let input = search.input.clone();
     let changed_ui = controller.clone();
     let submit = controller.store.dispatcher();
     let close = controller.store.dispatcher();
@@ -54,28 +71,48 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
         .placeholder("Find…")
         .focus_handle(controller.search_focus)
         .on_changed(move |_| {
+            if !changed_ui
+                .store
+                .state()
+                .read()
+                .popups
+                .is_current(generation)
+            {
+                return;
+            }
             changed_ui.publish_search_status("No Result");
             changed_ui
                 .store
                 .dispatcher()
-                .dispatch(AppCommandRequest::shortcut(AppCommand::SearchChanged));
+                .dispatch(AppCommandRequest::popup(
+                    AppCommand::SearchChanged,
+                    generation,
+                ));
         })
         .on_submitted(move |modifiers| {
-            submit.dispatch(AppCommandRequest::shortcut(if modifiers.shift {
-                AppCommand::SearchPrevious
-            } else {
-                AppCommand::SearchNext
-            }))
+            submit.dispatch(AppCommandRequest::popup(
+                if modifiers.shift {
+                    AppCommand::SearchPrevious
+                } else {
+                    AppCommand::SearchNext
+                },
+                generation,
+            ))
         })
-        .on_escape(move || close.dispatch(AppCommandRequest::shortcut(AppCommand::SearchClose)));
+        .on_escape(move || {
+            close.dispatch(AppCommandRequest::popup(
+                AppCommand::SearchClose,
+                generation,
+            ))
+        });
     let style = glass_icon_button_style(cx);
     let button = |icon, label, command| {
         let dispatcher = controller.store.dispatcher();
         IconButton::new(icon, label)
             .style(style.clone())
-            .on_click(move |_| dispatcher.dispatch(AppCommandRequest::shortcut(command)))
+            .on_click(move |_| dispatcher.dispatch(AppCommandRequest::popup(command, generation)))
     };
-    let status = controller.store.state().read().search.status.clone();
+    let status = search.status.clone();
     let content = harbor_widget::view! { &mut *cx;
         Padding::all(8.0) => {
             Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
@@ -111,7 +148,7 @@ fn search_bar(cx: &mut BuildCx, controller: &WorkspaceUiController) -> View {
                         .child(card),
                 ),
         )
-        .keyed("session-search")
+        .keyed(format!("session-search-{generation}"))
         .build(cx)
 }
 
@@ -123,9 +160,7 @@ const SEARCH_PANEL_INSET: f32 = 12.0;
 struct WorkspaceUiState {
     keybindings: Option<ResolvedKeybindings>,
     notices: ConfigurationNotices,
-    search: SearchUiState,
-    palette: Option<palette::PaletteState>,
-    palette_generation: u64,
+    popups: crate::popups::PopupSlot,
 }
 
 /// App-wide publication and the sole one-shot action inbox, independent of tab sync.
@@ -157,18 +192,32 @@ impl WorkspaceUiController {
 
     pub fn open_search(&self, source: crate::tab_manager::TabId) {
         let mut state = self.store.state().read().clone();
-        if state.search.source != Some(source) {
-            state.search = SearchUiState::default();
+        if state
+            .popups
+            .get::<SearchUiState>()
+            .is_some_and(|search| search.source == source)
+        {
+            return;
         }
-        state.search.open = true;
-        state.search.source = Some(source);
+        state.popups.open(|_| SearchUiState {
+            source,
+            input: TextEditingController::with_acceptance("", |text| {
+                text.len() <= harbor_terminal::literal_search::MAX_QUERY_BYTES
+            }),
+            status: "No Result".into(),
+            focus: self.search_focus,
+            cancellation: Default::default(),
+        });
         self.store.set_state(state);
     }
 
     pub fn close_search(&self) {
         let mut state = self.store.state().read().clone();
-        state.search = SearchUiState::default();
-        self.store.set_state(state);
+        if state.popups.get::<SearchUiState>().is_some() {
+            let generation = state.popups.generation().unwrap();
+            state.popups.close(generation);
+            self.store.set_state(state);
+        }
     }
 
     pub fn search_focus(&self) -> FocusHandle {
@@ -177,34 +226,52 @@ impl WorkspaceUiController {
 
     pub fn search_query(&self) -> Option<(crate::tab_manager::TabId, String)> {
         let state = self.store.state().read();
-        if !state.search.open {
-            return None;
+        let search = state.popups.get::<SearchUiState>()?;
+        Some((search.source, search.input.text()))
+    }
+
+    pub(crate) fn bind_search_cancellation(&self, cancellation: crate::search::SearchCancellation) {
+        if let Some(search) = self.store.state().read().popups.get::<SearchUiState>() {
+            *search.cancellation.borrow_mut() = Some(cancellation);
         }
-        Some((state.search.source?, state.search.input.text()))
     }
 
     pub fn sync_search_source(&self, active: Option<crate::tab_manager::TabId>) {
         if self
-            .store
-            .state()
-            .read()
-            .search
-            .source
-            .is_some_and(|source| Some(source) != active)
+            .search_query()
+            .is_some_and(|(source, _)| Some(source) != active)
         {
             self.close_search();
         }
     }
 
     pub fn publish_search_status(&self, status: &str) {
-        let current = self.store.state().read();
-        if current.search.status == status {
+        let mut state = self.store.state().read().clone();
+        if state
+            .popups
+            .get::<SearchUiState>()
+            .is_none_or(|search| search.status == status)
+        {
             return;
         }
-        let mut state = current.clone();
-        drop(current);
-        state.search.status = status.into();
+        state
+            .popups
+            .update::<SearchUiState>(|search| search.status = status.into());
         self.store.set_state(state);
+    }
+
+    /// Scoped editor/button intents may only act on the still-live popup lifetime.
+    pub fn popup_request_is_current(&self, request: AppCommandRequest) -> bool {
+        match request.source {
+            crate::command::CommandSource::Popup { generation } => {
+                self.store.state().read().popups.is_current(generation)
+            }
+            _ => true,
+        }
+    }
+
+    pub fn popup_is_open(&self) -> bool {
+        self.store.state().read().popups.active().is_some()
     }
 
     pub fn tabs(&self) -> &TabUiController {
@@ -345,7 +412,11 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         .expect("workspace has an active terminal until window exit");
     let root = root_padding(props.backdrop_available, props.backdrop_fallback);
     let bindings = state.keybindings.as_ref().unwrap_or(&props.keybindings);
-    let shortcuts = if state.palette.is_some() {
+    let shortcuts = if state
+        .popups
+        .active()
+        .is_some_and(|popup| popup.blocks_shortcuts())
+    {
         Shortcuts::empty()
     } else {
         shortcuts(bindings)
@@ -362,11 +433,10 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
     let dismiss_dispatcher = dispatcher.clone();
     let notification = state.notices.message().map(|message| {
         let revision = state.notices.revision;
-        let top_offset = if state.search.open {
-            SEARCH_PANEL_HEIGHT + SEARCH_PANEL_INSET
-        } else {
-            0.0
-        };
+        let top_offset = state
+            .popups
+            .active()
+            .map_or(0.0, |popup| popup.notification_inset());
         configuration_notification(state.notices.title(), message, top_offset, move || {
             dismiss_dispatcher.dispatch(AppCommandRequest {
                 command: AppCommand::DismissNotification(revision),
@@ -400,7 +470,7 @@ fn terminal_panel(
     active_bridge: TerminalWidgetBridge,
     bindings: &ResolvedKeybindings,
 ) -> View {
-    let search_open = controller.store.state().read().search.open;
+    let popup_state = controller.store.state().read().clone();
     harbor_widget::view! { cx; Expanded::new() => {
         harbor_widget::Column::new() => {
             Expanded::new().keyed("terminal-surface") => {
@@ -412,11 +482,8 @@ fn terminal_panel(
                     }
                 }
             }
-            if search_open {
-                search_bar(cx, controller);
-            }
-            if controller.palette_is_open() {
-                palette::palette_panel(cx, controller, bindings);
+            if let Some(popup) = popup_state.popups.active() {
+                popup.build(cx, controller, bindings, popup_state.popups.generation().unwrap());
             }
         }
     } }

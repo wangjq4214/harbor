@@ -69,12 +69,15 @@ fn next_app_action(
 ) -> Option<AppActionAdmission> {
     use harbor_app::command::CommandSource;
     for request in actions.by_ref() {
+        if !ui.popup_request_is_current(request) {
+            continue;
+        }
         let palette = matches!(request.source, CommandSource::Palette { .. });
         if palette && let Err(reason) = ui.take_palette_request(request, tabs, input_blocked) {
             return Some(AppActionAdmission::Rejected {
                 request,
                 reason,
-                restore_terminal_focus: !ui.palette_is_open() && !input_blocked,
+                restore_terminal_focus: !ui.popup_is_open() && !input_blocked,
             });
         }
         if !input_blocked {

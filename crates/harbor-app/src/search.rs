@@ -13,9 +13,26 @@ use std::time::{Duration, Instant};
 
 const SEARCH_BUSY_DELAY: Duration = Duration::from_millis(200);
 
+/// Revocation capability supplied by the search owner to its popup lifetime.
+/// Retirement clears visible decorations immediately. Bounded job/result storage
+/// is reclaimed on the next Host search turn, before any further work/navigation.
+#[derive(Clone)]
+pub(crate) struct SearchCancellation {
+    cancelled: std::rc::Rc<std::cell::Cell<bool>>,
+    bridge: TerminalWidgetBridge,
+}
+
+impl SearchCancellation {
+    pub(crate) fn cancel(&self) {
+        self.cancelled.set(true);
+        self.bridge.set_decorations(Vec::new());
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct SessionSearch {
     source: Option<TabId>,
+    cancellation: Option<SearchCancellation>,
     bridge: Option<TerminalWidgetBridge>,
     query: String,
     gate: LiteralSearch,
@@ -86,7 +103,16 @@ impl SessionSearch {
         true
     }
 
+    fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(|token| token.cancelled.get())
+    }
+
     fn cancel(&mut self) {
+        if let Some(token) = self.cancellation.take() {
+            token.cancel();
+        }
         self.gate.cancel();
         self.presented_gate.cancel();
         if let Some(bridge) = self.bridge.take() {
@@ -175,7 +201,9 @@ impl SearchCommandOutcome {
         ui: &crate::workspace::WorkspaceUiController,
     ) -> Option<harbor_widget::FocusHandle> {
         self.focus.or_else(|| match source {
-            crate::command::CommandSource::Direct => None,
+            crate::command::CommandSource::Direct | crate::command::CommandSource::Popup { .. } => {
+                None
+            }
             crate::command::CommandSource::Palette { .. } => Some(if ui.search_query().is_some() {
                 ui.search_focus()
             } else {
@@ -231,6 +259,9 @@ impl TabManager {
                     && self.active_id() == Some(source)
                 {
                     self.set_search_query(&query);
+                    if let Some(cancellation) = &self.search.cancellation {
+                        ui.bind_search_cancellation(cancellation.clone());
+                    }
                 }
                 (None, CommandCompletion::Applied)
             }
@@ -284,13 +315,17 @@ impl TabManager {
             return;
         };
         self.search.source = Some(id);
+        self.search.cancellation = Some(SearchCancellation {
+            cancelled: Default::default(),
+            bridge: bridge.clone(),
+        });
         self.search.bridge = Some(bridge);
         self.search.query = query.into();
         self.search.start(&terminal);
     }
 
     pub fn search_status(&self) -> &str {
-        if self.search.status.is_empty() {
+        if self.search.is_cancelled() || self.search.status.is_empty() {
             "No Result"
         } else {
             &self.search.status
@@ -313,6 +348,13 @@ impl TabManager {
     }
 
     fn advance_search_work(&mut self) -> SearchTick {
+        if self.search.is_cancelled() {
+            self.cancel_search();
+            return SearchTick {
+                pending: false,
+                changed: true,
+            };
+        }
         let idle = SearchTick {
             pending: false,
             changed: false,
@@ -382,6 +424,10 @@ impl TabManager {
     }
 
     pub fn navigate_search(&mut self, previous: bool) -> bool {
+        if self.search.is_cancelled() {
+            self.cancel_search();
+            return false;
+        }
         if self.search.source != self.active_id() || self.search.source.is_none() {
             return false;
         }

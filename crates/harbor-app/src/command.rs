@@ -42,6 +42,10 @@ pub enum AppCommand {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandSource {
     Direct,
+    /// Editor/button intent scoped to the active popup, independent of its kind.
+    Popup {
+        generation: u64,
+    },
     Palette {
         generation: u64,
         target: Option<TabId>,
@@ -56,6 +60,13 @@ pub struct AppCommandRequest {
 }
 
 impl AppCommandRequest {
+    pub(crate) const fn popup(command: AppCommand, generation: u64) -> Self {
+        Self {
+            command,
+            focus: TabFocusPolicy::Terminal,
+            source: CommandSource::Popup { generation },
+        }
+    }
     pub const fn shortcut(command: AppCommand) -> Self {
         Self {
             command,
