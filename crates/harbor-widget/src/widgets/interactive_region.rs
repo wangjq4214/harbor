@@ -54,7 +54,7 @@ impl InteractiveRegion {
             disabled: false,
             selected: false,
             focusable: true,
-            cursor: Some(CursorShape::Pointer),
+            cursor: Some(CursorShape::Default),
             label: None,
             on_activate: None,
             child: None,
@@ -458,7 +458,7 @@ impl AnyView for InteractiveRegionView {
 
     fn pointer_cursor(&self) -> Option<CursorShape> {
         if self.runtime.read().visual.disabled {
-            Some(CursorShape::NotAllowed)
+            Some(CursorShape::Default)
         } else {
             self.cursor
         }

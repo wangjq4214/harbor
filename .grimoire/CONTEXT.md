@@ -222,6 +222,9 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - depends on Reusable Widget Component
   - references Terminal Widget Bridge
 
+### Desktop Pointer Cursor Policy
+- **Definition:** Harbor's selected desktop interaction convention chooses mouse cursor shapes by interaction meaning, not clickability: ordinary buttons (including close/new controls), tabs and menu items keep the default arrow; hyperlinks use the hand pointer; text-editing regions use the I-beam; resize and drag regions use their corresponding specialized cursors. Hover highlighting and pressed feedback communicate ordinary controls' clickability instead of a hand cursor. This records the agreed convention, not completed implementation or runtime acceptance.
+
 ### Application-Layer Widget Hot Reload
 - **Definition:** An optional Windows debug-development capability in the `harbor-widget::winit` integration that observes reloads, tears down the active root safely, and installs a replacement application root while retaining native host infrastructure and Host-owned business state.
 - **Synonyms:** Widget HMR, UI hot reload
@@ -654,7 +657,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Single command path for shortcuts/buttons/menus/future palette. Shortcuts synchronously return Command Outcome; only consumed commands enter scoped FIFO for later Host-owned execution. Not a pub/sub bus.
 
 ### Command Palette
-- **Definition:** Application-owned searchable presentation of implemented, palette-visible Application Commands through the existing registry and dispatcher. Current unavailability disables an action with a reason rather than forwarding palette input to the PTY; execution revalidates availability and respects the resulting action's focus destination. See [ADR 0069](./adr/0069-command-palette-source-aware-availability-and-focus.md).
+- **Definition:** Application-owned searchable presentation of implemented, palette-visible Application Commands through the existing registry and dispatcher. Current unavailability visibly disables an action without displaying a reason rather than forwarding palette input to the PTY; execution revalidates availability and respects the resulting action's focus destination. See [ADR 0069](./adr/0069-command-palette-source-aware-availability-and-focus.md) and its reason-display override in [ADR 0078](./adr/0078-command-palette-disabled-items-without-reasons.md).
 - **Relationships:**
   - belongs to Application UI Composition
   - depends on Application Command Registry

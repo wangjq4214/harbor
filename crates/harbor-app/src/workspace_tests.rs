@@ -1941,6 +1941,205 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
     }
 }
 
+fn search_button_surfaces(runtime: &Runtime) -> Vec<(Rect, f32)> {
+    let delta = runtime.pending_delta().unwrap();
+    let items: Vec<_> = delta.added.iter().chain(&delta.modified).collect();
+    items
+        .iter()
+        .filter_map(|item| match item.primitive {
+            Primitive::BackdropMaterial {
+                rect,
+                sigma: 2.0,
+                refraction,
+                corner_radii,
+                ..
+            } if rect.size() == harbor_widget::layout::Size::new(32.0, 32.0) => {
+                assert_eq!(refraction.width(), 6.0);
+                assert_eq!(refraction.displacement(), 2.0);
+                assert_eq!(corner_radii, [12.0; 4]);
+                let alpha = items
+                    .iter()
+                    .find_map(|item| match item.primitive {
+                        Primitive::RoundedQuad {
+                            rect: surface,
+                            color,
+                            ..
+                        } if surface == rect => Some(color.a),
+                        _ => None,
+                    })
+                    .expect("glass has a translucent surface");
+                Some((rect, alpha))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn search_buttons_show_transient_glass_without_geometry_cursor_or_command_regressions() {
+    use harbor_widget::{CursorEffect, CursorShape, layout::Size};
+    for (width, height, scale) in [(1000, 500, 1.0), (1200, 800, 1.5), (1200, 800, 2.0)] {
+        let controller = controller(
+            width as f64 / scale as f64,
+            vec![snapshot(1, true, false)],
+            1,
+        );
+        controller.open_search(TabId(1));
+        let mut runtime = mount(controller.clone(), width, height);
+        runtime.set_viewport(Viewport::new(width, height, scale));
+        runtime.request_focus(&controller.search_focus());
+        runtime.update(Instant::now());
+        let panel = search_panel_rect(&runtime);
+        let allocation = controller.latest_terminal_allocation();
+        let delta = runtime.pending_delta().unwrap();
+        let mut buttons: Vec<_> = delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .filter_map(|item| match item.primitive {
+                Primitive::Quad { rect, .. }
+                    if panel.contains(rect.min) && rect.size() == Size::new(32.0, 32.0) =>
+                {
+                    Some(rect)
+                }
+                _ => None,
+            })
+            .collect();
+        buttons.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+        assert_eq!(buttons.len(), 3);
+        assert!(search_button_surfaces(&runtime).is_empty());
+
+        // The material wrapper must not replace the original keyboard tab stop or focus ring.
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: Modifiers::default(),
+        }));
+        runtime.update(Instant::now());
+        let delta = runtime.pending_delta().unwrap();
+        assert!(
+            delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .any(|item| matches!(
+                    item.primitive, Primitive::Border { rect, width: 1.0, corner_radius: 12.0, .. }
+                        if rect == buttons[0]
+                ))
+        );
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Space,
+            modifiers: Modifiers::default(),
+        }));
+        assert_eq!(
+            controller.drain_actions()[0].command,
+            AppCommand::SearchPrevious
+        );
+        runtime.request_focus(&controller.search_focus());
+        runtime.update(Instant::now());
+        let focus = runtime.input().focused();
+
+        for (rect, command) in buttons.into_iter().zip([
+            AppCommand::SearchPrevious,
+            AppCommand::SearchNext,
+            AppCommand::SearchClose,
+        ]) {
+            // Hover the padding, not the icon: the whole hit target needs feedback.
+            let position = Point::new(rect.min.x + 1.0, rect.min.y + 16.0);
+            let effects = runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                position,
+                PointerPhase::Move,
+                PointerButton::Left,
+                91,
+            )));
+            assert_eq!(
+                effects.cursor,
+                Some(CursorEffect::Set(CursorShape::Default))
+            );
+            runtime.update(Instant::now());
+            assert_eq!(search_button_surfaces(&runtime), [(rect, 0.12)]);
+            assert_eq!(runtime.input().focused(), focus);
+            assert!(
+                controller.drain_actions().is_empty(),
+                "hover never executes"
+            );
+            runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                position,
+                PointerPhase::Down,
+                PointerButton::Left,
+                91,
+            )));
+            runtime.update(Instant::now());
+            assert_eq!(search_button_surfaces(&runtime), [(rect, 0.14)]);
+            runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                position,
+                PointerPhase::Up,
+                PointerButton::Left,
+                91,
+            )));
+            runtime.update(Instant::now());
+            assert_eq!(search_button_surfaces(&runtime), [(rect, 0.12)]);
+            assert_eq!(
+                controller.drain_actions(),
+                [AppCommandRequest::popup(
+                    command,
+                    controller.store.state().read().popups.generation().unwrap(),
+                )]
+            );
+            runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                Point::new(panel.min.x - 1.0, panel.min.y + 16.0),
+                PointerPhase::Move,
+                PointerButton::Left,
+                91,
+            )));
+            runtime.update(Instant::now());
+            assert!(
+                search_button_surfaces(&runtime).is_empty(),
+                "leave restores transparency"
+            );
+            assert_eq!(search_panel_rect(&runtime), panel);
+            assert_eq!(controller.latest_terminal_allocation(), allocation);
+            assert!(runtime.drain_external_input().is_empty());
+            runtime.request_focus(&controller.search_focus());
+            runtime.update(Instant::now());
+        }
+    }
+}
+
+#[test]
+fn disabled_search_button_has_no_hover_glass_or_activation() {
+    let activated = Arc::new(AtomicBool::new(false));
+    let callback = activated.clone();
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(move |cx: &mut BuildCx| {
+        let callback = callback.clone();
+        search_icon_button(LucideIcon::X, glass_icon_button_style(cx))
+            .disabled(true)
+            .on_activate(move |_| callback.store(true, std::sync::atomic::Ordering::Relaxed))
+            .build(cx)
+    });
+    runtime.update(Instant::now());
+    for phase in [PointerPhase::Move, PointerPhase::Down, PointerPhase::Up] {
+        runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::new(16.0, 16.0),
+            phase,
+            PointerButton::Left,
+            92,
+        )));
+        runtime.update(Instant::now());
+        let delta = runtime.pending_delta().unwrap();
+        assert!(
+            !delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .any(|item| { matches!(item.primitive, Primitive::BackdropMaterial { .. }) })
+        );
+    }
+    assert!(!activated.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(runtime.input().focused().is_none());
+}
+
 #[test]
 fn configuration_notice_stays_below_search_and_returns_when_search_closes() {
     let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);

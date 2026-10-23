@@ -184,7 +184,7 @@ fn assert_palette_title_centered(runtime: &Runtime, row: Rect, title: &str, line
     assert_eq!(
         origin.y,
         row.min.y + (row.size().height - text_height) / 2.0,
-        "center the actual title/reason block, not a title plus an empty line: {title}",
+        "center the title without reserving a reason line: {title}",
     );
 }
 
@@ -249,7 +249,7 @@ fn palette_row_height_is_uniform_across_navigation_and_filtered_result_counts() 
                 ("terminal.search", 4, "Search current session", 1),
                 ("terminal.page-", 2, "Page up", 1),
                 ("app.new-tab", 1, "New tab", 1),
-                ("terminal.search-close", 1, "Close search", 2),
+                ("terminal.search-close", 1, "Close search", 1),
                 ("terminal.copy", 1, "Copy", 1),
                 ("", 5, "Reload configuration", 1),
             ] {
@@ -376,8 +376,8 @@ fn palette_rows_reserve_a_gutter_with_right_aligned_keycaps_and_translucent_sele
         assert!(!text.contains("app."));
         assert!(!text.contains("terminal."));
         assert!(
-            text.contains("No other tab"),
-            "disabled reason remains visible"
+            !text.contains("No other tab"),
+            "disabled reasons are not shown"
         );
         assert!(bytes.lock().unwrap().is_empty());
     }
@@ -532,11 +532,17 @@ fn palette_cancelled_click_and_disabled_row_leave_the_editor_usable_without_exec
     assert_eq!(runtime.input().focused(), focus);
     assert!(controller.drain_actions().is_empty());
     replace(&mut runtime, "app.next-tab");
-    assert!(painted(&runtime).contains("No other tab"));
+    assert!(!painted(&runtime).contains("No other tab"));
     let (_, disabled) = palette_geometry(&runtime);
     let point = Point::new(disabled.min.x + 30.0, disabled.min.y + 10.0);
     row_pointer(&mut runtime, point, PointerPhase::Move);
+    assert_eq!(row_surface(&runtime, 0.10), Some(disabled));
+    assert!(row_surface(&runtime, 0.06).is_none());
+    assert!(row_surface(&runtime, 0.12).is_none());
+    assert!(!painted(&runtime).contains("No other tab"));
     row_pointer(&mut runtime, point, PointerPhase::Down);
+    assert!(row_surface(&runtime, 0.14).is_none());
+    assert!(runtime.input().captor(42).is_none());
     row_pointer(&mut runtime, point, PointerPhase::Up);
     assert_eq!(runtime.input().focused(), focus);
     assert!(controller.drain_actions().is_empty());
@@ -547,6 +553,89 @@ fn palette_cancelled_click_and_disabled_row_leave_the_editor_usable_without_exec
         AppCommand::Tab(TabCommand::New)
     );
     assert!(bytes.lock().unwrap().is_empty());
+}
+
+fn row_text(runtime: &Runtime, row: Rect, expected_color: Color) -> Vec<String> {
+    let (panel, _) = palette_geometry(runtime);
+    let delta = runtime.pending_delta().unwrap();
+    let text: Vec<_> = delta
+        .added
+        .iter()
+        .chain(&delta.modified)
+        // Notifications can overlap the row; only inspect the palette's clipped content.
+        .filter(|item| item.clips.iter().any(|clip| clip.rect() == panel))
+        .filter_map(|item| match &item.primitive {
+            Primitive::Text {
+                text,
+                origin,
+                color,
+                ..
+            } if origin.y >= row.min.y && origin.y < row.max.y => {
+                assert_eq!(*color, expected_color, "row text: {text}");
+                Some(text.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!text.is_empty(), "palette row text is painted");
+    text
+}
+
+#[test]
+fn palette_disabled_titles_and_shortcuts_are_muted_without_reason_text() {
+    for binding_count in 0..=2 {
+        let (_, controller, mut runtime, bytes) = fixture();
+        let mut raw = harbor_config::RawKeybindings::default();
+        raw.entries.insert(
+            "app.next-tab".into(),
+            ["ctrl", "alt"]
+                .into_iter()
+                .take(binding_count)
+                .map(|modifier| harbor_config::RawKeybinding {
+                    modifiers: vec![modifier.into()],
+                    key: "n".into(),
+                })
+                .collect(),
+        );
+        controller.publish_keybindings(validate_keybindings(&raw).unwrap());
+        open(&controller, &mut runtime);
+        replace(&mut runtime, "app.next-tab");
+        let theme = harbor_widget::Theme::default().button;
+        assert_ne!(theme.disabled.foreground, theme.normal.foreground);
+        let (_, row) = palette_geometry(&runtime);
+        let text = row_text(&runtime, row, theme.disabled.foreground);
+        let expected: Vec<&str> = match binding_count {
+            0 => vec!["Next tab", "Unbound"],
+            1 => vec!["Next tab", "Ctrl", "N"],
+            _ => vec!["Next tab", "Ctrl", "N", "Alt", "N"],
+        };
+        assert_eq!(
+            text, expected,
+            "only the title and shortcuts, never a reason"
+        );
+        assert!(!painted(&runtime).contains("No other tab"));
+
+        replace(&mut runtime, "app.new-tab");
+        let (_, row) = palette_geometry(&runtime);
+        assert_eq!(
+            row_text(&runtime, row, theme.normal.foreground),
+            ["New tab", "Ctrl", "T"],
+            "available commands keep their normal color",
+        );
+        tap(&mut runtime, Key::Enter);
+        runtime.update(Instant::now());
+        let (_, row) = palette_geometry(&runtime);
+        assert_eq!(
+            row_text(&runtime, row, theme.disabled.foreground),
+            ["New tab", "Ctrl", "T"],
+            "pending execution also disables and mutes the row",
+        );
+        assert_eq!(
+            take_one(&controller).command,
+            AppCommand::Tab(TabCommand::New)
+        );
+        assert!(bytes.lock().unwrap().is_empty());
+    }
 }
 
 #[test]
@@ -636,7 +725,7 @@ fn palette_filters_navigates_and_executes_one_real_tab_reduction_without_pty_inp
     let (mut tabs, controller, mut runtime, bytes) = fixture();
     open(&controller, &mut runtime);
     assert!(painted(&runtime).contains("Reload configuration"));
-    assert!(painted(&runtime).contains("No other tab"));
+    assert!(!painted(&runtime).contains("No other tab"));
     tap(&mut runtime, Key::ArrowDown);
     assert_eq!(
         controller
@@ -719,7 +808,7 @@ fn palette_empty_results_disabled_rows_and_filter_changes_cannot_execute_phantom
     }
     assert!(controller.drain_actions().is_empty());
     replace(&mut runtime, "app.select-tab-9");
-    assert!(painted(&runtime).contains("Tab does not exist"));
+    assert!(!painted(&runtime).contains("Tab does not exist"));
     tap(&mut runtime, Key::Enter);
     assert!(controller.drain_actions().is_empty());
     assert_eq!(tabs.snapshots().len(), 1);

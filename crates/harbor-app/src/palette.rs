@@ -505,27 +505,22 @@ fn palette_panel(
     } else {
         let context = controller.palette_context();
         for (index, entry) in entries.iter().enumerate() {
-            let reason = availability(entry.command, palette.target, &snapshots, context).err();
-            let mut labels = Column::new().cross_axis_alignment(Alignment::Stretch);
-            labels = labels.child(
-                TextLabel::new(entry.label)
-                    .color(foreground)
-                    .ellipsis()
-                    .build(cx),
-            );
-            if let Some(reason) = reason {
-                labels = labels.child(
-                    TextLabel::new(reason)
-                        .color(foreground)
-                        .ellipsis()
-                        .build(cx),
-                );
-            }
+            let disabled = palette.pending
+                || availability(entry.command, palette.target, &snapshots, context).is_err();
+            let foreground = if disabled {
+                cx.theme().button.disabled.foreground
+            } else {
+                foreground
+            };
+            let label = TextLabel::new(entry.label)
+                .color(foreground)
+                .ellipsis()
+                .build(cx);
             let shortcuts = shortcut_badges(cx, bindings, entry.command, foreground);
             let row = Row::new()
                 .cross_axis_alignment(Alignment::Center)
                 .child(View::leaf(PaletteRowHeight { shortcut_rows }))
-                .child(Expanded::new().child(labels.build(cx)).build(cx))
+                .child(Expanded::new().child(label).build(cx))
                 .child(Padding::new(0.0, 0.0, 0.0, 12.0).child(shortcuts).build(cx))
                 .build(cx);
             let activate = controller.clone();
@@ -548,7 +543,7 @@ fn palette_panel(
                 .style(style)
                 .focusable(false)
                 .selected(index == palette.selected)
-                .disabled(reason.is_some() || palette.pending)
+                .disabled(disabled)
                 .on_activate(move |_| activate.palette_submit_command(generation, command))
                 .content(move |cx, state| {
                     let content = Padding::new(6.0, 8.0, 6.0, 8.0)
