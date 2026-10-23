@@ -1,4 +1,4 @@
-//! GPU coverage of the real palette composition, not just its scene descriptors.
+//! GPU coverage of real glass overlay composition, not just scene descriptors.
 use super::*;
 use harbor_widget::{
     layout::{BoxConstraints, Size},
@@ -219,6 +219,116 @@ fn palette_selection_pixels_have_visible_rounded_cutouts_and_optical_edges_at_mu
                 pixel(&baseline, x, row.min.y + 15.0),
                 "glass remains distinguishable from the panel"
             );
+        }
+    }
+}
+
+#[test]
+#[ignore = "GPU pixel acceptance; run explicitly with --ignored --nocapture"]
+fn search_button_hover_pixels_are_visible_local_and_revert_at_multiple_dpi() {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    if std::env::var("HARBOR_TEST_BACKEND").as_deref() == Ok("dx12") {
+        descriptor.backends = wgpu::Backends::DX12;
+    }
+    let instance = wgpu::Instance::new(descriptor);
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+        .expect("a GPU adapter is required for search button pixel acceptance");
+    eprintln!("search button pixel adapter: {:?}", adapter.get_info());
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    for scale in [1.0, 1.5, 2.0] {
+        for format in [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        ] {
+            let (_, controller, mut runtime, _) = fixture();
+            let viewport = Viewport::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale);
+            runtime.set_viewport(viewport.clone());
+            runtime.init_renderer(&device, format);
+            controller.open_search(TabId(1));
+            let root = controller.clone();
+            runtime.set_root(move |cx: &mut BuildCx| {
+                let state = root.store.watch(cx).clone();
+                let search = state.popups.get::<SearchUiState>().unwrap();
+                let panel = search_bar(cx, &root, search, state.popups.generation().unwrap());
+                Stack::new()
+                    .child(View::leaf(TestBackdrop))
+                    .child(panel)
+                    .build(cx)
+            });
+            runtime.update(Instant::now());
+            let delta = runtime.pending_delta().unwrap();
+            let mut buttons: Vec<_> = delta
+                .added
+                .iter()
+                .filter_map(|item| match item.primitive {
+                    Primitive::Quad { rect, .. } if rect.size() == Size::new(32.0, 32.0) => {
+                        Some(rect)
+                    }
+                    _ => None,
+                })
+                .collect();
+            buttons.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+            assert_eq!(buttons.len(), 3);
+            let baseline = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            for rect in buttons {
+                runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                    Point::new(rect.min.x + 1.0, rect.min.y + 16.0),
+                    PointerPhase::Move,
+                    PointerButton::Left,
+                    93,
+                )));
+                runtime.update(Instant::now());
+                let hovered = render(&device, &queue, &mut runtime, viewport.clone(), format);
+                let mut changed = 0;
+                for (index, (before, after)) in baseline
+                    .chunks_exact(4)
+                    .zip(hovered.chunks_exact(4))
+                    .enumerate()
+                {
+                    let x = (index as u32 % viewport.physical_size.0) as f32 / scale;
+                    let y = (index as u32 / viewport.physical_size.0) as f32 / scale;
+                    // Ignore the one-physical-pixel antialiasing boundary for isolation.
+                    let edge = 1.0 / scale;
+                    if x < rect.min.x - edge
+                        || x > rect.max.x + edge
+                        || y < rect.min.y - edge
+                        || y > rect.max.y + edge
+                    {
+                        assert_eq!(
+                            before, after,
+                            "hover must not change pixels outside the button"
+                        );
+                    } else if before != after {
+                        changed += 1;
+                    }
+                }
+                assert!(
+                    changed > (100.0 * scale * scale) as usize,
+                    "glass must visibly cover the control, not only change the icon"
+                );
+                let offset = ((((rect.min.y + 16.0) * scale) as u32 * viewport.physical_size.0
+                    + ((rect.min.x + 1.0) * scale) as u32)
+                    * 4) as usize;
+                assert_ne!(
+                    &baseline[offset..offset + 4],
+                    &hovered[offset..offset + 4],
+                    "the optical side must survive ancestor clipping"
+                );
+                runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                    Point::new(0.0, 0.0),
+                    PointerPhase::Move,
+                    PointerButton::Left,
+                    93,
+                )));
+                runtime.update(Instant::now());
+                let restored = render(&device, &queue, &mut runtime, viewport.clone(), format);
+                assert_eq!(
+                    baseline, restored,
+                    "leaving restores the original frame exactly"
+                );
+                assert!(controller.drain_actions().is_empty());
+            }
         }
     }
 }

@@ -9,9 +9,9 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionOutcome, Actions, ComponentExt as _, Expanded, Focus, FocusHandle, FocusScope,
-    IconButton, LayoutObserver, LucideIcon, Portal, Row, Shortcuts, Store, TextEditingController,
-    TextField,
+    ActionOutcome, Actions, BorderRadius, ComponentExt as _, Expanded, Focus, FocusHandle,
+    FocusScope, Icon, InteractionState, InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row,
+    Shortcuts, Store, TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -106,11 +106,11 @@ fn search_bar(
             ))
         });
     let style = glass_icon_button_style(cx);
-    let button = |icon, label, command| {
+    let button = |icon, command| {
         let dispatcher = controller.store.dispatcher();
-        IconButton::new(icon, label)
-            .style(style.clone())
-            .on_click(move |_| dispatcher.dispatch(AppCommandRequest::popup(command, generation)))
+        search_icon_button(icon, style.clone()).on_activate(move |_| {
+            dispatcher.dispatch(AppCommandRequest::popup(command, generation))
+        })
     };
     let status = search.status.clone();
     let content = harbor_widget::view! { &mut *cx;
@@ -122,9 +122,9 @@ fn search_bar(
                     harbor_widget::widgets::text_label::TextLabel::new(status)
                         .color(cx.theme().button.normal.foreground).ellipsis();
                 }
-                button(LucideIcon::ChevronUp, "Previous match", AppCommand::SearchPrevious);
-                button(LucideIcon::ChevronDown, "Next match", AppCommand::SearchNext);
-                button(LucideIcon::X, "Close search", AppCommand::SearchClose);
+                button(LucideIcon::ChevronUp, AppCommand::SearchPrevious);
+                button(LucideIcon::ChevronDown, AppCommand::SearchNext);
+                button(LucideIcon::X, AppCommand::SearchClose);
             }
         }
     };
@@ -150,6 +150,52 @@ fn search_bar(
         )
         .keyed(format!("session-search-{generation}"))
         .build(cx)
+}
+
+// Keep the IconButton hit box and focus behavior, but include its padding inside
+// the material so hover feedback covers the entire control, not just the glyph.
+fn search_icon_button(
+    icon: LucideIcon,
+    mut style: harbor_widget::theme::ControlStyle,
+) -> InteractiveRegion {
+    let horizontal_padding = style.horizontal_padding;
+    let vertical_padding = (style.min_height - style.icon_size).max(0.0) / 2.0;
+    style.horizontal_padding = 0.0;
+    style.radius = 12.0; // Match the search panel's outer corners.
+    InteractiveRegion::new()
+        .style(style.clone())
+        .content(move |cx, state| {
+            let content = Icon::new(icon)
+                .size(style.icon_size)
+                .color(style.resolve_state(&state).foreground)
+                .build(cx);
+            let content = Padding::new(
+                vertical_padding,
+                horizontal_padding,
+                vertical_padding,
+                horizontal_padding,
+            )
+            .child(content)
+            .build(cx);
+            if state.disabled || !(state.hovered || state.pressed) {
+                return content;
+            }
+            // Use the palette's selected-row treatment rather than its faint
+            // hover-only tint. This is a visual state, not a selected command.
+            let glass = GlassAppearance::command_palette_row(
+                style.normal.foreground,
+                InteractionState {
+                    selected: true,
+                    ..state
+                },
+            )
+            .unwrap();
+            GlassAppearance {
+                radius: BorderRadius::all(style.radius).unwrap(),
+                ..glass
+            }
+            .panel(cx, content)
+        })
 }
 
 // Fixed chrome height also reserves space for configuration notices below search.
