@@ -2,6 +2,8 @@ mod event_router;
 mod frame_encoder;
 #[cfg(test)]
 mod portal_tests;
+#[cfg(test)]
+mod text_input_blink_tests;
 
 use crate::effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, ExternalInvalidation, ImeEffect,
@@ -236,6 +238,13 @@ impl Runtime {
             effects.cursor = Some(cursor);
         }
         effects.merge(self.collect_external_schedule(now));
+        let animation = self.collect_focused_animation(now);
+        let control_flow = match (effects.control_flow, animation.control_flow) {
+            (Some(left), Some(right)) => Some(left.arbitrate(right)),
+            (left, right) => left.or(right),
+        };
+        effects.merge(animation);
+        effects.control_flow = control_flow;
         effects.merge(self.collect_focused_external_ime());
         effects
     }
@@ -345,6 +354,24 @@ impl Runtime {
         self.external_ime_active = active;
         RuntimeEffects {
             ime,
+            ..RuntimeEffects::default()
+        }
+    }
+
+    /// Only the current focused target can keep a local animation deadline alive.
+    fn collect_focused_animation(&mut self, now: Instant) -> RuntimeEffects {
+        let (repaint, deadline) = self
+            .events
+            .focused_event_target(&self.arena)
+            .and_then(|id| self.arena.get(id))
+            .and_then(|fiber| fiber.view.as_ref())
+            .map_or((false, None), |view| view.focused_animation(now));
+        if repaint {
+            self.run_paint_pass();
+        }
+        RuntimeEffects {
+            request_redraw: repaint,
+            control_flow: deadline.map(ControlFlowEffect::WaitUntil),
             ..RuntimeEffects::default()
         }
     }
