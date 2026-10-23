@@ -124,7 +124,7 @@ fn palette_geometry(runtime: &Runtime) -> (Rect, Rect) {
                 rect,
                 color,
                 corner_radii,
-            } if corner_radii == [6.0; 4] && color.a > 0.0 => Some(rect),
+            } if corner_radii == [12.0; 4] && color.a > 0.0 => Some(rect),
             _ => None,
         })
         .expect("selected command row");
@@ -291,13 +291,19 @@ fn palette_rows_fill_the_panel_with_right_aligned_keycaps_and_translucent_select
                     rect,
                     color,
                     corner_radii,
-                } if corner_radii == [6.0; 4] && color.a > 0.0 => {
+                } if corner_radii == [12.0; 4] && color.a > 0.0 => {
                     assert!(color.a <= 0.15, "selection must reveal the glass below it");
                     Some(rect)
                 }
                 _ => None,
             })
             .expect("selected command has a translucent highlight");
+        assert!(
+            items.iter().any(|item| matches!(item.primitive,
+            Primitive::BackdropMaterial { rect, corner_radii, .. }
+                if rect == selection && corner_radii == [12.0; 4])),
+            "selection uses real rounded liquid glass, not only a translucent fill"
+        );
         assert_eq!(selection.min.x, panel.min.x + 8.0);
         assert_eq!(selection.max.x, panel.max.x - 8.0);
 
@@ -375,6 +381,189 @@ fn palette_rows_fill_the_panel_with_right_aligned_keycaps_and_translucent_select
         );
         assert!(bytes.lock().unwrap().is_empty());
     }
+}
+
+fn row_surface(runtime: &Runtime, alpha: f32) -> Option<Rect> {
+    let delta = runtime.pending_delta().unwrap();
+    delta
+        .added
+        .iter()
+        .chain(&delta.modified)
+        .find_map(|item| match item.primitive {
+            Primitive::RoundedQuad {
+                rect,
+                color,
+                corner_radii,
+            } if corner_radii == [12.0; 4] && color.a == alpha => Some(rect),
+            _ => None,
+        })
+}
+
+fn row_pointer(runtime: &mut Runtime, position: Point, phase: PointerPhase) {
+    runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+        position,
+        phase,
+        PointerButton::Left,
+        42,
+    )));
+    runtime.update(Instant::now());
+}
+
+#[test]
+fn palette_hover_is_lighter_transient_glass_and_preserves_keyboard_selection_and_focus() {
+    let (_, controller, mut runtime, bytes) = fixture();
+    open(&controller, &mut runtime);
+    let focus = runtime.input().focused();
+    let (panel, selected) = palette_geometry(&runtime);
+    let second = Point::new(
+        selected.max.x - 2.0,
+        selected.max.y + 4.0 + selected.size().height / 2.0,
+    );
+    row_pointer(&mut runtime, second, PointerPhase::Move);
+    let hovered = row_surface(&runtime, 0.06).expect("hover is lighter than selection");
+    assert!(hovered.contains(second));
+    assert_eq!(row_surface(&runtime, 0.10), Some(selected));
+    let delta = runtime.pending_delta().unwrap();
+    assert!(
+        delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .any(|item| matches!(
+                item.primitive, Primitive::BackdropMaterial { rect, corner_radii, .. }
+                    if rect == hovered && corner_radii == [12.0; 4]
+            ))
+    );
+    assert_eq!(runtime.input().focused(), focus);
+    assert_eq!(
+        controller
+            .store
+            .state()
+            .read()
+            .popups
+            .get::<palette::PaletteState>()
+            .unwrap()
+            .selected,
+        0
+    );
+    assert!(
+        controller.drain_actions().is_empty(),
+        "hover never executes"
+    );
+    row_pointer(
+        &mut runtime,
+        Point::new(panel.min.x + 1.0, panel.min.y + 1.0),
+        PointerPhase::Move,
+    );
+    assert!(
+        row_surface(&runtime, 0.06).is_none(),
+        "hover disappears on leave"
+    );
+    assert_eq!(row_surface(&runtime, 0.10), Some(selected));
+    tap(&mut runtime, Key::ArrowDown);
+    runtime.update(Instant::now());
+    assert_eq!(runtime.input().focused(), focus);
+    tap(&mut runtime, Key::Enter);
+    assert_eq!(
+        take_one(&controller).command,
+        AppCommand::Tab(TabCommand::New)
+    );
+    assert!(bytes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn palette_single_click_runs_the_clicked_command_once_instead_of_the_keyboard_selection() {
+    // Labels, keycaps and row padding are all part of the same click target.
+    for inset in [2.0, 80.0, 590.0] {
+        let (mut tabs, controller, mut runtime, bytes) = fixture();
+        open(&controller, &mut runtime);
+        let focus = runtime.input().focused();
+        let (_, first) = palette_geometry(&runtime);
+        let point = Point::new(
+            first.min.x + inset,
+            first.max.y + 4.0 + first.size().height / 2.0,
+        );
+        row_pointer(&mut runtime, point, PointerPhase::Move);
+        row_pointer(&mut runtime, point, PointerPhase::Down);
+        assert!(
+            controller.drain_actions().is_empty(),
+            "execute on release, not press"
+        );
+        assert_eq!(runtime.input().focused(), focus);
+        row_pointer(&mut runtime, point, PointerPhase::Up);
+        // Repeated clicks and Enter before the Host drains cannot enqueue duplicates.
+        row_pointer(&mut runtime, point, PointerPhase::Down);
+        row_pointer(&mut runtime, point, PointerPhase::Up);
+        tap(&mut runtime, Key::Enter);
+        let request = take_one(&controller);
+        assert_eq!(request.command, AppCommand::Tab(TabCommand::New));
+        assert!(matches!(request.source, CommandSource::Palette { .. }));
+        controller
+            .take_palette_request(request, &tabs, false)
+            .unwrap();
+        let mut executions = 0;
+        tabs.execute_command(TabCommand::New, |_, draw| {
+            executions += 1;
+            Ok(resources(draw, &bytes))
+        })
+        .unwrap();
+        assert_eq!(executions, 1);
+        assert_eq!(tabs.snapshots().len(), 2);
+        assert!(!controller.palette_is_open());
+        assert!(bytes.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn palette_cancelled_click_and_disabled_row_leave_the_editor_usable_without_executing() {
+    let (_, controller, mut runtime, bytes) = fixture();
+    open(&controller, &mut runtime);
+    let focus = runtime.input().focused();
+    let (panel, first) = palette_geometry(&runtime);
+    let point = Point::new(
+        first.min.x + 30.0,
+        first.max.y + 4.0 + first.size().height / 2.0,
+    );
+    let outside = Point::new(panel.min.x - 2.0, panel.min.y);
+    row_pointer(&mut runtime, point, PointerPhase::Down);
+    row_pointer(&mut runtime, outside, PointerPhase::Move);
+    row_pointer(&mut runtime, outside, PointerPhase::Up);
+    assert!(runtime.input().captor(42).is_none());
+    assert_eq!(runtime.input().focused(), focus);
+    assert!(controller.drain_actions().is_empty());
+    replace(&mut runtime, "app.next-tab");
+    assert!(painted(&runtime).contains("No other tab"));
+    let (_, disabled) = palette_geometry(&runtime);
+    let point = Point::new(disabled.min.x + 30.0, disabled.min.y + 10.0);
+    row_pointer(&mut runtime, point, PointerPhase::Move);
+    row_pointer(&mut runtime, point, PointerPhase::Down);
+    row_pointer(&mut runtime, point, PointerPhase::Up);
+    assert_eq!(runtime.input().focused(), focus);
+    assert!(controller.drain_actions().is_empty());
+    replace(&mut runtime, "app.new-tab");
+    tap(&mut runtime, Key::Enter);
+    assert_eq!(
+        take_one(&controller).command,
+        AppCommand::Tab(TabCommand::New)
+    );
+    assert!(bytes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn palette_filtering_during_a_press_never_executes_a_replacement_row() {
+    let (_, controller, mut runtime, bytes) = fixture();
+    open(&controller, &mut runtime);
+    let (_, first) = palette_geometry(&runtime);
+    let point = Point::new(
+        first.min.x + 30.0,
+        first.max.y + 4.0 + first.size().height / 2.0,
+    );
+    row_pointer(&mut runtime, point, PointerPhase::Down);
+    replace(&mut runtime, "terminal.copy");
+    row_pointer(&mut runtime, point, PointerPhase::Up);
+    assert!(controller.drain_actions().is_empty());
+    assert!(runtime.input().captor(42).is_none());
+    assert!(bytes.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -925,6 +1114,9 @@ fn palette_native_ime_confirmation_and_close_gestures_do_not_replay_into_termina
 #[path = "palette_terminal_tests.rs"]
 mod terminal_actions;
 
+#[path = "palette_render_tests.rs"]
+mod rendered;
+
 #[path = "popup_tests.rs"]
 mod popups;
 
@@ -937,7 +1129,7 @@ fn selected_result_viewport(runtime: &Runtime) -> (Rect, Rect) {
         .find_map(|item| match item.primitive {
             Primitive::RoundedQuad {
                 rect,
-                corner_radii: [6.0, 6.0, 6.0, 6.0],
+                corner_radii: [12.0, 12.0, 12.0, 12.0],
                 color,
             } if color.a > 0.0 => Some((
                 rect,

@@ -30,7 +30,7 @@ struct InteractionRuntimeState {
     active_pointer: Option<u64>,
 }
 
-type ActivateCallback = Arc<dyn Fn(&mut EventCtx) + Send + Sync>;
+type ActivateCallback = Rc<dyn Fn(&mut EventCtx)>;
 type ContentBuilder = Rc<dyn Fn(&mut BuildCx, InteractionState) -> View>;
 
 /// Reusable focusable mouse/keyboard activation state machine.
@@ -38,6 +38,7 @@ type ContentBuilder = Rc<dyn Fn(&mut BuildCx, InteractionState) -> View>;
 pub struct InteractiveRegion {
     disabled: bool,
     selected: bool,
+    focusable: bool,
     cursor: Option<CursorShape>,
     label: Option<String>,
     on_activate: Option<ActivateCallback>,
@@ -52,6 +53,7 @@ impl InteractiveRegion {
         Self {
             disabled: false,
             selected: false,
+            focusable: true,
             cursor: Some(CursorShape::Pointer),
             label: None,
             on_activate: None,
@@ -91,6 +93,13 @@ impl InteractiveRegion {
         self
     }
 
+    /// Opt out of focus and tab traversal while retaining pointer activation.
+    /// Useful for suggestions whose editor must remain the keyboard/IME owner.
+    pub fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -106,8 +115,9 @@ impl InteractiveRegion {
         self
     }
 
-    pub fn on_activate(mut self, callback: impl Fn(&mut EventCtx) + Send + Sync + 'static) -> Self {
-        self.on_activate = Some(Arc::new(callback));
+    /// Runs on the UI thread; callbacks may retain local reactive state.
+    pub fn on_activate(mut self, callback: impl Fn(&mut EventCtx) + 'static) -> Self {
+        self.on_activate = Some(Rc::new(callback));
         self
     }
 
@@ -162,6 +172,7 @@ impl Component for InteractiveRegion {
                 cursor: self.cursor,
                 on_activate: self.on_activate.clone(),
                 focus_handle: self.focus_handle,
+                focusable: self.focusable,
             },
             children,
             None,
@@ -190,6 +201,7 @@ struct InteractiveRegionView {
     cursor: Option<CursorShape>,
     on_activate: Option<ActivateCallback>,
     focus_handle: Option<FocusHandle>,
+    focusable: bool,
 }
 
 impl InteractiveRegionView {
@@ -344,7 +356,9 @@ impl AnyView for InteractiveRegionView {
                         state.visual.pressed = true;
                         state.visual.cancelled = false;
                     });
-                    ctx.request_focus_from_pointer();
+                    if self.focusable {
+                        ctx.request_focus_from_pointer();
+                    }
                     ctx.capture_pointer(pointer.pointer_id);
                     EventHandled::Handled
                 }
@@ -430,7 +444,7 @@ impl AnyView for InteractiveRegionView {
     }
 
     fn focus_metadata(&self) -> Option<FocusMetadata> {
-        Some(FocusMetadata {
+        self.focusable.then_some(FocusMetadata {
             enabled: !self.runtime.read().visual.disabled,
             participates_in_tab_traversal: true,
             order: 0,

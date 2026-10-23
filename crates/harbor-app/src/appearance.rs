@@ -1,7 +1,7 @@
 //! Product appearance recipes. Generic paint/filter mechanisms live in harbor-widget.
 use harbor_widget::{
     BackdropFilter, BackdropMaterial, Border, BorderRadius, BoxDecoration, ClipBehavior,
-    DecoratedBox, EdgeRefraction, GradientStop, LinearGradient, Paint,
+    DecoratedBox, EdgeRefraction, GradientStop, InteractionState, LinearGradient, Paint,
     layout::Point,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -37,6 +37,7 @@ pub(crate) struct GlassAppearance {
     pub refraction: EdgeRefraction,
     pub material: Option<BackdropMaterial>,
     pub radius: BorderRadius,
+    pub content_clip: ClipBehavior,
     pub panel_fill: Paint,
     pub panel_border: Border,
     pub input_fill: Color,
@@ -80,6 +81,7 @@ impl Default for GlassAppearance {
             blur_sigma: 8.0,
             refraction: EdgeRefraction::new(12.0, 10.0).unwrap(),
             radius: BorderRadius::all(12.0).unwrap(),
+            content_clip: ClipBehavior::AntiAlias,
             panel_fill: surface.into(),
             // The shader now paints the geometric rim; don't double it with a border.
             panel_border: Border::all(Color::TRANSPARENT, 0.0).unwrap(),
@@ -132,6 +134,39 @@ impl GlassAppearance {
         }
     }
 
+    /// Row-local glass, lighter than the panel and absent on idle suggestions.
+    pub fn command_palette_row(foreground: Color, state: InteractionState) -> Option<Self> {
+        let alpha = if !state.disabled && state.pressed {
+            0.14
+        } else if state.selected {
+            if !state.disabled && state.hovered {
+                0.12
+            } else {
+                0.10
+            }
+        } else if !state.disabled && state.hovered {
+            0.06
+        } else {
+            return None;
+        };
+        Some(Self {
+            blur_sigma: 2.0,
+            refraction: EdgeRefraction::new(6.0, 2.0).unwrap(),
+            material: Some(
+                BackdropMaterial::new(4.0, -0.1, [0.0, 1.0, 0.0, 1.02], [0.30, 0.22]).unwrap(),
+            ),
+            radius: BorderRadius::all(12.0).unwrap(),
+            // Row content is inset and already scroll-clipped. Another rounded
+            // child mask would consume a third exact clip slot and cut keycaps.
+            content_clip: ClipBehavior::None,
+            panel_fill: Paint::Solid(Color {
+                a: alpha,
+                ..foreground
+            }),
+            ..Self::default()
+        })
+    }
+
     pub fn input(&self) -> BoxDecoration {
         let mut decoration = BoxDecoration::new()
             .try_color(self.input_fill)
@@ -152,7 +187,7 @@ impl GlassAppearance {
             .border(self.panel_border)
             .border_radius(self.radius);
         let card = DecoratedBox::new(decoration)
-            .clip_behavior(ClipBehavior::AntiAlias)
+            .clip_behavior(self.content_clip)
             .child(child)
             .build(cx);
         BackdropFilter::new(self.blur_sigma)
