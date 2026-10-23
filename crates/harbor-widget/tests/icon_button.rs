@@ -109,7 +109,7 @@ fn disabled_icon_button_uses_the_disabled_tint_and_does_not_activate() {
     let effects = runtime.dispatch(pointer(Point::new(8.0, 8.0), PointerPhase::Move));
     assert_eq!(
         effects.cursor,
-        Some(CursorEffect::Set(CursorShape::NotAllowed))
+        Some(CursorEffect::Set(CursorShape::Default))
     );
     for phase in [PointerPhase::Down, PointerPhase::Up] {
         runtime.dispatch(pointer(Point::new(8.0, 8.0), phase));

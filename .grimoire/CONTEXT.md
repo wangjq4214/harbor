@@ -222,6 +222,9 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - depends on Reusable Widget Component
   - references Terminal Widget Bridge
 
+### Desktop Pointer Cursor Policy
+- **Definition:** Harbor's selected desktop interaction convention chooses mouse cursor shapes by interaction meaning, not clickability: ordinary buttons (including close/new controls), tabs and menu items keep the default arrow; hyperlinks use the hand pointer; text-editing regions use the I-beam; resize and drag regions use their corresponding specialized cursors. Hover highlighting and pressed feedback communicate ordinary controls' clickability instead of a hand cursor. This records the agreed convention, not completed implementation or runtime acceptance.
+
 ### Application-Layer Widget Hot Reload
 - **Definition:** An optional Windows debug-development capability in the `harbor-widget::winit` integration that observes reloads, tears down the active root safely, and installs a replacement application root while retaining native host infrastructure and Host-owned business state.
 - **Synonyms:** Widget HMR, UI hot reload

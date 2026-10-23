@@ -375,11 +375,7 @@ impl AnyView for Card {
         rect.contains(point)
     }
     fn pointer_cursor(&self) -> Option<CursorShape> {
-        Some(if *self.hovered.read() {
-            CursorShape::Pointer
-        } else {
-            CursorShape::Default
-        })
+        Some(CursorShape::Default)
     }
     fn permits_pointer_capture(&self) -> bool {
         true
