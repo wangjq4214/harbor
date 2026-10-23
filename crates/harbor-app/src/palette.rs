@@ -570,6 +570,9 @@ fn palette_panel(
         })
         .child(rows.build(cx))
         .build(cx);
+        // Reserve the 10dp overlay hit target plus a 4dp gap outside row glass.
+        // Keep ScrollView's geometry and scrolling behavior unchanged.
+        let rows = Padding::new(0.0, 14.0, 0.0, 0.0).child(rows).build(cx);
         content = content.child(
             Expanded::new()
                 .child(

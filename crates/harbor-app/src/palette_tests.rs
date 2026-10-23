@@ -269,7 +269,7 @@ fn palette_row_height_is_uniform_across_navigation_and_filtered_result_counts() 
 }
 
 #[test]
-fn palette_rows_fill_the_panel_with_right_aligned_keycaps_and_translucent_selection() {
+fn palette_rows_reserve_a_gutter_with_right_aligned_keycaps_and_translucent_selection() {
     for (width, height, scale) in [(1000, 700, 1.0), (1500, 1000, 1.5), (320, 700, 1.0)] {
         let (_, controller, mut runtime, bytes) = fixture();
         runtime.set_viewport(Viewport::new(width, height, scale));
@@ -305,7 +305,7 @@ fn palette_rows_fill_the_panel_with_right_aligned_keycaps_and_translucent_select
             "selection uses real rounded liquid glass, not only a translucent fill"
         );
         assert_eq!(selection.min.x, panel.min.x + 8.0);
-        assert_eq!(selection.max.x, panel.max.x - 8.0);
+        assert_eq!(selection.max.x, panel.max.x - 8.0 - 14.0);
 
         let caps: Vec<_> = items
             .iter()
@@ -474,13 +474,13 @@ fn palette_hover_is_lighter_transient_glass_and_preserves_keyboard_selection_and
 #[test]
 fn palette_single_click_runs_the_clicked_command_once_instead_of_the_keyboard_selection() {
     // Labels, keycaps and row padding are all part of the same click target.
-    for inset in [2.0, 80.0, 590.0] {
+    for fraction in [0.0, 0.5, 1.0] {
         let (mut tabs, controller, mut runtime, bytes) = fixture();
         open(&controller, &mut runtime);
         let focus = runtime.input().focused();
         let (_, first) = palette_geometry(&runtime);
         let point = Point::new(
-            first.min.x + inset,
+            first.min.x + 2.0 + (first.size().width - 4.0) * fraction,
             first.max.y + 4.0 + first.size().height / 2.0,
         );
         row_pointer(&mut runtime, point, PointerPhase::Move);
@@ -1154,6 +1154,57 @@ fn palette_thumb(runtime: &Runtime) -> Option<Rect> {
             } if color.a == 0.35 || color.a == 0.6 => Some(rect),
             _ => None,
         })
+}
+
+#[test]
+fn palette_results_leave_a_stable_gutter_outside_row_surfaces() {
+    for (width, height, scale) in [(1000, 500, 1.0), (1500, 750, 1.5), (320, 500, 1.0)] {
+        let (_, controller, mut runtime, bytes) = fixture();
+        runtime.set_viewport(Viewport::new(width, height, scale));
+        runtime.update(Instant::now());
+        open(&controller, &mut runtime);
+        let focus = runtime.input().focused();
+        let (row, viewport) = selected_result_viewport(&runtime);
+        let thumb = palette_thumb(&runtime).expect("overflow scrollbar");
+        assert!(row.max.x < thumb.min.x, "idle thumb must not cover a row");
+
+        row_pointer(
+            &mut runtime,
+            Point::new(viewport.max.x - 5.0, row.min.y + 10.0),
+            PointerPhase::Move,
+        );
+        let delta = runtime.pending_delta().unwrap();
+        let track = delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .find_map(|item| match item.primitive {
+                Primitive::Quad {
+                    rect,
+                    color,
+                    corner_radius: 3.0,
+                } if color.a == 0.06 => Some(rect),
+                _ => None,
+            })
+            .expect("hover expands the scrollbar track");
+        assert!(
+            row.max.x + 4.0 <= track.min.x,
+            "the entire scrollbar hit target stays beyond the row background and its contents"
+        );
+        assert!(
+            row_surface(&runtime, 0.06).is_none(),
+            "gutter is not a row hover target"
+        );
+        assert_eq!(runtime.input().focused(), focus);
+
+        replace(&mut runtime, "app.new-tab");
+        let (filtered_row, filtered_viewport) = selected_result_viewport(&runtime);
+        assert_eq!(filtered_row.size().width, row.size().width);
+        assert_eq!(filtered_viewport.size().width, viewport.size().width);
+        assert!(palette_thumb(&runtime).is_none());
+        assert!(controller.drain_actions().is_empty());
+        assert!(bytes.lock().unwrap().is_empty());
+    }
 }
 
 #[test]
