@@ -134,11 +134,13 @@ fn alternate_scroll_is_disabled_rechecked_at_submit_and_drain_then_shortcuts_pas
         "terminal.scroll-to-bottom",
     ] {
         replace(&mut runtime, id);
-        assert!(
-            painted(&runtime).contains("alternate screen"),
-            "id={id} text={}",
-            painted(&runtime)
+        let (_, row) = palette_geometry(&runtime);
+        let text = row_text(
+            &runtime,
+            row,
+            harbor_widget::Theme::default().button.disabled.foreground,
         );
+        assert!(text.iter().all(|text| !text.contains("alternate screen")));
         tap(&mut runtime, Key::Enter);
         assert!(controller.drain_actions().is_empty());
     }
@@ -224,7 +226,13 @@ fn palette_replaces_search_clears_results_and_honors_fresh_search_destination() 
         "terminal.search-close",
     ] {
         replace(&mut runtime, id);
-        assert!(painted(&runtime).contains("Search is closed"));
+        let (_, row) = palette_geometry(&runtime);
+        let text = row_text(
+            &runtime,
+            row,
+            harbor_widget::Theme::default().button.disabled.foreground,
+        );
+        assert!(text.iter().all(|text| !text.contains("Search is closed")));
         tap(&mut runtime, Key::Enter);
         assert!(controller.drain_actions().is_empty());
     }
@@ -273,7 +281,13 @@ fn palette_closed_search_and_changed_search_context_reject_without_leaking() {
         "terminal.search-previous",
     ] {
         replace(&mut runtime, id);
-        assert!(painted(&runtime).contains("Search is closed"));
+        let (_, row) = palette_geometry(&runtime);
+        let text = row_text(
+            &runtime,
+            row,
+            harbor_widget::Theme::default().button.disabled.foreground,
+        );
+        assert!(text.iter().all(|text| !text.contains("Search is closed")));
         tap(&mut runtime, Key::Enter);
         assert!(controller.drain_actions().is_empty());
     }

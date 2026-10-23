@@ -4,6 +4,7 @@
 **Date:** 2026-10-18
 **Sources:** [Issue #156](https://github.com/wangjq4214/harbor/issues/156); the user's approval of the proposed first-delivery palette direction and Spec → Slice endpoint on 2026-10-18.
 **Related:** [ADR 0040](./0040-application-command-dispatch-and-keybinding-precedence.md), [ADR 0029](./0029-widget-store-state-action-boundary.md), [ADR 0064](./0064-widget-and-application-component-ownership.md), [ADR 0065](./0065-layered-widget-text-input.md).
+**Superseded by:** [ADR 0078](./0078-command-palette-disabled-items-without-reasons.md), only the reason-display requirement in decision 2; all other decisions remain applicable.
 
 ## Context
 
