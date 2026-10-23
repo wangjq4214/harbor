@@ -60,6 +60,7 @@ impl Component for ThemeProvider {
 }
 
 impl crate::WithChildren for ThemeProvider {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

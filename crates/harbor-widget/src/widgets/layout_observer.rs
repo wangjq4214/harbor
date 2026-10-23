@@ -49,6 +49,7 @@ impl Component for LayoutObserver {
 }
 
 impl crate::WithChildren for LayoutObserver {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

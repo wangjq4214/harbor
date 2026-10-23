@@ -1,0 +1,104 @@
+error[E0277]: the trait bound `SingleChild: AcceptsChildCount<2>` is not satisfied
+ --> tests/ui/fail/single_child_overcount.rs:8:21
+  |
+8 |     let _ = view! { Padding::all(1.0) => { leaf(); leaf(); } };
+  |             --------^^^^^^^^^^^^^^^^^-------------------------
+  |             |       |
+  |             |       the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
+  |             required by a bound introduced by this call
+  |
+help: `SingleChild` implements trait `AcceptsChildCount<N>`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | impl AcceptsChildCount<0> for SingleChild {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<0>`
+  | impl AcceptsChildCount<1> for SingleChild {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<1>`
+note: required by a bound in `with_static_children`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | pub fn with_static_children<const N: usize, C: WithChildren>(
+  |        -------------------- required by a bound in this function
+...
+  |     C::Capability: AcceptsChildCount<N>,
+  |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
+
+error[E0277]: the trait bound `SingleChild: AcceptsChildCount<2>` is not satisfied
+  --> tests/ui/fail/single_child_overcount.rs:10:9
+   |
+ 9 |       let _ = view! { Column::new() => {
+   |  _____________-
+10 | |         Align::new(Alignment::Center).keyed("align") => { leaf(); leaf(); }
+   | |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
+11 | |     }};
+   | |______- required by a bound introduced by this call
+   |
+help: `SingleChild` implements trait `AcceptsChildCount<N>`
+  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+   |
+   | impl AcceptsChildCount<0> for SingleChild {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<0>`
+   | impl AcceptsChildCount<1> for SingleChild {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<1>`
+note: required by a bound in `with_static_children`
+  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+   |
+   | pub fn with_static_children<const N: usize, C: WithChildren>(
+   |        -------------------- required by a bound in this function
+...
+   |     C::Capability: AcceptsChildCount<N>,
+   |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
+
+error[E0277]: the trait bound `SingleChild: AcceptsChildCount<2>` is not satisfied
+  --> tests/ui/fail/single_child_overcount.rs:13:21
+   |
+13 |       let _ = view! { Padding::all(1.0) => {
+   |               -       ^^^^^^^^^^^^^^^^^ the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
+   |  _____________|
+   | |
+14 | |         if enabled { leaf(); leaf(); } else { leaf(); }
+15 | |     }};
+   | |______- required by a bound introduced by this call
+   |
+help: `SingleChild` implements trait `AcceptsChildCount<N>`
+  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+   |
+   | impl AcceptsChildCount<0> for SingleChild {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<0>`
+   | impl AcceptsChildCount<1> for SingleChild {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<1>`
+note: required by a bound in `with_static_children`
+  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+   |
+   | pub fn with_static_children<const N: usize, C: WithChildren>(
+   |        -------------------- required by a bound in this function
+...
+   |     C::Capability: AcceptsChildCount<N>,
+   |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
+
+error[E0277]: the trait bound `SingleChild: AcceptsChildCount<2>` is not satisfied
+  --> tests/ui/fail/single_child_overcount.rs:16:21
+   |
+16 |       let _ = view! { Padding::all(1.0) => {
+   |               -       ^^^^^^^^^^^^^^^^^ the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
+   |  _____________|
+   | |
+17 | |         leaf(); for _ in 0..usize::from(enabled) { leaf(); } leaf();
+18 | |     }};
+   | |______- required by a bound introduced by this call
+   |
+help: `SingleChild` implements trait `AcceptsChildCount<N>`
+  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+   |
+   | impl AcceptsChildCount<0> for SingleChild {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<0>`
+   | impl AcceptsChildCount<1> for SingleChild {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<1>`
+note: required by a bound in `with_static_children`
+  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+   |
+   | pub fn with_static_children<const N: usize, C: WithChildren>(
+   |        -------------------- required by a bound in this function
+...
+   |     C::Capability: AcceptsChildCount<N>,
+   |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`

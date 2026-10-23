@@ -57,6 +57,7 @@ impl<A: Clone + 'static> Component for Shortcuts<A> {
 }
 
 impl<A: Clone + 'static> crate::WithChildren for Shortcuts<A> {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

@@ -82,11 +82,6 @@ fn icons_inherit_theme_and_retain_identity_on_theme_updates() {
 
 #[test]
 fn icon_is_a_public_macro_leaf_without_keyboard_activation() {
-    assert!(
-        Icon::new(LucideIcon::X)
-            .with_children(Children::one(Icon::new(LucideIcon::Plus)))
-            .is_err()
-    );
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(40, 40, 1.0));
     runtime.set_root(|cx: &mut harbor_widget::view::BuildCx| {

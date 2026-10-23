@@ -150,16 +150,16 @@ fn shortcut_badges(
         let mut keys = Row::new().gap(4.0);
         for key in chord_keys(chord) {
             let label = TextLabel::new(key).color(foreground).build(cx);
-            keys = keys.child(
+            keys = keys.push_child(
                 DecoratedBox::new(keycap.clone())
                     .child(Padding::new(1.0, 2.0, 1.0, 2.0).child(label).build(cx))
                     .build(cx),
             );
         }
-        shortcuts = shortcuts.child(keys.build(cx));
+        shortcuts = shortcuts.push_child(keys.build(cx));
     }
     if !bound {
-        shortcuts = shortcuts.child(TextLabel::new("Unbound").color(foreground).build(cx));
+        shortcuts = shortcuts.push_child(TextLabel::new("Unbound").color(foreground).build(cx));
     }
     shortcuts.build(cx)
 }
@@ -493,11 +493,11 @@ fn palette_panel(
     let mut content = Column::new()
         .cross_axis_alignment(Alignment::Stretch)
         .gap(4.0)
-        .child(View::deferred(
+        .push_child(View::deferred(
             input.keyed(format!("palette-editor-{generation}")),
         ));
     if entries.is_empty() {
-        rows = rows.child(
+        rows = rows.push_child(
             TextLabel::new("No matching commands")
                 .color(foreground)
                 .build(cx),
@@ -519,9 +519,9 @@ fn palette_panel(
             let shortcuts = shortcut_badges(cx, bindings, entry.command, foreground);
             let row = Row::new()
                 .cross_axis_alignment(Alignment::Center)
-                .child(View::leaf(PaletteRowHeight { shortcut_rows }))
-                .child(Expanded::new().child(label).build(cx))
-                .child(Padding::new(0.0, 0.0, 0.0, 12.0).child(shortcuts).build(cx))
+                .push_child(View::leaf(PaletteRowHeight { shortcut_rows }))
+                .push_child(Expanded::new().child(label).build(cx))
+                .push_child(Padding::new(0.0, 0.0, 0.0, 12.0).child(shortcuts).build(cx))
                 .build(cx);
             let activate = controller.clone();
             let command = entry.command;
@@ -554,7 +554,7 @@ fn palette_panel(
                         None => content,
                     }
                 });
-            rows = rows.child(View::deferred(
+            rows = rows.push_child(View::deferred(
                 region.keyed(format!("palette-row-{generation}-{}", entry.id)),
             ));
         }
@@ -568,7 +568,7 @@ fn palette_panel(
         // Reserve the 10dp overlay hit target plus a 4dp gap outside row glass.
         // Keep ScrollView's geometry and scrolling behavior unchanged.
         let rows = Padding::new(0.0, 14.0, 0.0, 0.0).child(rows).build(cx);
-        content = content.child(
+        content = content.push_child(
             Expanded::new()
                 .child(
                     ScrollView::new()
@@ -578,7 +578,7 @@ fn palette_panel(
                 )
                 .build(cx),
         );
-        content = content.child(
+        content = content.push_child(
             TextLabel::new(format!(
                 "{} / {} · ↑↓ select · Enter / click run · Esc close",
                 palette.selected + 1,
@@ -589,7 +589,7 @@ fn palette_panel(
         );
     }
     if entries.is_empty() {
-        content = content.child(
+        content = content.push_child(
             Expanded::new()
                 .child(
                     ScrollView::new()

@@ -218,14 +218,13 @@ impl Component for InteractiveRegion {
 }
 
 impl crate::WithChildren for InteractiveRegion {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
         children.into_single("InteractiveRegion", &mut self.child)?;
-        if self.child.is_some() {
-            self.content = None;
-        }
+        self.content = None;
         Ok(self)
     }
 }
@@ -647,5 +646,117 @@ mod content_slot_tests {
             region.children.is_empty(),
             "the region keeps only its own fiber state after the slot is removed",
         );
+    }
+
+    #[derive(Clone)]
+    struct ReplacementHost {
+        mode: Signal<u8>,
+        source: Signal<u32>,
+        slot_state: Rc<RefCell<Option<Signal<u32>>>>,
+        observations: Rc<RefCell<Vec<(u32, crate::scene::primitive::Color)>>>,
+    }
+
+    impl Component for ReplacementHost {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            cx.track(&self.mode);
+            let source = self.source.clone();
+            let slot_state = self.slot_state.clone();
+            let observations = self.observations.clone();
+            let builder = move |cx: &mut BuildCx, _state| {
+                cx.track(&source);
+                let retained = cx.use_state(|| 10u32);
+                *slot_state.borrow_mut() = Some(retained.clone());
+                let value = *source.read() + *retained.read();
+                observations
+                    .borrow_mut()
+                    .push((value, cx.theme().button.normal.foreground));
+                cx.register_external_schedule(
+                    ExternalDrawId::new(7_035),
+                    Arc::new(|_, _| ExternalScheduleDemand::empty()),
+                );
+                SizedBox::new(Size::new(4.0, 4.0)).build(cx)
+            };
+            let region = InteractiveRegion::new().content(builder.clone());
+            let mode = *self.mode.read();
+            let description = match mode {
+                0 => crate::view! { region; },
+                1 => crate::view! { region => { SizedBox::new(Size::new(8.0, 8.0)); } },
+                2 => crate::view! { region => {} },
+                4 => crate::view! { region.child(SizedBox::new(Size::ZERO)) => {} },
+                // content must replace an explicit child, in either setting order.
+                _ => crate::view! { region.child(SizedBox::new(Size::ZERO)).content(builder); },
+            };
+            crate::view! { Column::new() => { description; } }
+        }
+    }
+
+    #[test]
+    fn block_replacement_and_clearing_teardown_content_and_reselection_restores_own_fiber() {
+        use crate::scene::primitive::Color;
+        use crate::widgets::ThemeProvider;
+        for replacement_mode in [1, 2, 4] {
+            let host = ReplacementHost {
+                mode: Signal::new(0),
+                source: Signal::new(1),
+                slot_state: Rc::new(RefCell::new(None)),
+                observations: Rc::new(RefCell::new(Vec::new())),
+            };
+            let mut theme = crate::Theme::default();
+            theme.button.normal.foreground = Color::GREEN;
+            let mut runtime = Runtime::new();
+            runtime.set_root(ThemeProvider::new(theme).child(host.clone()));
+            runtime.update(Instant::now());
+            let provider_id = runtime.root_id().unwrap();
+            let host_id = runtime.arena().get(provider_id).unwrap().children()[0];
+            let region_id = runtime.arena().get(host_id).unwrap().children()[0];
+            let old_slot = runtime.arena().get(region_id).unwrap().children()[0];
+            assert_eq!(runtime.arena().get(region_id).unwrap().hooks.len(), 1);
+            assert_eq!(runtime.arena().get(old_slot).unwrap().hooks.len(), 1);
+            assert!(
+                runtime
+                    .external_schedule_ids()
+                    .contains(&ExternalDrawId::new(7_035))
+            );
+            assert_eq!(*host.observations.borrow(), vec![(11, Color::GREEN)]);
+            let old_state = host.slot_state.borrow().clone().unwrap();
+            old_state.set(20);
+            runtime.update(Instant::now());
+            assert_eq!(host.observations.borrow().last(), Some(&(21, Color::GREEN)));
+
+            host.mode.set(replacement_mode);
+            runtime.update(Instant::now());
+            assert!(!runtime.arena().contains(old_slot));
+            assert!(
+                !runtime
+                    .external_schedule_ids()
+                    .contains(&ExternalDrawId::new(7_035))
+            );
+            assert_eq!(
+                runtime.arena().get(region_id).unwrap().children().len(),
+                usize::from(replacement_mode == 1)
+            );
+            let observed = host.observations.borrow().len();
+            old_state.set(99);
+            host.source.set(5);
+            runtime.update(Instant::now());
+            assert_eq!(
+                host.observations.borrow().len(),
+                observed,
+                "removed content must not rebuild"
+            );
+
+            host.mode.set(3);
+            runtime.update(Instant::now());
+            let new_slot = runtime.arena().get(region_id).unwrap().children()[0];
+            assert_ne!(new_slot, old_slot);
+            assert_eq!(runtime.arena().get(region_id).unwrap().hooks.len(), 1);
+            assert_eq!(runtime.arena().get(new_slot).unwrap().hooks.len(), 1);
+            assert_eq!(host.observations.borrow().last(), Some(&(15, Color::GREEN)));
+            assert!(
+                runtime
+                    .external_schedule_ids()
+                    .contains(&ExternalDrawId::new(7_035))
+            );
+        }
     }
 }

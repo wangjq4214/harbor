@@ -108,6 +108,7 @@ impl Component for CustomPaint {
 }
 
 impl crate::WithChildren for CustomPaint {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
@@ -311,7 +312,7 @@ mod tests {
         use crate::{Expanded, Row};
         let runtime = unbounded_runtime(
             BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
-            Row::new().child(
+            Row::new().push_child(
                 Expanded::new()
                     .child(CustomPaint::new(1).child(SizedBox::new(Size::new(33.0, 21.0)))),
             ),

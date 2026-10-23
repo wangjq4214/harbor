@@ -138,6 +138,13 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Zero-/one-child container deducting insets before child layout and adding them back to its own size.
 - **Synonyms:** Padding
 
+### Widget Child Contract
+- **Definition:** The agreed construction capability classification: Leaf has no attachable slot, SingleChild has zero or one child, and MultiChild has an ordered zero-or-more child list. Setters and macro child blocks replace existing content; an empty block clears it, while explicitly named append operations preserve existing content then append in input order. Static violations fail compilation where provable; dynamic violations return ChildConstructionError in recoverable handwritten construction and panic at construction in ordinary view!. See [ADR 0080](./adr/0080-unify-child-cardinality-and-replacement-semantics.md); this is a selected contract, not completed implementation.
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - references Widget View Macro
+  - references Layout Container
+
 ### Widget Decoration
 - **Definition:** A general Harbor Widget Runtime visual capability that paints a widget's box without changing its measured size or layout bounds.
 

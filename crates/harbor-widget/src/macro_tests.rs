@@ -490,3 +490,193 @@ fn self_deferring_build_chain_fails_loudly() {
         "a build chain that only defers itself must be rejected, not spin"
     );
 }
+
+#[test]
+fn block_replacement_matches_builders_including_keys_scene_and_routing() {
+    for nested in [false, true] {
+        let mut runtimes = Vec::new();
+        for use_macro in [false, true] {
+            let clicked = Arc::new(AtomicBool::new(false));
+            let callback = clicked.clone();
+            let incoming = Button::new("replacement")
+                .on_click(move |_| callback.store(true, Ordering::SeqCst))
+                .keyed("b");
+            let parent = Padding::all(4.0).child(Button::new("old").keyed("a"));
+            let description = if use_macro {
+                crate::view! { parent => { incoming; } }
+            } else {
+                crate::construction::IntoChildView::into_child_view(parent.child(incoming))
+            };
+            let mut runtime = Runtime::new();
+            if nested {
+                runtime.set_root(crate::view! { Column::new() => { description; } });
+            } else {
+                runtime.set_root(description);
+            }
+            runtime.update(Instant::now());
+            let parent_id = if nested {
+                runtime
+                    .arena()
+                    .get(runtime.root_id().unwrap())
+                    .unwrap()
+                    .children()[0]
+            } else {
+                runtime.root_id().unwrap()
+            };
+            let children = runtime.arena().get(parent_id).unwrap().children();
+            assert_eq!(children.len(), 1);
+            assert_eq!(
+                runtime.arena().get(children[0]).unwrap().key(),
+                Some(&crate::view::Key::new("b"))
+            );
+            click(&mut runtime, Point::new(10.0, 16.0));
+            assert!(clicked.load(Ordering::SeqCst));
+            runtimes.push(runtime);
+        }
+        assert_eq!(
+            fiber_signature(&runtimes[0], runtimes[0].root_id().unwrap()),
+            fiber_signature(&runtimes[1], runtimes[1].root_id().unwrap())
+        );
+        assert_eq!(scene_signature(&runtimes[0]), scene_signature(&runtimes[1]));
+    }
+}
+
+#[test]
+fn empty_block_clears_but_value_expression_preserves_staged_content() {
+    for clear in [false, true] {
+        let staged = Padding::all(2.0).child(SizedBox::new(Size::new(3.0, 4.0)));
+        let tree = if clear {
+            crate::view! { staged => {} }
+        } else {
+            crate::view! { staged; }
+        };
+        let mut runtime = Runtime::new();
+        runtime.set_root(tree);
+        runtime.update(Instant::now());
+        assert_eq!(
+            runtime
+                .arena()
+                .get(runtime.root_id().unwrap())
+                .unwrap()
+                .children()
+                .len(),
+            usize::from(!clear)
+        );
+    }
+}
+
+#[test]
+fn dynamic_macro_validates_zero_one_many_at_construction_and_not_layout() {
+    for staged in [false, true] {
+        for count in 0..=2 {
+            let evaluated = RefCell::new(Vec::new());
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::view! {
+                    {
+                        evaluated.borrow_mut().push("parent");
+                        let parent = Padding::all(1.0);
+                        if staged { parent.child(SizedBox::new(Size::ZERO)) } else { parent }
+                    } => {
+                        for _ in 0..count {
+                            { evaluated.borrow_mut().push("child"); SizedBox::new(Size::new(2.0, 3.0)) };
+                        }
+                    }
+                }
+            }));
+            assert_eq!(&evaluated.borrow()[..count], vec!["child"; count]);
+            assert_eq!(evaluated.borrow().last(), Some(&"parent"));
+            match outcome {
+                Ok(tree) => {
+                    assert!(count <= 1);
+                    let mut runtime = Runtime::new();
+                    runtime.set_root(tree);
+                    runtime.update(Instant::now());
+                    assert_eq!(
+                        runtime
+                            .arena()
+                            .get(runtime.root_id().unwrap())
+                            .unwrap()
+                            .children()
+                            .len(),
+                        count
+                    );
+                }
+                Err(payload) => {
+                    assert_eq!(count, 2);
+                    let message = payload.downcast_ref::<String>().unwrap();
+                    assert!(message.contains("view! child construction failed: Padding accepts at most one child; received 2 children"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn bounded_alternatives_are_lazy_single_assignments_and_builds_stay_deferred() {
+    for choice in 0..3 {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let child = |name| {
+            log.borrow_mut().push(name);
+            let log = log.clone();
+            move |cx: &mut BuildCx| {
+                log.borrow_mut().push("build");
+                SizedBox::new(Size::new(2.0, 3.0)).build(cx)
+            }
+        };
+        let tree = crate::view! {
+            { log.borrow_mut().push("parent"); Padding::all(0.0).child(SizedBox::new(Size::ZERO)) } => {
+                if { log.borrow_mut().push("condition"); choice == 0 } {
+                    child("if-child");
+                } else if choice == 1 {
+                    match { log.borrow_mut().push("match"); choice } {
+                        1 if { log.borrow_mut().push("guard"); true } => { child("match-child"); },
+                        _ => { child("unselected"); },
+                    }
+                } else {}
+            }
+        };
+        let expected = match choice {
+            0 => vec!["condition", "if-child", "parent"],
+            1 => vec!["condition", "match", "guard", "match-child", "parent"],
+            _ => vec!["condition", "parent"],
+        };
+        assert_eq!(*log.borrow(), expected);
+        let mut runtime = Runtime::new();
+        runtime.set_root(tree);
+        runtime.update(Instant::now());
+        assert_eq!(
+            runtime
+                .arena()
+                .get(runtime.root_id().unwrap())
+                .unwrap()
+                .children()
+                .len(),
+            usize::from(choice < 2)
+        );
+        assert_eq!(
+            log.borrow().iter().filter(|&&s| s == "build").count(),
+            usize::from(choice < 2)
+        );
+    }
+}
+
+#[test]
+fn overwritten_staged_expression_still_runs_once_after_block_children() {
+    let log = RefCell::new(Vec::new());
+    let tree = crate::view! {
+        {
+            log.borrow_mut().push("parent");
+            Padding::all(1.0).child({
+                log.borrow_mut().push("staged");
+                SizedBox::new(Size::ZERO)
+            })
+        } => {
+            { log.borrow_mut().push("incoming"); SizedBox::new(Size::new(1.0, 2.0)) };
+        }
+    };
+    assert_eq!(*log.borrow(), vec!["incoming", "parent", "staged"]);
+    let mut runtime = Runtime::new();
+    runtime.set_root(tree);
+    runtime.update(Instant::now());
+    assert_eq!(*log.borrow(), vec!["incoming", "parent", "staged"]);
+}

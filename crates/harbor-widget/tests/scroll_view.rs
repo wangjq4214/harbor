@@ -202,7 +202,7 @@ fn nested_scroll_view_bubbles_to_outer_only_after_inner_reaches_boundary() {
             .line_step(10.0)
             .child(
                 Column::new()
-                    .child(
+                    .push_child(
                         ConstrainedBox::new()
                             .min_height(20.0)
                             .max_height(20.0)
@@ -213,7 +213,7 @@ fn nested_scroll_view_bubbles_to_outer_only_after_inner_reaches_boundary() {
                                     .child(SizedBox::new(Size::new(100.0, 60.0))),
                             ),
                     )
-                    .child(SizedBox::new(Size::new(100.0, 80.0))),
+                    .push_child(SizedBox::new(Size::new(100.0, 80.0))),
             ),
     );
     update(&mut runtime);
@@ -237,9 +237,9 @@ fn focus_navigation_reveals_offscreen_descendant_with_minimal_offset() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)))),
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)))),
         ),
     );
     update(&mut runtime);
@@ -266,9 +266,9 @@ fn pending_focus_handle_reveals_target_after_first_successful_layout() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))).handle(target)),
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))).handle(target)),
         ),
     );
 
@@ -287,9 +287,9 @@ fn pending_focus_reveal_retries_after_zero_viewport_restores() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))).handle(target)),
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))).handle(target)),
         ),
     );
 
@@ -315,24 +315,24 @@ fn nested_focus_reveal_accounts_for_inner_scroll_before_outer_scroll() {
     runtime.set_root(
         ScrollView::new().controller(outer.clone()).child(
             Column::new()
-                .child(SizedBox::new(Size::new(100.0, 80.0)))
-                .child(
+                .push_child(SizedBox::new(Size::new(100.0, 80.0)))
+                .push_child(
                     ConstrainedBox::new()
                         .min_height(40.0)
                         .max_height(40.0)
                         .child(
                             ScrollView::new().controller(inner.clone()).child(
                                 Column::new()
-                                    .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                                    .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                                    .child(
+                                    .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                                    .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                                    .push_child(
                                         Focus::new(SizedBox::new(Size::new(100.0, 30.0)))
                                             .handle(target),
                                     ),
                             ),
                         ),
                 )
-                .child(SizedBox::new(Size::new(100.0, 80.0))),
+                .push_child(SizedBox::new(Size::new(100.0, 80.0))),
         ),
     );
 
@@ -406,9 +406,9 @@ fn failed_layout_defers_focus_reveal_until_fresh_geometry_commits() {
                 .child(
                     ScrollView::new().controller(self.controller.clone()).child(
                         Column::new()
-                            .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                            .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                            .child(
+                            .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                            .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                            .push_child(
                                 Focus::new(SizedBox::new(Size::new(100.0, 30.0)))
                                     .handle(self.target),
                             ),
@@ -450,7 +450,7 @@ fn descendant_hit_testing_is_clipped_to_the_scroll_viewport() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 40, 1.0));
     runtime.set_root(
-        ScrollView::new().child(Column::new().child(Button::new("first")).child(
+        ScrollView::new().child(Column::new().push_child(Button::new("first")).push_child(
             Button::new("second").on_click(move |_| {
                 observed.store(true, Ordering::SeqCst);
             }),
@@ -614,11 +614,11 @@ fn scrollbar_is_painted_above_content_and_drag_preserves_focus_and_capture() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .child(
+                .push_child(
                     Button::new("under overlay")
                         .on_click(move |_| clicked.store(true, Ordering::SeqCst)),
                 )
-                .child(SizedBox::new(Size::new(100.0, 400.0)).color(Color::BLUE)),
+                .push_child(SizedBox::new(Size::new(100.0, 400.0)).color(Color::BLUE)),
         ),
     );
     update(&mut runtime);

@@ -30,6 +30,10 @@ fn main() {
 
 `.child(component)` defers that component's build until reconciliation assigns its fiber. The equivalent `view!` construction is shown in step 3. Prefer deferred construction for stateful children: eagerly calling each child's `.build(cx)` can put its hooks into the caller's slot sequence instead of giving it independent identity.
 
+Child attachment is component-owned: leaves have no child block; single-child containers use `.child(value)` to replace their slot; `Row`, `Column`, `Flex`, and `Stack` use `.children(values)` to replace the list and `.push_child(value)` / `.extend_children(values)` to append. A `=> { ... }` block is one replacement, not an append. An empty block clears existing content; an ordinary value statement preserves it. `Align` owns one child (use `Stack` for overlays). `InteractiveRegion::child` and `.content` replace each other.
+
+Static over-counts on single-child containers and all leaf blocks fail compilation. Runtime-dependent lists validate during construction: handwritten `.with_children(Children)` returns `ChildConstructionError`; ordinary `view!` panics with the receiver, allowed count, and incoming count. External components implement public `WithChildren` with `type Capability = SingleChild` or `MultiChild` and the same replacement/clearing rules; `Children::into_single` validates and replaces an `Option<View>` without building components.
+
 **Try:** add another label. Use `Row` instead of `Column`. Then read [flex layout](../flex-layout.md) before adding `Expanded` or scroll constraints: layout is parent-constrained, not CSS.
 
 ## 2. Keep editing state across builds

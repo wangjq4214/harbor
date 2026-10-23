@@ -49,6 +49,7 @@ impl Component for Padding {
 }
 
 impl crate::WithChildren for Padding {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

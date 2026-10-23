@@ -30,16 +30,6 @@ impl Component for SizedBox {
     }
 }
 
-impl crate::WithChildren for SizedBox {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("SizedBox")?;
-        Ok(self)
-    }
-}
-
 impl AnyView for SizedBox {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         constraints.constrain(self.size)

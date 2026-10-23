@@ -1175,14 +1175,14 @@ mod tests {
                     Arc::new(|_, _| ExternalScheduleDemand::empty());
                 Row::new()
                     .cross_axis_alignment(Alignment::Stretch)
-                    .child(
+                    .push_child(
                         ConstrainedBox::new()
                             .min_width(200.0)
                             .max_width(200.0)
                             .child(SizedBox::new(Size::new(200.0, 80.0)).color(Color::RED)),
                     )
-                    .child(Separator::vertical().color(Color::WHITE))
-                    .child(
+                    .push_child(Separator::vertical().color(Color::WHITE))
+                    .push_child(
                         Expanded::new()
                             .child(CustomPaint::new(42).handler(handler).schedule(schedule)),
                     )
@@ -1450,7 +1450,7 @@ mod tests {
                 let items = items_state.read();
                 let mut col = Column::new();
                 for key in items.iter() {
-                    col = col.child(
+                    col = col.push_child(
                         SizedBox::new(Size::new(50.0, 20.0))
                             .color(Color::RED)
                             .keyed(*key),
@@ -1529,7 +1529,7 @@ mod tests {
                 let items = state.read();
                 let mut col = Column::new();
                 for key in items.iter() {
-                    col = col.child(
+                    col = col.push_child(
                         SizedBox::new(Size::new(50.0, 20.0))
                             .color(Color::RED)
                             .keyed(*key),
@@ -1614,7 +1614,7 @@ mod tests {
             observed_values: Rc::clone(&observed_values),
         };
         let mut rt = Runtime::new();
-        rt.set_root(Column::new().child(Padding::new(1.0, 1.0, 1.0, 1.0).child(child)));
+        rt.set_root(Column::new().push_child(Padding::new(1.0, 1.0, 1.0, 1.0).child(child)));
 
         let root_id = rt.root_id().unwrap();
         let padding_id = rt.arena().get(root_id).unwrap().children[0];
@@ -1729,7 +1729,7 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Padding::new(8.0, 8.0, 8.0, 8.0).child(
-                Column::new().child(
+                Column::new().push_child(
                     FocusScope::new()
                         .modal(true)
                         .child(SizedBox::new(Size::new(100.0, 50.0))),
@@ -1850,7 +1850,7 @@ mod tests {
     fn should_report_external_draws_when_handler_is_nested_in_subtree() {
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
-        rt.set_root(Column::new().child(CustomPaint::new(79).handler(handler)));
+        rt.set_root(Column::new().push_child(CustomPaint::new(79).handler(handler)));
         rt.update(now());
 
         assert!(rt.has_external_draws());
@@ -2200,8 +2200,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .child(SizedBox::new(Size::new(100.0, 50.0)))
-                .child(Button::new("Next")),
+                .push_child(SizedBox::new(Size::new(100.0, 50.0)))
+                .push_child(Button::new("Next")),
         );
         rt.update(now());
 
@@ -2443,8 +2443,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .child(CustomPaint::new(1).schedule(late_schedule))
-                .child(CustomPaint::new(2).schedule(early_schedule)),
+                .push_child(CustomPaint::new(1).schedule(late_schedule))
+                .push_child(CustomPaint::new(2).schedule(early_schedule)),
         );
         let _ = rt.update(now());
 
@@ -2626,8 +2626,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .child(CustomPaint::new(1).schedule(eligible))
-                .child(CustomPaint::new(2).schedule(deferred)),
+                .push_child(CustomPaint::new(1).schedule(eligible))
+                .push_child(CustomPaint::new(2).schedule(deferred)),
         );
         let _ = rt.update(now());
 
@@ -2688,8 +2688,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .child(CustomPaint::new(10).schedule(eligible))
-                .child(CustomPaint::new(11).schedule(deferred)),
+                .push_child(CustomPaint::new(10).schedule(eligible))
+                .push_child(CustomPaint::new(11).schedule(deferred)),
         );
         let _ = rt.update(now());
 

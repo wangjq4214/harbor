@@ -324,8 +324,8 @@ fn ime_commit_stays_with_its_composition_owner_across_focus_and_root_replacement
         let bf = FocusHandle::new();
         let mut runtime = mount(
             harbor_widget::Column::new()
-                .child(TextField::new(a.clone()).focus_handle(af))
-                .child(TextField::new(b.clone()).focus_handle(bf)),
+                .push_child(TextField::new(a.clone()).focus_handle(af))
+                .push_child(TextField::new(b.clone()).focus_handle(bf)),
         );
         runtime.request_focus(&af);
         runtime.dispatch(UiEvent::ImePreedit(ImePreedit::new("old", None)));

@@ -53,16 +53,6 @@ impl Component for PreviewPane {
     }
 }
 
-impl harbor_widget::WithChildren for PreviewPane {
-    fn with_children(
-        self,
-        children: harbor_widget::Children,
-    ) -> Result<Self, harbor_widget::ChildConstructionError> {
-        children.ensure_leaf("PreviewPane")?;
-        Ok(self)
-    }
-}
-
 impl PrimitiveLeaf for PreviewPane {
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         let cell_width = metrics.cell_width;

@@ -53,13 +53,3 @@ impl Component for Button {
         region.build(cx)
     }
 }
-
-impl crate::WithChildren for Button {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("Button")?;
-        Ok(self)
-    }
-}

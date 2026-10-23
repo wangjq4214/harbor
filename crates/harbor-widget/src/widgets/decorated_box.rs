@@ -169,6 +169,7 @@ impl Component for DecoratedBox {
 }
 
 impl crate::WithChildren for DecoratedBox {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

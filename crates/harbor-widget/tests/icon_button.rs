@@ -7,7 +7,7 @@ use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::signal::Signal;
-use harbor_widget::{Children, Icon, IconButton, LucideIcon, Theme, ThemeProvider, WithChildren};
+use harbor_widget::{IconButton, LucideIcon, Theme, ThemeProvider};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -214,12 +214,6 @@ fn icon_button_tint_follows_theme_updates() {
 
 #[test]
 fn icon_button_is_a_public_macro_leaf() {
-    assert!(
-        IconButton::new(LucideIcon::X, "Close")
-            .with_children(Children::one(Icon::new(LucideIcon::Plus)))
-            .is_err()
-    );
-
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(40, 40, 1.0));
     runtime.set_root(|cx: &mut harbor_widget::view::BuildCx| {

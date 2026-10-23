@@ -217,7 +217,7 @@ fn runtime_detects_modal_in_deeply_nested_tree() {
     let mut rt = Runtime::new();
     // Non-modal root wrapping a modal scope
     let root = Padding::new(8.0, 8.0, 8.0, 8.0).child(
-        Column::new().child(
+        Column::new().push_child(
             FocusScope::new()
                 .modal(true)
                 .child(SizedBox::new(Size::new(100.0, 50.0))),
@@ -237,8 +237,8 @@ fn runtime_no_modal_when_tree_is_purely_non_modal() {
 
     let mut rt = Runtime::new();
     let root = Column::new()
-        .child(SizedBox::new(Size::new(100.0, 50.0)))
-        .child(SizedBox::new(Size::new(100.0, 50.0)));
+        .push_child(SizedBox::new(Size::new(100.0, 50.0)))
+        .push_child(SizedBox::new(Size::new(100.0, 50.0)));
     rt.set_root(root);
     rt.update(Instant::now());
     assert!(!rt.has_modal());
@@ -476,8 +476,8 @@ fn row_cross_axis_center_integration() {
     rt.set_root(
         Row::new()
             .cross_axis_alignment(Alignment::Center)
-            .child(SizedBox::new(Size::new(50.0, 20.0)))
-            .child(SizedBox::new(Size::new(50.0, 100.0))),
+            .push_child(SizedBox::new(Size::new(50.0, 20.0)))
+            .push_child(SizedBox::new(Size::new(50.0, 100.0))),
     );
     let req = rt.update(Instant::now());
     assert!(req.request_redraw);
@@ -507,8 +507,8 @@ fn stack_with_background_paint_count() {
     rt.set_root(
         Stack::new()
             .background(Color::BLACK)
-            .child(SizedBox::new(Size::new(80.0, 80.0)).color(Color::RED))
-            .child(SizedBox::new(Size::new(60.0, 60.0)).color(Color::GREEN)),
+            .push_child(SizedBox::new(Size::new(80.0, 80.0)).color(Color::RED))
+            .push_child(SizedBox::new(Size::new(60.0, 60.0)).color(Color::GREEN)),
     );
     rt.update(Instant::now());
 

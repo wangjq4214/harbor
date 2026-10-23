@@ -8,7 +8,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 pub struct Align {
     pub alignment: Alignment,
     pub background: Option<Color>,
-    children: Vec<View>,
+    child: Option<View>,
     vertical_alignment: Option<Alignment>,
     insets: [f32; 4],
 }
@@ -20,7 +20,7 @@ impl Align {
             background: None,
             vertical_alignment: None,
             insets: [0.0; 4],
-            children: vec![],
+            child: None,
         }
     }
 
@@ -41,25 +41,26 @@ impl Align {
         self
     }
 
-    /// Appends a child while preserving the existing multi-child behavior.
+    /// Replaces the child slot.
     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
-        self.children.push(child.into_child_view());
+        self.child = Some(child.into_child_view());
         self
     }
 }
 
 impl Component for Align {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), self.child.iter().cloned().collect(), None)
     }
 }
 
 impl crate::WithChildren for Align {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        self.children.extend(children.into_views());
+        children.into_single("Align", &mut self.child)?;
         Ok(self)
     }
 }

@@ -108,7 +108,33 @@ impl Flex {
         self
     }
 
-    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+    /// Replaces the ordered child list, clearing it for empty input.
+    pub fn children<T: crate::IntoChildView>(
+        mut self,
+        children: impl IntoIterator<Item = T>,
+    ) -> Self {
+        self.children = children
+            .into_iter()
+            .map(crate::IntoChildView::into_child_view)
+            .collect();
+        self
+    }
+
+    /// Appends children in iteration order.
+    pub fn extend_children<T: crate::IntoChildView>(
+        mut self,
+        children: impl IntoIterator<Item = T>,
+    ) -> Self {
+        self.children.extend(
+            children
+                .into_iter()
+                .map(crate::IntoChildView::into_child_view),
+        );
+        self
+    }
+
+    /// Appends one child after all existing children.
+    pub fn push_child(mut self, child: impl crate::IntoChildView) -> Self {
         self.children.push(child.into_child_view());
         self
     }
@@ -130,11 +156,12 @@ impl Component for Flex {
 }
 
 impl crate::WithChildren for Flex {
+    type Capability = crate::MultiChild;
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        self.children.extend(children.into_views());
+        self.children = children.into_views();
         Ok(self)
     }
 }
@@ -512,17 +539,17 @@ mod tests {
                 for flexible in [false, true] {
                     let measurements = std::rc::Rc::new(std::cell::Cell::new(0));
                     let opposite =
-                        Flex::new(other_axis).child(Expanded::new().child(CorrectionLeaf {
+                        Flex::new(other_axis).push_child(Expanded::new().child(CorrectionLeaf {
                             axis,
                             measurements: measurements.clone(),
                         }));
                     let root = Flex::new(axis).cross_axis_alignment(Alignment::Stretch);
                     let root = if flexible {
-                        root.child(Flexible::new().child(opposite))
+                        root.push_child(Flexible::new().child(opposite))
                     } else {
-                        root.child(opposite)
+                        root.push_child(opposite)
                     };
-                    let root = root.child(SizedBox::new(axis.size(20.0, 20.0)));
+                    let root = root.push_child(SizedBox::new(axis.size(20.0, 20.0)));
                     let (arena, root) = layout_tree(
                         root,
                         BoxConstraints::loose(axis.size(maximum, f32::INFINITY)),
@@ -576,7 +603,8 @@ mod tests {
         for root_axis in [Axis::Horizontal, Axis::Vertical] {
             for maximum in [1000.0, f32::INFINITY] {
                 for depth in [8, 32] {
-                    let mut tree = Flex::new(root_axis).child(SizedBox::new(Size::new(1.0, 1.0)));
+                    let mut tree =
+                        Flex::new(root_axis).push_child(SizedBox::new(Size::new(1.0, 1.0)));
                     for level in 0..depth {
                         let axis = if level % 2 == 0 {
                             root_axis
@@ -588,8 +616,8 @@ mod tests {
                         };
                         tree = Flex::new(axis)
                             .cross_axis_alignment(Alignment::Stretch)
-                            .child(Expanded::new().child(tree))
-                            .child(SizedBox::new(axis.size(1.0, level as f32 + 2.0)));
+                            .push_child(Expanded::new().child(tree))
+                            .push_child(SizedBox::new(axis.size(1.0, level as f32 + 2.0)));
                     }
                     let axis = tree.axis;
                     let (arena, root) = layout_tree(

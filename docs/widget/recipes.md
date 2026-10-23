@@ -167,8 +167,8 @@ fn main() {
         .child(panel));
     let mut runtime = Runtime::new();
     runtime.set_root(move |cx: &mut BuildCx| Column::new()
-        .child(TextLabel::new("Ordinary background content"))
-        .child(overlay.clone()).build(cx));
+        .push_child(TextLabel::new("Ordinary background content"))
+        .push_child(overlay.clone()).build(cx));
     let _ = runtime.update(Instant::now());
 }
 ```

@@ -8,7 +8,7 @@
 
 > 统一构建语义，保留普通 Rust 表达式；明确组件的子节点契约；用少量组合方法降低嵌套。
 
-本文是源码审阅和设计建议。允许讨论破坏性变更。**状态更新(2026-10-23):F1 已实施并通过自动化验证,见第 9 节;F2–F8 仍为待实施建议。**
+本文是源码审阅和设计建议。允许讨论破坏性变更。**状态更新（2026-10-23）：F1、F2 已实施并通过各自记录的自动化验证，见第 9 节；F3–F8 仍为待实施建议。** 第 2–7 节保留原审阅基线与建议，不代表实施后的全部现状。
 
 ## 2. 审阅基线与范围
 
@@ -446,9 +446,9 @@ view! {
 
 建议保留普通 Rust 表达式语法、共享交互状态机、controller/editing-core/field 分层、共享 flex 引擎，以及应用 → widget 的依赖方向；这些边界具有实际价值，不应仅因实现较复杂而删除。
 
-本次审阅已覆盖所选生产 API 范围，未进行全仓库正确性审计。**状态更新(2026-10-23):F1 已实施并验证(spec 0034 / ADR 0079),F2–F8 仍为待实施建议,已映射到 U1–U5。** 审阅当时的结论见上文原文。
+本次审阅已覆盖所选生产 API 范围，未进行全仓库正确性审计。**状态更新（2026-10-23）：F1 已实施并完成所记录的自动化验证（spec 0034 / ADR 0079）；F2 已实施并通过自动化验证（spec 0035 / ADR 0080）；F3–F8 仍为待实施建议，已映射到 U1–U5。** 审阅当时的结论见上文原文。
 
-下一步应先确定 U1 的公开契约，尤其是组件返回描述与 Fiber 身份的关系，再开始修改运行时和宏。允许破坏性变更后，推荐仓库内整体迁移，但每个阶段仍需独立验证，避免同时改变构建、布局和事件行为而无法定位回归。
+原建议中 U1 的构建边界与 child 契约、U2 的 child API、U4 的相关宏改造及对应消费者迁移已随 F1/F2 落地；这不代表 U1–U5 整体完成。后续仍需单独推进 F3–F8，并保留 F1 记录中的人工集成验证待办。每个阶段应独立验证，避免同时改变构建、布局和事件行为而无法定位回归。
 
 ## 9. 实施状态记录(2026-10-23)
 
@@ -462,11 +462,27 @@ view! {
   - 文档:`docs/widget/learn.md`、`concepts.md`、`crates/harbor-widget/README.md` 已同步。
 - **验证**:`cargo test --workspace` 56/56 全绿(运行时等价、keyed 重排、事件路由、trybuild、slot 隔离/卸载、求值顺序);`cargo fmt`;workspace 零警告。原生窗口、IME、HMR 实机会话未在本环境运行,人工集成验证通过后 ADR 0079 → Completed、spec 0034 → Completed。
 
-### 相对本文建议的契约修订
+### F1：相对本文建议的契约修订
 
 - F1"风险与前置条件"指出的"组件返回描述与 Fiber 身份关系"已在实施中定为:**build 返回的 deferred 描述在同一 Fiber 上有界原地物化**(深度上限 8,超限报错而非死循环),取代"deferred build 返回 panic"的初稿措辞。这保持"无第二描述类型"和"无边界循环展开仍禁止"的约定;修订已写回 ADR 0079 D3、spec 0034 R7 与 CONTEXT 的 Deferred Root 条目。
 - 宏根 Fiber 的 TypeId 现在等于挂载描述组件的类型,而非展开后的具体根组件类型;布局/场景/事件输出已由等价测试确认不变。
 
+### F2：已实施并通过自动化验证
+
+- **产物**：`.grimoire/spec/0035-unified-child-cardinality-and-attachment.md`、`.grimoire/adr/0080-unify-child-cardinality-and-replacement-semantics.md`、`.grimoire/plans/0046-unified-child-cardinality-and-attachment.md`（含 R1–R7 验收证据）。本次仅同步本文状态，未修改关联 spec/ADR 的状态字段。
+- **已落地**：
+  - 公共协议：`WithChildren::Capability` 由组件声明 `SingleChild` / `MultiChild`，`Keyed` 转发能力与 key；叶子不再实现仅用于接收空列表或拒绝子节点的附加协议，无 widget 名称白名单。
+  - 设置与追加：单槽 `.child(value)` 覆盖；多槽 `.children(values)` 替换列表，`.push_child(value)` / `.extend_children(values)` 显式追加。宏 block 是一次替换，空 block 清空；普通值表达式保留已有内容。旧多槽 `.child(...)` 调用及相关测试、文档已迁移。
+  - 数量诊断：静态数量经公共 const-count 约束检查；`if` / `match` 分支按互斥备选计算，不相加。单槽静态超量和所有叶子 block 在编译期拒绝，诊断定位接收表达式。动态列表只验证本次传入数量，手写路径返回 `ChildConstructionError`，普通 `view!` 在构造处明确 panic，不截断、不留到布局阶段。
+  - 真实槽位：`Align` 改为 `Option<View>` 单槽；`InteractiveRegion` 的 child/content 相互替换，空 block 可清空任一选择。原 ContentSlot 独立 Fiber 的 hooks、主题、订阅及卸载边界保持不变。
+  - 不变量：保留单次求值、兄弟顺序、children-before-parent、分支惰性、显式所有权及 deferred 构建；覆盖已暂存但被替换表达式的求值，以及 macro/builder 的结构、key、几何、场景与路由等价。
+- **最终验证**：
+  - `cargo test -p harbor-widget -p harbor-widget-macros -p harbor-app`：1,193 项通过，0 失败；含 19 个 trybuild 编译通过/失败 fixtures 与依赖重命名检查。最初跳过 3 项 opt-in 测试。
+  - `cargo test -p harbor-app --lib -- --ignored`：补跑的 2 项 GPU 像素测试均通过，以上两次命令共 1,195 项通过。
+  - `cargo check --workspace --all-targets`、`cargo fmt --check`、所有改动 Rust 文件（含 fixtures）的 rustfmt 检查及 `git diff --check` 均通过；仍有既有 unused-import/variable 警告。
+  - 已完成实施、测试、风险审阅、需求核对及格式化后的集成复验，无已确认遗留阻塞。
+- **未运行与范围限制**：需要交互桌面的 native hidden-host 生命周期 smoke test 未运行；本轮未进行原生窗口、IME 或 HMR 人工会话验证，也未实现 F3–F8。该结果不替代 F1 已记录的人工集成验证待办。
+
 ### 其余发现
 
-- F2–F8 仍为待实施建议(U1 契约已部分由 0079 固定);后续单独立项时沿用本文件的证据与验证要求。
+- F3–F8 仍为待实施建议；U1 的构建边界与 child 契约已分别由 ADR 0079、0080 固定，但回调、组合便利 API、构造器、数值校验与具名配置等工作尚未完成。后续单独立项时沿用本文件的证据与验证要求。

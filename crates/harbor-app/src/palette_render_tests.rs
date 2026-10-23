@@ -155,8 +155,8 @@ fn palette_selection_pixels_have_visible_rounded_cutouts_and_optical_edges_at_mu
                     0,
                 );
                 Stack::new()
-                    .child(View::leaf(TestBackdrop))
-                    .child(panel)
+                    .push_child(View::leaf(TestBackdrop))
+                    .push_child(panel)
                     .build(cx)
             });
             runtime.update(Instant::now());
@@ -252,8 +252,8 @@ fn search_button_hover_pixels_are_visible_local_and_revert_at_multiple_dpi() {
                 let search = state.popups.get::<SearchUiState>().unwrap();
                 let panel = search_bar(cx, &root, search, state.popups.generation().unwrap());
                 Stack::new()
-                    .child(View::leaf(TestBackdrop))
-                    .child(panel)
+                    .push_child(View::leaf(TestBackdrop))
+                    .push_child(panel)
                     .build(cx)
             });
             runtime.update(Instant::now());

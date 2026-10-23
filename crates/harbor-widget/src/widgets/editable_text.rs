@@ -225,16 +225,6 @@ impl Component for EditableText {
     }
 }
 
-impl crate::WithChildren for EditableText {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("EditableText")?;
-        Ok(self)
-    }
-}
-
 struct EditorView {
     config: EditableText,
     runtime: Rc<RefCell<EditingRuntime>>,

@@ -123,13 +123,3 @@ impl Component for IconButton {
             .build(cx)
     }
 }
-
-impl crate::WithChildren for IconButton {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("IconButton")?;
-        Ok(self)
-    }
-}

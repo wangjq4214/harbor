@@ -95,9 +95,9 @@ fn bounded_external(width: f32, draw_id: u64) -> ConstrainedBox {
 fn rail_root(rail: f32, content: impl Component + 'static) -> Row {
     Row::new()
         .cross_axis_alignment(Alignment::Stretch)
-        .child(bounded_external(rail, 1))
-        .child(Separator::vertical().color(Color::WHITE))
-        .child(Expanded::new().child(content))
+        .push_child(bounded_external(rail, 1))
+        .push_child(Separator::vertical().color(Color::WHITE))
+        .push_child(Expanded::new().child(content))
 }
 
 struct Counted<C> {
@@ -173,12 +173,12 @@ fn resize_metrics_and_scale_changes_preserve_deferred_components_and_ids() {
     runtime.set_root(Counted {
         inner: Row::new()
             .cross_axis_alignment(Alignment::Stretch)
-            .child(Counted {
+            .push_child(Counted {
                 inner: TextLabel::new("aa"),
                 builds: builds.clone(),
                 initializations: initializations.clone(),
             })
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(Expanded::new().child(CustomPaint::new(2))),
         builds: builds.clone(),
         initializations: initializations.clone(),
     });
@@ -255,11 +255,11 @@ fn signal_factor_reallocates_siblings_before_the_next_pointer_event() {
     runtime.set_root(
         Row::new()
             .cross_axis_alignment(Alignment::Stretch)
-            .child(SignalFactor {
+            .push_child(SignalFactor {
                 exposed: exposed.clone(),
                 initializations: initializations.clone(),
             })
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(Expanded::new().child(CustomPaint::new(2))),
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);
@@ -299,8 +299,8 @@ fn signal_content_changes_relayout_the_full_root_including_siblings() {
     runtime.set_viewport(Viewport::new(200, 40, 1.0));
     runtime.set_root(
         Row::new()
-            .child(SignalContent(exposed.clone()))
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(SignalContent(exposed.clone()))
+            .push_child(Expanded::new().child(CustomPaint::new(2))),
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);
@@ -333,11 +333,11 @@ fn external_build_invalidation_is_not_mistaken_for_layout_only_work() {
     runtime.set_viewport(Viewport::new(200, 40, 1.0));
     runtime.set_root(
         Row::new()
-            .child(ExternalWidth {
+            .push_child(ExternalWidth {
                 width: width.clone(),
                 builds: builds.clone(),
             })
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(Expanded::new().child(CustomPaint::new(2))),
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);
@@ -360,9 +360,9 @@ fn external_build_invalidation_is_not_mistaken_for_layout_only_work() {
 fn overflowing_row() -> Row {
     Row::new()
         .cross_axis_alignment(Alignment::Stretch)
-        .child(bounded_external(80.0, 1))
-        .child(bounded_external(80.0, 2))
-        .child(Expanded::new().child(CustomPaint::new(3)))
+        .push_child(bounded_external(80.0, 1))
+        .push_child(bounded_external(80.0, 2))
+        .push_child(Expanded::new().child(CustomPaint::new(3)))
 }
 
 #[test]
@@ -413,14 +413,14 @@ fn loose_fit_does_not_make_unused_slot_hit_testable_or_redistribute_it() {
     runtime.set_root(
         Flex::new(Axis::Horizontal)
             .cross_axis_alignment(Alignment::Stretch)
-            .child(
+            .push_child(
                 Flexible::new().child(
                     ConstrainedBox::new()
                         .max_width(20.0)
                         .child(CustomPaint::new(1)),
                 ),
             )
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(Expanded::new().child(CustomPaint::new(2))),
     );
     update(&mut runtime);
     assert_eq!(rect_at(&runtime, &[0]).size().width, 20.0);
@@ -453,7 +453,7 @@ fn zero_viewport_with_padding_has_no_hit_and_restores_without_replacing_fibers()
     runtime.set_viewport(Viewport::new(0, 0, 1.0));
     runtime.set_root(
         Padding::new(10.0, 10.0, 10.0, 10.0)
-            .child(Row::new().child(Expanded::new().child(CustomPaint::new(1)))),
+            .child(Row::new().push_child(Expanded::new().child(CustomPaint::new(1)))),
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);

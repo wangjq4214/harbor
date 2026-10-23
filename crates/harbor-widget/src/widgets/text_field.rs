@@ -96,13 +96,3 @@ impl Component for TextField {
             .build(cx)
     }
 }
-
-impl crate::WithChildren for TextField {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("TextField")?;
-        Ok(self)
-    }
-}

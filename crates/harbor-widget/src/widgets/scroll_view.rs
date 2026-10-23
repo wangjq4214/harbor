@@ -262,6 +262,7 @@ impl Component for ScrollView {
 }
 
 impl crate::WithChildren for ScrollView {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

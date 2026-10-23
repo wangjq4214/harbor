@@ -131,9 +131,9 @@ fn portal_lifetime_updates_and_remounts_without_layout_slots_or_stale_hits() {
             let mut column = Column::new()
                 .cross_axis_alignment(Alignment::Stretch)
                 .gap(17.0)
-                .child(Expanded::new().child(SizedBox::new(Size::ZERO).color(Color::BLUE)));
+                .push_child(Expanded::new().child(SizedBox::new(Size::ZERO).color(Color::BLUE)));
             if visible.get() {
-                column = column.child(
+                column = column.push_child(
                     Portal::new().child(
                         Align::new(Alignment::End)
                             .child(SizedBox::new(Size::new(width.get(), 30.0)).color(Color::RED)),
@@ -306,11 +306,11 @@ fn failed_escaped_measurement_does_not_partially_commit_ordinary_geometry() {
     let state = bad.clone();
     rt.set_root(move |cx: &mut BuildCx| {
         Column::new()
-            .child(
+            .push_child(
                 SizedBox::new(Size::new(if state.get() { 200.0 } else { 100.0 }, 60.0))
                     .color(Color::BLUE),
             )
-            .child(Portal::new().child(View::new(FailingLeaf(state.get()), vec![], None)))
+            .push_child(Portal::new().child(View::new(FailingLeaf(state.get()), vec![], None)))
             .build(cx)
     });
     rt.update(Instant::now());
@@ -333,8 +333,8 @@ fn focusing_escaped_content_does_not_scroll_its_declaring_scroll_view() {
     let handle = crate::FocusHandle::new();
     let content =
         Column::new()
-            .child(SizedBox::new(Size::new(100.0, 600.0)))
-            .child(Portal::new().child(
+            .push_child(SizedBox::new(Size::new(100.0, 600.0)))
+            .push_child(Portal::new().child(
                 Align::new(Alignment::End).child(crate::Focus::new(target()).handle(handle)),
             ));
     let mut rt = Runtime::new();

@@ -55,6 +55,7 @@ impl Component for Flexible {
 }
 
 impl crate::WithChildren for Flexible {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
@@ -128,6 +129,7 @@ impl Component for Expanded {
 }
 
 impl crate::WithChildren for Expanded {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
@@ -180,15 +182,5 @@ impl Spacer {
 impl Component for Spacer {
     fn build(&self, cx: &mut BuildCx) -> View {
         self.inner.build(cx)
-    }
-}
-
-impl crate::WithChildren for Spacer {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("Spacer")?;
-        Ok(self)
     }
 }

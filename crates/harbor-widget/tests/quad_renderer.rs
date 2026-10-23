@@ -723,13 +723,15 @@ fn generic_glass_composes_gradient_fill_stroke_live_blur_and_sharp_foreground() 
     };
     let root = |background| {
         Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
-            .child(
+            .push_child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
+            .push_child(
                 Padding::new(0.0, 0.0, 0.0, 16.0)
                     .child(SizedBox::new(Size::new(16.0, 32.0)).color(background)),
             )
-            .child(glass())
-            .child(Padding::all(13.0).child(SizedBox::new(Size::new(6.0, 6.0)).color(Color::RED)))
+            .push_child(glass())
+            .push_child(
+                Padding::all(13.0).child(SizedBox::new(Size::new(6.0, 6.0)).color(Color::RED)),
+            )
     };
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
@@ -1971,8 +1973,8 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(CustomPaint::new(1).handler(first_handler))
-            .child(CustomPaint::new(2).handler(second_handler)),
+            .push_child(CustomPaint::new(1).handler(first_handler))
+            .push_child(CustomPaint::new(2).handler(second_handler)),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -2018,18 +2020,18 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::RED))
-            .child(
+            .push_child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::RED))
+            .push_child(
                 Padding::new(4.0, 8.0, 8.0, 4.0)
                     .child(CustomPaint::new(1).handler(make_handler(order.clone(), rects.clone()))),
             )
-            .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::GREEN))
-            .child(
+            .push_child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::GREEN))
+            .push_child(
                 Padding::new(8.0, 4.0, 4.0, 8.0)
                     .child(CustomPaint::new(2).handler(make_handler(order.clone(), rects.clone()))),
             )
-            .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::BLUE))
-            .child(
+            .push_child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::BLUE))
+            .push_child(
                 Padding::new(12.0, 0.0, 0.0, 12.0)
                     .child(CustomPaint::new(3).handler(make_handler(order.clone(), rects.clone()))),
             ),
@@ -2089,9 +2091,11 @@ fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive()
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)))
-            .child(Padding::new(8.0, 8.0, 8.0, 8.0).child(CustomPaint::new(1).handler(handler)))
-            .child(SizedBox::new(Size::new(8.0, 8.0)).color(Color::RED)),
+            .push_child(SizedBox::new(Size::new(32.0, 32.0)))
+            .push_child(
+                Padding::new(8.0, 8.0, 8.0, 8.0).child(CustomPaint::new(1).handler(handler)),
+            )
+            .push_child(SizedBox::new(Size::new(8.0, 8.0)).color(Color::RED)),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -2155,8 +2159,8 @@ fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(CustomPaint::new(42).handler(first_handler))
-            .child(CustomPaint::new(42).handler(last_handler)),
+            .push_child(CustomPaint::new(42).handler(first_handler))
+            .push_child(CustomPaint::new(42).handler(last_handler)),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -2375,8 +2379,8 @@ fn should_select_distinct_modes_when_two_externals_differ_in_eligibility() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(CustomPaint::new(1).handler(live_handler).schedule(eligible))
-            .child(
+            .push_child(CustomPaint::new(1).handler(live_handler).schedule(eligible))
+            .push_child(
                 CustomPaint::new(2)
                     .handler(retain_handler)
                     .schedule(deferred),
@@ -2785,8 +2789,8 @@ fn should_not_punch_following_widget_outside_custom_paint_allocation() {
         &device,
         &queue,
         Stack::new()
-            .child(SizedBox::new(Size::new(8.0, 8.0)).color(Color::RED))
-            .child(Padding::new(8.0, 8.0, 8.0, 8.0).child(clipped_external(
+            .push_child(SizedBox::new(Size::new(8.0, 8.0)).color(Color::RED))
+            .push_child(Padding::new(8.0, 8.0, 8.0, 8.0).child(clipped_external(
                 &device,
                 ClipBehavior::HardEdge,
                 4.0,
@@ -2884,7 +2888,7 @@ fn should_apply_independent_masks_when_two_clipped_custom_paints_share_a_pass() 
         &device,
         &queue,
         Stack::new()
-            .child(
+            .push_child(
                 Padding::new(0.0, 16.0, 0.0, 0.0).child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()),
@@ -2893,7 +2897,7 @@ fn should_apply_independent_masks_when_two_clipped_custom_paints_share_a_pass() 
                     .child(solid_external(&device, 1)),
                 ),
             )
-            .child(
+            .push_child(
                 Padding::new(0.0, 0.0, 0.0, 16.0).child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()),
@@ -2922,8 +2926,8 @@ fn should_dest_in_underlapping_pixels_inside_custom_paint_allocation_aabb() {
         &device,
         &queue,
         Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::RED))
-            .child(clipped_external(&device, ClipBehavior::HardEdge, 8.0)),
+            .push_child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::RED))
+            .push_child(clipped_external(&device, ClipBehavior::HardEdge, 8.0)),
         Viewport::new(32, 32, 1.0),
         32,
     );
@@ -2963,7 +2967,7 @@ fn should_keep_independent_masks_when_more_than_eight_externals_share_a_pass() {
                 8 => (1.0, 0.0, 0.0),
                 _ => (0.0, 0.0, 1.0),
             };
-            root = root.child(
+            root = root.push_child(
                 Padding::new(
                     row as f32 * 16.0,
                     (2 - col) as f32 * 16.0,
@@ -3003,7 +3007,7 @@ fn should_apply_later_mask_slot_when_unmasked_external_is_between() {
         &device,
         &queue,
         Stack::new()
-            .child(
+            .push_child(
                 Padding::new(0.0, 22.0, 0.0, 0.0).child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
@@ -3012,11 +3016,11 @@ fn should_apply_later_mask_slot_when_unmasked_external_is_between() {
                     .child(solid_external(&device, 1)),
                 ),
             )
-            .child(
+            .push_child(
                 Padding::new(0.0, 11.0, 0.0, 11.0)
                     .child(solid_external_rgb(&device, 2, 0.0, 0.0, 1.0)),
             )
-            .child(
+            .push_child(
                 Padding::new(0.0, 0.0, 0.0, 22.0).child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
@@ -3308,11 +3312,11 @@ fn backdrop_refraction_moves_edges_and_corners_but_not_center_outside_or_foregro
                     )
                     .unwrap();
                     Stack::new()
-                        .child(
+                        .push_child(
                             DecoratedBox::new(BoxDecoration::new().try_paint(ramp.into()).unwrap())
                                 .child(SizedBox::new(Size::new(32.0, 32.0))),
                         )
-                        .child(
+                        .push_child(
                             Padding::all(4.0).child(
                                 BackdropFilter::new(sigma)
                                     .unwrap()
@@ -3324,7 +3328,7 @@ fn backdrop_refraction_moves_edges_and_corners_but_not_center_outside_or_foregro
                             ),
                         )
                         // A sharp foreground marker lies directly over the edge band.
-                        .child(
+                        .push_child(
                             Padding::new(4.0, 0.0, 0.0, 14.0)
                                 .child(SizedBox::new(Size::new(4.0, 2.0)).color(Color::RED)),
                         )
@@ -3507,7 +3511,7 @@ fn backdrop_large_sigma_softens_a_thin_line_without_a_sparse_sampling_comb() {
                 .child(SizedBox::new(Size::new(1.0, 32.0)).color(Color::WHITE))
         };
         runtime.set_viewport(viewport.clone());
-        runtime.set_root(Stack::new().child(stripe()));
+        runtime.set_root(Stack::new().push_child(stripe()));
         runtime.update(Instant::now());
         let source_pixels = encode_filter_frame(&device, &queue, &mut runtime, viewport.clone());
         // Account for the source shape's DPI-dependent edge coverage rather
@@ -3518,7 +3522,7 @@ fn backdrop_large_sigma_softens_a_thin_line_without_a_sparse_sampling_comb() {
         let expected_peak =
             source_energy as f32 / ((2.0 * std::f32::consts::PI).sqrt() * 8.0 * scale);
         runtime.set_root(
-            Stack::new().child(stripe()).child(
+            Stack::new().push_child(stripe()).push_child(
                 harbor_widget::BackdropFilter::new(8.0)
                     .unwrap()
                     .child(SizedBox::new(Size::new(32.0, 32.0))),
@@ -3586,8 +3590,8 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
             runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
             runtime.set_root(
                 Stack::new()
-                    .child(CustomPaint::new(1).handler(handler))
-                    .child(
+                    .push_child(CustomPaint::new(1).handler(handler))
+                    .push_child(
                         Padding::all(4.0).child(
                             harbor_widget::BackdropFilter::new(2.0)
                                 .unwrap()
@@ -3599,7 +3603,7 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
                                 .child(SizedBox::new(Size::new(24.0, 24.0))),
                         ),
                     )
-                    .child(
+                    .push_child(
                         Padding::all(13.0)
                             .child(SizedBox::new(Size::new(6.0, 6.0)).color(Color::RED)),
                     ),
@@ -3670,8 +3674,8 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
         };
         runtime.set_root(
             Stack::new()
-                .child(SizedBox::new(Size::new(32.0, 32.0)).color(translucent))
-                .child(
+                .push_child(SizedBox::new(Size::new(32.0, 32.0)).color(translucent))
+                .push_child(
                     Padding::all(4.0).child(
                         DecoratedBox::new(
                             BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()),
@@ -3723,12 +3727,12 @@ fn backdrop_multiple_regions_use_distinct_uniforms_and_respect_ancestor_clip() {
         runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
         runtime.set_root(
             Stack::new()
-                .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
-                .child(
+                .push_child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
+                .push_child(
                     Padding::new(0.0, 0.0, 0.0, 16.0)
                         .child(SizedBox::new(Size::new(16.0, 32.0)).color(Color::BLUE)),
                 )
-                .child(
+                .push_child(
                     Padding::new(4.0, 18.0, 4.0, 4.0).child(
                         harbor_widget::BackdropFilter::new(3.0)
                             .unwrap()
@@ -3738,7 +3742,7 @@ fn backdrop_multiple_regions_use_distinct_uniforms_and_respect_ancestor_clip() {
                             .child(SizedBox::new(Size::new(10.0, 24.0))),
                     ),
                 )
-                .child(
+                .push_child(
                     Padding::new(4.0, 4.0, 4.0, 18.0).child(
                         DecoratedBox::new(
                             BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
@@ -3802,8 +3806,8 @@ fn transparent_icon_button_has_no_zero_width_border_fill() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
-            .child(
+            .push_child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
+            .push_child(
                 harbor_widget::IconButton::new(harbor_widget::LucideIcon::Plus, "transparent")
                     .style(style),
             ),
@@ -3846,18 +3850,18 @@ fn material_test_scene(start: Color, end: Color, filter: harbor_widget::Backdrop
     )
     .unwrap();
     Stack::new()
-        .child(
+        .push_child(
             DecoratedBox::new(BoxDecoration::new().try_paint(ramp.into()).unwrap())
                 .child(SizedBox::new(Size::new(32.0, 32.0))),
         )
-        .child(
+        .push_child(
             Padding::all(4.0).child(
                 filter
                     .border_radius(BorderRadius::all(6.0).unwrap())
                     .child(SizedBox::new(Size::new(24.0, 24.0))),
             ),
         )
-        .child(
+        .push_child(
             Padding::new(4.0, 0.0, 0.0, 14.0)
                 .child(SizedBox::new(Size::new(4.0, 2.0)).color(Color::RED)),
         )
@@ -4011,12 +4015,12 @@ fn backdrop_material_broad_frost_blurs_both_axes_and_releases_when_disabled() {
     let mut render = |mix| {
         let material = BackdropMaterial::new(5.0, mix, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
         let root = Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::BLACK))
-            .child(
+            .push_child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::BLACK))
+            .push_child(
                 Padding::new(15.0, 0.0, 0.0, 15.0)
                     .child(SizedBox::new(Size::new(2.0, 2.0)).color(Color::WHITE)),
             )
-            .child(
+            .push_child(
                 BackdropFilter::new(0.5)
                     .unwrap()
                     .material(Some(material))

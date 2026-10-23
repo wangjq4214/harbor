@@ -74,19 +74,6 @@ impl Children {
     pub fn into_views(self) -> Vec<View> {
         self.views
     }
-    /// Validates that this collection is empty for a leaf widget.
-    pub fn ensure_leaf(self, widget: &'static str) -> Result<(), ChildConstructionError> {
-        let received = self.len();
-        if received == 0 {
-            Ok(())
-        } else {
-            Err(ChildConstructionError::too_many(
-                widget,
-                ChildCardinality::Leaf,
-                received,
-            ))
-        }
-    }
 
     /// Attaches at most one child from this collection to a single-child slot.
     pub fn into_single(
@@ -95,7 +82,7 @@ impl Children {
         existing_child: &mut Option<View>,
     ) -> Result<(), ChildConstructionError> {
         let mut incoming = self.into_views();
-        let received = usize::from(existing_child.is_some()) + incoming.len();
+        let received = incoming.len();
         if received > 1 {
             return Err(ChildConstructionError::too_many(
                 widget,
@@ -103,10 +90,17 @@ impl Children {
                 received,
             ));
         }
-        if let Some(child) = incoming.pop() {
-            *existing_child = Some(child);
-        }
+        *existing_child = incoming.pop();
         Ok(())
+    }
+}
+
+impl IntoIterator for Children {
+    type Item = View;
+    type IntoIter = std::vec::IntoIter<View>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.views.into_iter()
     }
 }
 
@@ -149,7 +143,7 @@ pub struct ChildConstructionError {
     pub widget: &'static str,
     /// The cardinality contract that was violated.
     pub cardinality: ChildCardinality,
-    /// The total staged and attached child count.
+    /// The incoming child count, excluding any replaced content.
     pub received: usize,
 }
 
@@ -181,12 +175,45 @@ impl fmt::Display for ChildConstructionError {
 
 impl Error for ChildConstructionError {}
 
-/// Attaches an ordered child list to a widget according to that widget's own
-/// cardinality contract.
+/// Capability for a component owning a zero-or-one child slot.
+pub struct SingleChild;
+
+/// Capability for a component owning an ordered child list.
+pub struct MultiChild;
+
+/// A capability that accepts a statically bounded incoming count.
+///
+/// Single-child components accept bounds zero and one, while multi-child
+/// components accept every bound. Leaves have no attachment capability.
+pub trait AcceptsChildCount<const N: usize> {}
+impl AcceptsChildCount<0> for SingleChild {}
+impl AcceptsChildCount<1> for SingleChild {}
+impl<const N: usize> AcceptsChildCount<N> for MultiChild {}
+
+/// Replaces a component's content with an ordered incoming child list.
+///
+/// Implementations declare their capability, validate incoming counts (not
+/// previously staged content), and clear their slot/list for empty input.
+/// Leaves deliberately do not implement this trait.
 pub trait WithChildren: Sized {
-    /// Attaches `children`, preserving their order or returning a precise
-    /// cardinality error without silently replacing staged children.
+    type Capability;
+
     fn with_children(self, children: Children) -> Result<Self, ChildConstructionError>;
+}
+
+/// Applies a statically bounded replacement through the receiving capability.
+///
+/// Macro expansion supplies the bound without evaluating expressions twice.
+/// Runtime validation remains in `with_children`, including for public callers
+/// that construct the actual list dynamically.
+pub fn with_static_children<const N: usize, C: WithChildren>(
+    component: C,
+    children: Children,
+) -> Result<C, ChildConstructionError>
+where
+    C::Capability: AcceptsChildCount<N>,
+{
+    component.with_children(children)
 }
 
 /// A component wrapper that supplies an explicit sibling reconciliation key.
@@ -219,6 +246,7 @@ impl<C: Component> Component for Keyed<C> {
 }
 
 impl<C: WithChildren> WithChildren for Keyed<C> {
+    type Capability = C::Capability;
     fn with_children(self, children: Children) -> Result<Self, ChildConstructionError> {
         Ok(Self {
             component: self.component.with_children(children)?,

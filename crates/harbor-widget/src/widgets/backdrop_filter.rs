@@ -178,6 +178,7 @@ impl Component for BackdropFilter {
 }
 
 impl crate::WithChildren for BackdropFilter {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

@@ -63,6 +63,7 @@ impl Expander {
         let children = self.fresh_ident("children");
         let component = self.fresh_ident("component");
         let children_body = self.expand_children(&node.children, &children);
+        let attachment = self.attachment(&node.children, node.span());
         let component_expr = &node.component;
         let support = &self.support;
         let span = node.span();
@@ -71,7 +72,7 @@ impl Expander {
             {
                 let mut #children = #support::Children::new();
                 #children_body
-                let #component = <_ as #support::WithChildren>::with_children(
+                let #component = #attachment(
                     #component_expr,
                     #children,
                 )
@@ -80,6 +81,16 @@ impl Expander {
                 });
                 <_ as #support::IntoChildView>::into_child_view(#component)
             }
+        }
+    }
+
+    fn attachment(&self, children: &[Child], span: Span) -> TokenStream {
+        let support = &self.support;
+        let (minimum, maximum) = child_bounds(children);
+        // Even around a dynamic loop, two unconditional values are invalid.
+        match maximum.or_else(|| (minimum >= 2).then_some(2)) {
+            Some(bound) => quote_spanned!(span=> #support::with_static_children::<#bound, _>),
+            None => quote_spanned!(span=> <_ as #support::WithChildren>::with_children),
         }
     }
 
@@ -130,6 +141,7 @@ impl Expander {
         let component = self.fresh_ident("component");
         let child_view = self.fresh_ident("child");
         let children_body = self.expand_children(&node.children, &children);
+        let attachment = self.attachment(&node.children, node.span());
         let component_expr = &node.component;
         let support = &self.support;
         let span = node.span();
@@ -138,7 +150,7 @@ impl Expander {
             {
                 let mut #children = #support::Children::new();
                 #children_body
-                let #component = <_ as #support::WithChildren>::with_children(
+                let #component = #attachment(
                     #component_expr,
                     #children,
                 )
@@ -205,6 +217,47 @@ impl Expander {
     }
 }
 
+/// Conservative lower/upper incoming bounds, without executing Rust expressions.
+fn child_bounds(children: &[Child]) -> (usize, Option<usize>) {
+    children
+        .iter()
+        .fold((0usize, Some(0usize)), |(min, max), child| {
+            let (child_min, child_max) = match child {
+                Child::Value { .. } | Child::Parent(_) => (1, Some(1)),
+                Child::For(child) => {
+                    let (_, upper) = child_bounds(&child.body);
+                    (0, if upper == Some(0) { Some(0) } else { None })
+                }
+                Child::If(child) => {
+                    let alternatives = child.branches.iter().map(|b| child_bounds(&b.body)).chain(
+                        ::core::iter::once(
+                            child
+                                .else_body
+                                .as_ref()
+                                .map_or((0, Some(0)), |body| child_bounds(body)),
+                        ),
+                    );
+                    alternative_bounds(alternatives)
+                }
+                Child::Match(child) => {
+                    alternative_bounds(child.arms.iter().map(|arm| child_bounds(&arm.body)))
+                }
+            };
+            (
+                min.saturating_add(child_min),
+                max.zip(child_max).map(|(a, b)| a.saturating_add(b)),
+            )
+        })
+}
+
+fn alternative_bounds(
+    alternatives: impl Iterator<Item = (usize, Option<usize>)>,
+) -> (usize, Option<usize>) {
+    alternatives.fold((usize::MAX, Some(0)), |(min, max), (a, b)| {
+        (min.min(a), max.zip(b).map(|(x, y)| x.max(y)))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,7 +279,7 @@ mod tests {
         let expansion = expand(input).unwrap().to_string();
         assert!(expansion.contains("__macro_support"));
         assert!(expansion.contains("IntoChildView"));
-        assert!(expansion.contains("WithChildren"));
+        assert!(expansion.contains("with_static_children"));
         assert!(!expansion.contains("Component>::build"));
         assert!(!expansion.contains("IntoChildren"));
         assert!(!expansion.contains("clone"));
@@ -252,5 +305,28 @@ mod tests {
         let expansion = expand(input).unwrap().to_string();
         assert!(expansion.contains("__harbor_view_children_0"));
         assert!(expansion.contains("__harbor_view_children_2"));
+    }
+    #[test]
+    fn counts_sequences_and_alternatives_without_summing_exclusive_branches() {
+        for (tokens, expected) in [
+            (quote! { Parent => {} }, (0, Some(0))),
+            (
+                quote! { Parent => { if x { a; } else { b; } } },
+                (1, Some(1)),
+            ),
+            (
+                quote! { Parent => { match x { A => { a; }, B => { b; } } } },
+                (1, Some(1)),
+            ),
+            (quote! { Parent => { a; if x { b; } } }, (1, Some(2))),
+            (quote! { Parent => { for x in xs { a; } } }, (0, None)),
+            (quote! { Parent => { a; for x in xs { b; } c; } }, (2, None)),
+        ] {
+            let input: ViewInput = syn::parse2(tokens).unwrap();
+            let Root::Parent(node) = input.root else {
+                panic!("expected parent");
+            };
+            assert_eq!(child_bounds(&node.children), expected);
+        }
     }
 }

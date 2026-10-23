@@ -167,14 +167,14 @@ fn should_retain_gpu_handles_and_external_allocations_across_flex_resize_and_dpi
     rt.set_root(
         Row::new()
             .cross_axis_alignment(Alignment::Stretch)
-            .child(
+            .push_child(
                 ConstrainedBox::new()
                     .min_width(200.0)
                     .max_width(200.0)
                     .child(TextLabel::new("Rail")),
             )
-            .child(Separator::vertical().color(Color::WHITE))
-            .child(
+            .push_child(Separator::vertical().color(Color::WHITE))
+            .push_child(
                 Expanded::new().child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
@@ -294,7 +294,7 @@ fn default_label_layout_matches_rendered_ui_advances_across_dpi() {
         .unwrap();
     let mut row = Row::new().gap(4.0);
     for key in ["Ctrl", "Shift", "Tab", "R"] {
-        row = row.child(
+        row = row.push_child(
             DecoratedBox::new(BoxDecoration::new().border(Border::all(Color::WHITE, 1.0).unwrap()))
                 .child(Padding::new(1.0, 2.0, 1.0, 2.0).child(TextLabel::new(key))),
         );

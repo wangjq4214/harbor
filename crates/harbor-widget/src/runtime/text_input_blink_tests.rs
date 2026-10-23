@@ -155,12 +155,12 @@ fn focus_loss_disable_and_unmount_remove_caret_deadline() {
     let mut runtime = mount(move |cx: &mut BuildCx| {
         cx.track(&observed_enabled);
         Column::new()
-            .child(
+            .push_child(
                 EditableText::new(controller.clone())
                     .enabled(*observed_enabled.read())
                     .focus_handle(editor_focus),
             )
-            .child(Button::new("other"))
+            .push_child(Button::new("other"))
             .build(cx)
     });
     let start = Instant::now();
@@ -219,8 +219,8 @@ fn caret_deadline_arbitrates_with_external_schedule() {
         });
         let mut runtime = mount(
             Column::new()
-                .child(EditableText::new(TextEditingController::new("abc")))
-                .child(CustomPaint::new(1).schedule(schedule)),
+                .push_child(EditableText::new(TextEditingController::new("abc")))
+                .push_child(CustomPaint::new(1).schedule(schedule)),
         );
         assert_deadline(
             &runtime.update(start),

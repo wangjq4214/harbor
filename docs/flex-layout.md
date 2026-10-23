@@ -13,11 +13,11 @@ use harbor_widget::widgets::text_label::TextLabel;
 
 let root = Row::new()
     .cross_axis_alignment(Alignment::Stretch)
-    .child(ConstrainedBox::new()
+    .push_child(ConstrainedBox::new()
         .min_width(200.0).max_width(200.0)
         .child(TextLabel::new("Rail")))
-    .child(Separator::vertical())
-    .child(Expanded::new().child(CustomPaint::new(1)));
+    .push_child(Separator::vertical())
+    .push_child(Expanded::new().child(CustomPaint::new(1)));
 ```
 
 At 1000dp width the allocations are 200dp, 1dp, and 799dp. Replacing both rail

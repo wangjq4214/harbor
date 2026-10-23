@@ -86,6 +86,7 @@ impl Component for ConstrainedBox {
 }
 
 impl crate::WithChildren for ConstrainedBox {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

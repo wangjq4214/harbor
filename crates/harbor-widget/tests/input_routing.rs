@@ -197,8 +197,8 @@ fn should_route_pointer_to_topmost_overlapping_widget() {
     let bottom_clicked = Arc::new(AtomicBool::new(false));
 
     let stack = Stack::new()
-        .child(test_button("Bottom", bottom_clicked.clone()))
-        .child(test_button("Top", top_clicked.clone()));
+        .push_child(test_button("Bottom", bottom_clicked.clone()))
+        .push_child(test_button("Top", top_clicked.clone()));
 
     let mut rt = Runtime::new();
     rt.set_root(stack);
@@ -236,8 +236,8 @@ fn should_route_to_underlying_widget_when_point_outside_topmost_bounds() {
     let bottom_clicked = Arc::new(AtomicBool::new(false));
 
     let stack = Stack::new()
-        .child(test_button("Bottom", bottom_clicked.clone()))
-        .child(test_button("Top", top_clicked.clone()));
+        .push_child(test_button("Bottom", bottom_clicked.clone()))
+        .push_child(test_button("Top", top_clicked.clone()));
 
     let mut rt = Runtime::new();
     rt.set_root(stack);
@@ -366,8 +366,8 @@ fn should_only_fire_targeted_button_in_stack() {
     let bottom_clicked = Arc::new(AtomicBool::new(false));
 
     let stack = Stack::new()
-        .child(test_button("First", bottom_clicked.clone()))
-        .child(test_button("Second", top_clicked.clone()));
+        .push_child(test_button("First", bottom_clicked.clone()))
+        .push_child(test_button("Second", top_clicked.clone()));
 
     let mut rt = Runtime::new();
     rt.set_root(stack);
@@ -501,7 +501,9 @@ fn should_block_keyboard_events_when_modal_is_active_and_nothing_focused() {
     let outside_button = test_button("Outside", outside_key.clone());
 
     // Stack both at origin: modal covers everything
-    let root = Stack::new().child(outside_button).child(modal_scope);
+    let root = Stack::new()
+        .push_child(outside_button)
+        .push_child(modal_scope);
 
     let mut rt = Runtime::new();
     rt.set_root(root);
@@ -837,8 +839,8 @@ fn should_hit_sibling_behind_cutout_when_front_child_is_clipped() {
     let front = Arc::new(AtomicBool::new(false));
     let behind = Arc::new(AtomicBool::new(false));
     let stack = Stack::new()
-        .child(test_button("Bottom", behind.clone()))
-        .child(clipped_button("Hi", front.clone(), ClipBehavior::HardEdge));
+        .push_child(test_button("Bottom", behind.clone()))
+        .push_child(clipped_button("Hi", front.clone(), ClipBehavior::HardEdge));
     let mut rt = Runtime::new();
     rt.set_root(stack);
     rt.update(now());

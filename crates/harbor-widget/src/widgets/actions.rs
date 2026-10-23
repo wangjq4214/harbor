@@ -46,6 +46,7 @@ impl<A: Clone + 'static> Component for Actions<A> {
 }
 
 impl<A: Clone + 'static> crate::WithChildren for Actions<A> {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

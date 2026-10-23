@@ -47,16 +47,6 @@ impl Component for TextLabel {
     }
 }
 
-impl crate::WithChildren for TextLabel {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("TextLabel")?;
-        Ok(self)
-    }
-}
-
 impl AnyView for TextLabel {
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         let width = self.geometry.borrow().as_ref().map_or_else(

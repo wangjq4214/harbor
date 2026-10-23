@@ -155,13 +155,13 @@ fn notification_can_be_inline_without_a_root_escape() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(400, 300, 1.0));
     runtime.set_root(
-        Column::new().child(
-            Notification::new("Inline content", || {}).style(NotificationStyle {
+        Column::new().push_child(Notification::new("Inline content", || {}).style(
+            NotificationStyle {
                 max_width: 140.0,
                 background: Some(Color::RED),
                 ..Default::default()
-            }),
-        ),
+            },
+        )),
     );
     runtime.update(Instant::now());
     let rect = runtime

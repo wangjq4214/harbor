@@ -46,6 +46,7 @@ impl Component for FocusScope {
 }
 
 impl crate::WithChildren for FocusScope {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

@@ -68,16 +68,6 @@ impl Component for Separator {
     }
 }
 
-impl crate::WithChildren for Separator {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("Separator")?;
-        Ok(self)
-    }
-}
-
 impl AnyView for Separator {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         self.size(constraints)

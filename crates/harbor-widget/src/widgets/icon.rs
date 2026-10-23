@@ -53,16 +53,6 @@ impl Component for Icon {
     }
 }
 
-impl crate::WithChildren for Icon {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("Icon")?;
-        Ok(self)
-    }
-}
-
 impl AnyView for Icon {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         constraints.constrain(Size::new(self.size, self.size))
