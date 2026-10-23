@@ -3,9 +3,9 @@ use crate::input::event::{PointerBoundaryKind, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, Point, Rect, Size};
 use crate::view::{AnyView, BuildCx, Component, View};
-use std::sync::Arc;
+use std::rc::Rc;
 
-type BoundaryCallback = Arc<dyn Fn(&mut EventCtx) + Send + Sync>;
+type BoundaryCallback = Rc<dyn Fn(&mut EventCtx)>;
 
 /// A pointer-boundary wrapper. It deliberately has no click or capture semantics.
 #[derive(Clone)]
@@ -36,13 +36,15 @@ impl MouseRegion {
         self
     }
 
-    pub fn on_enter(mut self, callback: impl Fn(&mut EventCtx) + Send + Sync + 'static) -> Self {
-        self.on_enter = Some(Arc::new(callback));
+    /// Runs on the UI thread when the pointer enters this region.
+    pub fn on_enter(mut self, callback: impl Fn(&mut EventCtx) + 'static) -> Self {
+        self.on_enter = Some(Rc::new(callback));
         self
     }
 
-    pub fn on_exit(mut self, callback: impl Fn(&mut EventCtx) + Send + Sync + 'static) -> Self {
-        self.on_exit = Some(Arc::new(callback));
+    /// Runs on the UI thread when the pointer leaves this region.
+    pub fn on_exit(mut self, callback: impl Fn(&mut EventCtx) + 'static) -> Self {
+        self.on_exit = Some(Rc::new(callback));
         self
     }
 }

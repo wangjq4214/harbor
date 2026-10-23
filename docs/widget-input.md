@@ -53,7 +53,7 @@ focus through the runtime/host instead of wrapping it in another focus stop.
 ## Presentation and Hosting
 
 `TextField` accepts `.placeholder(...)`, `.padding(...)`, `.decoration(...)`,
-`.color(...)`, `.enabled(...)` and `.read_only(...)`. `EditableText` exposes the
+`.color(...)`, `.disabled(...)` and `.read_only(...)`. `EditableText` exposes the
 same editing callbacks without the outer border/padding. Editor content is
 clipped; horizontal scrolling keeps the active caret usable. Caret and selection
 are separate draw primitives, not characters in the text.

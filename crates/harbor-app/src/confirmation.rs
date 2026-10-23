@@ -96,3 +96,65 @@ pub fn build_clipboard_confirmation_root(
         line_height,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harbor_widget::{
+        input::event::{Key, KeyboardEvent, Modifiers, UiEvent},
+        runtime::Runtime,
+    };
+    use std::time::Instant;
+
+    #[test]
+    fn confirmation_buttons_preserve_host_coordination_and_independent_permissions() {
+        for clipboard_write in [false, true] {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let confirmed = Arc::new(AtomicBool::new(false));
+            let scroll = Arc::new(AtomicUsize::new(0));
+            let mut runtime = Runtime::new();
+            if clipboard_write {
+                runtime.set_root(build_clipboard_confirmation_root(
+                    "Clipboard request".into(),
+                    vec!["preview".into()],
+                    scroll,
+                    cancelled.clone(),
+                    confirmed.clone(),
+                    18.0,
+                ));
+            } else {
+                runtime.set_root(build_confirmation_root(
+                    1,
+                    vec!["preview".into()],
+                    scroll,
+                    cancelled.clone(),
+                    confirmed.clone(),
+                    18.0,
+                ));
+            }
+            runtime.update(Instant::now());
+            assert!(runtime.focus_first_focusable());
+            let press = |runtime: &mut Runtime, key| {
+                runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key,
+                    modifiers: Modifiers::default(),
+                }));
+                runtime.update(Instant::now());
+            };
+            press(&mut runtime, Key::Enter);
+            assert!(cancelled.load(Ordering::SeqCst));
+            assert!(
+                !confirmed.load(Ordering::SeqCst),
+                "deny never grants permission"
+            );
+            cancelled.store(false, Ordering::SeqCst);
+            press(&mut runtime, Key::Tab);
+            press(&mut runtime, Key::Space);
+            assert!(confirmed.load(Ordering::SeqCst));
+            assert!(!cancelled.load(Ordering::SeqCst));
+            drop(runtime);
+            assert_eq!(Arc::strong_count(&confirmed), 1);
+            assert_eq!(Arc::strong_count(&cancelled), 1);
+        }
+    }
+}

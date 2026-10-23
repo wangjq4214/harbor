@@ -69,9 +69,42 @@ Keep hook calls in the same order and of the same types on every build. A type m
 
 **Try in a native host:** type in the middle, select and replace text, and trigger an unrelated rebuild. The controller should not reset.
 
-## 3. Send intent; publish the result
+## 3. Update local UI state directly
 
-A button should queue application intent, not run a reducer during build. `Store<S, A>` has two distinct sides: `watch(cx)` subscribes to published state, and `dispatcher()` gives callbacks an action-only capability.
+Ordinary UI callbacks can capture local Signals. Keep explicit clones for repeated builds and end read borrows before updating state. No action queue is needed for a purely local counter.
+
+```rust
+use harbor_widget::{Button, Column, runtime::Runtime, view};
+use harbor_widget::view::{BuildCx, Component, View};
+use harbor_widget::widgets::text_label::TextLabel;
+use std::time::Instant;
+
+struct LocalCounter;
+impl Component for LocalCounter {
+    fn build(&self, cx: &mut BuildCx) -> View {
+        let count = cx.use_state(|| 0u32);
+        cx.track(&count);
+        let value = *count.read();
+        view! { Column::new().gap(8.0) => {
+            TextLabel::new(format!("Count: {value}"));
+            Button::new("Increment").on_click(move |_| {
+                let next = *count.read() + 1;
+                count.set(next);
+            });
+        } }
+    }
+}
+
+fn main() {
+    let mut runtime = Runtime::new();
+    runtime.set_root(LocalCounter);
+    let _effects = runtime.update(Instant::now());
+}
+```
+
+## 4. Send business intent; publish the result
+
+For business operations, a button queues application intent rather than running a reducer or platform effect. `Store<S, A>` has two distinct sides: `watch(cx)` subscribes to published state, and `dispatcher()` gives callbacks an action-only capability.
 
 This complete example also supplies a tiny **application-owned** reducer. Calling the dispatcher in `main` simulates an action already delivered by a host turn; it does not simulate pointer input.
 
@@ -127,11 +160,11 @@ fn main() {
 }
 ```
 
-`Button::on_click` requires `Fn(&mut EventCtx) + Send + Sync + 'static`. A UI-thread `Signal` uses `Rc<RefCell<_>>` and cannot be captured there. The action dispatcher is the appropriate capability when its action type satisfies the callback's thread bounds. Do not use `Arc<Mutex<Signal<_>>>` to bypass the UI-thread ownership model.
+`Button::on_click` accepts `Fn(&mut EventCtx) + 'static` on the UI thread, including direct Signal or `Rc` captures. Use Dispatcher for business intent, not merely to satisfy callback bounds. Signal remains UI-thread-owned; do not wrap it in `Arc<Mutex<_>>` to share it with background work.
 
 **Important:** `Dispatcher::dispatch` only enqueues. It does not wake a runtime, schedule a frame, run effects or publish state. Drain after input routing, reduce on the UI thread, publish, and ensure the host processes invalidation. Background senders also need an event-loop wake mechanism; an inbox alone cannot wake a sleeping window.
 
-## 4. Give repeated children identity
+## 5. Give repeated children identity
 
 Import `harbor_widget::ComponentExt` and use `.keyed(stable_id)` on components when items may reorder. For example, `.child(TextLabel::new("Saved").keyed("save-status"))` uses a stable sibling-local identity. Keys must be unique under their parent; do not generate a new key on every build or use changing display text as the ID.
 

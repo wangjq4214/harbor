@@ -1,0 +1,11 @@
+error[E0599]: no method named `enabled` found for struct `TextField` in the current scope
+ --> tests/ui/fail/editor_enabled.rs:4:60
+  |
+4 |     let _ = TextField::new(TextEditingController::new("")).enabled(true);
+  |                                                            ^^^^^^^ method not found in `TextField`
+
+error[E0599]: no method named `enabled` found for struct `EditableText` in the current scope
+ --> tests/ui/fail/editor_enabled.rs:5:63
+  |
+5 |     let _ = EditableText::new(TextEditingController::new("")).enabled(true);
+  |                                                               ^^^^^^^ private field, not a method

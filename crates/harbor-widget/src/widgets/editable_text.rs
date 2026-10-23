@@ -56,8 +56,10 @@ impl EditableText {
             vertical_navigation: None,
         }
     }
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
+    /// Disables editing and focus eligibility. Enabled by default.
+    /// Read-only is separate and still permits selection and copy.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.enabled = !disabled;
         self
     }
     pub fn read_only(mut self, read_only: bool) -> Self {

@@ -157,7 +157,7 @@ fn focus_loss_disable_and_unmount_remove_caret_deadline() {
         Column::new()
             .push_child(
                 EditableText::new(controller.clone())
-                    .enabled(*observed_enabled.read())
+                    .disabled(!*observed_enabled.read())
                     .focus_handle(editor_focus),
             )
             .push_child(Button::new("other"))

@@ -232,7 +232,7 @@ impl Component for Modes {
     fn build(&self, cx: &mut BuildCx) -> View {
         cx.track(&self.mode);
         TextField::new(self.controller.clone())
-            .enabled(*self.mode.read() != 2)
+            .disabled(*self.mode.read() == 2)
             .read_only(*self.mode.read() == 1)
             .build(cx)
     }
@@ -358,5 +358,63 @@ fn ime_commit_stays_with_its_composition_owner_across_focus_and_root_replacement
             },
             "新"
         );
+    }
+}
+
+#[test]
+fn both_editor_layers_preserve_defaults_readonly_copy_and_disabled_rebuilds() {
+    for decorated in [false, true] {
+        let controller = TextEditingController::new("fixture");
+        let mode = Signal::new(0u8);
+        let observed_mode = mode.clone();
+        let observed_controller = controller.clone();
+        let mut runtime = mount(move |cx: &mut BuildCx| {
+            cx.track(&observed_mode);
+            let mode = *observed_mode.read();
+            if decorated {
+                let field = TextField::new(observed_controller.clone());
+                if mode == 0 {
+                    field.build(cx)
+                } else {
+                    field.disabled(mode == 2).read_only(mode == 1).build(cx)
+                }
+            } else {
+                let editor = EditableText::new(observed_controller.clone());
+                if mode == 0 {
+                    editor.build(cx)
+                } else {
+                    editor.disabled(mode == 2).read_only(mode == 1).build(cx)
+                }
+            }
+        });
+        runtime.dispatch(ctrl('a'));
+        press(&mut runtime, Key::Character('x'));
+        assert_eq!(controller.text(), "x", "default is enabled");
+        mode.set(1);
+        update(&mut runtime);
+        runtime.dispatch(ctrl('a'));
+        press(&mut runtime, Key::Delete);
+        assert_eq!(controller.text(), "x");
+        assert!(matches!(
+            runtime.dispatch(ctrl('c')).clipboard,
+            Some(ClipboardEffect::Editor(_))
+        ));
+        runtime.dispatch(pointer(8.0, 8.0, PointerPhase::Down));
+        assert!(runtime.input().captor(1).is_some());
+        mode.set(2);
+        update(&mut runtime);
+        assert!(runtime.input().captor(1).is_none());
+        assert!(!runtime.focus_first_focusable());
+        runtime.dispatch(pointer(8.0, 8.0, PointerPhase::Down));
+        runtime.dispatch(pointer(8.0, 8.0, PointerPhase::Up));
+        assert!(runtime.input().captor(1).is_none());
+        press(&mut runtime, Key::Character('y'));
+        assert_eq!(controller.text(), "x");
+        mode.set(3); // explicit disabled(false) restores eligibility and editing
+        update(&mut runtime);
+        assert!(runtime.focus_first_focusable());
+        runtime.dispatch(ctrl('a'));
+        press(&mut runtime, Key::Character('z'));
+        assert_eq!(controller.text(), "z");
     }
 }

@@ -26,13 +26,13 @@ Browse by the job you need to do. The tables describe available public APIs and 
 | --- | --- | --- |
 | Single-line text | `widgets::text_label::TextLabel`, `.color(...)`, `.ellipsis()` | Monospace label, not rich text or a general shaping/layout engine |
 | Built-in vector artwork | `Icon`, `LucideIcon` | Built-in Lucide inventory, not arbitrary SVG loading |
-| Labelled activation | `Button` | `.on_click`, `.disabled`, `.selected`; uses the shared interaction state machine |
+| Labelled activation | `Button` | `.on_click`, `.disabled`, `.selected`, `.focus_handle`; uses the shared interaction state machine |
 | Icon activation | `IconButton` | Icon plus label and control styling; the label is not proof of a native accessibility bridge |
 | Compose custom visuals with activation | `InteractiveRegion`, `InteractionState`, `ControlStyle` | Hover/press/focus/disabled/selected state and `.content(...)`/`.child(...)`; not a gesture-recognition suite |
 | Pointer-specific response | `MouseRegion` | Lower-level pointer hooks/cursor behavior; use an existing control when activation is the goal |
 | Transient dismissible message | `Notification` | A reusable message composition, not a global notification center, timer service or OS toast API |
 
-Button activation callbacks require `Send + Sync`; use a `Dispatcher` for application intent rather than capturing a UI-thread signal. See [Learn step 3](learn.md).
+Button/IconButton `on_click`, IconButton `color_with`, MouseRegion `on_enter`/`on_exit` and Notification dismissal accept UI-local `Fn(...) + 'static` captures, stored with `Rc`. Use direct Signals for local UI state and Dispatcher for business intent; see [Learn](learn.md). Button and IconButton accept `.focus_handle(handle)` on their existing interactive region, without another focus wrapper.
 
 ## Edit a single line
 
@@ -40,8 +40,9 @@ Button activation callbacks require `Send + Sync`; use a `Dispatcher` for applic
 | --- | --- | --- |
 | Coherent editing state | `TextEditingController`, `TextEditingValue`, `TextSelection` | Text, selection/caret, composition, revision, history and acceptance predicate |
 | Decoration-free editor | `EditableText` | Editing input, focus, caret/selection geometry, horizontal scrolling and clipping |
-| Decorated field | `TextField` | Composes that same editor with padding and `BoxDecoration`; placeholder, enabled and read-only modes |
+| Decorated field | `TextField` | Composes that same editor with padding and `BoxDecoration`; placeholder, disabled and read-only modes |
 
+TextField and EditableText are enabled by default. `.disabled(true)` disables and `.disabled(false)` enables; the old `.enabled(value)` builder is removed (migrate to `.disabled(!value)`). Read-only remains separate and allows selection/copy.
 Use `TextField::new(controller.clone())`, not a parallel application string editor. It is already focusable: assign `.focus_handle(handle)` directly instead of adding another focus stop.
 
 Current behavior includes grapheme-safe navigation/replacement/deletion, selection drag, local Windows editing chords, undo/redo and tagged clipboard completion. Public positions are **UTF-8 byte offsets normalized to extended grapheme boundaries**, not character counts. `on_changed` reports user committed-text changes only; programmatic replacement, selection movement and preedit do not fire it. `on_submitted` receives Enter modifiers; `on_escape` leaves cancellation policy to the consumer.

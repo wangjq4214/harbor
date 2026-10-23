@@ -48,8 +48,10 @@ impl TextField {
         };
         self
     }
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.editor = self.editor.enabled(enabled);
+    /// Disables editing and focus eligibility. Enabled by default.
+    /// Read-only is separate and still permits selection and copy.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.editor = self.editor.disabled(disabled);
         self
     }
     pub fn read_only(mut self, read_only: bool) -> Self {

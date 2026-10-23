@@ -15,33 +15,31 @@ pub(crate) fn configuration_notification(
     title: &'static str,
     message: String,
     top_offset: f32,
-    on_dismiss: impl Fn() + Send + Sync + 'static,
+    on_dismiss: impl Fn() + 'static,
 ) -> impl Component {
-    let on_dismiss = std::sync::Arc::new(on_dismiss);
+    let notification = Notification::new(message, on_dismiss)
+        .title(title)
+        .max_lines(4)
+        .close_alignment(Alignment::Start);
     move |cx: &mut BuildCx| {
         let appearance = GlassAppearance {
             radius: BorderRadius::all(6.0).unwrap(),
             ..GlassAppearance::default()
         };
-        let card = Notification::new(message.clone(), {
-            let on_dismiss = on_dismiss.clone();
-            move || on_dismiss()
-        })
-        .title(title)
-        .max_lines(4)
-        .close_alignment(Alignment::Start)
-        .detail_color(Color {
-            a: cx.theme().button.normal.foreground.a * 0.82,
-            ..cx.theme().button.normal.foreground
-        })
-        .style(harbor_widget::widgets::notification::NotificationStyle {
-            foreground: Some(cx.theme().button.normal.foreground),
-            // The shared material owns the fill; an opaque card would hide its filter.
-            background: Some(Color::TRANSPARENT),
-            ..Default::default()
-        })
-        .close_button_style(glass_icon_button_style(cx))
-        .build(cx);
+        let card = notification
+            .clone()
+            .detail_color(Color {
+                a: cx.theme().button.normal.foreground.a * 0.82,
+                ..cx.theme().button.normal.foreground
+            })
+            .style(harbor_widget::widgets::notification::NotificationStyle {
+                foreground: Some(cx.theme().button.normal.foreground),
+                // The shared material owns the fill; an opaque card would hide its filter.
+                background: Some(Color::TRANSPARENT),
+                ..Default::default()
+            })
+            .close_button_style(glass_icon_button_style(cx))
+            .build(cx);
         let panel = appearance.panel(cx, card);
         Portal::new()
             .child(
@@ -394,10 +392,7 @@ mod tests {
             runtime::Runtime,
             scene::primitive::Primitive,
         };
-        use std::sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        };
+        use std::{cell::Cell, rc::Rc};
 
         fn close_icon(runtime: &Runtime) -> (Rect, Color) {
             let delta = runtime.pending_delta().unwrap();
@@ -425,7 +420,7 @@ mod tests {
             runtime.update(Instant::now());
         }
         for (width, height, scale) in [(800, 400, 1.0), (800, 400, 1.5), (320, 200, 1.0)] {
-            let dismissed = Arc::new(AtomicUsize::new(0));
+            let dismissed = Rc::new(Cell::new(0));
             let count = dismissed.clone();
             let mut runtime = Runtime::new();
             runtime.set_viewport(Viewport::new(width, height, scale));
@@ -434,7 +429,7 @@ mod tests {
                 "Invalid settings; previously accepted configuration remains effective".into(),
                 0.0,
                 move || {
-                    count.fetch_add(1, Ordering::Relaxed);
+                    count.set(count.get() + 1);
                 },
             ));
             runtime.update(Instant::now());
@@ -497,7 +492,7 @@ mod tests {
             assert_eq!(close_icon(&runtime).1.a, 0.5);
             pointer(&mut runtime, center, PointerPhase::Cancel);
             assert_eq!(close_icon(&runtime).1, normal);
-            assert_eq!(dismissed.load(Ordering::Relaxed), 0);
+            assert_eq!(dismissed.get(), 0);
             pointer(&mut runtime, center, PointerPhase::Down);
             pointer(
                 &mut runtime,
@@ -509,14 +504,10 @@ mod tests {
                 Point::new(panel.min.x + 8.0, center.y),
                 PointerPhase::Up,
             );
-            assert_eq!(
-                dismissed.load(Ordering::Relaxed),
-                0,
-                "release outside close must cancel"
-            );
+            assert_eq!(dismissed.get(), 0, "release outside close must cancel");
             pointer(&mut runtime, center, PointerPhase::Down);
             pointer(&mut runtime, center, PointerPhase::Up);
-            assert_eq!(dismissed.load(Ordering::Relaxed), 1);
+            assert_eq!(dismissed.get(), 1);
             assert!(
                 runtime.input().focused().is_none(),
                 "close never steals focus"

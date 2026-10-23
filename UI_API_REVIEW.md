@@ -8,7 +8,7 @@
 
 > 统一构建语义，保留普通 Rust 表达式；明确组件的子节点契约；用少量组合方法降低嵌套。
 
-本文是源码审阅和设计建议。允许讨论破坏性变更。**状态更新（2026-10-23）：F1、F2 已实施并通过各自记录的自动化验证，见第 9 节；F3–F8 仍为待实施建议。** 第 2–7 节保留原审阅基线与建议，不代表实施后的全部现状。
+本文是源码审阅和设计建议。允许讨论破坏性变更。**状态更新（2026-10-23）：F1、F2 已实施并通过各自记录的自动化验证；F3 已实施并通过自动化验证及 native hidden-host smoke，但原生 IME 与实际 HMR DLL 卸载验收仍待完成，见第 9 节；F4–F8 仍为待实施建议。** 第 2–7 节保留原审阅基线与建议，不代表实施后的全部现状；F3 原建议中的 `on_activate` / `enabled` 命名方向已被后续决策修订。
 
 ## 2. 审阅基线与范围
 
@@ -116,6 +116,8 @@ view! 子节点 ── IntoChildView ── deferred View ── Fiber 内构建
 这是有意的契约变更，必须迁移原先依赖错误或覆盖行为的调用和测试。
 
 ### F3 / P0：统一普通 UI 回调的线程模型和事件命名
+
+> 后续实施说明：本节保留原审阅建议。实际契约保留 Button/IconButton 的 `.on_click(...)` 和 InteractiveRegion 的 `.on_activate(...)`，并统一普通控件为 `.disabled(bool)`；见 ADR 0081、0082、spec 0036 及第 9 节 F3 记录。
 
 #### 现状与影响
 
@@ -446,9 +448,9 @@ view! {
 
 建议保留普通 Rust 表达式语法、共享交互状态机、controller/editing-core/field 分层、共享 flex 引擎，以及应用 → widget 的依赖方向；这些边界具有实际价值，不应仅因实现较复杂而删除。
 
-本次审阅已覆盖所选生产 API 范围，未进行全仓库正确性审计。**状态更新（2026-10-23）：F1 已实施并完成所记录的自动化验证（spec 0034 / ADR 0079）；F2 已实施并通过自动化验证（spec 0035 / ADR 0080）；F3–F8 仍为待实施建议，已映射到 U1–U5。** 审阅当时的结论见上文原文。
+本次审阅已覆盖所选生产 API 范围，未进行全仓库正确性审计。**状态更新（2026-10-23）：F1 已实施并完成所记录的自动化验证（spec 0034 / ADR 0079）；F2 已实施并通过自动化验证（spec 0035 / ADR 0080）；F3 已实施并通过自动化验证及 native hidden-host smoke，仍有原生 IME/HMR 验收缺口（spec 0036 / ADR 0081、0082）；F4–F8 仍为待实施建议。** 审阅当时的结论见上文原文。
 
-原建议中 U1 的构建边界与 child 契约、U2 的 child API、U4 的相关宏改造及对应消费者迁移已随 F1/F2 落地；这不代表 U1–U5 整体完成。后续仍需单独推进 F3–F8，并保留 F1 记录中的人工集成验证待办。每个阶段应独立验证，避免同时改变构建、布局和事件行为而无法定位回归。
+原建议中 U1 的构建边界与 child 契约、U2 的 child API、U4 的相关宏改造及对应消费者迁移已随 F1/F2 落地；F3 进一步落实了 U1/U2 的普通 UI 回调、控件命名和焦点转发契约，以及对应 U5 调用与文档迁移。这不代表 U1–U5 整体完成。后续仍需单独推进 F4–F8，并保留 F1/F3 记录中的人工集成验证待办。每个阶段应独立验证，避免同时改变构建、布局和事件行为而无法定位回归。
 
 ## 9. 实施状态记录(2026-10-23)
 
@@ -483,6 +485,23 @@ view! {
   - 已完成实施、测试、风险审阅、需求核对及格式化后的集成复验，无已确认遗留阻塞。
 - **未运行与范围限制**：需要交互桌面的 native hidden-host 生命周期 smoke test 未运行；本轮未进行原生窗口、IME 或 HMR 人工会话验证，也未实现 F3–F8。该结果不替代 F1 已记录的人工集成验证待办。
 
+### F3：已实施并通过自动化验证，原生验收仍有缺口
+
+- **产物**：`.grimoire/spec/0036-ui-thread-callbacks-and-control-api-consistency.md`、`.grimoire/adr/0081-preserve-click-naming-and-standardize-disabled-builders.md`、`.grimoire/adr/0082-ui-thread-local-widget-callbacks.md`、`.grimoire/plans/0047-ui-thread-callbacks-and-control-api.md`（含 R1–R5 对照及验证证据）。关联 spec/ADR 状态字段未修改，不据局部验证宣称整体验收完成。
+- **相对原建议的修订**：保留 Button/IconButton `.on_click(...)`，涵盖既有鼠标与 Enter/Space 逻辑激活；InteractiveRegion 继续使用 `.on_activate(...)`。可用性统一沿用 `.disabled(bool)`，而非原建议的 `.enabled(bool)`；无关的 Focus `.enabled(...)` 保持不变。
+- **已落地**：
+  - 普通 UI 回调：Button/IconButton 点击、MouseRegion enter/exit、IconButton `color_with` 和 Notification dismissal 采用 `Rc` 存储与 `Fn(...) + 'static`，可直接捕获 Signal 或其他 UI-local 状态；不改变真实跨线程接口、外部渲染和调度的线程契约。
+  - 编辑器：TextField/EditableText 改为 `.disabled(bool)`，默认仍可用；旧 `.enabled(...)` 方法移除且不保留别名。调用按等价极性迁移，read-only 的选择/复制与 disabled 的编辑/焦点限制保持独立。
+  - 焦点：Button/IconButton `.focus_handle(FocusHandle)` 直接转发到既有 InteractiveRegion，不添加 Focus 包装、额外 Fiber 或 Tab stop；共享交互状态机及路由、capture、键盘时机保持不变。
+  - 上层调用：Notification composition 保留已配置组件，删除额外 Arc 与纯转发回调；逐一检查 tab/search/palette/confirmation，保留具有视觉、generation/source、生命周期或 Host 协调职责的 helper 与同步状态。业务命令仍通过 Dispatcher，由 Host 按原有顺序执行。
+  - 文档与覆盖：Learn 增加直接捕获局部 Signal 的按钮示例，保留业务 intent 与 Host drain/wakeup 说明；catalog 和编辑器文档同步。新增公共 API 编译通过/失败 fixtures、局部状态真实控件交互、焦点遍历/恢复、回调替换/移除/根卸载释放及确认权限回归测试。
+- **最终验证**：
+  - `cargo test -p harbor-widget -p harbor-app -p harbor-widget-macros --all-features`：1,203 项通过，0 失败，3 项忽略；包括公共 API fixtures、HMR lifecycle 单元测试和应用交互回归，不代表真实 DLL 卸载验收。
+  - `cargo test -p harbor-widget --features winit --test native_host_smoke -- --ignored --nocapture`：另行补跑上述忽略项中的 hidden-host smoke，1 项通过，覆盖真实隐藏窗口 GPU 呈现及重复次级窗口生命周期。
+  - `cargo check --workspace --all-targets --all-features` 通过；文档示例检查（含 crate READMEs）18 项通过；13 个改动/新增 Rust 文件的 rustfmt 检查及 `git diff --check` 通过。既有 unused-variable 警告未作为本次清理范围。
+  - 实施、测试、inline 风险审阅与需求核对、格式化后的集成复验均已执行，无已确认代码阻塞。日志位于 `target/spec0036-final-tests.log`、`target/spec0036-final-check.log`、`target/spec0036-native-smoke.log` 和 `target/spec0036-doc-examples.log`。
+- **未运行与范围限制**：未运行 live native IME/candidate-window 交互、实际 HMR 旧 generation 回调销毁先于 DLL 卸载的验收，以及本轮忽略的 2 项应用 GPU 像素测试。headless IME/root teardown 与 native host smoke 不替代这些证据；F3 尚不能标记为整体验收完成。F4–F8 未纳入本轮实施。
+
 ### 其余发现
 
-- F3–F8 仍为待实施建议；U1 的构建边界与 child 契约已分别由 ADR 0079、0080 固定，但回调、组合便利 API、构造器、数值校验与具名配置等工作尚未完成。后续单独立项时沿用本文件的证据与验证要求。
+- F4–F8 仍为待实施建议；U1 的构建边界、child 契约与普通 UI 回调/命名契约已分别由 ADR 0079、0080、0081/0082 固定。Button 内容组合、布局便利 API、构造器/导出、数值校验与具名配置尚需单独推进；沿用本文件的证据与验证要求，不将 F3 的完成范围扩大到这些发现。

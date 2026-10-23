@@ -70,6 +70,7 @@ impl AnyView for Position {
 }
 use super::text_label::LabelGeometry;
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::LucideIcon;
@@ -96,21 +97,22 @@ pub struct Notification {
     detail_color: Option<Color>,
     max_lines: Option<usize>,
     close_alignment: Alignment,
-    on_dismiss: Arc<dyn Fn() + Send + Sync>,
+    on_dismiss: Rc<dyn Fn()>,
     style: NotificationStyle,
     close_style: Option<ControlStyle>,
     placement: Option<NotificationPlacement>,
 }
 
 impl Notification {
-    pub fn new(message: impl Into<String>, on_dismiss: impl Fn() + Send + Sync + 'static) -> Self {
+    /// Creates persistent content with a UI-thread-local dismissal callback.
+    pub fn new(message: impl Into<String>, on_dismiss: impl Fn() + 'static) -> Self {
         Self {
             message: message.into(),
             title: None,
             detail_color: None,
             max_lines: None,
             close_alignment: Alignment::Center,
-            on_dismiss: Arc::new(on_dismiss),
+            on_dismiss: Rc::new(on_dismiss),
             style: NotificationStyle::default(),
             close_style: None,
             placement: None,
@@ -209,7 +211,7 @@ struct Card {
     close_alignment: Alignment,
     geometry: RefCell<Option<LabelGeometry>>,
     title_geometry: RefCell<Option<LabelGeometry>>,
-    on_dismiss: Arc<dyn Fn() + Send + Sync>,
+    on_dismiss: Rc<dyn Fn()>,
     foreground: Color,
     background: Color,
     style: NotificationStyle,

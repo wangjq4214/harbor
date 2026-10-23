@@ -3,12 +3,13 @@ use crate::input::event_ctx::EventCtx;
 use crate::scene::primitive::Color;
 use crate::theme::ControlStyle;
 use crate::view::{BuildCx, Component, View};
+use crate::widgets::focus::FocusHandle;
 use crate::widgets::icon::Icon;
 use crate::widgets::interactive_region::{InteractionState, InteractiveRegion};
-use std::sync::Arc;
+use std::rc::Rc;
 
-type ClickCallback = Arc<dyn Fn(&mut EventCtx) + Send + Sync>;
-type ColorCallback = Arc<dyn Fn(&InteractionState) -> Color + Send + Sync>;
+type ClickCallback = Rc<dyn Fn(&mut EventCtx)>;
+type ColorCallback = Rc<dyn Fn(&InteractionState) -> Color>;
 
 /// Compact icon control with the same interaction semantics as [`crate::widgets::Button`].
 ///
@@ -23,6 +24,7 @@ pub struct IconButton {
     label: String,
     on_click: Option<ClickCallback>,
     disabled: bool,
+    focus_handle: Option<FocusHandle>,
     selected: bool,
     style: Option<ControlStyle>,
     icon_size: Option<f32>,
@@ -36,6 +38,7 @@ impl IconButton {
             label: label.into(),
             on_click: None,
             disabled: false,
+            focus_handle: None,
             selected: false,
             style: None,
             icon_size: None,
@@ -43,11 +46,17 @@ impl IconButton {
         }
     }
 
-    pub fn on_click(mut self, handler: impl Fn(&mut EventCtx) + Send + Sync + 'static) -> Self {
-        self.on_click = Some(Arc::new(handler));
+    /// Runs on the UI thread with local captures and existing activation timing.
+    pub fn on_click(mut self, handler: impl Fn(&mut EventCtx) + 'static) -> Self {
+        self.on_click = Some(Rc::new(handler));
         self
     }
 
+    /// Assigns the existing interactive region a stable focus identity.
+    pub fn focus_handle(mut self, handle: FocusHandle) -> Self {
+        self.focus_handle = Some(handle);
+        self
+    }
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -79,11 +88,8 @@ impl IconButton {
     /// The callback receives this control's retained interaction state, so callers can
     /// express appearance rules a [`ControlStyle`] cannot, such as an enclosing row's
     /// visibility or keyboard focus.
-    pub fn color_with(
-        mut self,
-        color: impl Fn(&InteractionState) -> Color + Send + Sync + 'static,
-    ) -> Self {
-        self.color = Some(Arc::new(color));
+    pub fn color_with(mut self, color: impl Fn(&InteractionState) -> Color + 'static) -> Self {
+        self.color = Some(Rc::new(color));
         self
     }
 
@@ -105,6 +111,9 @@ impl Component for IconButton {
             .style(style.clone())
             .disabled(self.disabled)
             .selected(self.selected);
+        if let Some(handle) = self.focus_handle {
+            region = region.focus_handle(handle);
+        }
         if let Some(callback) = &self.on_click {
             let callback = callback.clone();
             region = region.on_activate(move |ctx| callback(ctx));
