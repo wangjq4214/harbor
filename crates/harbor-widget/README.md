@@ -69,7 +69,7 @@ impl Component for Counter {
 
         view! { Column::new().gap(8.0) => {
             TextLabel::new(format!("Count: {value}"));
-            Button::new("Increment")
+            Button::text("Increment")
                 .on_click(move |_| actions.dispatch(CounterAction::Increment));
         } }
     }
@@ -84,7 +84,7 @@ For dynamic lists, assign stable sibling keys:
 use harbor_widget::ComponentExt;
 
 // Inside view! { ... }
-// Button::new(item.label.clone()).keyed(item.id.to_string());
+// Button::text(item.label.clone()).keyed(item.id.to_string());
 ```
 
 Keys are parent-local. Unkeyed siblings reconcile by position.

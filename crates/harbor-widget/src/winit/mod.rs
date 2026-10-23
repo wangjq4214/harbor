@@ -1816,7 +1816,7 @@ mod tests {
     #[test]
     fn adapter_dispatches_focus_events_and_forwards_redraw_effects() {
         let mut runtime = Runtime::new();
-        runtime.set_root(crate::widgets::button::Button::new("OK"));
+        runtime.set_root(crate::widgets::button::Button::text("OK"));
         runtime.update(Instant::now());
         runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
             key: crate::input::event::Key::Tab,
@@ -1916,7 +1916,7 @@ mod tests {
         let clicked = Arc::new(AtomicBool::new(false));
         let clicked_clone = Arc::clone(&clicked);
         let mut runtime = Runtime::new();
-        runtime.set_root(Button::new("OK").on_click(move |_| {
+        runtime.set_root(Button::text("OK").on_click(move |_| {
             clicked_clone.store(true, Ordering::SeqCst);
         }));
         runtime.update(Instant::now());
@@ -1954,7 +1954,7 @@ mod tests {
         let clicked = Arc::new(AtomicBool::new(false));
         let clicked_clone = Arc::clone(&clicked);
         let mut runtime = Runtime::new();
-        runtime.set_root(Button::new("OK").on_click(move |_| {
+        runtime.set_root(Button::text("OK").on_click(move |_| {
             clicked_clone.store(true, Ordering::SeqCst);
         }));
         runtime.update(Instant::now());
@@ -2027,7 +2027,7 @@ mod tests {
         }
 
         let mut runtime = Runtime::new();
-        runtime.set_root(Button::new("OK"));
+        runtime.set_root(Button::text("OK"));
         runtime.update(Instant::now());
         let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
         press(&mut runtime, &mut adapter);

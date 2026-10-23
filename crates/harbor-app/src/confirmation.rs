@@ -43,11 +43,11 @@ impl Component for ConfirmationDialogProps {
                     );
                     SizedBox::new(Size::new(0.0, 12.0));
                     Row::new() => {
-                        Button::new(self.deny_label).on_click(move |_| {
+                        Button::text(self.deny_label).on_click(move |_| {
                             cancelled.store(true, Ordering::SeqCst);
                         });
                         SizedBox::new(Size::new(12.0, 0.0));
-                        Button::new(self.allow_label).on_click(move |_| {
+                        Button::text(self.allow_label).on_click(move |_| {
                             confirmed.store(true, Ordering::SeqCst);
                         });
                     }

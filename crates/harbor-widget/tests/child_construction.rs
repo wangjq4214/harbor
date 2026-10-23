@@ -134,7 +134,7 @@ impl Component for StatefulButton {
         let state = cx.use_state(|| self.initial);
         *self.signal_out.borrow_mut() = Some(state.clone());
         self.observed.borrow_mut().push(*state.read());
-        Button::new(self.label).build(cx)
+        Button::text(self.label).build(cx)
     }
 }
 
@@ -356,7 +356,7 @@ fn keyed_children_reorder_preserves_state_per_key_without_migration() {
 fn macro_ready_traits_produce_identical_view_tree_to_fluent_builder() {
     let fluent_tree = Column::new()
         .push_child(Padding::all(4.0).child(SizedBox::new(Size::new(10.0, 20.0))))
-        .push_child(Button::new("Click"));
+        .push_child(Button::text("Click"));
 
     let macro_tree = Column::new()
         .with_children(Children::from_iter([
@@ -364,7 +364,7 @@ fn macro_ready_traits_produce_identical_view_tree_to_fluent_builder() {
                 .with_children(Children::one(SizedBox::new(Size::new(10.0, 20.0))))
                 .unwrap()
                 .into_child_view(),
-            Button::new("Click").into_child_view(),
+            Button::text("Click").into_child_view(),
         ]))
         .unwrap();
 

@@ -352,9 +352,12 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Synonyms:** Event Walk
 
 ### Button
-- **Definition:** Focusable onClick widget with hover/pressed/focused states, also used by paste confirmation.
+- **Definition:** Focusable logical-activation control with hover/pressed/focused states, also used by paste confirmation. The selected composable design provides one replaceable custom or state-driven content slot, with text and icon-plus-text conveniences; shared interaction and control-surface behavior remain distinct from TextLabel/Icon measurement and painting. InteractiveRegion retains its style composition entry point. See [ADR 0083](./adr/0083-composable-buttons-and-shared-control-surfaces.md); this records the agreed direction, not completed implementation or acceptance.
 - **Relationships:**
-  - implements AnyView
+  - belongs to Harbor Widget Runtime
+  - references Widget Child Contract
+  - references Widget Icon
+  - references Event Routing
 
 ### Paste Confirmation Window
 - **Definition:** An OS-level secondary winit window that displays the paste confirmation UI independently of Harbor's main window.

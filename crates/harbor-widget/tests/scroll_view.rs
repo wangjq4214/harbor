@@ -164,10 +164,11 @@ fn zero_height_viewport_keeps_descendants_clipped_and_unhittable() {
     let observed = activated.clone();
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 0, 1.0));
-    runtime
-        .set_root(ScrollView::new().child(
-            Button::new("hidden").on_click(move |_| observed.store(true, Ordering::SeqCst)),
-        ));
+    runtime.set_root(
+        ScrollView::new().child(
+            Button::text("hidden").on_click(move |_| observed.store(true, Ordering::SeqCst)),
+        ),
+    );
     update(&mut runtime);
 
     let clipped = runtime
@@ -449,13 +450,13 @@ fn descendant_hit_testing_is_clipped_to_the_scroll_viewport() {
     let observed = activated.clone();
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 40, 1.0));
-    runtime.set_root(
-        ScrollView::new().child(Column::new().push_child(Button::new("first")).push_child(
-            Button::new("second").on_click(move |_| {
+    runtime.set_root(ScrollView::new().child(
+        Column::new().push_child(Button::text("first")).push_child(
+            Button::text("second").on_click(move |_| {
                 observed.store(true, Ordering::SeqCst);
             }),
-        )),
-    );
+        ),
+    ));
     update(&mut runtime);
 
     for phase in [PointerPhase::Down, PointerPhase::Up] {
@@ -615,7 +616,7 @@ fn scrollbar_is_painted_above_content_and_drag_preserves_focus_and_capture() {
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
                 .push_child(
-                    Button::new("under overlay")
+                    Button::text("under overlay")
                         .on_click(move |_| clicked.store(true, Ordering::SeqCst)),
                 )
                 .push_child(SizedBox::new(Size::new(100.0, 400.0)).color(Color::BLUE)),

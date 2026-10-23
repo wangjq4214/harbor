@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 fn main() {
     let local = Signal::new(0u32);
-    let _ = Button::new("Local")
+    let _ = Button::text("Local")
         .focus_handle(FocusHandle::new())
         .on_click(move |_| local.set(1));
     let local = Rc::new(Cell::new(0));

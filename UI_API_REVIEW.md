@@ -8,7 +8,7 @@
 
 > 统一构建语义，保留普通 Rust 表达式；明确组件的子节点契约；用少量组合方法降低嵌套。
 
-本文是源码审阅和设计建议。允许讨论破坏性变更。**状态更新（2026-10-23）：F1、F2 已实施并通过各自记录的自动化验证；F3 已实施并通过自动化验证及 native hidden-host smoke，但原生 IME 与实际 HMR DLL 卸载验收仍待完成，见第 9 节；F4–F8 仍为待实施建议。** 第 2–7 节保留原审阅基线与建议，不代表实施后的全部现状；F3 原建议中的 `on_activate` / `enabled` 命名方向已被后续决策修订。
+本文是源码审阅和设计建议。允许讨论破坏性变更。**状态更新（2026-10-23）：F1、F2 已实施并通过各自记录的自动化验证；F3 已实施并通过自动化验证及 native hidden-host smoke，但原生 IME 与实际 HMR DLL 卸载验收仍待完成；F4 已实施并通过自动化验证及 GPU/系统字体渲染验证，原生应用焦点/IME 与实际 HMR generation teardown 仍待验收，见第 9 节；F5–F8 仍为待实施建议。** 第 2–7 节保留原审阅基线与建议，不代表实施后的全部现状；F3 原建议中的 `on_activate` / `enabled` 命名方向已被后续决策修订。
 
 ## 2. 审阅基线与范围
 
@@ -148,6 +148,8 @@ view! 子节点 ── IntoChildView ── deferred View ── Fiber 内构建
 需保留事件路由、嵌套控件优先处理、pointer capture 和恰好一次激活的语义。
 
 ### F4 / P1：让 Button 支持组合，收敛内容测量与绘制责任
+
+> 后续实施说明：本节保留原审阅基线。Button 单槽组合、共享 ControlSurface 与 TextLabel/Icon 内容测量绘制已落地；旧 `Button::new(text)` 已迁移为 `Button::text(text)`，详见 ADR 0083、spec 0037 及第 9 节 F4 记录。
 
 #### 现状与影响
 
@@ -448,9 +450,9 @@ view! {
 
 建议保留普通 Rust 表达式语法、共享交互状态机、controller/editing-core/field 分层、共享 flex 引擎，以及应用 → widget 的依赖方向；这些边界具有实际价值，不应仅因实现较复杂而删除。
 
-本次审阅已覆盖所选生产 API 范围，未进行全仓库正确性审计。**状态更新（2026-10-23）：F1 已实施并完成所记录的自动化验证（spec 0034 / ADR 0079）；F2 已实施并通过自动化验证（spec 0035 / ADR 0080）；F3 已实施并通过自动化验证及 native hidden-host smoke，仍有原生 IME/HMR 验收缺口（spec 0036 / ADR 0081、0082）；F4–F8 仍为待实施建议。** 审阅当时的结论见上文原文。
+本次审阅已覆盖所选生产 API 范围，未进行全仓库正确性审计。**状态更新（2026-10-23）：F1 已实施并完成所记录的自动化验证（spec 0034 / ADR 0079）；F2 已实施并通过自动化验证（spec 0035 / ADR 0080）；F3 已实施并通过自动化验证及 native hidden-host smoke，仍有原生 IME/HMR 验收缺口（spec 0036 / ADR 0081、0082）；F4 已实施并通过自动化及 GPU/系统字体渲染验证，仍有原生应用焦点/IME 与实际 HMR 验收缺口（spec 0037 / ADR 0083）；F5–F8 仍为待实施建议。** 审阅当时的结论见上文原文。
 
-原建议中 U1 的构建边界与 child 契约、U2 的 child API、U4 的相关宏改造及对应消费者迁移已随 F1/F2 落地；F3 进一步落实了 U1/U2 的普通 UI 回调、控件命名和焦点转发契约，以及对应 U5 调用与文档迁移。这不代表 U1–U5 整体完成。后续仍需单独推进 F4–F8，并保留 F1/F3 记录中的人工集成验证待办。每个阶段应独立验证，避免同时改变构建、布局和事件行为而无法定位回归。
+原建议中 U1 的构建边界与 child 契约、U2 的 child API、U4 的相关宏改造及对应消费者迁移已随 F1/F2 落地；F3 进一步落实了 U1/U2 的普通 UI 回调、控件命名和焦点转发契约，以及对应 U5 调用与文档迁移；F4 落实了 U2 的 Button 内容组合、共享表面与内容测量责任收敛，以及对应 U5 消费者和文档迁移。这不代表 U1–U5 整体完成。后续仍需单独推进 F5–F8，并保留 F1/F3/F4 记录中的原生与 HMR 集成验证待办。每个阶段应独立验证，避免同时改变构建、布局和事件行为而无法定位回归。
 
 ## 9. 实施状态记录(2026-10-23)
 
@@ -502,6 +504,23 @@ view! {
   - 实施、测试、inline 风险审阅与需求核对、格式化后的集成复验均已执行，无已确认代码阻塞。日志位于 `target/spec0036-final-tests.log`、`target/spec0036-final-check.log`、`target/spec0036-native-smoke.log` 和 `target/spec0036-doc-examples.log`。
 - **未运行与范围限制**：未运行 live native IME/candidate-window 交互、实际 HMR 旧 generation 回调销毁先于 DLL 卸载的验收，以及本轮忽略的 2 项应用 GPU 像素测试。headless IME/root teardown 与 native host smoke 不替代这些证据；F3 尚不能标记为整体验收完成。F4–F8 未纳入本轮实施。
 
+### F4：已实施并通过自动化与渲染验证，原生验收仍有缺口
+
+- **产物**：`.grimoire/spec/0037-composable-buttons-and-content-measurement.md`、`.grimoire/adr/0083-composable-buttons-and-shared-control-surfaces.md`、`.grimoire/plans/0048-composable-buttons-and-content-measurement.md`（含 R1–R6 对照、实施修正与验证证据）。spec/ADR 的 Draft / Proposed 状态及早期 spec-only 说明未在本轮改写；本文记录后续实施，不据自动化结果宣称整体验收完成。
+- **已落地**：
+  - Button 单槽组合：支持 `new()`、`text(...)`、`icon(icon, text)`、`.child(...)`、状态驱动 `.content(...)` 与 `.style(...)`；共享 `SingleChild` 协议，child/content 相互替换，宏空 block 清空，静态/动态数量错误沿用 F2 规则。旧 `Button::new(text)` 移除，无兼容别名，消费者与文档已迁移。
+  - 职责收敛：私有 `ControlSurface` 通过 InteractiveRegion 为 Button/IconButton 共享 padding、最小尺寸、背景、边框及子内容之后的焦点环；保留 region 的 `.style(...)` 外观入口与唯一交互状态机，不强制新增公开 wrapper 或焦点停靠点。region 不再存储、估算或绘制 label，内容交给 TextLabel/Icon。
+  - 测量与窄空间：内置文字单行、使用 TextLabel renderer advances 与 ellipsis，放宽约束后恢复源文本；图文组合先分配 icon 与间距，再约束文字。为避免有界 Flex 填满最大宽度，采用私有纯布局 IconText arrangement，保留短按钮的内容驱动宽度；极窄父约束仍具权威。
+  - 主题与生命周期：Button/IconButton 保留各自 theme role、style/tint 配置与 IconButton 不绘制的 label metadata；自定义内容颜色不被覆盖。状态内容保留独立 Fiber/hooks、主题继承及替换/清空/卸载清理，既有 `.on_click(...)`、`.disabled(...)`、focus handle、capture、嵌套优先处理与键盘激活逻辑继续由共享 region 承担。
+  - 应用与文档：confirmation 等 Button 调用及 README/learn/catalog 同步；覆盖文字、图文、自定义 child 与状态内容示例。tabs/search/palette 继续使用既有 region/material 组合，不重复应用 padding，不转移 Dispatcher/Host 业务职责。
+- **最终验证（实施记录）**：
+  - `cargo test --workspace --all-features`、`cargo check --workspace --all-targets --all-features` 通过；既有 ignored/manual 项未据此计为通过，仍有既有 unused-import/variable 警告。日志：`target/f4-final-tests.log`、`target/f4-final-check.log`。
+  - `cargo test --test composable_button_rendering -- --ignored --nocapture` 显式通过，使用真实 GPU/系统字体；`cargo test -p harbor-app --lib -- --ignored --nocapture` 补跑的 2 项 search/palette GPU 验收测试均通过。日志：`target/f4-rendering-final.log`、`target/f4-app-rendered-final.log`。
+  - 渲染证据：Radeon RX 7900 XT/Vulkan 下，四个 i/W 的实测文字宽分别为 11.62/44.84dp，对应文字按钮宽 43.62/76.84dp，图文按钮宽 71.62/104.84dp。`target/f4-buttons/samples.png` 已检查，覆盖 320/150/40dp 宽度、四类内容、六种交互状态及长文字/中文/混合 grapheme；几何变化来自实际 advances，不再追求旧字符数估算的像素等价。
+  - mounted/编译测试覆盖 slot 替换/清空、macro/builder 等价、数量诊断、旧构造器拒绝、主题/自定义颜色、窄到宽恢复、keyed 状态/焦点、订阅与捕获释放、全表面命中、嵌套拒绝及鼠标/键盘时机。结构审阅确认没有保留 region label renderer 或复制输入处理。
+  - `python scripts/docs/check_examples.py --include-readmes`：19 项通过；`cargo fmt --all -- --check` 与 `git diff --check` 通过。全仓 `check_docs.py` 因本报告原有中文字符策略冲突失败；实施阶段改动的 3 份文档 scoped 检查通过，不将全仓文档检查算作通过。
+- **未运行与范围限制**：未执行原生应用焦点/IME 交互会话，也未收集实际受支持 HMR generation 回调销毁先于 DLL 卸载的生命周期证据；本轮未单独补跑 native hidden-host smoke。GPU 渲染、headless 生命周期及全特性测试不替代这些验收，F4 尚不能标记为整体验收完成，也不关闭 F1/F3 的既有缺口。F5–F8 未纳入本轮实施；本次报告同步未重新运行上述 Rust 验证。
+
 ### 其余发现
 
-- F4–F8 仍为待实施建议；U1 的构建边界、child 契约与普通 UI 回调/命名契约已分别由 ADR 0079、0080、0081/0082 固定。Button 内容组合、布局便利 API、构造器/导出、数值校验与具名配置尚需单独推进；沿用本文件的证据与验证要求，不将 F3 的完成范围扩大到这些发现。
+- F5–F8 仍为待实施建议；U1 的构建边界、child 契约与普通 UI 回调/命名契约已分别由 ADR 0079、0080、0081/0082 固定，F4 的 Button 内容组合与共享表面契约由 ADR 0083 / spec 0037 固定。布局便利 API、通用构造器/导出、数值校验与具名配置尚需单独推进；F4 的定向 Button 构造器迁移不代表 F6 整体完成。沿用本文件的证据与验证要求，不将 F4 的实施范围扩大到这些发现。

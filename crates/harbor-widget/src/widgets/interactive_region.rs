@@ -1,3 +1,4 @@
+use super::control_surface::ControlSurface;
 use crate::IntoChildView;
 use crate::effects::CursorShape;
 use crate::input::event::{
@@ -11,7 +12,6 @@ use crate::theme::ControlStyle;
 use crate::view::{AnyView, BuildCx, Component, FocusMetadata, View};
 use crate::widgets::focus::FocusHandle;
 use std::rc::Rc;
-use std::sync::Arc;
 
 /// Orthogonal state exposed by interactive desktop controls.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,7 +72,7 @@ pub struct InteractiveRegion {
     selected: bool,
     focusable: bool,
     cursor: Option<CursorShape>,
-    label: Option<String>,
+    centered: bool,
     on_activate: Option<ActivateCallback>,
     child: Option<View>,
     content: Option<ContentBuilder>,
@@ -87,7 +87,7 @@ impl InteractiveRegion {
             selected: false,
             focusable: true,
             cursor: Some(CursorShape::Default),
-            label: None,
+            centered: false,
             on_activate: None,
             child: None,
             content: None,
@@ -153,8 +153,15 @@ impl InteractiveRegion {
         self
     }
 
-    pub(crate) fn label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
+    pub(super) fn resolved_style(&self, cx: &BuildCx) -> ControlStyle {
+        self.style
+            .clone()
+            .unwrap_or_else(|| cx.theme().button.clone())
+    }
+
+    /// Center built-in content without changing application region composition.
+    pub(super) fn centered(mut self) -> Self {
+        self.centered = true;
         self
     }
 }
@@ -187,10 +194,7 @@ impl Component for InteractiveRegion {
             }
             runtime.set(next);
         }
-        let style = self
-            .style
-            .clone()
-            .unwrap_or_else(|| cx.theme().button.clone());
+        let style = self.resolved_style(cx);
         let children = match &self.content {
             Some(builder) => vec![
                 ContentSlot {
@@ -204,8 +208,10 @@ impl Component for InteractiveRegion {
         View::new(
             InteractiveRegionView {
                 runtime,
-                style,
-                label: self.label.clone(),
+                surface: ControlSurface {
+                    style,
+                    centered: self.centered,
+                },
                 cursor: self.cursor,
                 on_activate: self.on_activate.clone(),
                 focus_handle: self.focus_handle,
@@ -232,8 +238,7 @@ impl crate::WithChildren for InteractiveRegion {
 #[derive(Clone)]
 struct InteractiveRegionView {
     runtime: Signal<InteractionRuntimeState>,
-    style: ControlStyle,
-    label: Option<String>,
+    surface: ControlSurface,
     cursor: Option<CursorShape>,
     on_activate: Option<ActivateCallback>,
     focus_handle: Option<FocusHandle>,
@@ -261,111 +266,34 @@ impl InteractiveRegionView {
 }
 
 impl AnyView for InteractiveRegionView {
-    fn intrinsic_size(
-        &self,
-        constraints: BoxConstraints,
-        metrics: &crate::text::TextMetrics,
-    ) -> Size {
-        let width = self
-            .label
-            .as_ref()
-            .map(|label| {
-                label.chars().count() as f32 * metrics.cell_width
-                    + self.style.horizontal_padding * 2.0
-            })
-            .unwrap_or(0.0);
-        let height = if self.label.is_some() {
-            metrics.line_height.max(self.style.min_height)
-        } else {
-            self.style.min_height
-        };
-        constraints.constrain(Size::new(width, height))
-    }
-
     fn child_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
-        constraints.deflate(Size::new(self.style.horizontal_padding * 2.0, 0.0))
+        self.surface.child_constraints(constraints)
     }
 
     fn layout_children(
         &self,
         constraints: BoxConstraints,
         child_sizes: &[Size],
-        metrics: &crate::text::TextMetrics,
+        _metrics: &crate::text::TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let child = child_sizes.first().copied().unwrap_or(Size::ZERO);
-        let label_size = self.label.as_ref().map_or(Size::ZERO, |label| {
-            Size::new(
-                label.chars().count() as f32 * metrics.cell_width,
-                metrics.line_height,
-            )
-        });
-        let content = Size::new(
-            child.width.max(label_size.width),
-            child.height.max(label_size.height),
-        );
-        let size = constraints.constrain(Size::new(
-            content.width + self.style.horizontal_padding * 2.0,
-            content.height.max(self.style.min_height),
-        ));
-        let origin = Point::new(
-            self.style.horizontal_padding.min(size.width),
-            ((size.height - child.height) / 2.0).max(0.0),
-        );
-        (size, vec![origin; child_sizes.len()])
+        self.surface.layout(constraints, child_sizes)
     }
 
     fn paint_primitives(&self, rect: Rect, _metrics: &crate::text::TextMetrics) -> Vec<Primitive> {
-        let state = self.runtime.read().visual;
-        let colors = self.style.resolve_state(&state);
-        let mut primitives = vec![Primitive::Quad {
+        self.surface.paint(
+            crate::view::PaintPhase::BeforeChildren,
             rect,
-            color: colors.background,
-            corner_radius: self.style.radius,
-        }];
-        // A zero-width border means no outline, not the renderer's fill mode.
-        if self.style.border_width > 0.0 && colors.border.a > 0.0 {
-            primitives.push(Primitive::Border {
-                rect,
-                width: self.style.border_width,
-                color: colors.border,
-                corner_radius: self.style.radius,
-            });
-        }
-        primitives
+            self.runtime.read().visual,
+        )
     }
 
     fn paint_primitives_for_phase(
         &self,
         phase: crate::view::PaintPhase,
         rect: Rect,
-        metrics: &crate::text::TextMetrics,
+        _metrics: &crate::text::TextMetrics,
     ) -> Vec<Primitive> {
-        if phase == crate::view::PaintPhase::AfterChildren {
-            let state = self.runtime.read().visual;
-            let colors = self.style.resolve_state(&state);
-            let mut primitives = Vec::new();
-            if let Some(label) = &self.label {
-                let text_width = label.chars().count() as f32 * metrics.cell_width;
-                primitives.push(Primitive::Text {
-                    text: Arc::from(label.as_str()),
-                    origin: Point::new(
-                        rect.min.x + (rect.size().width - text_width).max(0.0) / 2.0,
-                        rect.min.y + (rect.size().height - metrics.line_height).max(0.0) / 2.0,
-                    ),
-                    color: colors.foreground,
-                });
-            }
-            if state.focused && state.focus_visible {
-                primitives.push(Primitive::Border {
-                    rect,
-                    width: self.style.border_width + 1.0,
-                    color: self.style.focus_ring,
-                    corner_radius: self.style.radius,
-                });
-            }
-            return primitives;
-        }
-        self.paint_primitives(rect, metrics)
+        self.surface.paint(phase, rect, self.runtime.read().visual)
     }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {

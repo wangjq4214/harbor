@@ -764,7 +764,7 @@ fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
     let clicks = Arc::new(AtomicUsize::new(0));
     let clicks_clone = Arc::clone(&clicks);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicks_clone.fetch_add(1, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());

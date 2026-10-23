@@ -5,6 +5,7 @@ pub mod align;
 pub mod button;
 pub mod column;
 pub mod constrained_box;
+mod control_surface;
 pub mod custom_paint;
 pub mod decorated_box;
 pub mod editable_text;

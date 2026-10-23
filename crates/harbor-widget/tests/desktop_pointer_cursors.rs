@@ -37,7 +37,7 @@ fn assert_arrow(control: impl Component + 'static) {
 #[test]
 fn ordinary_controls_keep_the_arrow_when_enabled_or_disabled() {
     for disabled in [false, true] {
-        assert_arrow(Button::new("Command").disabled(disabled));
+        assert_arrow(Button::text("Command").disabled(disabled));
         assert_arrow(IconButton::new(LucideIcon::X, "Close").disabled(disabled));
         assert_arrow(
             InteractiveRegion::new()
@@ -52,7 +52,7 @@ fn ordinary_controls_override_an_ancestor_specialized_cursor() {
     assert_arrow(
         MouseRegion::new()
             .cursor(CursorShape::Text)
-            .child(Button::new("Command")),
+            .child(Button::text("Command")),
     );
 }
 

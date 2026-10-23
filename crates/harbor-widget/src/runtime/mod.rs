@@ -1090,7 +1090,7 @@ mod tests {
         rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
         rt.request_focus(&handle);
 
-        rt.set_root(Focus::new(Button::new("replacement")).handle(handle));
+        rt.set_root(Focus::new(Button::text("replacement")).handle(handle));
 
         assert!(rt.input().focused().is_some());
     }
@@ -1793,7 +1793,7 @@ mod tests {
     #[test]
     fn route_to_single_with_live_fiber() {
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1865,7 +1865,7 @@ mod tests {
         assert!(rt.has_external_draws());
 
         // Act — replacing the root rebuilds and reinstalls the external bag.
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         // Assert
@@ -2048,7 +2048,7 @@ mod tests {
     #[test]
     fn set_focus_and_clear_focus() {
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -2083,7 +2083,7 @@ mod tests {
     #[test]
     fn route_event_pointer_cancel_without_capture_returns_false() {
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         let event = UiEvent::Pointer(PointerEvent::new(
@@ -2111,7 +2111,7 @@ mod tests {
         // the capture. Sending events for the stale pointer is a no-op.
         let clicked = Arc::new(AtomicBool::new(false));
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK").on_click(move |_ctx| {
+        rt.set_root(Button::text("OK").on_click(move |_ctx| {
             clicked.store(true, Ordering::SeqCst);
         }));
         rt.update(now());
@@ -2129,7 +2129,7 @@ mod tests {
         );
 
         // Replace tree — old fibers are unmounted, captures cleared
-        rt.set_root(Button::new("Replacement"));
+        rt.set_root(Button::text("Replacement"));
         rt.update(now());
 
         // After tree replacement, capture should be cleared
@@ -2179,7 +2179,7 @@ mod tests {
     fn should_focus_button_when_it_is_focusable() {
         // Arrange
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         // Act
@@ -2201,7 +2201,7 @@ mod tests {
         rt.set_root(
             Column::new()
                 .push_child(SizedBox::new(Size::new(100.0, 50.0)))
-                .push_child(Button::new("Next")),
+                .push_child(Button::text("Next")),
         );
         rt.update(now());
 
@@ -2273,7 +2273,7 @@ mod tests {
     #[test]
     fn button_text_rebuilds_and_marks_instances_dirty_when_atlas_revision_changes() {
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         let glyph = |_ch| {
             Some(crate::text::AtlasGlyph {
                 key: harbor_text::GlyphKey::new(

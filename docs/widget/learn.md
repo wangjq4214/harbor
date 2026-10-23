@@ -87,7 +87,7 @@ impl Component for LocalCounter {
         let value = *count.read();
         view! { Column::new().gap(8.0) => {
             TextLabel::new(format!("Count: {value}"));
-            Button::new("Increment").on_click(move |_| {
+            Button::text("Increment").on_click(move |_| {
                 let next = *count.read() + 1;
                 count.set(next);
             });
@@ -127,7 +127,7 @@ impl Component for Counter {
         let actions = self.store.dispatcher();
         view! { Column::new().gap(8.0) => {
             TextLabel::new(format!("Count: {count}"));
-            Button::new("Increment")
+            Button::text("Increment")
                 .on_click(move |_| actions.dispatch(CounterAction::Increment));
         } }
     }

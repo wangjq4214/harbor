@@ -160,7 +160,7 @@ fn focus_loss_disable_and_unmount_remove_caret_deadline() {
                     .disabled(!*observed_enabled.read())
                     .focus_handle(editor_focus),
             )
-            .push_child(Button::new("other"))
+            .push_child(Button::text("other"))
             .build(cx)
     });
     let start = Instant::now();

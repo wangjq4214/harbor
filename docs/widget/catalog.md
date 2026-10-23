@@ -24,15 +24,62 @@ Browse by the job you need to do. The tables describe available public APIs and 
 
 | Need | Available control | Constraints |
 | --- | --- | --- |
-| Single-line text | `widgets::text_label::TextLabel`, `.color(...)`, `.ellipsis()` | Monospace label, not rich text or a general shaping/layout engine |
+| Single-line text | `widgets::text_label::TextLabel`, `.color(...)`, `.ellipsis()` | Renderer-advance label, not rich text or a general shaping/layout engine |
 | Built-in vector artwork | `Icon`, `LucideIcon` | Built-in Lucide inventory, not arbitrary SVG loading |
-| Labelled activation | `Button` | `.on_click`, `.disabled`, `.selected`, `.focus_handle`; uses the shared interaction state machine |
-| Icon activation | `IconButton` | Icon plus label and control styling; the label is not proof of a native accessibility bridge |
+| Composable activation | `Button::new()`, `Button::text(text)`, `Button::icon(icon, text)` | Single replaceable child/content slot; `.on_click`, `.disabled`, `.selected`, `.focus_handle`, `.style` |
+| Icon activation | `IconButton::new(icon, label)` | Icon-only; label is non-painted metadata, not proof of a native accessibility bridge |
 | Compose custom visuals with activation | `InteractiveRegion`, `InteractionState`, `ControlStyle` | Hover/press/focus/disabled/selected state and `.content(...)`/`.child(...)`; not a gesture-recognition suite |
 | Pointer-specific response | `MouseRegion` | Lower-level pointer hooks/cursor behavior; use an existing control when activation is the goal |
 | Transient dismissible message | `Notification` | A reusable message composition, not a global notification center, timer service or OS toast API |
 
 Button/IconButton `on_click`, IconButton `color_with`, MouseRegion `on_enter`/`on_exit` and Notification dismissal accept UI-local `Fn(...) + 'static` captures, stored with `Rc`. Use direct Signals for local UI state and Dispatcher for business intent; see [Learn](learn.md). Button and IconButton accept `.focus_handle(handle)` on their existing interactive region, without another focus wrapper.
+
+### Button content and appearance
+
+The old text-taking constructor is removed; use `Button::text(text)`. `Button::new()`
+is empty and accepts a component or existing View through `.child(...)`.
+All four content forms are ordinary deferred descriptions:
+
+```rust
+use harbor_widget::{Button, Column, LucideIcon, view};
+use harbor_widget::view::Component;
+use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::scene::primitive::Color;
+
+let controls = view! { Column::new() => {
+    Button::text("Save");
+    Button::icon(LucideIcon::Plus, "New");
+    Button::new() => { TextLabel::new("Custom").color(Color::GREEN); }
+    Button::new().content(|cx, state| {
+        TextLabel::new(if state.pressed { "Release" } else { "Press" })
+            .color(Color::BLUE).build(cx)
+    });
+}};
+```
+
+Conveniences, `.child(...)`, `.content(...)` and macro blocks select **one slot**:
+later choices replace earlier choices, repeated children do not append, and an
+empty macro block clears even a convenience or builder. Multiple incoming
+children fail statically where provable, otherwise at construction (handwritten
+`ChildConstructionError`; ordinary `view!` panic). Content builders receive
+`InteractionState` on their own child Fiber with independent hooks/subscriptions.
+
+Button defaults to `theme.button`; IconButton defaults to `theme.icon_button`.
+Both share surface and interaction mechanics; `.style(ControlStyle)` overrides
+the local role. Built-in Button text/icon foreground follows the same style/state
+as its surface. Custom children retain their own explicit colors; there is no
+automatic foreground inheritance. State-driven custom content can select its
+own state-dependent presentation.
+
+Built-in Button content is centered, single-line and measured by TextLabel with
+renderer glyph advances (its ordinary fallback without font resources). Narrow
+space uses TextLabel's grapheme-safe ellipsis, reserving icon and theme spacing
+first; wider layouts recover the retained full text. Parent constraints remain
+authoritative even below padding/icon size. Custom content chooses its own
+wrapping/truncation. IconButton stays icon-only: its label is metadata, while
+Button's `icon(icon, text)` paints visible text. IconButton's `icon_size` and
+`color_with` overrides are unchanged. Existing styled InteractiveRegion
+compositions need no new surface wrapper.
 
 ## Edit a single line
 

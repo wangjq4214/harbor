@@ -70,7 +70,7 @@ fn should_quarantine_stale_release_until_a_fresh_pointer_down() {
     let clicked = Arc::new(AtomicBool::new(false));
     let clicked_clone = Arc::clone(&clicked);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicked_clone.store(true, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -113,7 +113,7 @@ fn host_quarantine_cancels_existing_capture_and_blocks_modal_pointer_sequences()
     let clicked = Arc::new(AtomicBool::new(false));
     let clicked_clone = Arc::clone(&clicked);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicked_clone.store(true, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -154,7 +154,7 @@ fn host_quarantine_blocks_touch_started_behind_a_modal_gate() {
     let clicked = Arc::new(AtomicBool::new(false));
     let clicked_clone = Arc::clone(&clicked);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicked_clone.store(true, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -181,7 +181,7 @@ fn stale_release_for_canceled_mouse_button_cannot_end_fresh_capture() {
     let clicked = Arc::new(AtomicBool::new(false));
     let clicked_clone = Arc::clone(&clicked);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicked_clone.store(true, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -402,7 +402,7 @@ fn should_quarantine_stale_touch_end_until_a_fresh_touch_down() {
     let clicks = Arc::new(AtomicUsize::new(0));
     let clicks_clone = Arc::clone(&clicks);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicks_clone.fetch_add(1, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -436,7 +436,7 @@ fn should_quarantine_stale_touch_end_until_a_fresh_touch_down() {
 fn should_request_redraw_when_programmatic_focus_changes() {
     // Arrange
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK"));
+    runtime.set_root(Button::text("OK"));
     runtime.update(Instant::now());
     let root_id = runtime.root_id().expect("button root");
 
@@ -570,7 +570,7 @@ fn mixed_mouse_and_touch_quarantine_is_scoped_to_each_pointer_source() {
 fn should_consume_programmatic_focus_redraw_effect_once_at_runtime_boundary() {
     // Arrange: focus changes are made while the runtime is otherwise idle.
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK"));
+    runtime.set_root(Button::text("OK"));
     runtime.update(Instant::now());
     let root_id = runtime.root_id().expect("button root");
 
@@ -637,7 +637,7 @@ fn should_quarantine_each_supported_mouse_release_without_claiming_unsupported_b
 
 fn focused_button_runtime() -> Runtime {
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK"));
+    runtime.set_root(Button::text("OK"));
     runtime.update(Instant::now());
     assert!(runtime.focus_first_focusable());
     assert!(runtime.take_pending_effects().request_redraw);

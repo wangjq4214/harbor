@@ -109,7 +109,7 @@ impl Component for MacroButtonTree {
     fn build(&self, cx: &mut BuildCx) -> View {
         let clicked = self.clicked.clone();
         crate::view! { Column::new() => {
-            Button::new("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst));
+            Button::text("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst));
         } }
     }
 }
@@ -123,7 +123,7 @@ impl Component for HandwrittenButtonTree {
     fn build(&self, cx: &mut BuildCx) -> View {
         let clicked = self.clicked.clone();
         let children = Children::one(
-            Button::new("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst)),
+            Button::text("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst)),
         );
         Column::new().with_children(children).unwrap().build(cx)
     }
@@ -498,10 +498,10 @@ fn block_replacement_matches_builders_including_keys_scene_and_routing() {
         for use_macro in [false, true] {
             let clicked = Arc::new(AtomicBool::new(false));
             let callback = clicked.clone();
-            let incoming = Button::new("replacement")
+            let incoming = Button::text("replacement")
                 .on_click(move |_| callback.store(true, Ordering::SeqCst))
                 .keyed("b");
-            let parent = Padding::all(4.0).child(Button::new("old").keyed("a"));
+            let parent = Padding::all(4.0).child(Button::text("old").keyed("a"));
             let description = if use_macro {
                 crate::view! { parent => { incoming; } }
             } else {

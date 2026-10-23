@@ -77,7 +77,7 @@ fn buttons_capture_signals_and_update_rendered_text_through_all_activation_paths
                     })
                     .build(cx)
             } else {
-                Button::new("Increment")
+                Button::text("Increment")
                     .focus_handle(focus)
                     .on_click(move |_| {
                         let next = *captured.read() + 1;
@@ -128,7 +128,7 @@ fn button_handles_target_single_existing_stops_across_rebuild_and_disablement() 
         cx.track(&observed);
         Column::new()
             .push_child(
-                Button::new("First")
+                Button::text("First")
                     .focus_handle(first)
                     .disabled(*observed.read()),
             )
@@ -297,9 +297,9 @@ fn replaced_and_removed_local_callbacks_release_captures_and_use_current_closure
                 log.borrow_mut().push(token.get());
             };
             match kind {
-                CallbackKind::Button => {
-                    Button::new("Click").on_click(move |_| callback()).build(cx)
-                }
+                CallbackKind::Button => Button::text("Click")
+                    .on_click(move |_| callback())
+                    .build(cx),
                 CallbackKind::IconClick => IconButton::new(LucideIcon::Plus, "Click")
                     .on_click(move |_| callback())
                     .build(cx),

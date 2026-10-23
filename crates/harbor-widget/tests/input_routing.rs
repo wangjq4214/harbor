@@ -36,7 +36,7 @@ fn key_down(key: Key) -> UiEvent {
 
 /// Build a Button that sets `flag` to true when its onClick fires.
 fn test_button(label: &str, flag: Arc<AtomicBool>) -> Button {
-    Button::new(label).on_click(move |_ctx| {
+    Button::text(label).on_click(move |_ctx| {
         flag.store(true, Ordering::SeqCst);
     })
 }
@@ -325,7 +325,7 @@ fn should_not_activate_button_on_key_when_not_focused() {
 
 /// Helper: build a FocusScope wrapping a Button (for tree integration testing).
 fn focus_scope_with_button(modal: bool, button_label: &str, flag: Arc<AtomicBool>) -> FocusScope {
-    let btn = Button::new(button_label).on_click(move |_ctx| {
+    let btn = Button::text(button_label).on_click(move |_ctx| {
         flag.store(true, Ordering::SeqCst);
     });
     FocusScope::new().modal(modal).child(btn)
@@ -478,7 +478,7 @@ fn should_clear_capture_when_set_root_replaces_tree() {
     assert!(rt.input().captor(5).is_some());
 
     // Replace root — capture cleared since old fiber is gone
-    rt.set_root(Button::new("New"));
+    rt.set_root(Button::text("New"));
     rt.update(now());
     assert!(
         rt.input().captor(5).is_none(),
@@ -525,17 +525,17 @@ fn should_block_keyboard_events_when_modal_is_active_and_nothing_focused() {
 #[test]
 fn should_detect_modal_in_tree() {
     let mut rt = Runtime::new();
-    rt.set_root(Button::new("OK"));
+    rt.set_root(Button::text("OK"));
     rt.update(now());
     assert!(!rt.has_modal());
 
     // Add modal scope
-    rt.set_root(FocusScope::new().modal(true).child(Button::new("OK")));
+    rt.set_root(FocusScope::new().modal(true).child(Button::text("OK")));
     rt.update(now());
     assert!(rt.has_modal());
 
     // Non-modal scope
-    rt.set_root(FocusScope::new().child(Button::new("OK")));
+    rt.set_root(FocusScope::new().child(Button::text("OK")));
     rt.update(now());
     assert!(!rt.has_modal());
 }
@@ -547,7 +547,7 @@ fn should_deliver_focus_gained_to_focused_button() {
     let focus_gained = Arc::new(AtomicBool::new(false));
 
     // Build a button that captures click (for identification)
-    let btn = Button::new("OK").on_click(move |_ctx| {
+    let btn = Button::text("OK").on_click(move |_ctx| {
         focus_gained.store(true, Ordering::SeqCst);
     });
 
@@ -567,7 +567,7 @@ fn should_deliver_focus_gained_to_focused_button() {
 #[test]
 fn should_deliver_focus_lost_to_button() {
     let mut rt = Runtime::new();
-    rt.set_root(Button::new("OK"));
+    rt.set_root(Button::text("OK"));
     rt.update(now());
 
     let root_id = rt.root_id().unwrap();
@@ -646,7 +646,7 @@ fn should_ignore_right_click_activation() {
 #[test]
 fn should_not_crash_on_wheel_event() {
     let mut rt = Runtime::new();
-    rt.set_root(Button::new("OK"));
+    rt.set_root(Button::text("OK"));
     rt.update(now());
 
     let req = rt.dispatch(UiEvent::Pointer(PointerEvent::new(
@@ -666,7 +666,7 @@ fn should_not_crash_on_wheel_event() {
 #[test]
 fn should_route_move_event_to_button_without_crashing() {
     let mut rt = Runtime::new();
-    rt.set_root(Button::new("OK"));
+    rt.set_root(Button::text("OK"));
     rt.update(now());
 
     // Move inside the button bounds — button handles it (sets hover state)
@@ -688,7 +688,7 @@ fn should_route_move_event_to_button_without_crashing() {
 #[test]
 fn should_start_root_focus_traversal_when_unfocused() {
     let mut rt = Runtime::new();
-    rt.set_root(Button::new("OK"));
+    rt.set_root(Button::text("OK"));
     rt.update(now());
 
     // Root-level traversal is available even before a node is focused.
@@ -727,7 +727,7 @@ fn should_trigger_relayout_on_viewport_change() {
 #[test]
 fn should_clear_focus_programmatically() {
     let mut rt = Runtime::new();
-    rt.set_root(Button::new("OK"));
+    rt.set_root(Button::text("OK"));
     rt.update(now());
 
     let root_id = rt.root_id().unwrap();
