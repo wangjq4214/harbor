@@ -148,7 +148,7 @@ fn palette_build_queries_context_once_for_visible_rows_and_never_for_no_matches(
     assert_eq!(
         bridge.alt_screen_queries() - before,
         1,
-        "one context for five visible rows"
+        "one context snapshot for all result rows"
     );
 
     let before = bridge.alt_screen_queries();
@@ -232,7 +232,7 @@ fn palette_row_height_is_uniform_across_navigation_and_filtered_result_counts() 
                 let (panel, row) = palette_geometry(&runtime);
                 assert_eq!(
                     panel, full_panel,
-                    "five visible rows must not resize the panel"
+                    "the results viewport must not resize during navigation"
                 );
                 assert_eq!(
                     row.size().height,
@@ -303,6 +303,15 @@ fn palette_rows_fill_the_panel_with_right_aligned_keycaps_and_translucent_select
 
         let caps: Vec<_> = items
             .iter()
+            .filter(|item| {
+                let Primitive::RoundedBorder { rect, .. } = item.primitive else {
+                    return false;
+                };
+                item.clips.iter().all(|clip| {
+                    let clip = clip.rect();
+                    rect.min.y >= clip.min.y && rect.max.y <= clip.max.y
+                })
+            })
             .filter_map(|item| match item.primitive {
                 Primitive::RoundedBorder {
                     rect,
@@ -918,3 +927,117 @@ mod terminal_actions;
 
 #[path = "popup_tests.rs"]
 mod popups;
+
+fn selected_result_viewport(runtime: &Runtime) -> (Rect, Rect) {
+    let delta = runtime.pending_delta().unwrap();
+    delta
+        .added
+        .iter()
+        .chain(&delta.modified)
+        .find_map(|item| match item.primitive {
+            Primitive::RoundedQuad {
+                rect,
+                corner_radii: [6.0, 6.0, 6.0, 6.0],
+                color,
+            } if color.a > 0.0 => Some((
+                rect,
+                item.clips.last().expect("result viewport clip").rect(),
+            )),
+            _ => None,
+        })
+        .expect("selected result")
+}
+
+fn palette_thumb(runtime: &Runtime) -> Option<Rect> {
+    let delta = runtime.pending_delta().unwrap();
+    delta
+        .added
+        .iter()
+        .chain(&delta.modified)
+        .find_map(|item| match item.primitive {
+            Primitive::Quad {
+                rect,
+                color,
+                corner_radius: 3.0,
+            } if color.a == 0.35 || color.a == 0.6 => Some(rect),
+            _ => None,
+        })
+}
+
+#[test]
+fn palette_real_results_scroll_drag_and_keyboard_reveal_keep_query_focus_and_pty_quiet() {
+    for height in [500, 180] {
+        let (_, controller, mut runtime, bytes) = fixture();
+        runtime.set_viewport(Viewport::new(1000, height, 1.0));
+        runtime.update(Instant::now());
+        open(&controller, &mut runtime);
+        let focus = runtime.input().focused();
+        let (first, viewport) = selected_result_viewport(&runtime);
+        let text = painted(&runtime);
+        assert!(text.contains("Reload configuration"));
+        assert!(
+            text.contains("Previous search match"),
+            "offscreen results exist, not a five-item slice"
+        );
+        assert!(palette_thumb(&runtime).is_some());
+        assert!(first.min.y >= viewport.min.y && first.max.y <= viewport.max.y);
+
+        runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::new(viewport.min.x + 20.0, viewport.min.y + 10.0),
+            PointerPhase::WheelPixel {
+                dx: 0.0,
+                dy: -100.0,
+            },
+            PointerButton::Left,
+            10,
+        )));
+        runtime.update(Instant::now());
+        let (scrolled, _) = selected_result_viewport(&runtime);
+        assert_eq!(
+            scrolled.min.y,
+            first.min.y - 100.0,
+            "continuous pixel scrolling"
+        );
+        assert_eq!(runtime.input().focused(), focus);
+        let thumb = palette_thumb(&runtime).unwrap();
+        for (phase, y) in [
+            (PointerPhase::Down, thumb.min.y + 2.0),
+            (PointerPhase::Move, viewport.max.y + 100.0),
+            (PointerPhase::Up, viewport.max.y + 100.0),
+        ] {
+            runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                Point::new(thumb.min.x + 2.0, y),
+                phase,
+                PointerButton::Left,
+                11,
+            )));
+            runtime.update(Instant::now());
+        }
+        assert!(runtime.input().captor(11).is_none());
+        assert_eq!(runtime.input().focused(), focus);
+        tap(&mut runtime, Key::ArrowDown);
+        runtime.update(Instant::now());
+        let (selected, clipped) = selected_result_viewport(&runtime);
+        assert!(selected.min.y >= clipped.min.y && selected.max.y <= clipped.max.y);
+        assert_eq!(runtime.input().focused(), focus);
+        assert!(controller.drain_actions().is_empty());
+        assert!(bytes.lock().unwrap().is_empty());
+
+        replace(&mut runtime, "app.new-tab");
+        let (selected, clipped) = selected_result_viewport(&runtime);
+        assert_eq!(
+            selected.min.y, clipped.min.y,
+            "filter resets to the first result"
+        );
+        assert!(
+            palette_thumb(&runtime).is_none(),
+            "one result has no scrollbar"
+        );
+        assert_eq!(runtime.input().focused(), focus);
+        replace(&mut runtime, "not-a-real-command");
+        assert!(painted(&runtime).contains("No matching commands"));
+        assert!(palette_thumb(&runtime).is_none());
+        assert!(controller.drain_actions().is_empty());
+        assert!(bytes.lock().unwrap().is_empty());
+    }
+}

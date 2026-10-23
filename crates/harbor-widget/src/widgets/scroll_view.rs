@@ -1,18 +1,23 @@
 use crate::decoration::{BorderRadius, ClipBehavior};
-use crate::input::event::{Key, KeyboardEvent, PointerPhase, UiEvent};
+use crate::input::event::{
+    Key, KeyboardEvent, PointerBoundaryKind, PointerButton, PointerEvent, PointerPhase, UiEvent,
+};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size};
 use crate::scene::clip::RoundedClip;
+use crate::scene::primitive::{Color, Primitive};
 use crate::signal::Signal;
 use crate::text::TextMetrics;
-use crate::view::{AnyView, BuildCx, Component, EnsureVisibleResult, ScrollableView, View};
+use crate::view::{
+    AnyView, BuildCx, Component, EnsureVisibleResult, PaintPhase, ScrollableView, View,
+};
 use std::cell::Cell;
 use std::rc::Rc;
 
 /// Default distance, in logical pixels, moved by one wheel line or arrow key.
 pub const DEFAULT_SCROLL_LINE_STEP: f32 = 40.0;
 
-/// Committed vertical geometry for a [`ScrollArea`].
+/// Committed vertical geometry for a [`ScrollView`].
 ///
 /// Values are always finite and non-negative. Metrics change only after a
 /// successful layout commit and do not themselves invalidate the widget tree.
@@ -46,7 +51,7 @@ impl ScrollMetrics {
     }
 }
 
-/// Cloneable state model for one vertical [`ScrollArea`].
+/// Cloneable state model for one vertical [`ScrollView`].
 ///
 /// `jump_to` stores a normalized request. The next successful layout clamps it
 /// to the current content extent. Wheel and keyboard operations use committed
@@ -100,6 +105,27 @@ impl ScrollController {
         let metrics = self.metrics.get();
         let requested = finite_add(metrics.offset, delta).clamp(0.0, metrics.max_scroll_extent);
         self.set_requested(requested)
+    }
+
+    /// Minimally reveals a vertical range in content-local logical pixels.
+    /// Oversized ranges align their leading edge. Uses the latest committed bounds.
+    pub fn reveal_range(&self, start: f32, end: f32) -> bool {
+        if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+            return false;
+        }
+        let metrics = self.metrics();
+        if metrics.viewport_extent <= 0.0 {
+            return false;
+        }
+        let offset = self.requested().min(metrics.max_scroll_extent);
+        let requested = if end - start > metrics.viewport_extent || start < offset {
+            start
+        } else if end > finite_add(offset, metrics.viewport_extent) {
+            end - metrics.viewport_extent
+        } else {
+            return false;
+        };
+        self.jump_to(requested.clamp(0.0, metrics.max_scroll_extent))
     }
 
     fn set_requested(&self, offset: f32) -> bool {
@@ -158,7 +184,9 @@ impl ScrollController {
     }
 }
 
-/// A hard-clipped, single-child vertical viewport.
+/// A hard-clipped, single-child vertical viewport with an overflow-only overlay scrollbar.
+/// The thumb can be dragged; clicking its track pages the viewport without changing focus.
+/// At rest only a thin thumb is painted; hovering the track or interacting expands it.
 ///
 /// Positive wheel deltas follow the platform convention and move content toward
 /// the start (decreasing the offset); negative deltas move toward the end.
@@ -167,19 +195,19 @@ impl ScrollController {
 /// when the effective offset can change, allowing an outer scroll area to handle
 /// boundary input.
 #[derive(Clone)]
-pub struct ScrollArea {
+pub struct ScrollView {
     controller: Option<ScrollController>,
     line_step: f32,
     child: Option<View>,
 }
 
-impl Default for ScrollArea {
+impl Default for ScrollView {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ScrollArea {
+impl ScrollView {
     /// Creates an empty vertical scroll area with the default line step.
     pub fn new() -> Self {
         Self {
@@ -208,17 +236,24 @@ impl ScrollArea {
     }
 }
 
-impl Component for ScrollArea {
+impl Component for ScrollView {
     fn build(&self, cx: &mut BuildCx) -> View {
+        // Keep these hooks before the optional controller hook so switching controller
+        // ownership never changes the type occupying an existing hook slot.
+        let gesture = cx.use_state(|| Rc::new(Cell::new(None))).read().clone();
+        let hovered = cx.use_state(|| Rc::new(Cell::new(false))).read().clone();
         let controller = self.controller.clone().unwrap_or_else(|| {
             let state = cx.use_state(ScrollController::new);
             state.read().clone()
         });
         cx.track(&controller.requested_offset);
         View::new(
-            ScrollAreaView {
+            ScrollViewport {
                 controller,
                 line_step: self.line_step,
+                scrollbar_color: cx.theme().button.normal.foreground,
+                gesture,
+                hovered,
             },
             self.child.iter().cloned().collect(),
             None,
@@ -226,23 +261,26 @@ impl Component for ScrollArea {
     }
 }
 
-impl crate::WithChildren for ScrollArea {
+impl crate::WithChildren for ScrollView {
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        children.into_single("ScrollArea", &mut self.child)?;
+        children.into_single("ScrollView", &mut self.child)?;
         Ok(self)
     }
 }
 
 #[derive(Clone)]
-struct ScrollAreaView {
+struct ScrollViewport {
     controller: ScrollController,
     line_step: f32,
+    scrollbar_color: Color,
+    gesture: Rc<Cell<Option<ScrollbarGesture>>>,
+    hovered: Rc<Cell<bool>>,
 }
 
-impl AnyView for ScrollAreaView {
+impl AnyView for ScrollViewport {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         constraints.fill_bounded(Size::ZERO)
     }
@@ -286,6 +324,54 @@ impl AnyView for ScrollAreaView {
         })
     }
 
+    fn paint_primitives_for_phase(
+        &self,
+        phase: PaintPhase,
+        rect: Rect,
+        _metrics: &TextMetrics,
+    ) -> Vec<Primitive> {
+        if phase != PaintPhase::AfterChildren {
+            return Vec::new();
+        }
+        let Some(geometry) = ScrollbarGeometry::new(rect, self.controller.metrics()) else {
+            return Vec::new();
+        };
+        let expanded = self.hovered.get() || self.gesture.get().is_some();
+        let mut primitives = Vec::with_capacity(2);
+        if expanded {
+            primitives.push(Primitive::Quad {
+                rect: geometry.track,
+                color: Color {
+                    a: 0.06,
+                    ..self.scrollbar_color
+                },
+                corner_radius: 3.0,
+            });
+        }
+        let mut thumb = geometry.thumb;
+        if !expanded {
+            // Keep the hit target and content layout unchanged when the thumb narrows.
+            thumb.min.x = thumb.max.x - thumb.size().width.min(3.0);
+        }
+        primitives.push(Primitive::Quad {
+            rect: thumb,
+            color: Color {
+                a: if self.gesture.get().is_some() {
+                    0.6
+                } else {
+                    0.35
+                },
+                ..self.scrollbar_color
+            },
+            corner_radius: 3.0,
+        });
+        primitives
+    }
+
+    fn accepts_pointer_boundaries(&self) -> bool {
+        true
+    }
+
     fn descendant_clip(&self, rect: Rect) -> Option<RoundedClip> {
         if !valid_rect(rect) {
             return None;
@@ -298,7 +384,35 @@ impl AnyView for ScrollAreaView {
         .ok()
     }
 
-    fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
+    fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {
+        let position = match event {
+            UiEvent::Pointer(pointer) => {
+                Some((pointer.phase != PointerPhase::Cancel).then_some(pointer.position))
+            }
+            UiEvent::PointerBoundary(boundary) => Some(
+                (boundary.kind == PointerBoundaryKind::Enter)
+                    .then_some(boundary.position)
+                    .flatten(),
+            ),
+            _ => None,
+        };
+        if let Some(position) = position {
+            let hovered = position.is_some_and(|point| {
+                ScrollbarGeometry::new(rect, self.controller.metrics())
+                    .is_some_and(|geometry| geometry.track.contains(point))
+            });
+            if self.hovered.replace(hovered) != hovered {
+                ctx.invalidate_paint();
+            }
+        }
+        // The overlay owns its track even when a descendant control would consume the press.
+        if let UiEvent::Pointer(pointer) = event
+            && self.handle_scrollbar(pointer, ctx, rect)
+        {
+            ctx.invalidate_paint();
+            ctx.stop_propagation();
+            return EventHandled::Handled;
+        }
         if ctx.is_capture_phase() {
             return EventHandled::Ignored;
         }
@@ -372,7 +486,109 @@ impl AnyView for ScrollAreaView {
     }
 }
 
-impl ScrollableView for ScrollAreaView {
+#[derive(Clone, Copy)]
+struct ScrollbarGesture {
+    pointer_id: u64,
+    // None captures a track click until release, without turning it into a drag.
+    grab_fraction: Option<f32>,
+}
+
+struct ScrollbarGeometry {
+    track: Rect,
+    thumb: Rect,
+}
+
+impl ScrollbarGeometry {
+    fn new(rect: Rect, metrics: ScrollMetrics) -> Option<Self> {
+        if !valid_rect(rect) || rect.size().is_empty() || metrics.max_scroll_extent <= 0.0 {
+            return None;
+        }
+        let height = rect.size().height;
+        let width = rect.size().width.min(10.0);
+        let inset = (width / 4.0).min(2.0);
+        let thumb_height = ((f64::from(height) * f64::from(metrics.viewport_extent)
+            / f64::from(metrics.content_extent)) as f32)
+            .clamp(24.0_f32.min(height / 2.0), height);
+        let travel = height - thumb_height;
+        let top = rect.min.y + travel * (metrics.offset / metrics.max_scroll_extent);
+        Some(Self {
+            track: Rect::from_min_size(
+                Point::new(rect.max.x - width, rect.min.y),
+                Size::new(width, height),
+            ),
+            thumb: Rect::from_min_size(
+                Point::new(rect.max.x - width + inset, top),
+                Size::new(width - inset * 2.0, thumb_height),
+            ),
+        })
+    }
+}
+
+impl ScrollViewport {
+    fn handle_scrollbar(&self, pointer: &PointerEvent, ctx: &mut EventCtx, rect: Rect) -> bool {
+        let geometry = ScrollbarGeometry::new(rect, self.controller.metrics());
+        if let Some(gesture) = self.gesture.get() {
+            if gesture.pointer_id != pointer.pointer_id {
+                return false;
+            }
+            match pointer.phase {
+                PointerPhase::Move => {
+                    if let (Some(grab), Some(geometry)) = (gesture.grab_fraction, geometry) {
+                        let travel = geometry.track.size().height - geometry.thumb.size().height;
+                        if travel > 0.0 && pointer.position.y.is_finite() {
+                            let position = pointer.position.y
+                                - geometry.track.min.y
+                                - grab * geometry.thumb.size().height;
+                            self.controller.jump_to(
+                                (position / travel).clamp(0.0, 1.0)
+                                    * self.controller.metrics().max_scroll_extent,
+                            );
+                        }
+                    }
+                    return true;
+                }
+                PointerPhase::Up if pointer.button == PointerButton::Left => {}
+                PointerPhase::Cancel => {}
+                _ => return false,
+            }
+            self.gesture.set(None);
+            ctx.release_pointer(pointer.pointer_id);
+            return true;
+        }
+        let Some(geometry) = geometry else {
+            return false;
+        };
+        if pointer.phase != PointerPhase::Down
+            || pointer.button != PointerButton::Left
+            || pointer.modifiers != Default::default()
+            || !geometry.track.contains(pointer.position)
+        {
+            return false;
+        }
+        // The entire horizontal thumb band is draggable, including its visual inset.
+        let in_thumb =
+            pointer.position.y >= geometry.thumb.min.y && pointer.position.y < geometry.thumb.max.y;
+        let grab_fraction = if in_thumb {
+            Some((pointer.position.y - geometry.thumb.min.y) / geometry.thumb.size().height)
+        } else {
+            let direction = if pointer.position.y < geometry.thumb.min.y {
+                -1.0
+            } else {
+                1.0
+            };
+            self.controller
+                .scroll_by(direction * self.controller.metrics().viewport_extent);
+            None
+        };
+        self.gesture.set(Some(ScrollbarGesture {
+            pointer_id: pointer.pointer_id,
+            grab_fraction,
+        }));
+        ctx.capture_pointer(pointer.pointer_id);
+        true
+    }
+}
+impl ScrollableView for ScrollViewport {
     fn ensure_visible(&self, rect: Rect, target: &mut Rect) -> EnsureVisibleResult {
         if !valid_rect(rect) || rect.size().is_empty() {
             EnsureVisibleResult::Unavailable
@@ -427,9 +643,12 @@ mod tests {
     #[test]
     fn post_layout_uses_one_valid_child_for_both_committed_metrics() {
         let controller = ScrollController::new();
-        let view = ScrollAreaView {
+        let view = ScrollViewport {
             controller: controller.clone(),
             line_step: DEFAULT_SCROLL_LINE_STEP,
+            scrollbar_color: Color::WHITE,
+            gesture: Rc::new(Cell::new(None)),
+            hovered: Rc::new(Cell::new(false)),
         };
         let viewport = Rect::from_min_size(Point::new(5.0, 100.0), Size::new(50.0, 40.0));
         let child = Rect::from_min_size(Point::new(5.0, 80.0), Size::new(50.0, 100.0));

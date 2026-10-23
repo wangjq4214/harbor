@@ -1,5 +1,6 @@
 use harbor_widget::input::event::{
-    Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
+    Key, KeyboardEvent, Modifiers, PointerBoundaryEvent, PointerBoundaryKind, PointerButton,
+    PointerEvent, PointerPhase, UiEvent,
 };
 use harbor_widget::layout::{Point, Rect, Size};
 use harbor_widget::renderer::Viewport;
@@ -9,7 +10,7 @@ use harbor_widget::signal::Signal;
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{
-    Button, Column, ConstrainedBox, Focus, FocusHandle, ScrollArea, ScrollController,
+    Button, Column, ConstrainedBox, Focus, FocusHandle, ScrollController, ScrollView,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,12 +43,12 @@ fn child_rect(runtime: &Runtime) -> Rect {
 }
 
 #[test]
-fn scroll_area_commits_metrics_moves_content_and_settles_at_boundaries() {
+fn scroll_view_commits_metrics_moves_content_and_settles_at_boundaries() {
     let controller = ScrollController::new();
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 40, 1.0));
     runtime.set_root(
-        ScrollArea::new()
+        ScrollView::new()
             .controller(controller.clone())
             .line_step(25.0)
             .child(Focus::new(
@@ -88,7 +89,7 @@ fn pixel_page_home_and_ignored_input_follow_committed_boundaries() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 40, 1.0));
     runtime.set_root(
-        ScrollArea::new()
+        ScrollView::new()
             .controller(controller.clone())
             .child(Focus::new(SizedBox::new(Size::new(100.0, 100.0)))),
     );
@@ -135,11 +136,11 @@ fn pixel_page_home_and_ignored_input_follow_committed_boundaries() {
 }
 
 #[test]
-fn scroll_area_attaches_hard_viewport_clip_to_descendant_paint() {
+fn scroll_view_attaches_hard_viewport_clip_to_descendant_paint() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(80, 30, 1.0));
     runtime
-        .set_root(ScrollArea::new().child(SizedBox::new(Size::new(80.0, 90.0)).color(Color::BLUE)));
+        .set_root(ScrollView::new().child(SizedBox::new(Size::new(80.0, 90.0)).color(Color::BLUE)));
     update(&mut runtime);
 
     let item = runtime
@@ -164,7 +165,7 @@ fn zero_height_viewport_keeps_descendants_clipped_and_unhittable() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 0, 1.0));
     runtime
-        .set_root(ScrollArea::new().child(
+        .set_root(ScrollView::new().child(
             Button::new("hidden").on_click(move |_| observed.store(true, Ordering::SeqCst)),
         ));
     update(&mut runtime);
@@ -190,13 +191,13 @@ fn zero_height_viewport_keeps_descendants_clipped_and_unhittable() {
 }
 
 #[test]
-fn nested_scroll_area_bubbles_to_outer_only_after_inner_reaches_boundary() {
+fn nested_scroll_view_bubbles_to_outer_only_after_inner_reaches_boundary() {
     let outer = ScrollController::new();
     let inner = ScrollController::new();
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 40, 1.0));
     runtime.set_root(
-        ScrollArea::new()
+        ScrollView::new()
             .controller(outer.clone())
             .line_step(10.0)
             .child(
@@ -206,7 +207,7 @@ fn nested_scroll_area_bubbles_to_outer_only_after_inner_reaches_boundary() {
                             .min_height(20.0)
                             .max_height(20.0)
                             .child(
-                                ScrollArea::new()
+                                ScrollView::new()
                                     .controller(inner.clone())
                                     .line_step(10.0)
                                     .child(SizedBox::new(Size::new(100.0, 60.0))),
@@ -234,7 +235,7 @@ fn focus_navigation_reveals_offscreen_descendant_with_minimal_offset() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 40, 1.0));
     runtime.set_root(
-        ScrollArea::new().controller(controller.clone()).child(
+        ScrollView::new().controller(controller.clone()).child(
             Column::new()
                 .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
                 .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
@@ -263,7 +264,7 @@ fn pending_focus_handle_reveals_target_after_first_successful_layout() {
     runtime.request_focus(&target);
     runtime.set_viewport(Viewport::new(100, 40, 1.0));
     runtime.set_root(
-        ScrollArea::new().controller(controller.clone()).child(
+        ScrollView::new().controller(controller.clone()).child(
             Column::new()
                 .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
                 .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
@@ -284,7 +285,7 @@ fn pending_focus_reveal_retries_after_zero_viewport_restores() {
     runtime.request_focus(&target);
     runtime.set_viewport(Viewport::new(100, 0, 1.0));
     runtime.set_root(
-        ScrollArea::new().controller(controller.clone()).child(
+        ScrollView::new().controller(controller.clone()).child(
             Column::new()
                 .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
                 .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
@@ -312,7 +313,7 @@ fn nested_focus_reveal_accounts_for_inner_scroll_before_outer_scroll() {
     runtime.request_focus(&target);
     runtime.set_viewport(Viewport::new(100, 100, 1.0));
     runtime.set_root(
-        ScrollArea::new().controller(outer.clone()).child(
+        ScrollView::new().controller(outer.clone()).child(
             Column::new()
                 .child(SizedBox::new(Size::new(100.0, 80.0)))
                 .child(
@@ -320,7 +321,7 @@ fn nested_focus_reveal_accounts_for_inner_scroll_before_outer_scroll() {
                         .min_height(40.0)
                         .max_height(40.0)
                         .child(
-                            ScrollArea::new().controller(inner.clone()).child(
+                            ScrollView::new().controller(inner.clone()).child(
                                 Column::new()
                                     .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
                                     .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
@@ -352,7 +353,7 @@ fn content_shrink_clamps_geometry_in_the_same_commit_then_converges() {
     impl Component for DynamicContent {
         fn build(&self, cx: &mut BuildCx) -> View {
             cx.track(&self.height);
-            ScrollArea::new()
+            ScrollView::new()
                 .controller(self.controller.clone())
                 .child(SizedBox::new(Size::new(100.0, *self.height.read())))
                 .build(cx)
@@ -403,7 +404,7 @@ fn failed_layout_defers_focus_reveal_until_fresh_geometry_commits() {
             };
             constrained
                 .child(
-                    ScrollArea::new().controller(self.controller.clone()).child(
+                    ScrollView::new().controller(self.controller.clone()).child(
                         Column::new()
                             .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
                             .child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
@@ -449,7 +450,7 @@ fn descendant_hit_testing_is_clipped_to_the_scroll_viewport() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 40, 1.0));
     runtime.set_root(
-        ScrollArea::new().child(Column::new().child(Button::new("first")).child(
+        ScrollView::new().child(Column::new().child(Button::new("first")).child(
             Button::new("second").on_click(move |_| {
                 observed.store(true, Ordering::SeqCst);
             }),
@@ -466,4 +467,345 @@ fn descendant_hit_testing_is_clipped_to_the_scroll_viewport() {
         )));
     }
     assert!(!activated.load(Ordering::SeqCst));
+}
+
+fn pointer(runtime: &mut Runtime, x: f32, y: f32, phase: PointerPhase, id: u64) {
+    runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+        Point::new(x, y),
+        phase,
+        PointerButton::Left,
+        id,
+    )));
+}
+
+fn thumb(runtime: &Runtime) -> Option<(Rect, u32)> {
+    let delta = runtime.pending_delta().unwrap();
+    delta
+        .added
+        .iter()
+        .chain(&delta.modified)
+        .find_map(|item| match item.primitive {
+            harbor_widget::scene::primitive::Primitive::Quad {
+                rect,
+                color,
+                corner_radius: 3.0,
+            } if color.a == 0.35 || color.a == 0.6 => Some((rect, item.paint_order)),
+            _ => None,
+        })
+}
+
+fn track(runtime: &Runtime) -> Option<Rect> {
+    let delta = runtime.pending_delta().unwrap();
+    delta
+        .added
+        .iter()
+        .chain(&delta.modified)
+        .find_map(|item| match item.primitive {
+            harbor_widget::scene::primitive::Primitive::Quad { rect, color, .. }
+                if color.a == 0.06 =>
+            {
+                Some(rect)
+            }
+            _ => None,
+        })
+}
+
+#[test]
+fn scrollbar_expands_only_over_its_track_without_moving_content() {
+    let controller = ScrollController::new();
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(
+        ScrollView::new()
+            .controller(controller.clone())
+            .child(SizedBox::new(Size::new(100.0, 400.0))),
+    );
+    update(&mut runtime);
+    let resting = thumb(&runtime).unwrap().0;
+    let content = child_rect(&runtime);
+    assert_eq!(resting.size().width, 3.0);
+    assert!(track(&runtime).is_none());
+
+    pointer(&mut runtime, 50.0, 10.0, PointerPhase::Move, 1);
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0, resting);
+    assert!(track(&runtime).is_none());
+
+    // The invisible track is a stable, wider target, not just the thin thumb.
+    pointer(&mut runtime, 91.0, 10.0, PointerPhase::Move, 1);
+    update(&mut runtime);
+    let expanded = thumb(&runtime).unwrap().0;
+    assert_eq!(expanded.size().width, 6.0);
+    assert_eq!(expanded.max, resting.max);
+    assert_eq!(expanded.size().height, resting.size().height);
+    assert_eq!(track(&runtime).unwrap().size(), Size::new(10.0, 100.0));
+    assert_eq!(child_rect(&runtime), content);
+    assert_eq!(controller.offset(), 0.0);
+
+    // Moving down the track, away from the thumb, must not collapse it.
+    pointer(&mut runtime, 91.0, 90.0, PointerPhase::Move, 1);
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 6.0);
+
+    pointer(&mut runtime, 50.0, 90.0, PointerPhase::Move, 1);
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0, resting);
+    assert!(track(&runtime).is_none());
+    assert_eq!(child_rect(&runtime), content);
+}
+
+#[test]
+fn scrollbar_boundary_and_drag_lifecycle_restore_the_thin_thumb() {
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(ScrollView::new().child(SizedBox::new(Size::new(100.0, 400.0))));
+    update(&mut runtime);
+
+    let boundary = |kind, position| {
+        UiEvent::PointerBoundary(PointerBoundaryEvent {
+            pointer_id: 7,
+            position,
+            kind,
+        })
+    };
+    runtime.dispatch(boundary(
+        PointerBoundaryKind::Enter,
+        Some(Point::new(91.0, 5.0)),
+    ));
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 6.0);
+    runtime.dispatch(boundary(PointerBoundaryKind::Leave, None));
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 3.0);
+    assert!(track(&runtime).is_none());
+
+    pointer(&mut runtime, 91.0, 5.0, PointerPhase::Move, 7);
+    pointer(&mut runtime, 91.0, 5.0, PointerPhase::Down, 7);
+    update(&mut runtime);
+    assert!(runtime.input().captor(7).is_some());
+    pointer(&mut runtime, -50.0, 70.0, PointerPhase::Move, 7);
+    runtime.dispatch(boundary(PointerBoundaryKind::Leave, None));
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 6.0);
+    assert!(track(&runtime).is_some());
+
+    pointer(&mut runtime, -50.0, 70.0, PointerPhase::Up, 7);
+    update(&mut runtime);
+    assert!(runtime.input().captor(7).is_none());
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 3.0);
+    assert!(track(&runtime).is_none());
+
+    let y = thumb(&runtime).unwrap().0.min.y + 5.0;
+    pointer(&mut runtime, 91.0, y, PointerPhase::Down, 7);
+    pointer(&mut runtime, 91.0, y, PointerPhase::Cancel, 7);
+    update(&mut runtime);
+    assert!(runtime.input().captor(7).is_none());
+    assert_eq!(thumb(&runtime).unwrap().0.size().width, 3.0);
+    assert!(track(&runtime).is_none());
+}
+
+#[test]
+fn scrollbar_is_painted_above_content_and_drag_preserves_focus_and_capture() {
+    let activated = Arc::new(AtomicBool::new(false));
+    let clicked = activated.clone();
+    let controller = ScrollController::new();
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(
+        ScrollView::new().controller(controller.clone()).child(
+            Column::new()
+                .child(
+                    Button::new("under overlay")
+                        .on_click(move |_| clicked.store(true, Ordering::SeqCst)),
+                )
+                .child(SizedBox::new(Size::new(100.0, 400.0)).color(Color::BLUE)),
+        ),
+    );
+    update(&mut runtime);
+    runtime.dispatch(key(Key::Tab));
+    update(&mut runtime);
+    let focus = runtime.input().focused();
+    let (initial, order) = thumb(&runtime).unwrap();
+    assert!(initial.size().height >= 24.0);
+    let delta = runtime.pending_delta().unwrap();
+    assert!(
+        delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .filter(|item| {
+                !matches!(
+                    item.primitive,
+                    harbor_widget::scene::primitive::Primitive::Quad {
+                        corner_radius: 3.0,
+                        ..
+                    }
+                )
+            })
+            .all(|item| item.paint_order < order)
+    );
+
+    pointer(
+        &mut runtime,
+        97.0,
+        initial.min.y + 5.0,
+        PointerPhase::Down,
+        7,
+    );
+    assert_eq!(runtime.input().captor(7), runtime.root_id());
+    assert_eq!(runtime.input().focused(), focus);
+    update(&mut runtime); // Reconciliation must retain the active drag.
+    pointer(&mut runtime, -50.0, 1000.0, PointerPhase::Move, 8);
+    assert_eq!(
+        controller.offset(),
+        0.0,
+        "another pointer cannot move this thumb"
+    );
+    pointer(&mut runtime, -50.0, 1000.0, PointerPhase::Move, 7);
+    update(&mut runtime);
+    assert_eq!(
+        controller.metrics().offset(),
+        controller.metrics().max_scroll_extent()
+    );
+    let (bottom, _) = thumb(&runtime).unwrap();
+    assert_eq!(bottom.max.y, 100.0);
+    pointer(&mut runtime, -50.0, 1000.0, PointerPhase::Up, 7);
+    assert!(runtime.input().captor(7).is_none());
+    assert_eq!(runtime.input().focused(), focus);
+    assert!(
+        !activated.load(Ordering::SeqCst),
+        "overlay press cannot activate the content"
+    );
+}
+
+#[test]
+fn scrollbar_track_pages_and_cancel_releases_without_further_dragging() {
+    let controller = ScrollController::new();
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(
+        ScrollView::new()
+            .controller(controller.clone())
+            .child(SizedBox::new(Size::new(100.0, 400.0))),
+    );
+    update(&mut runtime);
+    assert_eq!(thumb(&runtime).unwrap().0.size().height, 25.0);
+    pointer(&mut runtime, 97.0, 90.0, PointerPhase::Down, 3);
+    assert_eq!(
+        controller.offset(),
+        100.0,
+        "track click moves exactly one viewport"
+    );
+    update(&mut runtime);
+    pointer(&mut runtime, 97.0, 99.0, PointerPhase::Move, 3);
+    assert_eq!(
+        controller.offset(),
+        100.0,
+        "track capture is not a thumb drag"
+    );
+    pointer(&mut runtime, 97.0, 99.0, PointerPhase::Up, 3);
+    assert!(runtime.input().captor(3).is_none());
+    pointer(&mut runtime, 97.0, 1.0, PointerPhase::Down, 3);
+    assert_eq!(controller.offset(), 0.0);
+    pointer(&mut runtime, 97.0, 1.0, PointerPhase::Up, 3);
+    update(&mut runtime);
+    pointer(&mut runtime, 97.0, 5.0, PointerPhase::Down, 3);
+    pointer(&mut runtime, 97.0, 5.0, PointerPhase::Cancel, 3);
+    assert!(runtime.input().captor(3).is_none());
+    pointer(&mut runtime, 97.0, 80.0, PointerPhase::Move, 3);
+    assert_eq!(controller.offset(), 0.0);
+}
+
+#[test]
+fn scrollbar_hides_on_content_shrink_and_zero_or_fitting_viewports() {
+    for (width, viewport, content) in [(100, 100, 40.0), (0, 100, 400.0), (100, 0, 400.0)] {
+        let mut runtime = Runtime::new();
+        runtime.set_viewport(Viewport::new(width, viewport, 1.0));
+        runtime.set_root(ScrollView::new().child(SizedBox::new(Size::new(100.0, content))));
+        update(&mut runtime);
+        assert!(thumb(&runtime).is_none());
+        pointer(&mut runtime, 97.0, 10.0, PointerPhase::Down, 5);
+        assert!(runtime.input().captor(5).is_none());
+    }
+    let content = Signal::new_distinct(400.0);
+    let height = content.clone();
+    let controller = ScrollController::new();
+    let scroll = controller.clone();
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(move |cx: &mut BuildCx| {
+        cx.track(&height);
+        ScrollView::new()
+            .controller(scroll.clone())
+            .child(SizedBox::new(Size::new(100.0, *height.read())))
+            .build(cx)
+    });
+    update(&mut runtime);
+    pointer(&mut runtime, 97.0, 5.0, PointerPhase::Down, 5);
+    content.set(20.0);
+    update(&mut runtime);
+    assert!(thumb(&runtime).is_none());
+    assert_eq!(controller.metrics().offset(), 0.0);
+    pointer(&mut runtime, 97.0, 80.0, PointerPhase::Move, 5);
+    pointer(&mut runtime, 97.0, 80.0, PointerPhase::Up, 5);
+    assert!(runtime.input().captor(5).is_none());
+    assert_eq!(controller.offset(), 0.0);
+}
+
+#[test]
+fn reveal_range_minimally_moves_content_and_rejects_invalid_ranges() {
+    let controller = ScrollController::new();
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(
+        ScrollView::new()
+            .controller(controller.clone())
+            .child(SizedBox::new(Size::new(100.0, 400.0))),
+    );
+    update(&mut runtime);
+    assert!(!controller.reveal_range(0.0, 50.0));
+    assert!(controller.reveal_range(200.0, 240.0));
+    update(&mut runtime);
+    assert_eq!(controller.metrics().offset(), 140.0);
+    assert!(controller.reveal_range(20.0, 50.0));
+    update(&mut runtime);
+    assert_eq!(controller.metrics().offset(), 20.0);
+    assert!(controller.reveal_range(30.0, 180.0));
+    update(&mut runtime);
+    assert_eq!(
+        controller.metrics().offset(),
+        30.0,
+        "oversized targets align their leading edge"
+    );
+    for (start, end) in [
+        (f32::NAN, 2.0),
+        (0.0, f32::INFINITY),
+        (-1.0, 30.0),
+        (5.0, 2.0),
+    ] {
+        assert!(!controller.reveal_range(start, end));
+    }
+}
+
+#[test]
+fn switching_between_internal_and_external_controller_keeps_hook_types_stable() {
+    let external = Signal::new_distinct(false);
+    let active = external.clone();
+    let scroll = ScrollController::new();
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(move |cx: &mut BuildCx| {
+        cx.track(&active);
+        let mut viewport = ScrollView::new().child(SizedBox::new(Size::new(100.0, 400.0)));
+        if *active.read() {
+            viewport = viewport.controller(scroll.clone());
+        }
+        viewport.build(cx)
+    });
+    update(&mut runtime);
+    for value in [true, false, true] {
+        external.set(value);
+        update(&mut runtime);
+        assert!(thumb(&runtime).is_some());
+    }
 }

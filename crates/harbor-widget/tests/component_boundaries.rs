@@ -1,7 +1,7 @@
 //! Non-terminal callers exercise the reusable presentation/extension surface.
 use harbor_widget::{
     Actions, Alignment, Button, Column, ConstrainedBox, FocusScope, Icon, KeyChord, LucideIcon,
-    Notification, Portal, ScrollArea, Shortcuts, Store, ThemeProvider,
+    Notification, Portal, ScrollView, Shortcuts, Store, ThemeProvider,
     input::{
         event::{
             Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
@@ -44,7 +44,7 @@ fn generic_controls_and_actions_need_no_application_models() {
                                 Button::new("Test content");
                                 Icon::new(LucideIcon::Plus);
                                 ConstrainedBox::new().max_height(60.0) => {
-                                    ScrollArea::new() => {
+                                    ScrollView::new() => {
                                         SizedBox::new(Size::new(100.0, 400.0));
                                     }
                                 }
@@ -230,4 +230,52 @@ fn application_leaf_uses_public_primitives_and_input_without_focus_or_external_r
     )));
     assert!(effects.request_redraw);
     assert_eq!(events.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn text_metric_height_cap_tracks_fonts_and_respects_static_and_parent_bounds() {
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 100, 1.0));
+    runtime.set_root(
+        ConstrainedBox::new()
+            .max_height(70.0)
+            .max_height_with(|metrics| metrics.line_height * 2.0 + 8.0)
+            .child(SizedBox::new(Size::new(100.0, 400.0))),
+    );
+    for (line_height, expected) in [(20.0, 48.0), (30.0, 68.0), (40.0, 70.0)] {
+        runtime.set_text_metrics(TextMetrics {
+            line_height,
+            ..*runtime.text_metrics()
+        });
+        runtime.update(Instant::now());
+        let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
+        assert_eq!(root.layout_error(), None);
+        assert_eq!(root.layout_rect().unwrap().size().height, expected);
+    }
+    runtime.set_viewport(Viewport::new(100, 30, 1.0));
+    runtime.update(Instant::now());
+    let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
+    assert_eq!(root.layout_rect().unwrap().size().height, 30.0);
+}
+
+#[test]
+fn text_metric_height_cap_rejects_invalid_values_without_committing_them() {
+    for value in [f32::NAN, -1.0, f32::NEG_INFINITY] {
+        let mut runtime = Runtime::new();
+        runtime.set_viewport(Viewport::new(100, 100, 1.0));
+        runtime.set_root(
+            ConstrainedBox::new()
+                .max_height_with(move |_| value)
+                .child(SizedBox::new(Size::new(100.0, 400.0))),
+        );
+        runtime.update(Instant::now());
+        assert_eq!(
+            runtime
+                .arena()
+                .get(runtime.root_id().unwrap())
+                .unwrap()
+                .layout_error(),
+            Some(harbor_widget::layout::LayoutError::InvalidConstraints)
+        );
+    }
 }

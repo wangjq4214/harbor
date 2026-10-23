@@ -78,7 +78,7 @@ The first parent data contract covers flex factor/fit and positioned layout meta
 | Pointer behavior | `MouseRegion` cursor/enter/exit and desktop click behavior | Rail hover and close affordances |
 | Focus and commands | Node-level `Focus`, traversal order, `Shortcuts`, typed `Actions` | Keyboard tab operation |
 | Styling | Inherited `Theme` tokens for colors, typography, spacing, radii, and interaction states | Remove hard-coded tab/button visuals |
-| Scrolling | Vertical `ScrollArea`, controller/metrics, clipping, wheel, keyboard scroll, and ensure-visible | Overflowing tab rail |
+| Scrolling | Vertical `ScrollView`, controller/metrics, clipping, wheel, keyboard scroll, and ensure-visible | Overflowing tab rail |
 | Layout observation | Post-layout allocation notification with equality coalescing | Broadcast terminal rows/columns |
 | Keyed identity | Key wrapper/extension and sibling keyed reorder with duplicate-key diagnostics | Close/insert tabs without state migration |
 
@@ -171,7 +171,7 @@ Verify independent sessions and active-only input/paint; close B among A/B/C sel
 
 - Hidden tabs produce no terminal draw calls and no cursor-driven Poll scheduling.
 - Tab rail layout and hit testing are linear in visible tab items; no spatial index is introduced without profiling evidence.
-- ScrollArea does not require full virtual-list infrastructure for the initial expected tab count, but must clip painting and avoid work proportional to terminal cell count for hidden tabs.
+- ScrollView does not require full virtual-list infrastructure for the initial expected tab count, but must clip painting and avoid work proportional to terminal cell count for hidden tabs.
 - Closing a tab removes its Fiber subtree, external registrations, schedule provider, reader, PTY control, and Terminal ownership without targeting a reused generation.
 - Resize broadcasts are coalesced by TerminalSize and do not repeatedly resize PTYs for unchanged logical allocations.
 - The existing active-terminal frame target and idle behavior remain within the current validation/performance policy.

@@ -5,7 +5,7 @@ use crate::{command::AppCommandRequest, tab_manager::TabSnapshot};
 use harbor_widget::{
     Alignment, BoxDecoration, ClipBehavior, Column, ComponentExt as _, ConstrainedBox,
     ControlColors, ControlStyle, DecoratedBox, Dispatcher, Expanded, Icon, IconButton,
-    InteractionState, InteractiveRegion, LucideIcon, Row, ScrollArea,
+    InteractionState, InteractiveRegion, LucideIcon, Row, ScrollView,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
     widgets::{padding::Padding, text_label::TextLabel},
@@ -23,7 +23,7 @@ pub(crate) fn tab_rail(
         ConstrainedBox::new()
             .min_width(state.presentation.width())
             .max_width(state.presentation.width()) => {
-            ScrollArea::new().controller(controller.scroll.clone()) => {
+            ScrollView::new().controller(controller.scroll.clone()) => {
                 Padding::new(0.0, 6.0, 4.0, 6.0) => {
                     Column::new().cross_axis_alignment(Alignment::Stretch).gap(4.0) => {
                         for snapshot in state.snapshots.iter() {

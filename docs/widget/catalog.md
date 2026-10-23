@@ -12,9 +12,11 @@ Browse by the job you need to do. The tables describe available public APIs and 
 | Allocate flexible space | `Expanded`, `Flexible`, `FlexFit`, `Spacer` | Flex-parent relationships and bounded/unbounded constraints matter |
 | Impose size, insets or alignment | `SizedBox`, `ConstrainedBox`, `Padding`, `Align` | Logical pixels; `Align` can position overlay content without making its empty area hit-testable |
 | Layer ordinary children | `Stack` | Shared parent allocation, not a generic positioned/anchored popover engine |
-| Scroll a single content subtree | `ScrollArea`, `ScrollController`, `ScrollMetrics` | Vertical scrolling and controller-visible geometry; not virtualized lists/trees/tables |
+| Scroll a single content subtree | `ScrollView`, `ScrollController`, `ScrollMetrics` | Vertical clipped viewport, overflow-only draggable scrollbar, track paging and controller-visible geometry; not virtualized lists/trees/tables |
 | Observe committed allocation | `LayoutObserver`, `LayoutChangedCallback` | Geometry notification, not application resize policy |
 | Add a rule | `Separator` | Layout/presentation primitive |
+
+`ScrollView` replaces the former `ScrollArea` name and module (`widgets::scroll_view`); no old-name alias is retained. Wheel/key movement and scrollbar gestures preserve focus. `ScrollController::reveal_range(start, end)` minimally reveals a content-local vertical range using committed metrics; ordinary focus traversal also reveals offscreen controls. `ConstrainedBox::max_height_with` can cap a viewport or its surrounding layout using current `TextMetrics`, without hard-coding font sizes.
 
 `SizedBox`, `Padding`, `Align` and `Stack` are imported through `harbor_widget::widgets::<module>::Type`, rather than all being crate-root exports. Check [public exports](../../crates/harbor-widget/src/lib.rs) instead of guessing import paths from type names.
 
