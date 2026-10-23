@@ -13,7 +13,14 @@ use crate::{
     view::{AnyView, BuildCx, Component, FocusMetadata, View},
     widgets::{FocusHandle, decorated_box::DecoratedBox},
 };
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 
 type Changed = Rc<dyn Fn(&str)>;
 type Submitted = Rc<dyn Fn(Modifiers)>;
@@ -106,6 +113,9 @@ struct EditingRuntime {
     display: String,
     caret: f32,
     caret_visible: bool,
+    blink_visible: bool,
+    blink_deadline: Option<Instant>,
+    blink_revision: u64,
     selection: Option<(f32, f32)>,
     preedit: Option<(f32, f32)>,
     line_height: f32,
@@ -114,6 +124,7 @@ struct EditingRuntime {
 impl EditingRuntime {
     fn new(controller: TextEditingController) -> Self {
         Self {
+            blink_revision: controller.revision(),
             controller,
             focused: false,
             pointer: None,
@@ -123,10 +134,37 @@ impl EditingRuntime {
             display: String::new(),
             caret: 0.0,
             caret_visible: true,
+            blink_visible: true,
+            blink_deadline: None,
             selection: None,
             preedit: None,
             line_height: 20.0,
         }
+    }
+
+    fn reset_blink(&mut self) {
+        self.blink_visible = true;
+        self.blink_deadline = None;
+        self.blink_revision = self.controller.revision();
+    }
+
+    fn tick_blink(&mut self, now: Instant, enabled: bool) -> (bool, Option<Instant>) {
+        if !enabled || !self.focused || !self.caret_visible {
+            self.blink_deadline = None;
+            return (false, None);
+        }
+        let was_visible = self.blink_visible;
+        if self.blink_revision != self.controller.revision() {
+            self.reset_blink();
+        }
+        if self.blink_deadline.is_some_and(|deadline| now >= deadline) {
+            self.blink_visible = !self.blink_visible;
+            self.blink_deadline = None;
+        }
+        let deadline = *self
+            .blink_deadline
+            .get_or_insert(now + CARET_BLINK_INTERVAL);
+        (was_visible != self.blink_visible, Some(deadline))
     }
 
     fn hit(&self, x: f32) -> usize {
@@ -418,6 +456,12 @@ impl AnyView for EditorView {
         runtime.line_height = metrics.line_height;
     }
 
+    fn focused_animation(&self, now: Instant) -> (bool, Option<Instant>) {
+        self.runtime
+            .borrow_mut()
+            .tick_blink(now, self.config.enabled)
+    }
+
     fn focused_ime(&self, rect: Rect) -> Option<ImeEffect> {
         let mut runtime = self.runtime.borrow_mut();
         runtime.reveal(rect.size().width);
@@ -485,7 +529,8 @@ impl AnyView for EditorView {
                 self.config.color,
             ));
         }
-        if runtime.focused && runtime.caret_visible && self.config.enabled {
+        if runtime.focused && runtime.caret_visible && runtime.blink_visible && self.config.enabled
+        {
             out.push(quad(
                 runtime.caret,
                 runtime.caret + 1.0,
@@ -584,6 +629,17 @@ impl AnyView for EditorView {
         };
         if !handled {
             return EventHandled::Ignored;
+        }
+        // Key releases and pointer releases must not postpone the idle blink.
+        if !matches!(
+            event,
+            UiEvent::Keyboard(KeyboardEvent::KeyUp { .. })
+                | UiEvent::Pointer(crate::input::event::PointerEvent {
+                    phase: PointerPhase::Up | PointerPhase::Cancel,
+                    ..
+                })
+        ) {
+            self.runtime.borrow_mut().reset_blink();
         }
         self.changed(&old);
         ctx.invalidate_paint();

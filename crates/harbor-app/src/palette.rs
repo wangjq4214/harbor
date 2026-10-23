@@ -6,7 +6,8 @@ use crate::command::{
 };
 use crate::tab_manager::{TabId, TabManager, TabSnapshot};
 use harbor_widget::{
-    Alignment, Column, ConstrainedBox, DecoratedBox, KeyChord, ScrollController, ScrollView,
+    Alignment, Column, ConstrainedBox, ControlColors, DecoratedBox, InteractiveRegion, KeyChord,
+    ScrollController, ScrollView,
     decoration::{Border, BorderRadius, BoxDecoration},
     layout::{BoxConstraints, Size},
     scene::primitive::Primitive,
@@ -360,6 +361,20 @@ impl WorkspaceUiController {
     }
 
     fn palette_submit(&self, generation: u64) {
+        let state = self.store.state().read().clone();
+        let Some(palette) = state.popups.get::<PaletteState>() else {
+            return;
+        };
+        let Some(entry) = candidates(&palette.input.text())
+            .into_iter()
+            .nth(palette.selected)
+        else {
+            return;
+        };
+        self.palette_submit_command(generation, entry.command);
+    }
+
+    fn palette_submit_command(&self, generation: u64, command: AppCommand) {
         let mut state = self.store.state().read().clone();
         let Some(palette) = state.popups.get::<PaletteState>() else {
             return;
@@ -367,9 +382,10 @@ impl WorkspaceUiController {
         if palette.generation != generation || palette.pending {
             return;
         }
+        // A row captures command identity, never a potentially stale result index.
         let Some(entry) = candidates(&palette.input.text())
             .into_iter()
-            .nth(palette.selected)
+            .find(|entry| entry.command == command)
         else {
             return;
         };
@@ -512,18 +528,40 @@ fn palette_panel(
                 .child(Expanded::new().child(labels.build(cx)).build(cx))
                 .child(Padding::new(0.0, 0.0, 0.0, 12.0).child(shortcuts).build(cx))
                 .build(cx);
-            let decoration = BoxDecoration::new()
-                .try_color(Color {
-                    a: if index == palette.selected { 0.10 } else { 0.0 },
-                    ..foreground
-                })
-                .unwrap()
-                .border_radius(BorderRadius::all(6.0).unwrap());
-            rows = rows.child(
-                DecoratedBox::new(decoration)
-                    .child(Padding::new(6.0, 8.0, 6.0, 8.0).child(row).build(cx))
-                    .build(cx),
-            );
+            let activate = controller.clone();
+            let command = entry.command;
+            let mut style = cx.theme().button.clone();
+            let transparent = ControlColors {
+                background: Color::TRANSPARENT,
+                border: Color::TRANSPARENT,
+                foreground,
+            };
+            style.min_height = 0.0;
+            style.horizontal_padding = 0.0;
+            style.border_width = 0.0;
+            style.normal = transparent;
+            style.hovered = transparent;
+            style.pressed = transparent;
+            style.selected = transparent;
+            style.disabled = transparent;
+            let region = InteractiveRegion::new()
+                .style(style)
+                .focusable(false)
+                .selected(index == palette.selected)
+                .disabled(reason.is_some() || palette.pending)
+                .on_activate(move |_| activate.palette_submit_command(generation, command))
+                .content(move |cx, state| {
+                    let content = Padding::new(6.0, 8.0, 6.0, 8.0)
+                        .child(row.clone())
+                        .build(cx);
+                    match GlassAppearance::command_palette_row(foreground, state) {
+                        Some(glass) => glass.panel(cx, content),
+                        None => content,
+                    }
+                });
+            rows = rows.child(View::deferred(
+                region.keyed(format!("palette-row-{generation}-{}", entry.id)),
+            ));
         }
         let row_height = palette.row_height.clone();
         // Uniform rows let committed content geometry determine the exact row height.
@@ -532,6 +570,9 @@ fn palette_panel(
         })
         .child(rows.build(cx))
         .build(cx);
+        // Reserve the 10dp overlay hit target plus a 4dp gap outside row glass.
+        // Keep ScrollView's geometry and scrolling behavior unchanged.
+        let rows = Padding::new(0.0, 14.0, 0.0, 0.0).child(rows).build(cx);
         content = content.child(
             Expanded::new()
                 .child(
@@ -544,7 +585,7 @@ fn palette_panel(
         );
         content = content.child(
             TextLabel::new(format!(
-                "{} / {} · ↑↓ select · Enter run · Esc close",
+                "{} / {} · ↑↓ select · Enter / click run · Esc close",
                 palette.selected + 1,
                 entries.len()
             ))

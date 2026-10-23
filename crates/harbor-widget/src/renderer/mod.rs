@@ -107,10 +107,32 @@ fn collapse_ancestor_insets(
     *max_y = (*max_y).min(inset_max_y);
 }
 
+// A rectangular hard ancestor contributes no extra coverage restriction when a
+// hard-clipped descendant's entire AABB is inside it. Do not spend an exact GPU slot on
+// that ancestor (notably the Portal viewport), or ordinary panel + scroll clips
+// needlessly fall into the lossy inscribed-rectangle fallback.
+fn redundant_hard_rect(clip: &RoundedClip, descendants: &[RoundedClip]) -> bool {
+    if clip.behavior() != ClipBehavior::HardEdge || clip.radii().as_array() != [0.0; 4] {
+        return false;
+    }
+    // An antialiased descendant may cover pixels just outside its AABB; it
+    // cannot make a hard ancestor redundant without a separate scissor.
+    let outer = clip.rect();
+    descendants.iter().any(|inner| {
+        let bounds = inner.rect();
+        inner.behavior() == ClipBehavior::HardEdge
+            && bounds.min.x >= outer.min.x
+            && bounds.min.y >= outer.min.y
+            && bounds.max.x <= outer.max.x
+            && bounds.max.y <= outer.max.y
+    })
+}
+
 pub(crate) fn pack_active_clips(clips: &[RoundedClip], origin: Point) -> PackedClips {
-    let mut active = clips
-        .iter()
-        .filter(|clip| clip.behavior() != ClipBehavior::None);
+    let mut active = clips.iter().enumerate().filter_map(|(index, clip)| {
+        (clip.behavior() != ClipBehavior::None && !redundant_hard_rect(clip, &clips[index + 1..]))
+            .then_some(clip)
+    });
     let Some(first) = active.next() else {
         return PackedClips::default();
     };
@@ -504,6 +526,93 @@ mod tests {
     }
 
     #[test]
+    fn redundant_portal_and_scroll_rectangles_preserve_exact_rounded_clips() {
+        let root = test_clip(
+            Point::ZERO,
+            Size::new(1000.0, 600.0),
+            0.0,
+            ClipBehavior::HardEdge,
+        );
+        let panel = test_clip(
+            Point::new(190.0, 12.0),
+            Size::new(620.0, 352.0),
+            12.0,
+            ClipBehavior::AntiAlias,
+        );
+        let scroll = test_clip(
+            Point::new(198.0, 56.0),
+            Size::new(604.0, 276.0),
+            0.0,
+            ClipBehavior::HardEdge,
+        );
+        let row = test_clip(
+            Point::new(198.0, 56.0),
+            Size::new(604.0, 52.0),
+            12.0,
+            ClipBehavior::HardEdge,
+        );
+        let packed = pack_active_clips(&[root.clone(), panel.clone(), scroll.clone()], Point::ZERO);
+        assert_eq!(packed.clip_meta[0], 2);
+        assert_eq!(packed.clip_rect0, [190.0, 12.0, 620.0, 352.0]);
+        assert_eq!(packed.clip_radii0, [12.0; 4]);
+        assert_eq!(packed.clip_rect1, [198.0, 56.0, 604.0, 276.0]);
+        let packed = pack_active_clips(&[root, panel, scroll, row], Point::ZERO);
+        assert_eq!(packed.clip_meta[0], 2);
+        assert_eq!(packed.clip_rect1, [198.0, 56.0, 604.0, 52.0]);
+        assert_eq!(packed.clip_radii1, [12.0; 4]);
+    }
+
+    #[test]
+    fn partially_overlapping_or_antialiased_ancestors_are_not_discarded() {
+        let outer = test_clip(
+            Point::ZERO,
+            Size::new(20.0, 20.0),
+            0.0,
+            ClipBehavior::HardEdge,
+        );
+        let overflow = test_clip(
+            Point::new(18.0, 1.0),
+            Size::new(4.0, 4.0),
+            0.0,
+            ClipBehavior::HardEdge,
+        );
+        let contained = test_clip(
+            Point::new(2.0, 2.0),
+            Size::new(4.0, 4.0),
+            0.0,
+            ClipBehavior::HardEdge,
+        );
+        assert!(!redundant_hard_rect(&outer, &[overflow]));
+        assert!(!redundant_hard_rect(
+            &outer,
+            &[test_clip(
+                Point::ZERO,
+                Size::new(20.0, 20.0),
+                0.0,
+                ClipBehavior::AntiAlias
+            )]
+        ));
+        assert!(!redundant_hard_rect(
+            &outer,
+            &[test_clip(
+                Point::new(2.0, 2.0),
+                Size::new(4.0, 4.0),
+                0.0,
+                ClipBehavior::None
+            )]
+        ));
+        assert!(!redundant_hard_rect(
+            &test_clip(
+                Point::ZERO,
+                Size::new(20.0, 20.0),
+                0.0,
+                ClipBehavior::AntiAlias
+            ),
+            &[contained]
+        ));
+    }
+
+    #[test]
     fn should_filter_none_clips_when_packing_active_slots() {
         // Arrange
         let clips = [
@@ -601,7 +710,7 @@ mod tests {
             test_clip(
                 Point::ZERO,
                 Size::new(20.0, 20.0),
-                0.0,
+                1.0,
                 ClipBehavior::HardEdge,
             ),
             test_clip(

@@ -407,6 +407,12 @@ pub(crate) trait AnyView: 'static {
     fn prepare_text_geometry(&self, _metrics: &TextMetrics, _advance: &mut dyn FnMut(char) -> f32) {
     }
 
+    /// Advances focused-widget animation, returning (paint_changed, next_deadline).
+    /// Runtime repaints without rebuilding and combines this with external deadlines.
+    fn focused_animation(&self, _now: std::time::Instant) -> (bool, Option<std::time::Instant>) {
+        (false, None)
+    }
+
     fn focused_ime(&self, _rect: Rect) -> Option<crate::effects::ImeEffect> {
         None
     }
