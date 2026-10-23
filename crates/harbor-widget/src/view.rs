@@ -22,6 +22,11 @@ impl Key {
     pub fn new(s: impl Into<String>) -> Self {
         Self(s.into())
     }
+
+    /// Returns the key's text representation.
+    pub fn text(&self) -> &str {
+        &self.0
+    }
 }
 
 impl From<String> for Key {
@@ -619,6 +624,7 @@ impl View {
         }
     }
 
+    #[cfg(test)]
     /// Consumes a concrete View and returns its components.
     pub(crate) fn decompose(self) -> (Arc<dyn AnyView>, Vec<View>, Option<Key>) {
         match self.contents {
@@ -632,6 +638,41 @@ impl View {
     /// Consumes this View into the data reconciliation needs to materialize it.
     pub(crate) fn into_parts(self) -> (ViewContents, Vec<View>, Option<Key>) {
         (self.contents, self.children, self.explicit_key)
+    }
+}
+
+/// Maximum number of chained deferrals a single build return may flatten in
+/// place on one Fiber before construction is rejected.
+const MAX_MATERIALIZATION_DEPTH: usize = 8;
+
+/// Materializes a view for the Fiber that produced it.
+///
+/// Already-concrete views pass through unchanged. A build return that defers
+/// another component is built against the same `BuildCx`, keeping component
+/// identity, theme, and hook sequence on a single Fiber. Depth is bounded so
+/// a self-deferring component build chain fails loudly instead of recursing
+/// forever.
+pub(crate) fn materialize_for_fiber(
+    view: View,
+    cx: &mut BuildCx,
+) -> (Arc<dyn AnyView>, Vec<View>, Option<Key>) {
+    let mut pending = view;
+    for _ in 0..MAX_MATERIALIZATION_DEPTH {
+        match pending.contents {
+            ViewContents::Concrete(inner) => {
+                return (inner, pending.children, pending.explicit_key);
+            }
+            ViewContents::Deferred { component, .. } => {
+                pending = component.build(cx);
+            }
+        }
+    }
+    match pending.contents {
+        ViewContents::Concrete(inner) => (inner, pending.children, pending.explicit_key),
+        ViewContents::Deferred { .. } => panic!(
+            "view construction exceeds {} materialization levels; a component build likely returns its own deferred description",
+            MAX_MATERIALIZATION_DEPTH
+        ),
     }
 }
 

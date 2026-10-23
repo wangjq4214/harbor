@@ -1,13 +1,13 @@
 error: view! match arm body must be a braced child list
-  --> tests/ui/fail/invalid_match_body.rs:11:32
-   |
-11 |                 Some(value) => value,
-   |                                ^^^^^
+ --> tests/ui/fail/invalid_match_body.rs:8:32
+  |
+8 |                 Some(value) => value,
+  |                                ^^^^^
 
 warning: unused import: `harbor_widget::widgets::column::Column`
- --> tests/ui/fail/invalid_match_body.rs:2:5
+ --> tests/ui/fail/invalid_match_body.rs:1:5
   |
-2 | use harbor_widget::widgets::column::Column;
+1 | use harbor_widget::widgets::column::Column;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

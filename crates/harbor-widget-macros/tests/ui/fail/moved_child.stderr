@@ -1,14 +1,20 @@
-error[E0382]: use of moved value: `leaf`
-  --> tests/ui/fail/moved_child.rs:20:28
+error[E0425]: cannot find type `BuildCx` in this scope
+  --> tests/ui/fail/moved_child.rs:11:30
    |
-18 |     let leaf = Leaf;
+11 |     fn build(&self, cx: &mut BuildCx) -> View {
+   |                              ^^^^^^^ not found in this scope
+
+error[E0382]: use of moved value: `leaf`
+  --> tests/ui/fail/moved_child.rs:19:28
+   |
+17 |     let leaf = Leaf;
    |         ---- move occurs because `leaf` has type `Leaf`, which does not implement the `Copy` trait
-19 |     let _ = view! { &mut cx; Column::new() => { leaf; } };
-   |                                                 ---- value moved here
-20 |     let _used_after_move = leaf;
+18 |     let _ = view! {  Column::new() => { leaf; } };
+   |                                         ---- value moved here
+19 |     let _used_after_move = leaf;
    |                            ^^^^ value used here after move
    |
 help: consider cloning the value if the performance cost is acceptable
    |
-19 |     let _ = view! { &mut cx; Column::new() => { leaf.clone(); } };
-   |                                                     ++++++++
+18 |     let _ = view! {  Column::new() => { leaf.clone(); } };
+   |                                             ++++++++

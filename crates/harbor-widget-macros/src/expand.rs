@@ -10,7 +10,7 @@ pub fn expand(input: ViewInput) -> Result<TokenStream> {
         support,
         next_ident: 0,
     };
-    Ok(expander.expand_root(&input.root, &input.cx))
+    Ok(expander.expand_root(&input.root))
 }
 
 fn support_path() -> Result<TokenStream> {
@@ -40,31 +40,28 @@ impl Expander {
         Ident::new(&format!("__harbor_view_{role}_{index}"), Span::mixed_site())
     }
 
-    fn expand_root(&mut self, root: &Root, cx: &syn::Expr) -> TokenStream {
+    fn expand_root(&mut self, root: &Root) -> TokenStream {
         match root {
-            Root::Value { expr, span } => self.expand_value_root(expr, *span, cx),
-            Root::Parent(node) => self.expand_parent_root(node, cx),
+            Root::Value { expr, span } => self.expand_value_root(expr, *span),
+            Root::Parent(node) => self.expand_parent_root(node),
         }
     }
 
-    fn expand_value_root(&mut self, expr: &syn::Expr, span: Span, cx: &syn::Expr) -> TokenStream {
+    fn expand_value_root(&mut self, expr: &syn::Expr, span: Span) -> TokenStream {
         let component = self.fresh_ident("component");
-        let build_cx = self.fresh_ident("cx");
         let support = &self.support;
 
         quote_spanned! {span=>
             {
                 let #component = #expr;
-                let #build_cx = #cx;
-                <_ as #support::Component>::build(&#component, #build_cx)
+                <_ as #support::IntoChildView>::into_child_view(#component)
             }
         }
     }
 
-    fn expand_parent_root(&mut self, node: &Node, cx: &syn::Expr) -> TokenStream {
+    fn expand_parent_root(&mut self, node: &Node) -> TokenStream {
         let children = self.fresh_ident("children");
         let component = self.fresh_ident("component");
-        let build_cx = self.fresh_ident("cx");
         let children_body = self.expand_children(&node.children, &children);
         let component_expr = &node.component;
         let support = &self.support;
@@ -81,8 +78,7 @@ impl Expander {
                 .unwrap_or_else(|error| {
                     ::core::panic!("view! child construction failed: {}", error)
                 });
-                let #build_cx = #cx;
-                <_ as #support::Component>::build(&#component, #build_cx)
+                <_ as #support::IntoChildView>::into_child_view(#component)
             }
         }
     }
@@ -217,7 +213,7 @@ mod tests {
     #[test]
     fn expansion_uses_root_child_and_parent_protocols() {
         let input: ViewInput = syn::parse2(quote! {
-            cx; Root::new() => {
+            Root::new() => {
                 existing;
                 Row::new() => { Leaf::new(); }
                 for item in items { Row::new(item); }
@@ -231,31 +227,30 @@ mod tests {
         assert!(expansion.contains("__macro_support"));
         assert!(expansion.contains("IntoChildView"));
         assert!(expansion.contains("WithChildren"));
-        assert!(expansion.contains("Component"));
+        assert!(!expansion.contains("Component>::build"));
         assert!(!expansion.contains("IntoChildren"));
         assert!(!expansion.contains("clone"));
         assert!(!expansion.contains("use_state"));
     }
 
     #[test]
-    fn leaf_root_builds_directly_without_children_attachment() {
-        let input: ViewInput = syn::parse2(quote! { cx; Root::new(); }).unwrap();
+    fn leaf_root_defers_without_children_attachment() {
+        let input: ViewInput = syn::parse2(quote! { Root::new(); }).unwrap();
         let expansion = expand(input).unwrap().to_string();
 
-        assert!(expansion.contains("Component"));
-        assert!(!expansion.contains("IntoChildView"));
+        assert!(expansion.contains("IntoChildView"));
         assert!(!expansion.contains("WithChildren"));
     }
 
     #[test]
     fn nested_parents_receive_distinct_internal_collectors() {
         let input: ViewInput = syn::parse2(quote! {
-            cx; Root::new() => { Parent::new() => { Leaf::new(); } }
+            Root::new() => { Parent::new() => { Leaf::new(); } }
         })
         .unwrap();
 
         let expansion = expand(input).unwrap().to_string();
         assert!(expansion.contains("__harbor_view_children_0"));
-        assert!(expansion.contains("__harbor_view_children_3"));
+        assert!(expansion.contains("__harbor_view_children_2"));
     }
 }

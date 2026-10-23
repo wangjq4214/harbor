@@ -1,0 +1,13 @@
+error[E0277]: the trait bound `u8: IntoChildView` is not satisfied
+ --> tests/ui/fail/non_component_root.rs:5:21
+  |
+5 |     let _ = view! { not_a_component; };
+  |                     ^^^^^^^^^^^^^^^ the trait `for<'a> Fn(&'a mut BuildCx)` is not implemented for `u8`
+  |
+help: the trait `IntoChildView` is implemented for `View`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | impl IntoChildView for View {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: required for `u8` to implement `harbor_widget::view::Component`
+  = note: required for `u8` to implement `IntoChildView`

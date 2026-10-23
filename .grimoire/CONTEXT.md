@@ -692,11 +692,18 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - communicates with Harbor Widget Runtime
 
 ### Widget View Macro
-- **Definition:** Experimental `view! { cx; root }` Rust-expression syntax: semicolon child values, `expression => { children }` components and child-list `for`/`if`/`match`. Expands into Component/View without new runtime semantics; Component roots and IntoChildView children. See [ADR 0032](./adr/0032-view-macro-rust-expression-grammar.md).
+- **Definition:** Experimental Rust-expression `view!` syntax: semicolon child values through `IntoChildView`, `expression => { children }` components and child-list `for`/`if`/`match`; no context parameter. Every composition position — root, child and content slot — supplies the same deferred description; the root Fiber is allocated by the Runtime at the reconciliation top level. See [ADR 0032](./adr/0032-view-macro-rust-expression-grammar.md) for the grammar and [ADR 0079](./adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md) for the construction boundary.
 - **Synonyms:** view! DSL
 - **Relationships:**
-  - references BuildCx
   - belongs to Harbor Widget Runtime
+
+### Deferred Root
+- **Definition:** The `view!` macro root supplied as the same deferred component description child positions use; the Runtime allocates the root Fiber at the reconciliation top level and builds the root component with its own Fiber-owned BuildCx. A build return that defers another component flattens in place on that Fiber within a bounded depth. See [ADR 0079](./adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md).
+- **Synonyms:** Root Deferral
+- **Relationships:**
+  - belongs to Harbor Widget Runtime
+  - references Fiber
+  - references Reconciliation
 
 ### Hex Color Setting
 - **Definition:** A TOML color string in `#RRGGBB` or `#RRGGBBAA` form, where omitted alpha means opaque and eight-digit colors preserve alpha for terminal backgrounds.

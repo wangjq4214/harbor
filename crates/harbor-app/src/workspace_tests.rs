@@ -578,7 +578,10 @@ fn tab_rows(runtime: &Runtime) -> Vec<FiberId> {
         .filter(|id| {
             let fiber = runtime.arena().get(*id).expect("live fiber");
             let children = fiber.children();
-            fiber.widget_type() == TypeId::of::<Row>()
+            let slot_wrapped = fiber
+                .key()
+                .is_some_and(|key| key.text() == harbor_widget::CONTENT_SLOT_KEY);
+            (fiber.widget_type() == TypeId::of::<Row>() || slot_wrapped)
                 && children.last().is_some_and(|child| {
                     let kind = runtime.arena().get(*child).unwrap().widget_type();
                     (kind == TypeId::of::<ConstrainedBox>() && children.len() == 3)

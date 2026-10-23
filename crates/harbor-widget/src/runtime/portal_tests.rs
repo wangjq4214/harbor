@@ -1,7 +1,8 @@
 use super::*;
+use crate::construction::ComponentExt as _;
 use crate::input::event::{Modifiers, PointerButton, PointerEvent};
 use crate::scene::primitive::{Color, Primitive};
-use crate::view::{AnyView, View};
+use crate::view::{AnyView, Component, View};
 use crate::widgets::{align::Align, sized_box::SizedBox};
 use crate::{
     Alignment, BoxDecoration, ClipBehavior, Column, ConstrainedBox, DecoratedBox, Expanded,

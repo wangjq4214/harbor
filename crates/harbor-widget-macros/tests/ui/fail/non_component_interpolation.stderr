@@ -1,13 +1,13 @@
 error[E0277]: the trait bound `(): IntoChildView` is not satisfied
-  --> tests/ui/fail/non_component_interpolation.rs:10:13
-   |
-10 |             { let _value = 42usize; };
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `for<'a> Fn(&'a mut BuildCx)` is not implemented for `()`
-   |
+ --> tests/ui/fail/non_component_interpolation.rs:7:13
+  |
+7 |             { let _value = 42usize; };
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `for<'a> Fn(&'a mut BuildCx)` is not implemented for `()`
+  |
 help: the trait `IntoChildView` is implemented for `View`
-  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
-   |
-   | impl IntoChildView for View {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   = note: required for `()` to implement `harbor_widget::view::Component`
-   = note: required for `()` to implement `IntoChildView`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | impl IntoChildView for View {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: required for `()` to implement `harbor_widget::view::Component`
+  = note: required for `()` to implement `IntoChildView`

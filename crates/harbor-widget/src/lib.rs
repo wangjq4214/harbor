@@ -50,11 +50,11 @@ pub use theme::{ControlColors, ControlStyle, ControlVisualState, Theme};
 pub use widgets::backdrop_filter::{BackdropFilter, BackdropMaterial, EdgeRefraction};
 pub use widgets::decorated_box::DecoratedBox;
 pub use widgets::{
-    ActionOutcome, Actions, Axis, Button, Column, ConstrainedBox, DEFAULT_SCROLL_LINE_STEP,
-    Expanded, Flex, Flexible, Focus, FocusHandle, FocusScope, Icon, IconButton, InteractionState,
-    InteractiveRegion, KeyChord, LayoutChangedCallback, LayoutObserver, MainAxisAlignment,
-    MouseRegion, Notification, Portal, Row, ScrollController, ScrollMetrics, ScrollView, Separator,
-    Shortcuts, Spacer, ThemeProvider,
+    ActionOutcome, Actions, Axis, Button, CONTENT_SLOT_KEY, Column, ConstrainedBox,
+    DEFAULT_SCROLL_LINE_STEP, Expanded, Flex, Flexible, Focus, FocusHandle, FocusScope, Icon,
+    IconButton, InteractionState, InteractiveRegion, KeyChord, LayoutChangedCallback,
+    LayoutObserver, MainAxisAlignment, MouseRegion, Notification, Portal, Row, ScrollController,
+    ScrollMetrics, ScrollView, Separator, Shortcuts, Spacer, ThemeProvider,
 };
 pub use widgets::{EditableText, TextField};
 

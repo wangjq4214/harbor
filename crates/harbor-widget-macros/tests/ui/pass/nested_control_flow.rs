@@ -1,5 +1,6 @@
 use harbor_widget::layout::Size;
 use harbor_widget::view::{BuildCx, Component};
+
 use harbor_widget::widgets::column::Column;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{view, ComponentExt};
@@ -12,7 +13,6 @@ fn main() {
     let choice = Some(Size::new(9.0, 10.0));
 
     let _root = view! {
-        &mut cx;
         Column::new() => {
             SizedBox::new(Size::new(1.0, 2.0));
             existing;

@@ -19,8 +19,7 @@ pub(crate) fn tab_rail(
     controller: &TabUiController,
     dispatcher: Dispatcher<AppCommandRequest>,
 ) -> View {
-    harbor_widget::view! { cx;
-        ConstrainedBox::new()
+    harbor_widget::view! { ConstrainedBox::new()
             .min_width(state.presentation.width())
             .max_width(state.presentation.width()) => {
             ScrollView::new().controller(controller.scroll.clone()) => {
@@ -43,7 +42,7 @@ fn tab_row(
     presentation: RailPresentation,
     controller: &TabUiController,
     dispatcher: Dispatcher<AppCommandRequest>,
-) -> View {
+) -> impl Component + use<> {
     let id = snapshot.id;
     let title = snapshot.title.clone();
     let compact = presentation == RailPresentation::Compact;
@@ -64,8 +63,7 @@ fn tab_row(
         })
         .content(move |cx, state| {
             let color = rail_style(cx, compact).resolve_state(&state).foreground;
-            harbor_widget::view! { cx;
-                Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 2.0 } else { 8.0 }) => {
+            harbor_widget::view! { Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 2.0 } else { 8.0 }) => {
                     if !compact {
                         ConstrainedBox::new().min_width(24.0).max_width(24.0) => {
                             Icon::new(icon).size(20.0).color(color);
@@ -86,13 +84,10 @@ fn tab_row(
                 }
             }
         });
-    // Defer the stateful region to its own keyed fiber, rather than borrowing
-    // the workspace's positional hooks when tabs are inserted or removed.
-    harbor_widget::view! { cx;
-        Padding::new(0.0, 0.0, 0.0, 0.0).keyed(format!("terminal-tab-{id}")) => {
-            region;
-        }
-    }
+    // The region is a deferred component of its own keyed fiber; the padding
+    // wrapper that used to isolate it from the workspace's positional hooks
+    // is no longer needed (ADR 0079).
+    region.keyed(format!("terminal-tab-{id}"))
 }
 
 fn rail_style(cx: &BuildCx, compact: bool) -> ControlStyle {
@@ -131,8 +126,7 @@ fn new_tab_button(
             })
             .content(move |cx, state| {
                 let color = rail_style(cx, compact).resolve_state(&state).foreground;
-                harbor_widget::view! { cx;
-                    Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 0.0 } else { 8.0 }) => {
+                harbor_widget::view! { Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 0.0 } else { 8.0 }) => {
                         ConstrainedBox::new().min_width(24.0).max_width(24.0) => {
                             Icon::new(LucideIcon::Plus).size(20.0).color(color);
                         }

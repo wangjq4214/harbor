@@ -30,7 +30,7 @@ Reconciliation rules are parent-local:
 
 Use `ComponentExt::keyed`, or `Component::key()` when implementing a component's identity directly. Reordering is supported; moving a keyed child to another parent is not a state-preservation contract. `Runtime::set_root` replaces and tears down the old root even when the new description looks similar.
 
-**Construction matters:** passing a component to `.child(...)`/`view!` defers its build to its own fiber. Calling a child's `.build(cx)` eagerly shares the caller's build context. That can be intentional inside a composite implementation, but is not an independent hook boundary. `BuildCx::stub()` is for prebuilding descriptions; it is not a mounted runtime with persistent subscriptions.
+**Construction matters:** passing a component to `.child(...)`/`view!` (root or child position) defers its build to its own fiber; an already-built `View` passes through unchanged at any position. Calling a child's `.build(cx)` eagerly shares the caller's build context. That can be intentional inside a composite implementation, but is not an independent hook boundary. `BuildCx::stub()` is for prebuilding descriptions; it is not a mounted runtime with persistent subscriptions.
 
 ## Signals are pull-based shared cells, not render snapshots
 

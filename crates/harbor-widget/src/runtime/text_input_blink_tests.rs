@@ -4,6 +4,7 @@ use crate::{
     input::event::{ImePreedit, Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent},
     scene::primitive::{ExternalScheduleDemand, Primitive},
     signal::Signal,
+    view::Component,
     widgets::custom_paint::CustomPaint,
 };
 use std::{cell::Cell, rc::Rc, time::Duration};

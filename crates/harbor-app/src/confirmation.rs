@@ -27,10 +27,10 @@ struct ConfirmationDialogProps {
 }
 
 impl Component for ConfirmationDialogProps {
-    fn build(&self, cx: &mut BuildCx) -> View {
+    fn build(&self, _cx: &mut BuildCx) -> View {
         let cancelled = Arc::clone(&self.cancelled);
         let confirmed = Arc::clone(&self.confirmed);
-        harbor_widget::view! { cx; FocusScope::new() => {
+        harbor_widget::view! { FocusScope::new() => {
             Padding::new(24.0, 16.0, 24.0, 16.0) => {
                 Column::new() => {
                     TextLabel::new(self.header_text.clone());

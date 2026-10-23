@@ -1,3 +1,4 @@
+use crate::IntoChildView;
 use crate::effects::CursorShape;
 use crate::input::event::{
     FocusEvent, Key, KeyboardEvent, PointerBoundaryKind, PointerButton, PointerPhase, UiEvent,
@@ -32,6 +33,37 @@ struct InteractionRuntimeState {
 
 type ActivateCallback = Rc<dyn Fn(&mut EventCtx)>;
 type ContentBuilder = Rc<dyn Fn(&mut BuildCx, InteractionState) -> View>;
+
+/// Reconciliation key carried by every content-slot fiber
+/// ([`InteractiveRegion::content`]), letting consumers recognize the slot's
+/// wrapper fiber without depending on its internal type.
+pub const CONTENT_SLOT_KEY: &str = "harbor-content-slot";
+
+/// A state-driven content slot.
+///
+/// The slot is a Component so its content builds inside the slot's own child
+/// Fiber with its own hook sequence and subscriptions assigned by
+/// reconciliation, instead of consuming the owning region's hook serials
+/// (ADR 0079 D4). It re-reads the retained interaction state at build time,
+/// so continuing state changes keep driving content without extra wiring.
+#[derive(Clone)]
+struct ContentSlot {
+    builder: ContentBuilder,
+    state: Signal<InteractionRuntimeState>,
+}
+
+impl Component for ContentSlot {
+    /// Stable key so traversal consumers (focused traversal, tests, docs) can
+    /// recognize the slot fiber without decoding widget types beneath it.
+    fn key(&self) -> Option<crate::view::Key> {
+        Some(crate::view::Key::new(CONTENT_SLOT_KEY))
+    }
+
+    fn build(&self, cx: &mut BuildCx) -> View {
+        let visual = self.state.read().visual;
+        (self.builder)(cx, visual)
+    }
+}
 
 /// Reusable focusable mouse/keyboard activation state machine.
 #[derive(Clone)]
@@ -159,9 +191,14 @@ impl Component for InteractiveRegion {
             .style
             .clone()
             .unwrap_or_else(|| cx.theme().button.clone());
-        let visual = runtime.read().visual;
         let children = match &self.content {
-            Some(builder) => vec![builder(cx, visual)],
+            Some(builder) => vec![
+                ContentSlot {
+                    builder: builder.clone(),
+                    state: runtime.clone(),
+                }
+                .into_child_view(),
+            ],
             None => self.child.iter().cloned().collect(),
         };
         View::new(
@@ -466,5 +503,149 @@ impl AnyView for InteractiveRegionView {
 
     fn accepts_pointer_boundaries(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod content_slot_tests {
+    //! Characterization for the state-driven content slot owning its Fiber
+    //! boundary (spec 0034 R4): slot hooks never consume the region's serial
+    //! space, slot state survives region passes, and teardown releases the
+    //! slot's external registrations with the slot fiber.
+
+    use super::*;
+    use crate::construction::IntoChildView;
+    use crate::layout::Size;
+    use crate::runtime::Runtime;
+    use crate::scene::primitive::{ExternalDrawId, ExternalScheduleDemand};
+    use crate::widgets::column::Column;
+    use crate::widgets::sized_box::SizedBox;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    #[derive(Clone)]
+    struct SlotHost {
+        show_slot: Rc<RefCell<Option<Signal<bool>>>>,
+        content_state: Rc<RefCell<Option<Signal<&'static str>>>>,
+        slot_installed: bool,
+    }
+
+    impl SlotHost {
+        fn new(slot_installed: bool) -> Self {
+            Self {
+                show_slot: Rc::new(RefCell::new(None)),
+                content_state: Rc::new(RefCell::new(None)),
+                slot_installed,
+            }
+        }
+    }
+
+    impl Component for SlotHost {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            let show_slot = cx.use_state(|| self.slot_installed);
+            *self.show_slot.borrow_mut() = Some(show_slot.clone());
+            let region = if show_slot.read().clone() {
+                let content_state = self.content_state.clone();
+                InteractiveRegion::new().content(move |cx, _state| {
+                    let value = cx.use_state(|| "slot-initial");
+                    *content_state.borrow_mut() = Some(value.clone());
+                    let _ = value.read().clone();
+                    cx.register_external_schedule(
+                        ExternalDrawId::new(7_034),
+                        Arc::new(|_id, _now| ExternalScheduleDemand::empty()),
+                    );
+                    SizedBox::new(Size::new(4.0, 4.0)).build(cx)
+                })
+            } else {
+                InteractiveRegion::new()
+            };
+
+            crate::view! {
+                Column::new() => { region; }
+            }
+        }
+    }
+
+    fn region_fiber_id(runtime: &Runtime) -> crate::fiber::FiberId {
+        // root (host + collapsed outer composition) -> region fiber -> slot fiber
+        runtime
+            .arena()
+            .get(runtime.root_id().unwrap())
+            .unwrap()
+            .children()[0]
+    }
+
+    fn slot_fiber_id(runtime: &Runtime) -> Option<crate::fiber::FiberId> {
+        runtime
+            .arena()
+            .get(region_fiber_id(runtime))
+            .unwrap()
+            .children()
+            .first()
+            .copied()
+    }
+
+    #[test]
+    fn slot_hooks_live_on_their_own_fiber() {
+        let host = SlotHost::new(true);
+        let mut runtime = Runtime::new();
+        runtime.set_root(host.clone());
+        runtime.update(Instant::now());
+
+        // The slot's external schedule registration installs with the parent
+        // rebuild that materializes the slot.
+        assert!(
+            runtime
+                .external_schedule_ids()
+                .contains(&ExternalDrawId::new(7_034))
+        );
+        let region_id = region_fiber_id(&runtime);
+        let slot_id = slot_fiber_id(&runtime).expect("slot content became a child fiber");
+
+        // The region's hook sequence holds exactly its own interaction state;
+        // the content hook belongs to the slot fiber instead.
+        assert_eq!(runtime.arena().get(region_id).unwrap().hooks.len(), 1);
+        assert_eq!(runtime.arena().get(slot_id).unwrap().hooks.len(), 1);
+
+        // Slot state mutated between passes survives the next region pass.
+        let content_signal = host.content_state.borrow().clone().unwrap();
+        content_signal.set("revised");
+        runtime.update(Instant::now());
+        let content_signal = host.content_state.borrow().clone().unwrap();
+        assert_eq!(content_signal.read().clone(), "revised");
+    }
+
+    #[test]
+    fn removed_slot_fiber_releases_hooks_and_registrations() {
+        let host = SlotHost::new(true);
+        let mut runtime = Runtime::new();
+        runtime.set_root(host.clone());
+        runtime.update(Instant::now());
+        assert!(slot_fiber_id(&runtime).is_some());
+        assert!(
+            runtime
+                .external_schedule_ids()
+                .contains(&ExternalDrawId::new(7_034))
+        );
+
+        // Dismount the slot and confirm its fiber disappeared with its hooks.
+        host.show_slot.borrow().as_ref().unwrap().set(false);
+        runtime.update(Instant::now());
+        assert!(slot_fiber_id(&runtime).is_none());
+        assert!(
+            !runtime
+                .external_schedule_ids()
+                .contains(&ExternalDrawId::new(7_034)),
+            "the slot's external registration leaves with its fiber"
+        );
+
+        let region_id = region_fiber_id(&runtime);
+        let region = runtime.arena().get(region_id).unwrap();
+        assert!(
+            region.children.is_empty(),
+            "the region keeps only its own fiber state after the slot is removed",
+        );
     }
 }

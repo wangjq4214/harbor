@@ -18,12 +18,10 @@ impl Component for StructLeaf {
 }
 
 fn main() {
-    let mut cx = BuildCx::stub();
     let enabled = true;
     let choice = Some(Size::new(3.0, 4.0));
 
     let _ = view! {
-        &mut cx;
         Column::new() => {
             SizedBox::new(Size::new(1.0, 2.0)).color(harbor_widget::scene::primitive::Color::RED);
             StructLeaf { size: Size::new(2.0, 2.0) };
@@ -46,5 +44,5 @@ fn main() {
         }
     };
 
-    let _ = view! { &mut cx; SizedBox::new(Size::new(8.0, 9.0)); };
+    let _ = view! {  SizedBox::new(Size::new(8.0, 9.0)); };
 }

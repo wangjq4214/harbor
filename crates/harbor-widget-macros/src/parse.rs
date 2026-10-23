@@ -4,12 +4,9 @@ use syn::{Expr, Pat, Result, Token, braced, spanned::Spanned};
 
 impl Parse for ViewInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let cx = input.call(Expr::parse_without_eager_brace)?;
-        if input.peek(Token![,]) {
-            return Err(input
-                .error("view! uses `;` after the context expression; replace this `,` with `;`"));
+        if let Some(error) = legacy_context(input) {
+            return Err(error);
         }
-        input.parse::<Token![;]>()?;
 
         let root = parse_root(input)?;
         if !input.is_empty() {
@@ -21,8 +18,40 @@ impl Parse for ViewInput {
             return Err(input.error("view! accepts exactly one root"));
         }
 
-        Ok(Self { cx, root })
+        Ok(Self { root })
     }
+}
+
+/// Rejects the retired `view! { cx; root }` signature at the context position so the
+/// diagnostic names the removed context instead of a generic parse failure.
+fn legacy_context(input: ParseStream<'_>) -> Option<syn::Error> {
+    let probe = input.fork();
+    let context = match probe.call(Expr::parse_without_eager_brace) {
+        Ok(context) => context,
+        Err(_) => return None,
+    };
+
+    if probe.peek(Token![,]) {
+        return Some(probe.error(
+            "view! no longer takes a context expression; remove this `cx,` context — \
+             roots defer exactly like children",
+        ));
+    }
+    if !probe.peek(Token![;]) {
+        return None;
+    }
+    let probe = probe.fork();
+    probe.parse::<Token![;]>().ok()?;
+    if probe.is_empty() {
+        return None;
+    }
+
+    let span = context.span();
+    Some(syn::Error::new(
+        span,
+        "view! no longer takes a context expression; remove this `cx;` context — \
+         roots defer exactly like children",
+    ))
 }
 
 fn parse_root(input: ParseStream<'_>) -> Result<Root> {
@@ -211,7 +240,7 @@ mod tests {
     #[test]
     fn parses_values_parents_blocks_and_control_flow() {
         let input: ViewInput = syn::parse2(quote! {
-            cx; Root::new() => {
+            Root::new() => {
                 Leaf::new();
                 existing;
                 { let value = 1; Leaf::new(value) };
@@ -239,11 +268,11 @@ mod tests {
 
     #[test]
     fn parses_leaf_root_and_struct_literals() {
-        let leaf: ViewInput = syn::parse2(quote! { cx; Leaf::new(); }).unwrap();
+        let leaf: ViewInput = syn::parse2(quote! { Leaf::new(); }).unwrap();
         assert!(matches!(leaf.root, Root::Value { .. }));
 
         let parent: ViewInput = syn::parse2(quote! {
-            cx; Root { label: "root" } => { Leaf { value: 1 }; }
+            Root { label: "root" } => { Leaf { value: 1 }; }
         })
         .unwrap();
         let Root::Parent(root) = parent.root else {
@@ -255,7 +284,7 @@ mod tests {
     #[test]
     fn parenthesized_control_flow_is_a_value() {
         let input: ViewInput = syn::parse2(quote! {
-            cx; Root::new() => {
+            Root::new() => {
                 (if enabled { one() } else { two() });
                 ({ match choice { Some(value) => value, None => fallback } });
             }
@@ -272,15 +301,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_old_separator_with_migration_diagnostic() {
-        let error = parse_error(quote! { cx, Root::new(); });
-        assert!(error.to_string().contains("replace this `,` with `;`"));
+    fn rejects_retired_context_signature() {
+        let comma_error = parse_error(quote! { cx, Root::new(); });
+        assert!(
+            comma_error
+                .to_string()
+                .contains("no longer takes a context")
+        );
+
+        let passthrough_error = parse_error(quote! { cx; Root::new(); });
+        assert!(
+            passthrough_error
+                .to_string()
+                .contains("no longer takes a context")
+        );
     }
 
     #[test]
     fn rejects_a_second_root() {
         let error = parse_error(quote! {
-            cx; Root::new() => {} Other::new();
+            Root::new() => {} Other::new();
         });
         assert!(error.to_string().contains("exactly one root"));
     }
@@ -288,12 +328,12 @@ mod tests {
     #[test]
     fn rejects_non_block_child_body_and_trailing_parent_semicolon() {
         let body_error = parse_error(quote! {
-            cx; Root::new() => Leaf::new();
+            Root::new() => Leaf::new();
         });
         assert!(body_error.to_string().contains("braced child list"));
 
         let semicolon_error = parse_error(quote! {
-            cx; Root::new() => {};
+            Root::new() => {};
         });
         assert!(
             semicolon_error

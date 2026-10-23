@@ -2086,7 +2086,7 @@ mod decoration_tests {
 
     impl<C: Component + Clone + 'static> Component for TestMainTerminalRoot<C> {
         fn build(&self, cx: &mut BuildCx) -> View {
-            harbor_widget::view! { cx; self.root.clone() => {
+            harbor_widget::view! { self.root.clone() => {
                 TerminalDecorationPreset::container() => {
                     self.child.clone();
                 }
@@ -2324,7 +2324,12 @@ mod decoration_tests {
         ) = fiber_chain(&runtime);
         let items = painted_items(&runtime);
 
-        assert_eq!(padding_type, TypeId::of::<Padding>());
+        // The root Fiber belongs to the mounted description component (ADR 0079);
+        // the concrete Padding materializes onto it without an extra layer.
+        assert_eq!(
+            padding_type,
+            TypeId::of::<TestMainTerminalRoot<CustomPaint>>()
+        );
         assert_eq!(decorated_type, TypeId::of::<DecoratedBox>());
         assert_eq!(external_type, TypeId::of::<CustomPaint>());
         assert_eq!(padding_rect.min, Point::new(0.0, 0.0));

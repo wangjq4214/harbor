@@ -285,7 +285,7 @@ fn editor_chords_bypass_terminal_like_actions_but_other_shortcuts_still_work() {
         ActionOutcome::Consumed
     });
     let mut runtime = mount(move |cx: &mut BuildCx| {
-        harbor_widget::view! { cx; actions.clone() => {
+        harbor_widget::view! { actions.clone() => {
             shortcuts.clone() => { TextField::new(c.clone()); }
         } }
     });

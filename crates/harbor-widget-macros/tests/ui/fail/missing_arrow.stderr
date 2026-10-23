@@ -1,23 +1,23 @@
 error: expected `;`, found `}`
- --> tests/ui/fail/missing_arrow.rs:7:45
+ --> tests/ui/fail/missing_arrow.rs:5:37
   |
-7 |     let _ = view! { &mut cx; Column::new() }
-  |                                             ^ help: add `;` here
-8 | }
+5 |     let _ = view! {  Column::new() }
+  |                                     ^ help: add `;` here
+6 | }
   | - unexpected token
 
 error: unexpected end of input, view! expected `;` or `=> { ... }` after the root expression
- --> tests/ui/fail/missing_arrow.rs:7:13
+ --> tests/ui/fail/missing_arrow.rs:5:13
   |
-7 |     let _ = view! { &mut cx; Column::new() }
-  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+5 |     let _ = view! {  Column::new() }
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 warning: unused import: `harbor_widget::widgets::column::Column`
- --> tests/ui/fail/missing_arrow.rs:2:5
+ --> tests/ui/fail/missing_arrow.rs:1:5
   |
-2 | use harbor_widget::widgets::column::Column;
+1 | use harbor_widget::widgets::column::Column;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

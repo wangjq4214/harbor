@@ -2,6 +2,7 @@
 
 **Status:** Completed
 **Date:** 2026-09-16
+**Correction (2026-10-23):** root-constructs-directly and `view! { cx; root }` signature clauses are partially superseded by [0079-defer-root-construction-and-unify-content-slot-boundaries](./0079-defer-root-construction-and-unify-content-slot-boundaries.md); the child grammar and evaluation-order intent remain in force.
 
 ## Context
 

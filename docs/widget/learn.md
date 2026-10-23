@@ -6,27 +6,27 @@ Build a tree first, retain an editor second, then separate application intent fr
 
 ## 1. Describe an interface
 
-A component receives a `BuildCx` and returns a `View`. Closures with the signature `Fn(&mut BuildCx) -> View + 'static` are components too. Build describes the interface; it is not the place to start I/O or execute application commands.
+A component receives a `BuildCx` and returns a `View`. Closures with the signature `Fn(&mut BuildCx) -> View + 'static` are components too. `view!` also produces a `View`: it converts every root and child through `IntoChildView`, so components defer until reconciliation assigns their Fiber and no context parameter is passed to the macro. Build describes the interface; it is not the place to start I/O or execute application commands.
 
 ```rust
-use harbor_widget::{Column, runtime::Runtime, view::{BuildCx, Component}};
+use harbor_widget::{Column, runtime::Runtime, view};
 use harbor_widget::widgets::text_label::TextLabel;
 use std::time::Instant;
 
 fn main() {
     let mut runtime = Runtime::new();
-    runtime.set_root(|cx: &mut BuildCx| {
-        Column::new().gap(8.0)
-            .child(TextLabel::new("Hello, Harbor"))
-            .child(TextLabel::new("A description, not a native control handle"))
-            .build(cx)
+    runtime.set_root(view! {
+        Column::new().gap(8.0) => {
+            TextLabel::new("Hello, Harbor");
+            TextLabel::new("A description, not a native control handle");
+        }
     });
     let effects = runtime.update(Instant::now());
     assert!(effects.request_redraw);
 }
 ```
 
-`set_root` mounts and builds immediately; the first `update` collects pending work/effects. A redraw request is not a presented frame. The host must render and present the scene.
+`set_root` accepts a component or a `view!` description; the root Fiber belongs to the Runtime and materializes the description during the first update, which collects pending work/effects. A redraw request is not a presented frame. The host must render and present the scene.
 
 `.child(component)` defers that component's build until reconciliation assigns its fiber. The equivalent `view!` construction is shown in step 3. Prefer deferred construction for stateful children: eagerly calling each child's `.build(cx)` can put its hooks into the caller's slot sequence instead of giving it independent identity.
 
@@ -88,7 +88,7 @@ impl Component for Counter {
     fn build(&self, cx: &mut BuildCx) -> View {
         let count = *self.store.watch(cx); // end the borrow before callbacks run
         let actions = self.store.dispatcher();
-        view! { cx; Column::new().gap(8.0) => {
+        view! { Column::new().gap(8.0) => {
             TextLabel::new(format!("Count: {count}"));
             Button::new("Increment")
                 .on_click(move |_| actions.dispatch(CounterAction::Increment));

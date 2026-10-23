@@ -223,7 +223,7 @@ fn icon_button_is_a_public_macro_leaf() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(40, 40, 1.0));
     runtime.set_root(|cx: &mut harbor_widget::view::BuildCx| {
-        harbor_widget::view! { cx; IconButton::new(LucideIcon::X, "Close"); }
+        harbor_widget::view! { IconButton::new(LucideIcon::X, "Close"); }
     });
     runtime.update(Instant::now());
     assert!(icon_primitive(&runtime).is_some_and(|(icon, _, _)| icon == LucideIcon::X));

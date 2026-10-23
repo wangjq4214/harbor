@@ -42,7 +42,7 @@ pub use focus::{Focus, FocusHandle};
 pub use focus_scope::FocusScope;
 pub use icon::Icon;
 pub use icon_button::IconButton;
-pub use interactive_region::{InteractionState, InteractiveRegion};
+pub use interactive_region::{CONTENT_SLOT_KEY, InteractionState, InteractiveRegion};
 pub use layout_observer::{LayoutChangedCallback, LayoutObserver};
 pub use mouse_region::MouseRegion;
 pub use notification::Notification;

@@ -141,6 +141,11 @@ impl Fiber {
         &self.reconcile_diagnostics
     }
 
+    /// Reconciliation key assigned by the description, when present.
+    pub fn key(&self) -> Option<&crate::view::Key> {
+        self.key.as_ref()
+    }
+
     /// Child fiber ids in paint order.
     pub fn children(&self) -> &[FiberId] {
         &self.children

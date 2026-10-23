@@ -113,7 +113,7 @@ fn search_bar(
         })
     };
     let status = search.status.clone();
-    let content = harbor_widget::view! { &mut *cx;
+    let content = harbor_widget::view! {
         Padding::all(8.0) => {
             Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
                 Expanded::new() => { entry; }
@@ -491,7 +491,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
             })
         })
     });
-    harbor_widget::view! { cx; Stack::new() => {
+    harbor_widget::view! { Stack::new() => {
         root => {
             FocusScope::new() => {
                 actions => {
@@ -517,7 +517,7 @@ fn terminal_panel(
     bindings: &ResolvedKeybindings,
 ) -> View {
     let popup_state = controller.store.state().read().clone();
-    harbor_widget::view! { cx; Expanded::new() => {
+    harbor_widget::view! { Expanded::new() => {
         harbor_widget::Column::new() => {
             Expanded::new().keyed("terminal-surface") => {
                 controller.allocation.observer() => {

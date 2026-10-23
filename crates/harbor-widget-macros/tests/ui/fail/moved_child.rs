@@ -1,5 +1,5 @@
 use harbor_widget::layout::Size;
-use harbor_widget::view::{BuildCx, Component, View};
+use harbor_widget::view::{Component, View};
 use harbor_widget::widgets::column::Column;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::view;
@@ -14,8 +14,7 @@ impl Component for Leaf {
 }
 
 fn main() {
-    let mut cx = BuildCx::stub();
     let leaf = Leaf;
-    let _ = view! { &mut cx; Column::new() => { leaf; } };
+    let _ = view! {  Column::new() => { leaf; } };
     let _used_after_move = leaf;
 }

@@ -24,7 +24,7 @@ struct MacroTree {
 
 impl Component for MacroTree {
     fn build(&self, cx: &mut BuildCx) -> View {
-        crate::view! { cx; Column::new() => {
+        crate::view! { Column::new() => {
             SizedBox::new(Size::new(10.0, 10.0)).color(Color::RED);
             SizedBox::new(Size::new(20.0, 10.0)).color(Color::GREEN);
             for (index, size) in self.values.iter().copied().enumerate() {
@@ -92,7 +92,7 @@ impl Component for KeyedMacroList {
         *self.items.borrow_mut() = Some(state.clone());
         let current_items = state.read();
 
-        crate::view! { cx; Column::new() => {
+        crate::view! { Column::new() => {
             for item in current_items.iter() {
                 SizedBox::new(Size::new(10.0, 10.0)).keyed(*item);
             }
@@ -108,7 +108,7 @@ struct MacroButtonTree {
 impl Component for MacroButtonTree {
     fn build(&self, cx: &mut BuildCx) -> View {
         let clicked = self.clicked.clone();
-        crate::view! { cx; Column::new() => {
+        crate::view! { Column::new() => {
             Button::new("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst));
         } }
     }
@@ -150,6 +150,20 @@ fn fiber_signature(runtime: &Runtime, id: crate::fiber::FiberId) -> FiberSignatu
     }
 }
 
+/// Compares fiber trees from the root's first child, ignoring root identity:
+/// the mounted description's component type differs by design from the
+/// handwritten build's returned concrete root type (ADR 0079: the root Fiber
+/// identity belongs to the deferred description, not the flattened result).
+fn child_tree_signature(sig: &FiberSignature) -> Vec<(Option<Rect>, TypeId)> {
+    fn walk(sig: &FiberSignature) -> Vec<(Option<Rect>, TypeId)> {
+        let mut out = vec![(sig.rect, sig.widget_type)];
+        for child in &sig.children {
+            out.extend(walk(child));
+        }
+        out
+    }
+    sig.children.iter().flat_map(walk).collect()
+}
 fn scene_signature(runtime: &Runtime) -> Vec<(Primitive, u32)> {
     runtime
         .pending_delta()
@@ -189,8 +203,22 @@ fn declarative_tree_matches_handwritten_layout_and_scene_output() {
     handwritten_runtime.update(Instant::now());
 
     assert_eq!(
-        fiber_signature(&macro_runtime, macro_runtime.root_id().unwrap()),
-        fiber_signature(&handwritten_runtime, handwritten_runtime.root_id().unwrap()),
+        child_tree_signature(&fiber_signature(
+            &macro_runtime,
+            macro_runtime.root_id().unwrap()
+        )),
+        child_tree_signature(&fiber_signature(
+            &handwritten_runtime,
+            handwritten_runtime.root_id().unwrap(),
+        )),
+    );
+    assert_eq!(
+        macro_runtime
+            .arena()
+            .get(macro_runtime.root_id().unwrap())
+            .unwrap()
+            .widget_type(),
+        TypeId::of::<MacroTree>(),
     );
     assert_eq!(
         scene_signature(&macro_runtime),
@@ -205,7 +233,7 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
 
     impl Component for MacroLeaf {
         fn build(&self, cx: &mut BuildCx) -> View {
-            crate::view! { cx; SizedBox::new(Size::new(10.0, 10.0)); }
+            crate::view! { SizedBox::new(Size::new(10.0, 10.0)); }
         }
     }
 
@@ -223,7 +251,7 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
 
     impl Component for MacroSingle {
         fn build(&self, cx: &mut BuildCx) -> View {
-            crate::view! { cx; Padding::all(2.0) => {
+            crate::view! { Padding::all(2.0) => {
                 SizedBox::new(Size::new(10.0, 10.0));
             } }
         }
@@ -247,8 +275,21 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     handwritten_leaf.set_root(HandwrittenLeaf);
     handwritten_leaf.update(Instant::now());
     assert_eq!(
-        fiber_signature(&macro_leaf, macro_leaf.root_id().unwrap()),
-        fiber_signature(&handwritten_leaf, handwritten_leaf.root_id().unwrap()),
+        child_tree_signature(&fiber_signature(&macro_leaf, macro_leaf.root_id().unwrap())),
+        child_tree_signature(&fiber_signature(
+            &handwritten_leaf,
+            handwritten_leaf.root_id().unwrap()
+        )),
+    );
+    // The macro root fiber keeps the mounted description's component identity
+    // instead of the flattened concrete root type.
+    assert_eq!(
+        macro_leaf
+            .arena()
+            .get(macro_leaf.root_id().unwrap())
+            .unwrap()
+            .widget_type(),
+        TypeId::of::<MacroLeaf>(),
     );
 
     let mut macro_single = Runtime::new();
@@ -258,8 +299,14 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     handwritten_single.set_root(HandwrittenSingle);
     handwritten_single.update(Instant::now());
     assert_eq!(
-        fiber_signature(&macro_single, macro_single.root_id().unwrap()),
-        fiber_signature(&handwritten_single, handwritten_single.root_id().unwrap()),
+        child_tree_signature(&fiber_signature(
+            &macro_single,
+            macro_single.root_id().unwrap()
+        )),
+        child_tree_signature(&fiber_signature(
+            &handwritten_single,
+            handwritten_single.root_id().unwrap()
+        )),
     );
 }
 
@@ -337,15 +384,8 @@ fn macro_preserves_expression_evaluation_order_and_reachability() {
         value
     }
 
-    fn logged_cx<'a>(cx: &'a mut BuildCx, log: &RefCell<Vec<&'static str>>) -> &'a mut BuildCx {
-        log.borrow_mut().push("context");
-        cx
-    }
-
     let log = RefCell::new(Vec::new());
-    let mut cx = BuildCx::stub();
     let _ = crate::view! {
-        logged_cx(&mut cx, &log);
         logged_column(&log, "root") => {
             logged_leaf(&log, "first");
             logged_column(&log, "parent") => {
@@ -385,22 +425,21 @@ fn macro_preserves_expression_evaluation_order_and_reachability() {
             "guard",
             "match",
             "root",
-            "context",
         ]
     );
 }
 
 #[test]
-fn leaf_root_evaluates_component_then_context_then_build() {
+fn leaf_root_defers_build_until_reconciliation() {
     #[derive(Clone)]
     struct LoggedRoot {
         log: Rc<RefCell<Vec<&'static str>>>,
     }
 
     impl Component for LoggedRoot {
-        fn build(&self, cx: &mut BuildCx) -> View {
+        fn build(&self, _cx: &mut BuildCx) -> View {
             self.log.borrow_mut().push("build");
-            SizedBox::new(Size::new(1.0, 1.0)).build(cx)
+            SizedBox::new(Size::new(1.0, 1.0)).build(_cx)
         }
     }
 
@@ -409,14 +448,45 @@ fn leaf_root_evaluates_component_then_context_then_build() {
         LoggedRoot { log: log.clone() }
     }
 
-    fn context<'a>(cx: &'a mut BuildCx, log: &Rc<RefCell<Vec<&'static str>>>) -> &'a mut BuildCx {
-        log.borrow_mut().push("context");
-        cx
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let description = crate::view! { root(&log); };
+    drop(description);
+
+    // The macro evaluates the root expression once and converts it through
+    // `IntoChildView`; the component must not be built yet. Building happens
+    // when a Runtime mounts the component against its own Fiber.
+    assert_eq!(*log.borrow(), ["component"]);
+
+    let mut runtime = Runtime::new();
+    runtime.set_root(root(&log));
+    runtime.update(Instant::now());
+    runtime.update(Instant::now());
+    assert_eq!(*log.borrow(), ["component", "component", "build"]);
+
+    // A subsequent update with no dirty state must not rebuild the root
+    // description again.
+    runtime.update(Instant::now());
+    assert_eq!(*log.borrow(), ["component", "component", "build"]);
+}
+
+#[test]
+fn self_deferring_build_chain_fails_loudly() {
+    #[derive(Clone)]
+    struct SelfDefer;
+
+    impl Component for SelfDefer {
+        fn build(&self, _cx: &mut BuildCx) -> View {
+            View::deferred(SelfDefer)
+        }
     }
 
-    let log = Rc::new(RefCell::new(Vec::new()));
-    let mut cx = BuildCx::stub();
-    let _ = crate::view! { context(&mut cx, &log); root(&log); };
-
-    assert_eq!(*log.borrow(), ["component", "context", "build"]);
+    let mut runtime = Runtime::new();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.set_root(SelfDefer);
+        runtime.update(Instant::now());
+    }));
+    assert!(
+        outcome.is_err(),
+        "a build chain that only defers itself must be rejected, not spin"
+    );
 }

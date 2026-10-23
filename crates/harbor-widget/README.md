@@ -67,7 +67,7 @@ impl Component for Counter {
         let value = *self.store.watch(cx);
         let actions = self.store.dispatcher();
 
-        view! { cx; Column::new().gap(8.0) => {
+        view! { Column::new().gap(8.0) => {
             TextLabel::new(format!("Count: {value}"));
             Button::new("Increment")
                 .on_click(move |_| actions.dispatch(CounterAction::Increment));

@@ -1,6 +1,6 @@
 use super::{DirtyFlags, Fiber, FiberArena, FiberId};
 use crate::theme::Theme;
-use crate::view::{BuildCx, ExternalRegistrations, Key, View, ViewContents};
+use crate::view::{BuildCx, ExternalRegistrations, Key, View, ViewContents, materialize_for_fiber};
 use hashbrown::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -123,11 +123,11 @@ fn reconcile_fiber(
                 externals: ExternalRegistrations::default(),
                 theme,
             };
-            let materialized = component.build(&mut cx);
+            let materialized = materialize_for_fiber(component.build(&mut cx), &mut cx);
+            let (inner, materialized_children, _key) = materialized;
             externals.append(&mut cx.externals);
             let hooks = cx.hooks;
             let subscriptions = cx.subscriptions;
-            let (inner, materialized_children, _key) = materialized.decompose();
             reconcile_concrete_fiber(
                 arena,
                 id,

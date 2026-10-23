@@ -5,6 +5,7 @@ mod portal_tests;
 #[cfg(test)]
 mod text_input_blink_tests;
 
+use crate::construction::IntoChildView;
 use crate::effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, ExternalInvalidation, ImeEffect,
     RuntimeEffects,
@@ -30,7 +31,7 @@ use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, tak
 use crate::text::TextRunCache;
 use crate::text::{TextMetrics, text_metrics_equal};
 use crate::theme::Theme;
-use crate::view::{BuildCx, Component, ExternalRegistrations};
+use crate::view::{BuildCx, ExternalRegistrations, View, materialize_for_fiber};
 use hashbrown::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -63,7 +64,7 @@ pub struct Runtime {
     runtime_id: RuntimeId,
     arena: FiberArena,
     root_id: Option<FiberId>,
-    root_component: Option<Box<dyn Component>>,
+    root_view: Option<View>,
     text_metrics: TextMetrics,
     scene_graph: SceneGraph,
     next_scene_item_id: u64,
@@ -99,7 +100,7 @@ impl Runtime {
             runtime_id: RuntimeId::new(),
             arena: FiberArena::new(),
             root_id: None,
-            root_component: None,
+            root_view: None,
             text_metrics,
             scene_graph: SceneGraph::new(),
             next_scene_item_id: 1,
@@ -139,7 +140,7 @@ impl Runtime {
         // hook panics, unwinding drops this detached closure environment while the
         // Runtime itself already contains only generation-neutral state.
         let old_root = self.root_id.take();
-        let old_root_component = self.root_component.take();
+        let old_root_view = self.root_view.take();
         let mut old_arena = std::mem::take(&mut self.arena);
         let old_external_draws = std::mem::take(&mut self.external_draws);
         let old_external_schedules = std::mem::take(&mut self.external_schedules);
@@ -180,7 +181,7 @@ impl Runtime {
 
         let drop_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             drop((
-                old_root_component,
+                old_root_view,
                 old_external_draws,
                 old_external_schedules,
                 old_external_ime,
@@ -195,12 +196,16 @@ impl Runtime {
         }
     }
 
-    /// Sets the root component and performs the initial build + layout.
+    /// Sets the root view description and performs the initial build + layout.
     ///
-    /// If a previous root existed, it is torn down before the replacement is built.
-    pub fn set_root(&mut self, root: impl Component + 'static) {
-        let pending_focus_handle = self.events.pending_focus_handle();
-        if self.root_id.is_some() || self.root_component.is_some() {
+    /// Accepts any value converting through `IntoChildView`: a `Component` or an
+    /// already-built `View` (as `view!` produces). If a previous root existed,
+    /// it is torn down before the replacement is built. The description is not
+    /// built here; the placeholder root Fiber, owned by the Runtime, materializes
+    /// it during `rebuild_root`.
+    pub fn set_root(&mut self, root: impl IntoChildView + 'static) {
+        if self.root_id.is_some() || self.root_view.is_some() {
+            let pending_focus_handle = self.events.pending_focus_handle();
             self.clear_root();
             self.events
                 .restore_pending_focus_handle(pending_focus_handle);
@@ -216,7 +221,7 @@ impl Runtime {
         let root_id = self.arena.insert(root_fiber);
         self.root_id = Some(root_id);
 
-        self.root_component = Some(Box::new(root));
+        self.root_view = Some(root.into_child_view());
 
         // Full rebuild from root with empty old children
         self.rebuild_root(root_id, &[]);
@@ -247,6 +252,11 @@ impl Runtime {
         effects.control_flow = control_flow;
         effects.merge(self.collect_focused_external_ime());
         effects
+    }
+    #[cfg(test)]
+    pub(crate) fn external_schedule_ids(&self) -> Vec<ExternalDrawId> {
+        use crate::scene::primitive::ExternalDrawId;
+        self.external_schedules.keys().copied().collect()
     }
 
     /// Layout invalidation is separate from the signal/external build queue:
@@ -408,10 +418,14 @@ impl Runtime {
             theme: Arc::new(Theme::default()),
         };
 
-        let view = self.root_component.as_ref().unwrap().build(&mut cx);
+        let view = self
+            .root_view
+            .as_ref()
+            .unwrap_or_else(|| panic!("rebuild_root called without a stored root description"))
+            .clone();
         let widget_type = view.widget_type();
         let key = view.key().cloned();
-        let (inner, children, _explicit_key) = view.decompose();
+        let (inner, children, _explicit_key) = materialize_for_fiber(view, &mut cx);
         let effective_theme = inner
             .theme_override()
             .unwrap_or_else(|| Arc::new(Theme::default()));
@@ -974,7 +988,7 @@ mod tests {
     };
     use crate::input::event_ctx::EventCtx;
     use crate::scene::primitive::ExternalScheduleDemand;
-    use crate::view::View;
+    use crate::view::{Component, View};
     use crate::widgets::button::Button;
     use crate::widgets::column::Column;
     use crate::widgets::custom_paint::CustomPaint;
