@@ -1,8 +1,7 @@
-use harbor_widget::layout::Size;
-use harbor_widget::widgets::sized_box::SizedBox;
+use harbor_widget::widgets::text_label::TextLabel;
 use harbor_widget::{Column, ComponentExt, Icon, IconButton, LucideIcon, view};
-fn leaf() -> SizedBox {
-    SizedBox::new(Size::ZERO)
+fn leaf() -> TextLabel {
+    TextLabel::new("leaf")
 }
 fn main() {
     let _ = view! { leaf() => {} };

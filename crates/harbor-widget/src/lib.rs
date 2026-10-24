@@ -8,6 +8,7 @@ pub use harbor_widget_macros::view;
 /// Public construction helpers consumed by generated view code.
 #[doc(hidden)]
 pub mod __macro_support {
+    pub use crate::construction::resolve_node;
     pub use crate::construction::{
         AcceptsChildCount, ChildCardinality, ChildConstructionError, Children, ComponentExt,
         IntoChildView, Keyed, MultiChild, SingleChild, WithChildren, with_static_children,
@@ -45,18 +46,22 @@ pub use text_editing::{TextEditingController, TextEditingValue, TextSelection};
 pub mod theme;
 pub mod view;
 pub mod widgets;
-pub use layout::{Alignment, FlexFit};
+pub use layout::{Alignment, Alignment2D, FlexFit, Insets, LayoutConfigError, PositionAlignment};
 pub use theme::{ControlColors, ControlStyle, ControlVisualState, Theme};
 pub use widgets::backdrop_filter::{BackdropFilter, BackdropMaterial, EdgeRefraction};
 pub use widgets::decorated_box::DecoratedBox;
 pub use widgets::{
     ActionOutcome, Actions, Axis, Button, CONTENT_SLOT_KEY, Column, ConstrainedBox,
-    DEFAULT_SCROLL_LINE_STEP, Expanded, Flex, Flexible, Focus, FocusHandle, FocusScope, Icon,
-    IconButton, InteractionState, InteractiveRegion, KeyChord, LayoutChangedCallback,
-    LayoutObserver, MainAxisAlignment, MouseRegion, Notification, Portal, Row, ScrollController,
-    ScrollMetrics, ScrollView, Separator, Shortcuts, Spacer, ThemeProvider,
+    DEFAULT_SCROLL_LINE_STEP, Expanded, Flex, FlexOptions, Flexible, Focus, FocusHandle,
+    FocusScope, Icon, IconButton, InteractionState, InteractiveRegion, KeyChord,
+    LayoutChangedCallback, LayoutObserver, MainAxisAlignment, MouseRegion, Notification, Portal,
+    Row, ScrollController, ScrollMetrics, ScrollView, Separator, Shortcuts, Spacer, ThemeProvider,
 };
 pub use widgets::{EditableText, TextField};
+pub use widgets::{align::Align, padding::Padding, sized_box::SizedBox};
+
+#[cfg(test)]
+mod layout_component_tests;
 
 #[cfg(test)]
 mod macro_tests;

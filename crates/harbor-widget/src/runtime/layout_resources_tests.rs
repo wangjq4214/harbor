@@ -292,11 +292,20 @@ fn default_label_layout_matches_rendered_ui_advances_across_dpi() {
     let mut rt = Runtime::new();
     rt.init_text_renderer(&device, &queue, wgpu::TextureFormat::Bgra8Unorm)
         .unwrap();
-    let mut row = Row::new().gap(4.0);
+    let mut row = Row::new().gap(4.0).unwrap();
     for key in ["Ctrl", "Shift", "Tab", "R"] {
         row = row.push_child(
             DecoratedBox::new(BoxDecoration::new().border(Border::all(Color::WHITE, 1.0).unwrap()))
-                .child(Padding::new(1.0, 2.0, 1.0, 2.0).child(TextLabel::new(key))),
+                .child(
+                    Padding::new(crate::Insets {
+                        top: 1.0,
+                        right: 2.0,
+                        bottom: 1.0,
+                        left: 2.0,
+                    })
+                    .unwrap()
+                    .child(TextLabel::new(key)),
+                ),
         );
     }
     rt.set_root(row);

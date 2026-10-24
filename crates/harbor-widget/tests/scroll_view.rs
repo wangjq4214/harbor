@@ -52,7 +52,9 @@ fn scroll_view_commits_metrics_moves_content_and_settles_at_boundaries() {
             .controller(controller.clone())
             .line_step(25.0)
             .child(Focus::new(
-                SizedBox::new(Size::new(100.0, 100.0)).color(Color::RED),
+                SizedBox::new(Size::new(100.0, 100.0))
+                    .unwrap()
+                    .color(Color::RED),
             )),
     );
 
@@ -91,7 +93,7 @@ fn pixel_page_home_and_ignored_input_follow_committed_boundaries() {
     runtime.set_root(
         ScrollView::new()
             .controller(controller.clone())
-            .child(Focus::new(SizedBox::new(Size::new(100.0, 100.0)))),
+            .child(Focus::new(SizedBox::new(Size::new(100.0, 100.0)).unwrap())),
     );
     update(&mut runtime);
     runtime.dispatch(key(Key::Tab));
@@ -139,8 +141,13 @@ fn pixel_page_home_and_ignored_input_follow_committed_boundaries() {
 fn scroll_view_attaches_hard_viewport_clip_to_descendant_paint() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(80, 30, 1.0));
-    runtime
-        .set_root(ScrollView::new().child(SizedBox::new(Size::new(80.0, 90.0)).color(Color::BLUE)));
+    runtime.set_root(
+        ScrollView::new().child(
+            SizedBox::new(Size::new(80.0, 90.0))
+                .unwrap()
+                .color(Color::BLUE),
+        ),
+    );
     update(&mut runtime);
 
     let item = runtime
@@ -211,10 +218,10 @@ fn nested_scroll_view_bubbles_to_outer_only_after_inner_reaches_boundary() {
                                 ScrollView::new()
                                     .controller(inner.clone())
                                     .line_step(10.0)
-                                    .child(SizedBox::new(Size::new(100.0, 60.0))),
+                                    .child(SizedBox::new(Size::new(100.0, 60.0)).unwrap()),
                             ),
                     )
-                    .push_child(SizedBox::new(Size::new(100.0, 80.0))),
+                    .push_child(SizedBox::new(Size::new(100.0, 80.0)).unwrap()),
             ),
     );
     update(&mut runtime);
@@ -238,9 +245,9 @@ fn focus_navigation_reveals_offscreen_descendant_with_minimal_offset() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)))),
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap())),
         ),
     );
     update(&mut runtime);
@@ -267,9 +274,11 @@ fn pending_focus_handle_reveals_target_after_first_successful_layout() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))).handle(target)),
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(
+                    Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()).handle(target),
+                ),
         ),
     );
 
@@ -288,9 +297,11 @@ fn pending_focus_reveal_retries_after_zero_viewport_restores() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))).handle(target)),
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(
+                    Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()).handle(target),
+                ),
         ),
     );
 
@@ -316,7 +327,7 @@ fn nested_focus_reveal_accounts_for_inner_scroll_before_outer_scroll() {
     runtime.set_root(
         ScrollView::new().controller(outer.clone()).child(
             Column::new()
-                .push_child(SizedBox::new(Size::new(100.0, 80.0)))
+                .push_child(SizedBox::new(Size::new(100.0, 80.0)).unwrap())
                 .push_child(
                     ConstrainedBox::new()
                         .min_height(40.0)
@@ -324,16 +335,20 @@ fn nested_focus_reveal_accounts_for_inner_scroll_before_outer_scroll() {
                         .child(
                             ScrollView::new().controller(inner.clone()).child(
                                 Column::new()
-                                    .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                                    .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                                    .push_child(Focus::new(
+                                        SizedBox::new(Size::new(100.0, 30.0)).unwrap(),
+                                    ))
+                                    .push_child(Focus::new(
+                                        SizedBox::new(Size::new(100.0, 30.0)).unwrap(),
+                                    ))
                                     .push_child(
-                                        Focus::new(SizedBox::new(Size::new(100.0, 30.0)))
+                                        Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap())
                                             .handle(target),
                                     ),
                             ),
                         ),
                 )
-                .push_child(SizedBox::new(Size::new(100.0, 80.0))),
+                .push_child(SizedBox::new(Size::new(100.0, 80.0)).unwrap()),
         ),
     );
 
@@ -356,7 +371,7 @@ fn content_shrink_clamps_geometry_in_the_same_commit_then_converges() {
             cx.track(&self.height);
             ScrollView::new()
                 .controller(self.controller.clone())
-                .child(SizedBox::new(Size::new(100.0, *self.height.read())))
+                .child(SizedBox::new(Size::new(100.0, *self.height.read())).unwrap())
                 .build(cx)
         }
     }
@@ -407,10 +422,10 @@ fn failed_layout_defers_focus_reveal_until_fresh_geometry_commits() {
                 .child(
                     ScrollView::new().controller(self.controller.clone()).child(
                         Column::new()
-                            .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
-                            .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0))))
+                            .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                            .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
                             .push_child(
-                                Focus::new(SizedBox::new(Size::new(100.0, 30.0)))
+                                Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap())
                                     .handle(self.target),
                             ),
                     ),
@@ -519,7 +534,7 @@ fn scrollbar_expands_only_over_its_track_without_moving_content() {
     runtime.set_root(
         ScrollView::new()
             .controller(controller.clone())
-            .child(SizedBox::new(Size::new(100.0, 400.0))),
+            .child(SizedBox::new(Size::new(100.0, 400.0)).unwrap()),
     );
     update(&mut runtime);
     let resting = thumb(&runtime).unwrap().0;
@@ -559,7 +574,7 @@ fn scrollbar_expands_only_over_its_track_without_moving_content() {
 fn scrollbar_boundary_and_drag_lifecycle_restore_the_thin_thumb() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(100, 100, 1.0));
-    runtime.set_root(ScrollView::new().child(SizedBox::new(Size::new(100.0, 400.0))));
+    runtime.set_root(ScrollView::new().child(SizedBox::new(Size::new(100.0, 400.0)).unwrap()));
     update(&mut runtime);
 
     let boundary = |kind, position| {
@@ -619,7 +634,11 @@ fn scrollbar_is_painted_above_content_and_drag_preserves_focus_and_capture() {
                     Button::text("under overlay")
                         .on_click(move |_| clicked.store(true, Ordering::SeqCst)),
                 )
-                .push_child(SizedBox::new(Size::new(100.0, 400.0)).color(Color::BLUE)),
+                .push_child(
+                    SizedBox::new(Size::new(100.0, 400.0))
+                        .unwrap()
+                        .color(Color::BLUE),
+                ),
         ),
     );
     update(&mut runtime);
@@ -687,7 +706,7 @@ fn scrollbar_track_pages_and_cancel_releases_without_further_dragging() {
     runtime.set_root(
         ScrollView::new()
             .controller(controller.clone())
-            .child(SizedBox::new(Size::new(100.0, 400.0))),
+            .child(SizedBox::new(Size::new(100.0, 400.0)).unwrap()),
     );
     update(&mut runtime);
     assert_eq!(thumb(&runtime).unwrap().0.size().height, 25.0);
@@ -722,7 +741,8 @@ fn scrollbar_hides_on_content_shrink_and_zero_or_fitting_viewports() {
     for (width, viewport, content) in [(100, 100, 40.0), (0, 100, 400.0), (100, 0, 400.0)] {
         let mut runtime = Runtime::new();
         runtime.set_viewport(Viewport::new(width, viewport, 1.0));
-        runtime.set_root(ScrollView::new().child(SizedBox::new(Size::new(100.0, content))));
+        runtime
+            .set_root(ScrollView::new().child(SizedBox::new(Size::new(100.0, content)).unwrap()));
         update(&mut runtime);
         assert!(thumb(&runtime).is_none());
         pointer(&mut runtime, 97.0, 10.0, PointerPhase::Down, 5);
@@ -738,7 +758,7 @@ fn scrollbar_hides_on_content_shrink_and_zero_or_fitting_viewports() {
         cx.track(&height);
         ScrollView::new()
             .controller(scroll.clone())
-            .child(SizedBox::new(Size::new(100.0, *height.read())))
+            .child(SizedBox::new(Size::new(100.0, *height.read())).unwrap())
             .build(cx)
     });
     update(&mut runtime);
@@ -761,7 +781,7 @@ fn reveal_range_minimally_moves_content_and_rejects_invalid_ranges() {
     runtime.set_root(
         ScrollView::new()
             .controller(controller.clone())
-            .child(SizedBox::new(Size::new(100.0, 400.0))),
+            .child(SizedBox::new(Size::new(100.0, 400.0)).unwrap()),
     );
     update(&mut runtime);
     assert!(!controller.reveal_range(0.0, 50.0));
@@ -797,7 +817,7 @@ fn switching_between_internal_and_external_controller_keeps_hook_types_stable() 
     runtime.set_viewport(Viewport::new(100, 100, 1.0));
     runtime.set_root(move |cx: &mut BuildCx| {
         cx.track(&active);
-        let mut viewport = ScrollView::new().child(SizedBox::new(Size::new(100.0, 400.0)));
+        let mut viewport = ScrollView::new().child(SizedBox::new(Size::new(100.0, 400.0)).unwrap());
         if *active.read() {
             viewport = viewport.controller(scroll.clone());
         }

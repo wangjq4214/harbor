@@ -294,7 +294,11 @@ fn builtins_center_but_custom_colors_and_region_padding_remain_owned_by_callers(
     let rt = runtime(
         harbor_widget::InteractiveRegion::new()
             .style(Theme::default().button)
-            .child(harbor_widget::widgets::padding::Padding::all(3.0).child(TextLabel::new("x"))),
+            .child(
+                harbor_widget::widgets::padding::Padding::all(3.0)
+                    .unwrap()
+                    .child(TextLabel::new("x")),
+            ),
         240,
     );
     let width = rt
@@ -386,7 +390,7 @@ fn custom_content_preserves_full_surface_capture_nested_first_refusal_and_focus_
                     .on_click(move |_| parent.borrow_mut().push("parent"))
                     .child(
                         Button::new()
-                            .child(SizedBox::new(Size::new(20.0, 20.0)))
+                            .child(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
                             .on_click(move |_| child.borrow_mut().push("child")),
                     ),
             ),
@@ -510,7 +514,7 @@ fn content_has_independent_hooks_theme_and_subscriptions_and_releases_old_captur
                     3 => {
                         view! { Column::new() => { button.child(TextLabel::new("replacement")); } }
                     }
-                    _ => SizedBox::new(Size::ZERO).build(cx),
+                    _ => SizedBox::new(Size::ZERO).unwrap().build(cx),
                 }
             }),
             240,

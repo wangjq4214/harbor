@@ -266,7 +266,7 @@ mod tests {
             };
             let runtime = unbounded_runtime(
                 constraints,
-                CustomPaint::new(1).child(SizedBox::new(Size::new(40.0, 30.0))),
+                CustomPaint::new(1).child(SizedBox::new(Size::new(40.0, 30.0)).unwrap()),
             );
             let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
             let child = runtime.arena().get(root.children()[0]).unwrap();
@@ -310,13 +310,13 @@ mod tests {
     fn unbounded_expanded_custom_paint_falls_back_to_finite_content() {
         use crate::widgets::sized_box::SizedBox;
         use crate::{Expanded, Row};
-        let runtime = unbounded_runtime(
-            BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
-            Row::new().push_child(
-                Expanded::new()
-                    .child(CustomPaint::new(1).child(SizedBox::new(Size::new(33.0, 21.0)))),
-            ),
-        );
+        let runtime =
+            unbounded_runtime(
+                BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
+                Row::new().push_child(Expanded::new().child(
+                    CustomPaint::new(1).child(SizedBox::new(Size::new(33.0, 21.0)).unwrap()),
+                )),
+            );
         let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
         assert_eq!(root.layout_rect().unwrap().size(), Size::new(33.0, 21.0));
         assert!(

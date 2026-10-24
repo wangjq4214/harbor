@@ -1077,7 +1077,7 @@ mod tests {
         assert_eq!(rt.pending_effects.ime, Some(ImeEffect::set_allowed(false)));
 
         rt.clear_root();
-        rt.set_root(SizedBox::new(Size::new(10.0, 10.0)));
+        rt.set_root(SizedBox::new(Size::new(10.0, 10.0)).unwrap());
         let new_root = rt.root_id.expect("replacement root");
         assert!(rt.arena.contains(new_root));
         assert_ne!(new_root, old_root);
@@ -1087,7 +1087,7 @@ mod tests {
     fn set_root_preserves_a_pending_stable_focus_request() {
         let handle = crate::widgets::FocusHandle::new();
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)).unwrap());
         rt.request_focus(&handle);
 
         rt.set_root(Focus::new(Button::text("replacement")).handle(handle));
@@ -1110,7 +1110,7 @@ mod tests {
     #[test]
     fn clear_root_contains_unsubscribe_panics_after_detaching_old_state() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)).unwrap());
         let root = rt.root_id.expect("mounted root");
         rt.arena
             .get_mut(root)
@@ -1179,7 +1179,11 @@ mod tests {
                         ConstrainedBox::new()
                             .min_width(200.0)
                             .max_width(200.0)
-                            .child(SizedBox::new(Size::new(200.0, 80.0)).color(Color::RED)),
+                            .child(
+                                SizedBox::new(Size::new(200.0, 80.0))
+                                    .unwrap()
+                                    .color(Color::RED),
+                            ),
                     )
                     .push_child(Separator::vertical().color(Color::WHITE))
                     .push_child(
@@ -1300,7 +1304,7 @@ mod tests {
         let fail = Rc::new(Cell::new(false));
         let measurements = Rc::new(Cell::new(0));
         let mut rt = Runtime::new();
-        rt.set_root(Padding::all(2.0).child(FragileLeaf {
+        rt.set_root(Padding::all(2.0).unwrap().child(FragileLeaf {
             fail: fail.clone(),
             measurements: measurements.clone(),
         }));
@@ -1366,7 +1370,11 @@ mod tests {
         use crate::scene::primitive::Color;
 
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED));
+        rt.set_root(
+            SizedBox::new(Size::new(100.0, 50.0))
+                .unwrap()
+                .color(Color::RED),
+        );
         let scene_ids: Vec<u64> = rt.scene_graph.items().iter().map(|item| item.id).collect();
 
         rt.run_paint_pass();
@@ -1401,6 +1409,7 @@ mod tests {
         impl Component for ColorToggle {
             fn build(&self, cx: &mut BuildCx) -> View {
                 SizedBox::new(Size::new(100.0, 50.0))
+                    .unwrap()
                     .color(if self.0.get() {
                         Color::BLUE
                     } else {
@@ -1452,6 +1461,7 @@ mod tests {
                 for key in items.iter() {
                     col = col.push_child(
                         SizedBox::new(Size::new(50.0, 20.0))
+                            .unwrap()
                             .color(Color::RED)
                             .keyed(*key),
                     );
@@ -1531,6 +1541,7 @@ mod tests {
                 for key in items.iter() {
                     col = col.push_child(
                         SizedBox::new(Size::new(50.0, 20.0))
+                            .unwrap()
                             .color(Color::RED)
                             .keyed(*key),
                     );
@@ -1603,7 +1614,7 @@ mod tests {
                 let state = cx.use_state(|| 0u32);
                 self.observed_values.borrow_mut().push(*state.read());
                 *self.signal.borrow_mut() = Some(state);
-                SizedBox::new(Size::new(10.0, 10.0)).build(cx)
+                SizedBox::new(Size::new(10.0, 10.0)).unwrap().build(cx)
             }
         }
 
@@ -1614,7 +1625,18 @@ mod tests {
             observed_values: Rc::clone(&observed_values),
         };
         let mut rt = Runtime::new();
-        rt.set_root(Column::new().push_child(Padding::new(1.0, 1.0, 1.0, 1.0).child(child)));
+        rt.set_root(
+            Column::new().push_child(
+                Padding::new(crate::Insets {
+                    top: 1.0,
+                    right: 1.0,
+                    bottom: 1.0,
+                    left: 1.0,
+                })
+                .unwrap()
+                .child(child),
+            ),
+        );
 
         let root_id = rt.root_id().unwrap();
         let padding_id = rt.arena().get(root_id).unwrap().children[0];
@@ -1645,7 +1667,16 @@ mod tests {
     fn is_descendant_of_direct_child() {
         use crate::widgets::padding::Padding;
         let mut rt = Runtime::new();
-        rt.set_root(Padding::new(8.0, 8.0, 8.0, 8.0).child(SizedBox::new(Size::new(100.0, 50.0))));
+        rt.set_root(
+            Padding::new(crate::Insets {
+                top: 8.0,
+                right: 8.0,
+                bottom: 8.0,
+                left: 8.0,
+            })
+            .unwrap()
+            .child(SizedBox::new(Size::new(100.0, 50.0)).unwrap()),
+        );
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1658,7 +1689,7 @@ mod tests {
     #[test]
     fn is_descendant_of_self_is_true() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1668,7 +1699,7 @@ mod tests {
     #[test]
     fn is_descendant_of_none_is_false() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1687,7 +1718,7 @@ mod tests {
     #[test]
     fn build_ancestor_path_root_is_singleton() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1713,7 +1744,7 @@ mod tests {
         rt.set_root(
             FocusScope::new()
                 .modal(true)
-                .child(SizedBox::new(Size::new(100.0, 50.0))),
+                .child(SizedBox::new(Size::new(100.0, 50.0)).unwrap()),
         );
         rt.update(now());
 
@@ -1728,11 +1759,18 @@ mod tests {
 
         let mut rt = Runtime::new();
         rt.set_root(
-            Padding::new(8.0, 8.0, 8.0, 8.0).child(
+            Padding::new(crate::Insets {
+                top: 8.0,
+                right: 8.0,
+                bottom: 8.0,
+                left: 8.0,
+            })
+            .unwrap()
+            .child(
                 Column::new().push_child(
                     FocusScope::new()
                         .modal(true)
-                        .child(SizedBox::new(Size::new(100.0, 50.0))),
+                        .child(SizedBox::new(Size::new(100.0, 50.0)).unwrap()),
                 ),
             ),
         );
@@ -1746,7 +1784,7 @@ mod tests {
 
         // A separate non-modal SVG or SizedBox root returns false
         let mut rt2 = Runtime::new();
-        rt2.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt2.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt2.update(now());
         let root2_id = rt2.root_id().unwrap();
         assert!(!rt2.tree_has_modal(root2_id));
@@ -1755,7 +1793,7 @@ mod tests {
     #[test]
     fn tree_has_modal_returns_false_for_non_modal_tree() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -2001,7 +2039,7 @@ mod tests {
         use crate::widgets::sized_box::SizedBox;
 
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(crate::layout::Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(crate::layout::Size::new(100.0, 50.0)).unwrap());
         rt.set_viewport(Viewport::new(800, 600, 1.0));
         assert!(rt.update(now()).request_redraw);
         assert!(!rt.update(now()).request_redraw);
@@ -2066,7 +2104,7 @@ mod tests {
     #[test]
     fn route_event_keyboard_no_focused_returns_false() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
@@ -2200,7 +2238,7 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .push_child(SizedBox::new(Size::new(100.0, 50.0)))
+                .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap())
                 .push_child(Button::text("Next")),
         );
         rt.update(now());
@@ -2238,7 +2276,7 @@ mod tests {
     fn should_return_false_when_no_focusable_widgets_exist() {
         // Arrange
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         // Act
@@ -2265,7 +2303,7 @@ mod tests {
         rt.prepare_text_runs(&|_ch| None);
         assert_eq!(rt.text_run_cache().len(), 1);
 
-        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)).unwrap());
         rt.prepare_text_runs(&|_ch| None);
         assert!(rt.text_run_cache().is_empty());
     }
@@ -2558,7 +2596,7 @@ mod tests {
         );
 
         // Act — rebuild without a schedule provider
-        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)));
+        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)).unwrap());
         let _ = rt.update(now());
         let idle = rt.update(now());
 
@@ -2643,7 +2681,7 @@ mod tests {
     fn should_remain_eligible_when_no_external_schedule_is_registered() {
         // Arrange
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)));
+        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)).unwrap());
         let _ = rt.update(now());
 
         // Act
@@ -2716,7 +2754,7 @@ mod tests {
         assert!(rt.update(now()).has_deferred_externals);
 
         // Act
-        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)));
+        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)).unwrap());
         let _ = rt.update(now());
         let idle = rt.update(now());
 

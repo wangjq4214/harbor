@@ -112,8 +112,8 @@ mod tests {
     #[test]
     fn stack_two_children() {
         let stack = Stack::new()
-            .push_child(SizedBox::new(Size::new(100.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(80.0, 40.0)));
+            .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(80.0, 40.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(100.0, 50.0), Size::new(80.0, 40.0)];
         let (own, positions) = stack.layout_children(
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn stack_child_larger_than_constraints() {
-        let stack = Stack::new().push_child(SizedBox::new(Size::new(1000.0, 1000.0)));
+        let stack = Stack::new().push_child(SizedBox::new(Size::new(1000.0, 1000.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
         let child_sizes = vec![Size::new(1000.0, 1000.0)];
         let (own, positions) = stack.layout_children(
@@ -174,9 +174,9 @@ mod tests {
     #[test]
     fn stack_three_children_all_at_origin() {
         let stack = Stack::new()
-            .push_child(SizedBox::new(Size::new(100.0, 100.0)))
-            .push_child(SizedBox::new(Size::new(80.0, 80.0)))
-            .push_child(SizedBox::new(Size::new(60.0, 60.0)));
+            .push_child(SizedBox::new(Size::new(100.0, 100.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(80.0, 80.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(60.0, 60.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![
             Size::new(100.0, 100.0),

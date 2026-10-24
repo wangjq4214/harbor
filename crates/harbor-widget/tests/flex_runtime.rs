@@ -452,8 +452,14 @@ fn zero_viewport_with_padding_has_no_hit_and_restores_without_replacing_fibers()
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(0, 0, 1.0));
     runtime.set_root(
-        Padding::new(10.0, 10.0, 10.0, 10.0)
-            .child(Row::new().push_child(Expanded::new().child(CustomPaint::new(1)))),
+        Padding::new(harbor_widget::Insets {
+            top: 10.0,
+            right: 10.0,
+            bottom: 10.0,
+            left: 10.0,
+        })
+        .unwrap()
+        .child(Row::new().push_child(Expanded::new().child(CustomPaint::new(1)))),
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);

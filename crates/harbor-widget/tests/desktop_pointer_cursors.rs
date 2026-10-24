@@ -42,7 +42,7 @@ fn ordinary_controls_keep_the_arrow_when_enabled_or_disabled() {
         assert_arrow(
             InteractiveRegion::new()
                 .disabled(disabled)
-                .child(SizedBox::new(Size::new(80.0, 40.0))),
+                .child(SizedBox::new(Size::new(80.0, 40.0)).unwrap()),
         );
     }
 }
@@ -71,7 +71,7 @@ fn explicit_link_text_resize_and_drag_cursors_remain_available() {
         runtime.set_root(
             InteractiveRegion::new()
                 .cursor(shape)
-                .child(SizedBox::new(Size::new(80.0, 40.0))),
+                .child(SizedBox::new(Size::new(80.0, 40.0)).unwrap()),
         );
         runtime.update(Instant::now());
         let effects = runtime.dispatch(pointer(Point::new(8.0, 8.0), PointerPhase::Move));

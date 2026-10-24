@@ -25,19 +25,19 @@ struct MacroTree {
 impl Component for MacroTree {
     fn build(&self, cx: &mut BuildCx) -> View {
         crate::view! { Column::new() => {
-            SizedBox::new(Size::new(10.0, 10.0)).color(Color::RED);
-            SizedBox::new(Size::new(20.0, 10.0)).color(Color::GREEN);
+            SizedBox::new(Size::new(10.0, 10.0)).unwrap().color(Color::RED);
+            SizedBox::new(Size::new(20.0, 10.0)).unwrap().color(Color::GREEN);
             for (index, size) in self.values.iter().copied().enumerate() {
-                SizedBox::new(size).color(Color::BLUE).keyed(index.to_string());
+                SizedBox::new(size).unwrap().color(Color::BLUE).keyed(index.to_string());
             }
             if self.show_extra {
-                SizedBox::new(Size::new(30.0, 10.0)).color(Color::WHITE);
+                SizedBox::new(Size::new(30.0, 10.0)).unwrap().color(Color::WHITE);
             } else {
-                SizedBox::new(Size::new(40.0, 10.0)).color(Color::BLACK);
+                SizedBox::new(Size::new(40.0, 10.0)).unwrap().color(Color::BLACK);
             }
             match self.values.first().copied() {
                 Some(size) if size.width > 0.0 => {
-                    SizedBox::new(size).color(Color::TRANSPARENT);
+                    SizedBox::new(size).unwrap().color(Color::TRANSPARENT);
                 },
                 Some(_) => {},
                 None => {},
@@ -55,23 +55,40 @@ struct HandwrittenTree {
 impl Component for HandwrittenTree {
     fn build(&self, cx: &mut BuildCx) -> View {
         let mut children = Children::new();
-        children.push(SizedBox::new(Size::new(10.0, 10.0)).color(Color::RED));
-        children.push(SizedBox::new(Size::new(20.0, 10.0)).color(Color::GREEN));
+        children.push(
+            SizedBox::new(Size::new(10.0, 10.0))
+                .unwrap()
+                .color(Color::RED),
+        );
+        children.push(
+            SizedBox::new(Size::new(20.0, 10.0))
+                .unwrap()
+                .color(Color::GREEN),
+        );
         for (index, size) in self.values.iter().copied().enumerate() {
             children.push(
                 SizedBox::new(size)
+                    .unwrap()
                     .color(Color::BLUE)
                     .keyed(index.to_string()),
             );
         }
         if self.show_extra {
-            children.push(SizedBox::new(Size::new(30.0, 10.0)).color(Color::WHITE));
+            children.push(
+                SizedBox::new(Size::new(30.0, 10.0))
+                    .unwrap()
+                    .color(Color::WHITE),
+            );
         } else {
-            children.push(SizedBox::new(Size::new(40.0, 10.0)).color(Color::BLACK));
+            children.push(
+                SizedBox::new(Size::new(40.0, 10.0))
+                    .unwrap()
+                    .color(Color::BLACK),
+            );
         }
         match self.values.first().copied() {
             Some(size) if size.width > 0.0 => {
-                children.push(SizedBox::new(size).color(Color::TRANSPARENT));
+                children.push(SizedBox::new(size).unwrap().color(Color::TRANSPARENT));
             }
             Some(_) | None => {}
         }
@@ -94,7 +111,7 @@ impl Component for KeyedMacroList {
 
         crate::view! { Column::new() => {
             for item in current_items.iter() {
-                SizedBox::new(Size::new(10.0, 10.0)).keyed(*item);
+                SizedBox::new(Size::new(10.0, 10.0)).unwrap().keyed(*item);
             }
         } }
     }
@@ -242,7 +259,7 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
 
     impl Component for HandwrittenLeaf {
         fn build(&self, cx: &mut BuildCx) -> View {
-            SizedBox::new(Size::new(10.0, 10.0)).build(cx)
+            SizedBox::new(Size::new(10.0, 10.0)).unwrap().build(cx)
         }
     }
 
@@ -263,7 +280,8 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     impl Component for HandwrittenSingle {
         fn build(&self, cx: &mut BuildCx) -> View {
             Padding::all(2.0)
-                .child(SizedBox::new(Size::new(10.0, 10.0)))
+                .unwrap()
+                .child(SizedBox::new(Size::new(10.0, 10.0)).unwrap())
                 .build(cx)
         }
     }
@@ -376,7 +394,7 @@ fn macro_preserves_expression_evaluation_order_and_reachability() {
 
     fn logged_leaf(log: &RefCell<Vec<&'static str>>, label: &'static str) -> SizedBox {
         log.borrow_mut().push(label);
-        SizedBox::new(Size::new(1.0, 1.0))
+        SizedBox::new(Size::new(1.0, 1.0)).unwrap()
     }
 
     fn logged_bool(log: &RefCell<Vec<&'static str>>, label: &'static str, value: bool) -> bool {
@@ -439,7 +457,7 @@ fn leaf_root_defers_build_until_reconciliation() {
     impl Component for LoggedRoot {
         fn build(&self, _cx: &mut BuildCx) -> View {
             self.log.borrow_mut().push("build");
-            SizedBox::new(Size::new(1.0, 1.0)).build(_cx)
+            SizedBox::new(Size::new(1.0, 1.0)).unwrap().build(_cx)
         }
     }
 
@@ -501,7 +519,9 @@ fn block_replacement_matches_builders_including_keys_scene_and_routing() {
             let incoming = Button::text("replacement")
                 .on_click(move |_| callback.store(true, Ordering::SeqCst))
                 .keyed("b");
-            let parent = Padding::all(4.0).child(Button::text("old").keyed("a"));
+            let parent = Padding::all(4.0)
+                .unwrap()
+                .child(Button::text("old").keyed("a"));
             let description = if use_macro {
                 crate::view! { parent => { incoming; } }
             } else {
@@ -544,7 +564,9 @@ fn block_replacement_matches_builders_including_keys_scene_and_routing() {
 #[test]
 fn empty_block_clears_but_value_expression_preserves_staged_content() {
     for clear in [false, true] {
-        let staged = Padding::all(2.0).child(SizedBox::new(Size::new(3.0, 4.0)));
+        let staged = Padding::all(2.0)
+            .unwrap()
+            .child(SizedBox::new(Size::new(3.0, 4.0)).unwrap());
         let tree = if clear {
             crate::view! { staged => {} }
         } else {
@@ -574,8 +596,8 @@ fn dynamic_macro_validates_zero_one_many_at_construction_and_not_layout() {
                 crate::view! {
                     {
                         evaluated.borrow_mut().push("parent");
-                        let parent = Padding::all(1.0);
-                        if staged { parent.child(SizedBox::new(Size::ZERO)) } else { parent }
+                        let parent = Padding::all(1.0).unwrap();
+                        if staged { parent.child(SizedBox::new(Size::ZERO).unwrap()) } else { parent }
                     } => {
                         for _ in 0..count {
                             { evaluated.borrow_mut().push("child"); SizedBox::new(Size::new(2.0, 3.0)) };
@@ -620,11 +642,11 @@ fn bounded_alternatives_are_lazy_single_assignments_and_builds_stay_deferred() {
             let log = log.clone();
             move |cx: &mut BuildCx| {
                 log.borrow_mut().push("build");
-                SizedBox::new(Size::new(2.0, 3.0)).build(cx)
+                SizedBox::new(Size::new(2.0, 3.0)).unwrap().build(cx)
             }
         };
         let tree = crate::view! {
-            { log.borrow_mut().push("parent"); Padding::all(0.0).child(SizedBox::new(Size::ZERO)) } => {
+            { log.borrow_mut().push("parent"); Padding::all(0.0).unwrap().child(SizedBox::new(Size::ZERO).unwrap()) } => {
                 if { log.borrow_mut().push("condition"); choice == 0 } {
                     child("if-child");
                 } else if choice == 1 {
@@ -666,9 +688,9 @@ fn overwritten_staged_expression_still_runs_once_after_block_children() {
     let tree = crate::view! {
         {
             log.borrow_mut().push("parent");
-            Padding::all(1.0).child({
+            Padding::all(1.0).unwrap().child({
                 log.borrow_mut().push("staged");
-                SizedBox::new(Size::ZERO)
+                SizedBox::new(Size::ZERO).unwrap()
             })
         } => {
             { log.borrow_mut().push("incoming"); SizedBox::new(Size::new(1.0, 2.0)) };

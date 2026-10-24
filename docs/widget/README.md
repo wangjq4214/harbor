@@ -11,6 +11,7 @@ Harbor is a pre-1.0 workspace toolkit, not a complete desktop framework. Pin the
 | Build your first tree, retain state, then submit application intent | [Learn WIDGET](learn.md) |
 | Understand identity, hooks, signals, actions, effects and invalidation | [Mental models](concepts.md) |
 | Find an existing control and its support boundary | [Widget catalog](catalog.md) |
+| Declare sizes, insets and positioning; recover invalid configuration | [Explicit layout and fallible nodes](layout.md) |
 | Connect a native host, editing controller or root overlay | [Composition recipes](recipes.md) |
 | Test your components and troubleshoot integration | [Testing](testing.md) |
 

@@ -1,0 +1,53 @@
+error[E0277]: the trait bound `SingleChild: AcceptsChildCount<2>` is not satisfied
+ --> tests/ui/fail/sized_box_overcount.rs:4:13
+  |
+4 |       let _ = view! { SizedBox::width(10.0) => {
+  |  _____________^
+5 | |         TextLabel::new("a"); TextLabel::new("b");
+6 | |     }};
+  | |______^ the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
+  |
+help: `SingleChild` implements trait `AcceptsChildCount<N>`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | impl AcceptsChildCount<0> for SingleChild {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<0>`
+  | impl AcceptsChildCount<1> for SingleChild {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<1>`
+note: required by a bound in `with_static_children`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | pub fn with_static_children<const N: usize, C: WithChildren>(
+  |        -------------------- required by a bound in this function
+...
+  |     C::Capability: AcceptsChildCount<N>,
+  |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
+  = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `SingleChild: AcceptsChildCount<2>` is not satisfied
+  --> tests/ui/fail/sized_box_overcount.rs:7:13
+   |
+ 7 |       let _ = view! { Column::new() => {
+   |  _____________^
+ 8 | |         Ok::<_, &str>(SizedBox::height(20.0).unwrap()) => {
+ 9 | |             TextLabel::new("a"); TextLabel::new("b");
+10 | |         }
+11 | |     }};
+   | |______^ the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
+   |
+help: `SingleChild` implements trait `AcceptsChildCount<N>`
+  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+   |
+   | impl AcceptsChildCount<0> for SingleChild {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<0>`
+   | impl AcceptsChildCount<1> for SingleChild {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `AcceptsChildCount<1>`
+note: required by a bound in `with_static_children`
+  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+   |
+   | pub fn with_static_children<const N: usize, C: WithChildren>(
+   |        -------------------- required by a bound in this function
+...
+   |     C::Capability: AcceptsChildCount<N>,
+   |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)

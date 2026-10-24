@@ -223,7 +223,8 @@ async fn owned_host_contract(
             Ok::<_, anyhow::Error>((
                 harbor_widget::widgets::sized_box::SizedBox::new(harbor_widget::layout::Size::new(
                     16.0, 16.0,
-                )),
+                ))
+                .unwrap(),
                 42,
             ))
         },
@@ -236,9 +237,12 @@ async fn owned_host_contract(
     let mut second: WinitWindowHost = WinitWindowHostBuilder::new(
         Window::default_attributes().with_visible(false),
         |_context: HostInitContext<'_>, _setup: &()| {
-            Ok::<_, anyhow::Error>(harbor_widget::widgets::sized_box::SizedBox::new(
-                harbor_widget::layout::Size::new(8.0, 8.0),
-            ))
+            Ok::<_, anyhow::Error>(
+                harbor_widget::widgets::sized_box::SizedBox::new(harbor_widget::layout::Size::new(
+                    8.0, 8.0,
+                ))
+                .unwrap(),
+            )
         },
     )
     .reuse_gpu(shared_gpu)

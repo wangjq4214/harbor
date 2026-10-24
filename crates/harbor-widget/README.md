@@ -89,6 +89,8 @@ use harbor_widget::ComponentExt;
 
 Keys are parent-local. Unkeyed siblings reconcile by position.
 
+Layout stays visible as named parent components. `SizedBox` supports an optional child and optional requested axes; `Padding`/`Align` share `Insets`, and Row/Column/Flex accept `FlexOptions`. Numeric entry points return recoverable `Result`s. Ordinary `view!` resolves a final node `Result` automatically (Err panics with error and source location); intermediate Rust chains are not rewritten. See [explicit layout and fallible nodes](../../docs/widget/layout.md) for complete macro and handwritten examples, slot clearing and wrapper order.
+
 ## Mount in a native window
 
 The `winit` feature exposes [`WinitWindowHostBuilder`](src/winit/host.rs). A host owns one window's widget runtime, surface, input adapter, scheduler, and presentation state. Your application still owns `EventLoop`, `ApplicationHandler`, multi-window routing, and exit/fatal-error policy.

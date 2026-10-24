@@ -839,7 +839,7 @@ mod tests {
 
         use crate::view::Component;
         use crate::widgets::sized_box::SizedBox;
-        let sb = SizedBox::new(Size::new(100.0, 50.0));
+        let sb = SizedBox::new(Size::new(100.0, 50.0)).unwrap();
         let mut cx = crate::view::BuildCx::stub();
         let view = sb.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
@@ -868,7 +868,9 @@ mod tests {
         use crate::scene::primitive::Color;
         use crate::view::Component;
         use crate::widgets::sized_box::SizedBox;
-        let sb = SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED);
+        let sb = SizedBox::new(Size::new(100.0, 50.0))
+            .unwrap()
+            .color(Color::RED);
         let mut cx = crate::view::BuildCx::stub();
         let view = sb.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
@@ -886,8 +888,9 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].paint_order, 0);
 
-        arena.get_mut(fiber_id).unwrap().view =
-            Some(std::sync::Arc::new(SizedBox::new(Size::new(100.0, 50.0))));
+        arena.get_mut(fiber_id).unwrap().view = Some(std::sync::Arc::new(
+            SizedBox::new(Size::new(100.0, 50.0)).unwrap(),
+        ));
         let items = paint_fiber(&mut arena, fiber_id, 0, &mut next_scene_item_id);
         assert!(items.is_empty());
         // Slot-keyed identity retention keeps the old slot entry alive so a
@@ -1031,9 +1034,21 @@ mod tests {
 
         // Column with 3 colored SizedBox children
         let column = Column::new()
-            .push_child(SizedBox::new(Size::new(50.0, 30.0)).color(Color::RED))
-            .push_child(SizedBox::new(Size::new(50.0, 30.0)).color(Color::GREEN))
-            .push_child(SizedBox::new(Size::new(50.0, 30.0)).color(Color::BLUE));
+            .push_child(
+                SizedBox::new(Size::new(50.0, 30.0))
+                    .unwrap()
+                    .color(Color::RED),
+            )
+            .push_child(
+                SizedBox::new(Size::new(50.0, 30.0))
+                    .unwrap()
+                    .color(Color::GREEN),
+            )
+            .push_child(
+                SizedBox::new(Size::new(50.0, 30.0))
+                    .unwrap()
+                    .color(Color::BLUE),
+            );
         let mut cx = crate::view::BuildCx::stub();
         let view = column.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
@@ -1079,9 +1094,11 @@ mod tests {
         let mut arena = FiberArena::new();
 
         // Column with background + one child
-        let column = Column::new()
-            .background(Color::BLACK)
-            .push_child(SizedBox::new(Size::new(50.0, 30.0)).color(Color::RED));
+        let column = Column::new().background(Color::BLACK).push_child(
+            SizedBox::new(Size::new(50.0, 30.0))
+                .unwrap()
+                .color(Color::RED),
+        );
         let mut cx = crate::view::BuildCx::stub();
         let view = column.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
@@ -1115,9 +1132,19 @@ mod tests {
 
         // Row containing a Padding containing a SizedBox
         let row = Row::new().push_child(
-            Padding::new(8.0, 8.0, 8.0, 8.0)
-                .background(Color::BLACK)
-                .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::RED)),
+            Padding::new(crate::Insets {
+                top: 8.0,
+                right: 8.0,
+                bottom: 8.0,
+                left: 8.0,
+            })
+            .unwrap()
+            .background(Color::BLACK)
+            .child(
+                SizedBox::new(Size::new(32.0, 32.0))
+                    .unwrap()
+                    .color(Color::RED),
+            ),
         );
         let mut cx = crate::view::BuildCx::stub();
         let view = row.build(&mut cx);
@@ -1150,8 +1177,16 @@ mod tests {
 
         let stack = Stack::new()
             .background(Color::BLACK)
-            .push_child(SizedBox::new(Size::new(100.0, 100.0)).color(Color::RED))
-            .push_child(SizedBox::new(Size::new(80.0, 80.0)).color(Color::GREEN));
+            .push_child(
+                SizedBox::new(Size::new(100.0, 100.0))
+                    .unwrap()
+                    .color(Color::RED),
+            )
+            .push_child(
+                SizedBox::new(Size::new(80.0, 80.0))
+                    .unwrap()
+                    .color(Color::GREEN),
+            );
         let mut cx = crate::view::BuildCx::stub();
         let view = stack.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
@@ -1184,7 +1219,12 @@ mod tests {
             &mut arena,
             no_parent(),
             Padding::all(4.0)
-                .child(Padding::all(3.0).child(SizedBox::new(Size::new(20.0, 10.0))))
+                .unwrap()
+                .child(
+                    Padding::all(3.0)
+                        .unwrap()
+                        .child(SizedBox::new(Size::new(20.0, 10.0)).unwrap()),
+                )
                 .build(&mut cx),
         );
 
@@ -1238,7 +1278,7 @@ mod tests {
 
         // Arrange
         let mut arena = FiberArena::new();
-        let padding = Padding::all(16.0).child(CustomPaint::new(1));
+        let padding = Padding::all(16.0).unwrap().child(CustomPaint::new(1));
         let mut cx = crate::view::BuildCx::stub();
         let root_id = create_fiber_from_view(&mut arena, no_parent(), padding.build(&mut cx));
 
@@ -1273,7 +1313,7 @@ mod tests {
         let root_id = create_fiber_from_view(
             &mut arena,
             no_parent(),
-            Padding::all(16.0).child(child).build(&mut cx),
+            Padding::all(16.0).unwrap().child(child).build(&mut cx),
         );
 
         // Act
@@ -1336,7 +1376,10 @@ mod tests {
         let root_id = create_fiber_from_view(
             &mut arena,
             no_parent(),
-            Padding::all(16.0).child(CustomPaint::new(1)).build(&mut cx),
+            Padding::all(16.0)
+                .unwrap()
+                .child(CustomPaint::new(1))
+                .build(&mut cx),
         );
 
         // Act
@@ -1367,8 +1410,9 @@ mod tests {
             &mut arena,
             no_parent(),
             Padding::all(4.0)
-                .child(SizedBox::new(Size::new(10.0, 10.0)))
-                .child(SizedBox::new(Size::new(20.0, 20.0)))
+                .unwrap()
+                .child(SizedBox::new(Size::new(10.0, 10.0)).unwrap())
+                .child(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
                 .build(&mut cx),
         );
 
@@ -1395,7 +1439,7 @@ mod tests {
 
         use crate::view::Component;
         use crate::widgets::sized_box::SizedBox;
-        let sb = SizedBox::new(Size::new(100.0, 50.0));
+        let sb = SizedBox::new(Size::new(100.0, 50.0)).unwrap();
         let mut cx = crate::view::BuildCx::stub();
         let view = sb.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
@@ -1448,7 +1492,9 @@ mod tests {
 
         let mut arena = FiberArena::new();
 
-        let sb = SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED);
+        let sb = SizedBox::new(Size::new(100.0, 50.0))
+            .unwrap()
+            .color(Color::RED);
         let mut cx = crate::view::BuildCx::stub();
         let view = sb.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);

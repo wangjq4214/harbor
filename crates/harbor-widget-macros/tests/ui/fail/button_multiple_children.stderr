@@ -1,11 +1,8 @@
 error[E0277]: the trait bound `SingleChild: AcceptsChildCount<2>` is not satisfied
- --> tests/ui/fail/button_multiple_children.rs:4:21
+ --> tests/ui/fail/button_multiple_children.rs:4:13
   |
 4 |     let _ = view! { Button::new() => { TextLabel::new("A"); TextLabel::new("B"); } };
-  |             --------^^^^^^^^^^^^^---------------------------------------------------
-  |             |       |
-  |             |       the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
-  |             required by a bound introduced by this call
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
   |
 help: `SingleChild` implements trait `AcceptsChildCount<N>`
  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
@@ -22,3 +19,4 @@ note: required by a bound in `with_static_children`
 ...
   |     C::Capability: AcceptsChildCount<N>,
   |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
+  = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)

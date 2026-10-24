@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 fn update_decoration(decoration: BoxDecoration) -> harbor_widget::scene::SceneDelta {
-    paint(DecoratedBox::new(decoration).child(SizedBox::new(Size::new(40.0, 24.0))))
+    paint(DecoratedBox::new(decoration).child(SizedBox::new(Size::new(40.0, 24.0)).unwrap()))
 }
 
 fn paint(root: impl Component + 'static) -> harbor_widget::scene::SceneDelta {
@@ -70,7 +70,11 @@ fn gradient_paints_preserve_decoration_order_geometry_and_child_clipping() {
                 ),
         )
         .clip_behavior(ClipBehavior::AntiAlias)
-        .child(SizedBox::new(Size::new(40.0, 24.0)).color(Color::GREEN)),
+        .child(
+            SizedBox::new(Size::new(40.0, 24.0))
+                .unwrap()
+                .color(Color::GREEN),
+        ),
     );
     assert_eq!(delta.added.len(), 4);
     assert!(matches!(
@@ -189,7 +193,7 @@ fn changing_between_solid_and_gradient_preserves_fill_and_border_scene_slots() {
                     .unwrap()
                     .border(Border::with_paint(brush, 1.0).unwrap()),
             )
-            .child(SizedBox::new(Size::new(40.0, 24.0)))
+            .child(SizedBox::new(Size::new(40.0, 24.0)).unwrap())
             .build(cx)
         }
     }
@@ -420,7 +424,7 @@ fn extreme_opposite_finite_endpoints_are_rejected_before_gpu_geometry() {
                     .unwrap(),
             ),
         )
-        .child(SizedBox::new(Size::new(f32::MAX, f32::MAX))),
+        .child(SizedBox::new(Size::new(f32::MAX, f32::MAX)).unwrap()),
     );
     runtime.update(Instant::now());
     let delta = runtime.pending_delta().unwrap();
@@ -461,7 +465,9 @@ fn unchanged_decorated_runtime_has_no_steady_state_schedule_demand() {
             .unwrap(),
     );
     let mut runtime = Runtime::new();
-    runtime.set_root(DecoratedBox::new(decoration).child(SizedBox::new(Size::new(20.0, 12.0))));
+    runtime.set_root(
+        DecoratedBox::new(decoration).child(SizedBox::new(Size::new(20.0, 12.0)).unwrap()),
+    );
     let _ = runtime.update(Instant::now());
 
     let steady_state = runtime.update(Instant::now());
@@ -508,7 +514,7 @@ fn filtered_shadow_preserves_later_shadow_and_fill_scene_identities() {
                     .try_color(Color::GREEN)
                     .unwrap(),
             )
-            .child(SizedBox::new(Size::new(20.0, 12.0)))
+            .child(SizedBox::new(Size::new(20.0, 12.0)).unwrap())
             .build(cx)
         }
     }
@@ -573,7 +579,7 @@ fn appending_an_ineffective_shadow_does_not_replace_fill_identity() {
                     decoration.shadow(BoxShadow::new().try_color(Color::TRANSPARENT).unwrap());
             }
             DecoratedBox::new(decoration)
-                .child(SizedBox::new(Size::new(20.0, 12.0)))
+                .child(SizedBox::new(Size::new(20.0, 12.0)).unwrap())
                 .build(cx)
         }
     }
@@ -619,7 +625,7 @@ fn shadow_primitive_count_is_independent_of_widget_area() {
     };
     let count_for = |size| {
         let mut runtime = Runtime::new();
-        runtime.set_root(DecoratedBox::new(decoration()).child(SizedBox::new(size)));
+        runtime.set_root(DecoratedBox::new(decoration()).child(SizedBox::new(size).unwrap()));
         runtime.update(Instant::now());
         runtime.pending_delta().unwrap().added.len()
     };
@@ -722,7 +728,11 @@ fn active_clip_policy_attaches_normalized_clip_to_child_items() {
     let box_widget =
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()))
             .clip_behavior(ClipBehavior::AntiAlias)
-            .child(SizedBox::new(Size::new(10.0, 10.0)).color(Color::RED));
+            .child(
+                SizedBox::new(Size::new(10.0, 10.0))
+                    .unwrap()
+                    .color(Color::RED),
+            );
     assert_eq!(box_widget.clip_behavior_value(), ClipBehavior::AntiAlias);
 
     let mut runtime = Runtime::new();
@@ -815,8 +825,16 @@ fn should_keep_only_the_last_staged_child_and_preserve_its_layout() {
     let mut runtime = Runtime::new();
     runtime.set_root(
         DecoratedBox::new(BoxDecoration::new())
-            .child(SizedBox::new(Size::new(12.0, 8.0)).color(Color::RED))
-            .child(SizedBox::new(Size::new(20.0, 14.0)).color(Color::BLUE)),
+            .child(
+                SizedBox::new(Size::new(12.0, 8.0))
+                    .unwrap()
+                    .color(Color::RED),
+            )
+            .child(
+                SizedBox::new(Size::new(20.0, 14.0))
+                    .unwrap()
+                    .color(Color::BLUE),
+            ),
     );
 
     // Act
@@ -908,7 +926,9 @@ fn should_emit_no_clip_when_policy_is_none() {
     let widget = rounded_box(
         8.0,
         ClipBehavior::None,
-        SizedBox::new(Size::new(20.0, 20.0)).color(Color::RED),
+        SizedBox::new(Size::new(20.0, 20.0))
+            .unwrap()
+            .color(Color::RED),
     );
 
     // Act
@@ -936,7 +956,11 @@ fn should_leave_shadow_fill_and_border_unclipped_when_child_clip_is_active() {
         .border_radius(BorderRadius::all(6.0).unwrap());
     let widget = DecoratedBox::new(decoration)
         .clip_behavior(ClipBehavior::HardEdge)
-        .child(SizedBox::new(Size::new(40.0, 24.0)).color(Color::RED));
+        .child(
+            SizedBox::new(Size::new(40.0, 24.0))
+                .unwrap()
+                .color(Color::RED),
+        );
 
     // Act
     let delta = paint(widget);
@@ -975,10 +999,12 @@ fn should_accumulate_clips_outer_to_inner_when_decorated_boxes_are_nested() {
     let widget = rounded_box(
         8.0,
         ClipBehavior::HardEdge,
-        Padding::all(10.0).child(rounded_box(
+        Padding::all(10.0).unwrap().child(rounded_box(
             4.0,
             ClipBehavior::AntiAlias,
-            SizedBox::new(Size::new(20.0, 20.0)).color(Color::RED),
+            SizedBox::new(Size::new(20.0, 20.0))
+                .unwrap()
+                .color(Color::RED),
         )),
     );
 
@@ -1017,7 +1043,9 @@ fn should_accumulate_clips_outer_to_inner_when_decorated_boxes_are_nested() {
 #[test]
 fn should_keep_child_layout_rect_when_clip_policy_changes() {
     // Arrange
-    let child = SizedBox::new(Size::new(40.0, 24.0)).color(Color::RED);
+    let child = SizedBox::new(Size::new(40.0, 24.0))
+        .unwrap()
+        .color(Color::RED);
     let rect_of = |behavior: ClipBehavior| {
         let delta = paint(rounded_box(8.0, behavior, child.clone()));
         match delta.added[0].primitive {
@@ -1046,7 +1074,9 @@ fn should_normalize_oversized_radii_when_child_clip_is_emitted() {
     let widget = rounded_box(
         50.0,
         ClipBehavior::HardEdge,
-        SizedBox::new(Size::new(20.0, 10.0)).color(Color::RED),
+        SizedBox::new(Size::new(20.0, 10.0))
+            .unwrap()
+            .color(Color::RED),
     );
 
     // Act
@@ -1142,7 +1172,7 @@ fn should_accumulate_nested_clips_on_custom_paint_external_item() {
     runtime.set_root(rounded_box(
         8.0,
         ClipBehavior::HardEdge,
-        Padding::all(10.0).child(rounded_box(
+        Padding::all(10.0).unwrap().child(rounded_box(
             4.0,
             ClipBehavior::AntiAlias,
             CustomPaint::new(1),

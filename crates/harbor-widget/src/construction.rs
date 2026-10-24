@@ -29,6 +29,48 @@ impl<C: Component + 'static> IntoChildView for C {
     }
 }
 
+/// Marker distinguishing an ordinary node from a final fallible expression.
+#[doc(hidden)]
+pub enum PlainNode {}
+#[doc(hidden)]
+pub enum FallibleNode {}
+
+/// Normalizes a final macro node without changing its child capability or
+/// eagerly building its Component. The marker keeps blanket impls disjoint.
+#[doc(hidden)]
+pub trait ResolveNode<Kind> {
+    type Node: IntoChildView;
+    fn resolve_node(self, file: &'static str, line: u32, column: u32) -> Self::Node;
+}
+
+impl<T: IntoChildView> ResolveNode<PlainNode> for T {
+    type Node = T;
+    fn resolve_node(self, _: &'static str, _: u32, _: u32) -> T {
+        self
+    }
+}
+
+impl<T: IntoChildView, E: fmt::Display> ResolveNode<FallibleNode> for Result<T, E> {
+    type Node = T;
+    fn resolve_node(self, file: &'static str, line: u32, column: u32) -> T {
+        self.unwrap_or_else(|error| {
+            panic!("view! node construction failed at {file}:{line}:{column}: {error}")
+        })
+    }
+}
+
+/// Only the final Result is handled: arbitrary intermediate Rust expressions
+/// retain their normal meaning and must be recovered by the caller.
+#[doc(hidden)]
+pub fn resolve_node<T: ResolveNode<Kind>, Kind>(
+    value: T,
+    file: &'static str,
+    line: u32,
+    column: u32,
+) -> T::Node {
+    value.resolve_node(file, line, column)
+}
+
 /// An ordered collection of child views used by handwritten builders and macro
 /// expansions.
 #[derive(Default)]

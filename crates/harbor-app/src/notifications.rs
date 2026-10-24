@@ -43,9 +43,14 @@ pub(crate) fn configuration_notification(
         let panel = appearance.panel(cx, card);
         Portal::new()
             .child(
-                harbor_widget::widgets::align::Align::new(Alignment::End)
-                    .vertical_alignment(Alignment::Start)
-                    .insets(top_offset + 12.0, 12.0, 12.0, 12.0)
+                harbor_widget::widgets::align::Align::new(harbor_widget::Alignment2D::TOP_RIGHT)
+                    .insets(harbor_widget::Insets {
+                        top: top_offset + 12.0,
+                        right: 12.0,
+                        bottom: 12.0,
+                        left: 12.0,
+                    })
+                    .unwrap()
                     .child(panel)
                     .build(cx),
             )

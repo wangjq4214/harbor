@@ -25,10 +25,10 @@ fn main() {
         }
     }
     let enabled = std::env::args().len() > 1;
-    let _ = view! { External(Padding::all(1.0)).keyed("external") => {
+    let _ = view! { External(Padding::all(1.0).unwrap()).keyed("external") => {
         if enabled { SizedBox::new(Size::ZERO); } else {}
     }};
-    let _ = view! { External(Padding::all(1.0)) => {
+    let _ = view! { Ok::<_, &str>(External(Padding::all(1.0).unwrap())) => {
         for _ in 0..usize::from(enabled) { SizedBox::new(Size::ZERO); }
     }};
 }

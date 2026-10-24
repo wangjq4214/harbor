@@ -37,7 +37,7 @@ pub use actions::{ActionOutcome, Actions};
 pub use button::Button;
 pub use column::Column;
 pub use constrained_box::ConstrainedBox;
-pub use flex::{Axis, Flex, MainAxisAlignment};
+pub use flex::{Axis, Flex, FlexOptions, MainAxisAlignment};
 pub use flexible::{Expanded, Flexible, Spacer};
 pub use focus::{Focus, FocusHandle};
 pub use focus_scope::FocusScope;

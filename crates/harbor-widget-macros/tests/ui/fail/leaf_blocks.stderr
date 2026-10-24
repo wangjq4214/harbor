@@ -1,8 +1,8 @@
-error[E0277]: the trait bound `SizedBox: WithChildren` is not satisfied
- --> tests/ui/fail/leaf_blocks.rs:8:21
+error[E0277]: the trait bound `TextLabel: WithChildren` is not satisfied
+ --> tests/ui/fail/leaf_blocks.rs:7:21
   |
-8 |     let _ = view! { leaf() => {} };
-  |                     ^^^^ the trait `WithChildren` is not implemented for `SizedBox`
+7 |     let _ = view! { leaf() => {} };
+  |                     ^^^^ the trait `WithChildren` is not implemented for `TextLabel`
   |
   = help: the following other types implement trait `WithChildren`:
             Actions<A>
@@ -20,11 +20,11 @@ note: required by a bound in `with_static_children`
   | pub fn with_static_children<const N: usize, C: WithChildren>(
   |                                                ^^^^^^^^^^^^ required by this bound in `with_static_children`
 
-error[E0277]: the trait bound `SizedBox: WithChildren` is not satisfied
- --> tests/ui/fail/leaf_blocks.rs:9:21
+error[E0277]: the trait bound `TextLabel: WithChildren` is not satisfied
+ --> tests/ui/fail/leaf_blocks.rs:8:21
   |
-9 |     let _ = view! { leaf() => { leaf(); } };
-  |                     ^^^^ the trait `WithChildren` is not implemented for `SizedBox`
+8 |     let _ = view! { leaf() => { leaf(); } };
+  |                     ^^^^ the trait `WithChildren` is not implemented for `TextLabel`
   |
   = help: the following other types implement trait `WithChildren`:
             Actions<A>
@@ -43,26 +43,26 @@ note: required by a bound in `with_static_children`
   |                                                ^^^^^^^^^^^^ required by this bound in `with_static_children`
 
 error[E0277]: the trait bound `harbor_widget::Icon: WithChildren` is not satisfied
-  --> tests/ui/fail/leaf_blocks.rs:10:21
-   |
-10 |     let _ = view! { Icon::new(LucideIcon::X) => { for _ in 0..2 { leaf(); } } };
-   |                     ^^^^ the trait `WithChildren` is not implemented for `harbor_widget::Icon`
-   |
-   = help: the following other types implement trait `WithChildren`:
-             Actions<A>
-             Align
-             BackdropFilter
-             Button
-             Column
-             ConstrainedBox
-             CustomPaint
-             DecoratedBox
-           and $N others
+ --> tests/ui/fail/leaf_blocks.rs:9:21
+  |
+9 |     let _ = view! { Icon::new(LucideIcon::X) => { for _ in 0..2 { leaf(); } } };
+  |                     ^^^^ the trait `WithChildren` is not implemented for `harbor_widget::Icon`
+  |
+  = help: the following other types implement trait `WithChildren`:
+            Actions<A>
+            Align
+            BackdropFilter
+            Button
+            Column
+            ConstrainedBox
+            CustomPaint
+            DecoratedBox
+          and $N others
 
 error[E0277]: the trait bound `IconButton: WithChildren` is not satisfied
-  --> tests/ui/fail/leaf_blocks.rs:12:36
+  --> tests/ui/fail/leaf_blocks.rs:11:36
    |
-12 |         view! { Column::new() => { IconButton::new(LucideIcon::X, "Close").keyed("leaf") => {} } };
+11 |         view! { Column::new() => { IconButton::new(LucideIcon::X, "Close").keyed("leaf") => {} } };
    |                                    ^^^^^^^^^^ the trait `WithChildren` is not implemented for `IconButton`
    |
    = help: the following other types implement trait `WithChildren`:

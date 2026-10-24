@@ -43,7 +43,7 @@ fn observer_delivers_distinct_committed_rects_and_callback_work_waits_for_next_u
                     requested_size.set(Size::new(30.0, 10.0));
                 }
             })
-            .child(SizedBox::new(size))
+            .child(SizedBox::new(size).unwrap())
             .build(cx)
         }
     }
@@ -89,7 +89,7 @@ fn observer_ignores_failed_layout_and_notifies_after_recovery() {
             }
             .min_height(10.0)
             .max_height(10.0)
-            .child(SizedBox::new(Size::new(width, 10.0)));
+            .child(SizedBox::new(Size::new(width, 10.0)).unwrap());
             let calls = self.calls.clone();
             LayoutObserver::new(move |rect| calls.borrow_mut().push(rect))
                 .child(child)
@@ -152,9 +152,9 @@ fn observer_drops_staged_callback_when_fiber_unmounts_before_delivery() {
     let mut runtime = Runtime::new();
     runtime.set_root(
         LayoutObserver::new(move |rect| observed.borrow_mut().push(rect))
-            .child(SizedBox::new(Size::new(20.0, 10.0))),
+            .child(SizedBox::new(Size::new(20.0, 10.0)).unwrap()),
     );
-    runtime.set_root(SizedBox::new(Size::new(5.0, 5.0)));
+    runtime.set_root(SizedBox::new(Size::new(5.0, 5.0)).unwrap());
 
     update(&mut runtime);
     assert!(calls.borrow().is_empty());
@@ -174,7 +174,7 @@ fn replacing_callback_without_geometry_change_does_not_notify_again() {
             let generation = *self.generation.read();
             let calls = self.calls.clone();
             LayoutObserver::new(move |_| calls.borrow_mut().push(generation))
-                .child(SizedBox::new(Size::new(20.0, 10.0)))
+                .child(SizedBox::new(Size::new(20.0, 10.0)).unwrap())
                 .build(cx)
         }
     }

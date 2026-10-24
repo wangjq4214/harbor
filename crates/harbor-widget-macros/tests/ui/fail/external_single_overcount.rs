@@ -5,7 +5,7 @@ use harbor_widget::layout::Size;
 use harbor_widget::widgets::{padding::Padding, sized_box::SizedBox};
 use harbor_widget::{ComponentExt, view};
 fn main() {
-    let _ = view! { ExternalSingle(Padding::all(1.0)).keyed("external") => {
+    let _ = view! { ExternalSingle(Padding::all(1.0).unwrap()).keyed("external") => {
         SizedBox::new(Size::ZERO);
         SizedBox::new(Size::ZERO);
     }};

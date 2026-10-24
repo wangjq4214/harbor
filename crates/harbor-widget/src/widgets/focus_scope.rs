@@ -128,7 +128,7 @@ mod tests {
             scope.layout_children(constraints, &[], metrics).0,
             constraints.min
         );
-        let with_child = scope.child(crate::widgets::sized_box::SizedBox::new(Size::ZERO));
+        let with_child = scope.child(crate::widgets::sized_box::SizedBox::new(Size::ZERO).unwrap());
         assert_eq!(
             with_child.intrinsic_size(constraints, metrics),
             constraints.min
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn focus_scope_intrinsic_size_with_child() {
         use crate::widgets::sized_box::SizedBox;
-        let scope = FocusScope::new().child(SizedBox::new(Size::new(100.0, 50.0)));
+        let scope = FocusScope::new().child(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let size = scope.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // FocusScope fills available max space

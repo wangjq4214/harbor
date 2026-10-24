@@ -53,7 +53,7 @@ impl Expander {
 
         quote_spanned! {span=>
             {
-                let #component = #expr;
+                let #component = #support::resolve_node(#expr, ::core::file!(), ::core::line!(), ::core::column!());
                 <_ as #support::IntoChildView>::into_child_view(#component)
             }
         }
@@ -73,7 +73,7 @@ impl Expander {
                 let mut #children = #support::Children::new();
                 #children_body
                 let #component = #attachment(
-                    #component_expr,
+                    #support::resolve_node(#component_expr, ::core::file!(), ::core::line!(), ::core::column!()),
                     #children,
                 )
                 .unwrap_or_else(|error| {
@@ -129,7 +129,7 @@ impl Expander {
 
         quote_spanned! {span=>
             {
-                let #value = #expr;
+                let #value = #support::resolve_node(#expr, ::core::file!(), ::core::line!(), ::core::column!());
                 let #child_view = <_ as #support::IntoChildView>::into_child_view(#value);
                 #support::Children::push(&mut #parent, #child_view);
             }
@@ -151,7 +151,7 @@ impl Expander {
                 let mut #children = #support::Children::new();
                 #children_body
                 let #component = #attachment(
-                    #component_expr,
+                    #support::resolve_node(#component_expr, ::core::file!(), ::core::line!(), ::core::column!()),
                     #children,
                 )
                 .unwrap_or_else(|error| {

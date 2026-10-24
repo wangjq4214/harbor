@@ -1,6 +1,7 @@
-use super::flex::{Axis, Flex, MainAxisAlignment};
+use super::flex::{Axis, Flex, FlexOptions, MainAxisAlignment};
 use crate::layout::{
-    Alignment, BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size,
+    Alignment, BoxConstraints, ChildMeasurer, LayoutConfigError, LayoutError, ParentLayout, Point,
+    Rect, Size,
 };
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
@@ -25,15 +26,25 @@ impl Row {
         }
     }
 
+    pub fn with_options(options: FlexOptions) -> Result<Self, LayoutConfigError> {
+        Ok(Self {
+            inner: Flex::with_options(Axis::Horizontal, options)?,
+        })
+    }
+
+    pub fn options(&self) -> FlexOptions {
+        self.inner.options()
+    }
+
     pub fn cross_axis_alignment(mut self, alignment: Alignment) -> Self {
         self.inner = self.inner.cross_axis_alignment(alignment);
         self
     }
 
     /// Sets a finite, nonnegative minimum gap in logical pixels.
-    pub fn gap(mut self, gap: f32) -> Self {
-        self.inner = self.inner.gap(gap);
-        self
+    pub fn gap(mut self, gap: f32) -> Result<Self, LayoutConfigError> {
+        self.inner = self.inner.gap(gap)?;
+        Ok(self)
     }
 
     pub fn main_axis_alignment(mut self, alignment: MainAxisAlignment) -> Self {
@@ -129,9 +140,9 @@ mod tests {
     #[test]
     fn row_three_children() {
         let row = Row::new()
-            .push_child(SizedBox::new(Size::new(50.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(50.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(50.0, 50.0)));
+            .push_child(SizedBox::new(Size::new(50.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(50.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(50.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![
             Size::new(50.0, 50.0),
@@ -153,8 +164,8 @@ mod tests {
     #[test]
     fn row_different_child_sizes() {
         let row = Row::new()
-            .push_child(SizedBox::new(Size::new(100.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(200.0, 75.0)));
+            .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(200.0, 75.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(100.0, 50.0), Size::new(200.0, 75.0)];
         let (own, _positions) = row.layout_children(
@@ -169,7 +180,7 @@ mod tests {
     fn row_cross_axis_center() {
         let row = Row::new()
             .cross_axis_alignment(Alignment::Center)
-            .push_child(SizedBox::new(Size::new(50.0, 20.0)));
+            .push_child(SizedBox::new(Size::new(50.0, 20.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(50.0, 20.0)];
         let (own, positions) = row.layout_children(
@@ -186,8 +197,8 @@ mod tests {
     fn row_cross_axis_center_with_larger_own() {
         let row = Row::new()
             .cross_axis_alignment(Alignment::Center)
-            .push_child(SizedBox::new(Size::new(50.0, 20.0)))
-            .push_child(SizedBox::new(Size::new(50.0, 100.0)));
+            .push_child(SizedBox::new(Size::new(50.0, 20.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(50.0, 100.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(50.0, 20.0), Size::new(50.0, 100.0)];
         let (own, positions) = row.layout_children(
@@ -214,7 +225,7 @@ mod tests {
 
     #[test]
     fn row_child_wider_than_constraints() {
-        let row = Row::new().push_child(SizedBox::new(Size::new(1000.0, 50.0)));
+        let row = Row::new().push_child(SizedBox::new(Size::new(1000.0, 50.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
         let child_sizes = vec![Size::new(1000.0, 50.0)];
         let (own, _positions) = row.layout_children(
@@ -229,8 +240,8 @@ mod tests {
     #[test]
     fn row_all_children_wider_than_max() {
         let row = Row::new()
-            .push_child(SizedBox::new(Size::new(400.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(400.0, 50.0)));
+            .push_child(SizedBox::new(Size::new(400.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(400.0, 50.0)).unwrap());
         // Tight constraint smaller than total
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
         let child_sizes = vec![Size::new(400.0, 50.0), Size::new(400.0, 50.0)];
@@ -247,8 +258,8 @@ mod tests {
     fn row_cross_axis_end() {
         let row = Row::new()
             .cross_axis_alignment(Alignment::End)
-            .push_child(SizedBox::new(Size::new(50.0, 20.0)))
-            .push_child(SizedBox::new(Size::new(50.0, 100.0)));
+            .push_child(SizedBox::new(Size::new(50.0, 20.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(50.0, 100.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(50.0, 20.0), Size::new(50.0, 100.0)];
         let (own, positions) = row.layout_children(
@@ -267,8 +278,8 @@ mod tests {
     fn row_cross_axis_stretch() {
         let row = Row::new()
             .cross_axis_alignment(Alignment::Stretch)
-            .push_child(SizedBox::new(Size::new(50.0, 20.0)))
-            .push_child(SizedBox::new(Size::new(50.0, 100.0)));
+            .push_child(SizedBox::new(Size::new(50.0, 20.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(50.0, 100.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(50.0, 20.0), Size::new(50.0, 100.0)];
         let (own, positions) = row.layout_children(
@@ -284,7 +295,7 @@ mod tests {
 
     #[test]
     fn row_intrinsic_size() {
-        let row = Row::new().push_child(SizedBox::new(Size::new(50.0, 50.0)));
+        let row = Row::new().push_child(SizedBox::new(Size::new(50.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let size = row.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // Row fills available max in loose mode

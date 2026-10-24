@@ -9,9 +9,10 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionOutcome, Actions, BorderRadius, ComponentExt as _, Expanded, Focus, FocusHandle,
-    FocusScope, Icon, InteractionState, InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row,
-    Shortcuts, Store, TextEditingController, TextField,
+    ActionOutcome, Actions, Align, Alignment, Alignment2D, BorderRadius, ComponentExt as _,
+    Expanded, FlexOptions, Focus, FocusHandle, FocusScope, Icon, Insets, InteractionState,
+    InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row, Shortcuts, SizedBox, Store,
+    TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -115,10 +116,10 @@ fn search_bar(
     let status = search.status.clone();
     let content = harbor_widget::view! {
         Padding::all(8.0) => {
-            Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
+            Row::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
                 Expanded::new() => { entry; }
                 // Status text changes frequently; reserve its slot instead of resizing the editor.
-                harbor_widget::ConstrainedBox::new().min_width(120.0).max_width(120.0) => {
+                SizedBox::width(120.0) => {
                     harbor_widget::widgets::text_label::TextLabel::new(status)
                         .color(cx.theme().button.normal.foreground).ellipsis();
                 }
@@ -130,24 +131,13 @@ fn search_bar(
     };
     let card = appearance.panel(cx, content);
     Portal::new()
-        .child(
-            harbor_widget::widgets::align::Align::new(harbor_widget::Alignment::End)
-                .vertical_alignment(harbor_widget::Alignment::Start)
-                .insets(
-                    SEARCH_PANEL_INSET,
-                    SEARCH_PANEL_INSET,
-                    SEARCH_PANEL_INSET,
-                    SEARCH_PANEL_INSET,
-                )
-                .child(
-                    harbor_widget::ConstrainedBox::new()
-                        .min_width(440.0)
-                        .max_width(440.0)
-                        .min_height(SEARCH_PANEL_HEIGHT)
-                        .max_height(SEARCH_PANEL_HEIGHT)
-                        .child(card),
-                ),
-        )
+        .child(harbor_widget::view! {
+            Align::new(Alignment2D::TOP_RIGHT).insets(Insets::all(SEARCH_PANEL_INSET)) => {
+                SizedBox::new(harbor_widget::layout::Size::new(440.0, SEARCH_PANEL_HEIGHT)) => {
+                    card;
+                }
+            }
+        })
         .keyed(format!("session-search-{generation}"))
         .build(cx)
 }
@@ -169,12 +159,13 @@ fn search_icon_button(
                 .size(style.icon_size)
                 .color(style.resolve_state(&state).foreground)
                 .build(cx);
-            let content = Padding::new(
-                vertical_padding,
-                horizontal_padding,
-                vertical_padding,
-                horizontal_padding,
-            )
+            let content = Padding::new(Insets {
+                top: vertical_padding,
+                right: horizontal_padding,
+                bottom: vertical_padding,
+                left: horizontal_padding,
+            })
+            .unwrap()
             .child(content)
             .build(cx);
             if state.disabled || !(state.hovered || state.pressed) {
@@ -546,9 +537,9 @@ pub(crate) fn root_padding(backdrop_available: bool, fallback_rgb: [f32; 3]) -> 
         }
     });
     if backdrop_available {
-        Padding::all(4.0)
+        Padding::all(4.0).unwrap()
     } else {
-        Padding::all(4.0).background(Color {
+        Padding::all(4.0).unwrap().background(Color {
             r: fallback[0],
             g: fallback[1],
             b: fallback[2],

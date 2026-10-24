@@ -239,7 +239,7 @@ fn text_metric_height_cap_tracks_fonts_and_respects_static_and_parent_bounds() {
         ConstrainedBox::new()
             .max_height(70.0)
             .max_height_with(|metrics| metrics.line_height * 2.0 + 8.0)
-            .child(SizedBox::new(Size::new(100.0, 400.0))),
+            .child(SizedBox::new(Size::new(100.0, 400.0)).unwrap()),
     );
     for (line_height, expected) in [(20.0, 48.0), (30.0, 68.0), (40.0, 70.0)] {
         runtime.set_text_metrics(TextMetrics {
@@ -265,7 +265,7 @@ fn text_metric_height_cap_rejects_invalid_values_without_committing_them() {
         runtime.set_root(
             ConstrainedBox::new()
                 .max_height_with(move |_| value)
-                .child(SizedBox::new(Size::new(100.0, 400.0))),
+                .child(SizedBox::new(Size::new(100.0, 400.0)).unwrap()),
         );
         runtime.update(Instant::now());
         assert_eq!(

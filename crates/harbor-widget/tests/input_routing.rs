@@ -410,7 +410,7 @@ fn should_not_crash_dispatch_with_no_root() {
 fn should_return_needs_redraw_false_when_no_handler_requests_paint() {
     let mut rt = Runtime::new();
     // Use SizedBox (no event handlers at all) instead of Button
-    rt.set_root(SizedBox::new(Size::new(100.0, 32.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 32.0)).unwrap());
     rt.update(now());
 
     // Dispatch a move event — SizedBox ignores all events
@@ -705,7 +705,7 @@ fn should_trigger_relayout_on_viewport_change() {
     use harbor_widget::renderer::Viewport;
 
     let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
     let req1 = rt.update(now());
     assert!(req1.request_redraw);
 

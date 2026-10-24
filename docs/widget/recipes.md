@@ -161,9 +161,8 @@ fn main() {
         .border_radius(radius)
         .edge_refraction(EdgeRefraction::new(10.0, 2.0).expect("valid lens"))
         .child(DecoratedBox::new(decoration)
-            .child(Padding::all(12.0).child(TextLabel::new("Saved locally"))));
-    let overlay = Portal::new().child(Align::new(Alignment::End)
-        .vertical_alignment(Alignment::Start).insets(12.0, 12.0, 12.0, 12.0)
+            .child(Padding::all(12.0).unwrap().child(TextLabel::new("Saved locally"))));
+    let overlay = Portal::new().child(Align::new(harbor_widget::Alignment2D::TOP_RIGHT).insets(harbor_widget::Insets { top: 12.0, right: 12.0, bottom: 12.0, left: 12.0 }).unwrap()
         .child(panel));
     let mut runtime = Runtime::new();
     runtime.set_root(move |cx: &mut BuildCx| Column::new()

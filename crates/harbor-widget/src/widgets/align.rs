@@ -1,4 +1,7 @@
-use crate::layout::{Alignment, BoxConstraints, Point, Rect, Size};
+use crate::layout::{
+    Alignment2D, BoxConstraints, ChildMeasurer, Insets, LayoutConfigError, LayoutError,
+    ParentLayout, Point, Rect, Size,
+};
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, View};
@@ -6,34 +9,31 @@ use crate::view::{AnyView, BuildCx, Component, View};
 /// Single-child positioner within parent bounds according to Alignment.
 #[derive(Clone)]
 pub struct Align {
-    pub alignment: Alignment,
+    pub alignment: Alignment2D,
     pub background: Option<Color>,
     child: Option<View>,
-    vertical_alignment: Option<Alignment>,
-    insets: [f32; 4],
+    insets: Insets,
 }
 
 impl Align {
-    pub fn new(alignment: Alignment) -> Self {
+    pub fn new(alignment: Alignment2D) -> Self {
         Align {
             alignment,
             background: None,
-            vertical_alignment: None,
-            insets: [0.0; 4],
+            insets: Insets::all(0.0),
             child: None,
         }
     }
 
-    /// Overrides vertical placement while preserving the constructor's horizontal alignment.
-    pub fn vertical_alignment(mut self, alignment: Alignment) -> Self {
-        self.vertical_alignment = Some(alignment);
-        self
+    /// Insets the available alignment bounds. Each side is validated independently.
+    pub fn insets(mut self, insets: Insets) -> Result<Self, LayoutConfigError> {
+        insets.validate()?;
+        self.insets = insets;
+        Ok(self)
     }
 
-    /// Insets the available alignment bounds (top, right, bottom, left).
-    pub fn insets(mut self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
-        self.insets = [top, right, bottom, left];
-        self
+    pub fn get_insets(&self) -> Insets {
+        self.insets
     }
 
     pub fn background(mut self, color: Color) -> Self {
@@ -66,6 +66,28 @@ impl crate::WithChildren for Align {
 }
 
 impl AnyView for Align {
+    fn layout(
+        &self,
+        constraints: BoxConstraints,
+        children: &mut dyn ChildMeasurer,
+        metrics: &TextMetrics,
+    ) -> Result<ParentLayout, LayoutError> {
+        constraints.validate()?;
+        self.insets.checked_inflate(Size::ZERO)?;
+        let child_constraints = self.child_constraints(constraints);
+        let child_sizes = (0..children.len())
+            .map(|index| children.measure(index, child_constraints))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.insets
+            .checked_inflate(child_sizes.first().copied().unwrap_or(Size::ZERO))?;
+        let (size, origins) = self.layout_children(constraints, &child_sizes, metrics);
+        Ok(ParentLayout {
+            size,
+            placements: origins.into_iter().enumerate().collect(),
+            diagnostics: vec![],
+        })
+    }
+
     // Alignment space is not an input surface (notably inside a Portal).
     fn hit_test(&self, _: Point, _: Rect) -> bool {
         false
@@ -76,7 +98,12 @@ impl AnyView for Align {
     }
 
     fn child_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
-        let [top, right, bottom, left] = self.insets;
+        let Insets {
+            top,
+            right,
+            bottom,
+            left,
+        } = self.insets;
         constraints.deflate(Size::new(left + right, top + bottom))
     }
 
@@ -86,7 +113,12 @@ impl AnyView for Align {
         child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        let [top, right, bottom, left] = self.insets;
+        let Insets {
+            top,
+            right,
+            bottom,
+            left,
+        } = self.insets;
         let natural = child_sizes.first().copied().unwrap_or(Size::ZERO);
         let own = constraints.fill_bounded(Size::new(
             natural.width + left + right,
@@ -99,11 +131,12 @@ impl AnyView for Align {
         let x = left
             + self
                 .alignment
+                .horizontal
                 .position(child_size.width, (own.width - left - right).max(0.0));
         let y = top
             + self
-                .vertical_alignment
-                .unwrap_or(self.alignment)
+                .alignment
+                .vertical
                 .position(child_size.height, (own.height - top - bottom).max(0.0));
         (own, vec![Point::new(x, y)])
     }
@@ -127,7 +160,7 @@ mod tests {
 
     #[test]
     fn align_top_right_overrides_only_vertical_placement() {
-        let align = Align::new(Alignment::End).vertical_alignment(Alignment::Start);
+        let align = Align::new(crate::Alignment2D::TOP_RIGHT);
         let (size, positions) = align.layout_children(
             BoxConstraints::tight(Size::new(200.0, 100.0)),
             &[Size::new(50.0, 20.0)],
@@ -143,9 +176,14 @@ mod tests {
 
     #[test]
     fn align_insets_reserve_space_without_creating_an_input_surface() {
-        let align = Align::new(Alignment::End)
-            .vertical_alignment(Alignment::Start)
-            .insets(10.0, 20.0, 30.0, 40.0);
+        let align = Align::new(crate::Alignment2D::TOP_RIGHT)
+            .insets(crate::Insets {
+                top: 10.0,
+                right: 20.0,
+                bottom: 30.0,
+                left: 40.0,
+            })
+            .unwrap();
         let constraints = BoxConstraints::loose(Size::new(200.0, 100.0));
         assert_eq!(
             align.child_constraints(constraints),
@@ -165,7 +203,7 @@ mod tests {
     }
     #[test]
     fn should_use_natural_extent_on_unbounded_axes() {
-        let align = Align::new(Alignment::Center);
+        let align = Align::new(crate::Alignment2D::CENTER);
         let metrics = &crate::runtime::DEFAULT_TEXT_METRICS;
         let constraints = BoxConstraints {
             min: Size::new(10.0, 5.0),
@@ -193,7 +231,8 @@ mod tests {
 
     #[test]
     fn align_center() {
-        let align = Align::new(Alignment::Center).child(SizedBox::new(Size::new(50.0, 50.0)));
+        let align = Align::new(crate::Alignment2D::CENTER)
+            .child(SizedBox::new(Size::new(50.0, 50.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(50.0, 50.0)];
         let (own, positions) = align.layout_children(
@@ -207,7 +246,8 @@ mod tests {
 
     #[test]
     fn align_start() {
-        let align = Align::new(Alignment::Start).child(SizedBox::new(Size::new(50.0, 50.0)));
+        let align = Align::new(crate::Alignment2D::TOP_LEFT)
+            .child(SizedBox::new(Size::new(50.0, 50.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(50.0, 50.0)];
         let (_own, positions) = align.layout_children(
@@ -220,7 +260,8 @@ mod tests {
 
     #[test]
     fn align_end() {
-        let align = Align::new(Alignment::End).child(SizedBox::new(Size::new(50.0, 50.0)));
+        let align = Align::new(crate::Alignment2D::BOTTOM_RIGHT)
+            .child(SizedBox::new(Size::new(50.0, 50.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(50.0, 50.0)];
         let (_own, positions) = align.layout_children(
@@ -233,7 +274,7 @@ mod tests {
 
     #[test]
     fn align_empty() {
-        let align = Align::new(Alignment::Center);
+        let align = Align::new(crate::Alignment2D::CENTER);
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let (own, positions) =
             align.layout_children(constraints, &[], &crate::runtime::DEFAULT_TEXT_METRICS);
@@ -243,7 +284,8 @@ mod tests {
 
     #[test]
     fn align_child_larger_than_parent() {
-        let align = Align::new(Alignment::Center).child(SizedBox::new(Size::new(300.0, 300.0)));
+        let align = Align::new(crate::Alignment2D::CENTER)
+            .child(SizedBox::new(Size::new(300.0, 300.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(300.0, 300.0)];
         let (own, positions) = align.layout_children(
@@ -258,7 +300,7 @@ mod tests {
 
     #[test]
     fn align_background_paint() {
-        let align = Align::new(Alignment::Center).background(Color::BLUE);
+        let align = Align::new(crate::Alignment2D::CENTER).background(Color::BLUE);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         let prims = align.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);
@@ -270,7 +312,7 @@ mod tests {
 
     #[test]
     fn align_no_background_paint() {
-        let align = Align::new(Alignment::Center);
+        let align = Align::new(crate::Alignment2D::CENTER);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         let prims = align.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert!(prims.is_empty());
@@ -278,7 +320,8 @@ mod tests {
 
     #[test]
     fn align_with_loose_constraints_fills_max() {
-        let align = Align::new(Alignment::Start).child(SizedBox::new(Size::new(50.0, 50.0)));
+        let align = Align::new(crate::Alignment2D::TOP_LEFT)
+            .child(SizedBox::new(Size::new(50.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(50.0, 50.0)];
         let (own, positions) = align.layout_children(

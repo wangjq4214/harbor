@@ -1,5 +1,5 @@
 //! Public replacement and append contracts, including real Align slot ownership.
-use harbor_widget::layout::{Alignment, Size};
+use harbor_widget::layout::Size;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::view::{Key, View};
 use harbor_widget::widgets::{align::Align, stack::Stack};
@@ -7,7 +7,9 @@ use harbor_widget::{Children, Column, ComponentExt, IntoChildView, Row, WithChil
 use std::time::Instant;
 
 fn child(key: &'static str) -> impl IntoChildView {
-    harbor_widget::widgets::sized_box::SizedBox::new(Size::new(10.0, 10.0)).keyed(key)
+    harbor_widget::widgets::sized_box::SizedBox::new(Size::new(10.0, 10.0))
+        .unwrap()
+        .keyed(key)
 }
 
 fn mounted_keys(tree: View) -> Vec<Key> {
@@ -72,7 +74,7 @@ fn multi_child_setters_and_blocks_replace_while_explicit_appends_preserve_order(
 
 #[test]
 fn align_owns_one_replaceable_slot_and_rejects_dynamic_overcount() {
-    let staged = || Align::new(Alignment::Center).child(child("a"));
+    let staged = || Align::new(harbor_widget::Alignment2D::CENTER).child(child("a"));
     assert_eq!(
         mounted_keys(staged().child(child("b")).into_child_view()),
         vec![Key::new("b")]

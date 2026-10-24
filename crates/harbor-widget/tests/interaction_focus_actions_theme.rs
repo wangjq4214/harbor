@@ -48,10 +48,10 @@ impl Component for ToggleMouseRegion {
         if *self.visible.read() {
             MouseRegion::new()
                 .cursor(CursorShape::Text)
-                .child(SizedBox::new(Size::new(100.0, 40.0)))
+                .child(SizedBox::new(Size::new(100.0, 40.0)).unwrap())
                 .build(cx)
         } else {
-            SizedBox::new(Size::new(100.0, 40.0)).build(cx)
+            SizedBox::new(Size::new(100.0, 40.0)).unwrap().build(cx)
         }
     }
 }
@@ -64,10 +64,11 @@ struct ToggleFocusedChild {
 impl Component for ToggleFocusedChild {
     fn build(&self, cx: &mut harbor_widget::view::BuildCx) -> harbor_widget::view::View {
         cx.track(&self.show_target);
-        let mut scope =
-            FocusScope::new().child(Focus::new(SizedBox::new(Size::new(20.0, 20.0))).order(10));
+        let mut scope = FocusScope::new()
+            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()).order(10));
         if *self.show_target.read() {
-            scope = scope.child(Focus::new(SizedBox::new(Size::new(20.0, 20.0))).order(-1));
+            scope =
+                scope.child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()).order(-1));
         }
         scope.build(cx)
     }
@@ -125,7 +126,7 @@ fn mouse_region_emits_boundary_callback_and_cursor_only_on_edges() {
             .on_enter(move |_| {
                 observed.fetch_add(1, Ordering::SeqCst);
             })
-            .child(SizedBox::new(Size::new(100.0, 40.0))),
+            .child(SizedBox::new(Size::new(100.0, 40.0)).unwrap()),
     );
     runtime.update(now());
 
@@ -170,12 +171,12 @@ fn focus_scope_uses_explicit_order_and_focus_handles() {
     runtime.set_root(
         FocusScope::new()
             .child(
-                Focus::new(SizedBox::new(Size::new(20.0, 20.0)))
+                Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
                     .order(10)
                     .handle(second),
             )
             .child(
-                Focus::new(SizedBox::new(Size::new(20.0, 20.0)))
+                Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
                     .order(-1)
                     .handle(first),
             ),
@@ -209,9 +210,9 @@ fn tab_traversal_skips_custom_paint_in_both_directions() {
     runtime.set_root(
         FocusScope::new()
             .child(CustomPaint::new(1))
-            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0))))
+            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()))
             .child(CustomPaint::new(2))
-            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)))),
+            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())),
     );
     runtime.update(now());
 
@@ -340,7 +341,7 @@ fn tracked_external_signals_unsubscribe_when_their_component_unmounts() {
         disabled: disabled.clone(),
     });
     runtime.update(now());
-    runtime.set_root(SizedBox::new(Size::new(10.0, 10.0)));
+    runtime.set_root(SizedBox::new(Size::new(10.0, 10.0)).unwrap());
     runtime.update(now());
 
     disabled.set(true);

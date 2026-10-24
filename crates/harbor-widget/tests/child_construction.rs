@@ -19,7 +19,7 @@ struct PublicComponent;
 
 impl Component for PublicComponent {
     fn build(&self, cx: &mut BuildCx) -> View {
-        SizedBox::new(Size::new(10.0, 10.0)).build(cx)
+        SizedBox::new(Size::new(10.0, 10.0)).unwrap().build(cx)
     }
 }
 
@@ -38,7 +38,9 @@ fn keyed_public_component_is_deferred_with_a_visible_key() {
 #[test]
 fn children_accept_components_and_existing_views_in_source_order() {
     let mut build_cx = BuildCx::stub();
-    let existing_view = SizedBox::new(Size::new(20.0, 10.0)).build(&mut build_cx);
+    let existing_view = SizedBox::new(Size::new(20.0, 10.0))
+        .unwrap()
+        .build(&mut build_cx);
     let mut children = Children::one(PublicComponent.keyed("first"));
     children.push(existing_view);
     children.extend([PublicComponent.keyed("third")]);
@@ -68,7 +70,7 @@ fn children_accept_components_and_existing_views_in_source_order() {
 fn with_children_counts_only_incoming_values_and_clears_the_slot() {
     for staged in [false, true] {
         for count in 0..=2 {
-            let mut parent = Padding::all(1.0);
+            let mut parent = Padding::all(1.0).unwrap();
             if staged {
                 parent = parent.child(PublicComponent.keyed("old"));
             }
@@ -355,13 +357,18 @@ fn keyed_children_reorder_preserves_state_per_key_without_migration() {
 #[test]
 fn macro_ready_traits_produce_identical_view_tree_to_fluent_builder() {
     let fluent_tree = Column::new()
-        .push_child(Padding::all(4.0).child(SizedBox::new(Size::new(10.0, 20.0))))
+        .push_child(
+            Padding::all(4.0)
+                .unwrap()
+                .child(SizedBox::new(Size::new(10.0, 20.0)).unwrap()),
+        )
         .push_child(Button::text("Click"));
 
     let macro_tree = Column::new()
         .with_children(Children::from_iter([
             Padding::all(4.0)
-                .with_children(Children::one(SizedBox::new(Size::new(10.0, 20.0))))
+                .unwrap()
+                .with_children(Children::one(SizedBox::new(Size::new(10.0, 20.0)).unwrap()))
                 .unwrap()
                 .into_child_view(),
             Button::text("Click").into_child_view(),

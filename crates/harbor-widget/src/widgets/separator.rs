@@ -92,6 +92,7 @@ impl AnyView for Separator {
 
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
         SizedBox::new(rect.size())
+            .unwrap()
             .color(self.color)
             .paint_primitives(rect, metrics)
     }
@@ -135,6 +136,7 @@ mod tests {
         assert_eq!(
             separator.paint_primitives(rect, &DEFAULT_TEXT_METRICS),
             SizedBox::new(size)
+                .unwrap()
                 .color(Color::RED)
                 .paint_primitives(rect, &DEFAULT_TEXT_METRICS)
         );

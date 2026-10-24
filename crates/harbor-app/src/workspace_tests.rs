@@ -769,7 +769,7 @@ fn workspace_allocates_fixed_rail_and_finite_terminal_geometry() {
             .into_iter()
             .find_map(|id| {
                 let fiber = runtime.arena().get(id).unwrap();
-                (fiber.widget_type() == TypeId::of::<ConstrainedBox>())
+                (fiber.widget_type() == TypeId::of::<harbor_widget::SizedBox>())
                     .then(|| fiber.layout_rect().unwrap())
             })
             .expect("bounded rail");
@@ -1296,7 +1296,7 @@ fn unmounting_terminal_widget_clears_transient_preedit() {
     );
     let mut runtime = mount(controller, 1000, 320);
 
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO).unwrap());
     runtime.update(Instant::now());
 
     assert!(terminal.lock().unwrap().preedit().is_none());
@@ -1318,7 +1318,7 @@ fn clearing_workspace_releases_the_last_terminal_bridge() {
     drop(terminal);
 
     controller.tabs().sync(Vec::new(), None, 1000.0);
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO).unwrap());
     runtime.update(Instant::now());
 
     assert!(weak.upgrade().is_none());
@@ -1562,9 +1562,10 @@ fn global_publication_survives_tab_mutations_responsive_changes_and_root_replace
         controller.store.state().read().notices.message().as_deref(),
         Some("invalid TOML")
     );
-    runtime.set_root(harbor_widget::widgets::sized_box::SizedBox::new(
-        harbor_widget::layout::Size::ZERO,
-    ));
+    runtime.set_root(
+        harbor_widget::widgets::sized_box::SizedBox::new(harbor_widget::layout::Size::ZERO)
+            .unwrap(),
+    );
     runtime.update(Instant::now());
     runtime.set_root(tab_workspace(controller.clone(), false));
     runtime.update(Instant::now());

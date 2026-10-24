@@ -48,7 +48,8 @@ fn portal_at_root_and_beneath_clipping_parent_uses_root_geometry_and_hit_testing
     for nested in [false, true] {
         let mut rt = Runtime::new();
         rt.set_viewport(Viewport::new(300, 200, 1.0));
-        let portal = Portal::new().child(Align::new(Alignment::End).child(target()));
+        let portal =
+            Portal::new().child(Align::new(crate::Alignment2D::BOTTOM_RIGHT).child(target()));
         if nested {
             rt.set_root(
                 ConstrainedBox::new()
@@ -131,12 +132,18 @@ fn portal_lifetime_updates_and_remounts_without_layout_slots_or_stale_hits() {
             let mut column = Column::new()
                 .cross_axis_alignment(Alignment::Stretch)
                 .gap(17.0)
-                .push_child(Expanded::new().child(SizedBox::new(Size::ZERO).color(Color::BLUE)));
+                .unwrap()
+                .push_child(
+                    Expanded::new().child(SizedBox::new(Size::ZERO).unwrap().color(Color::BLUE)),
+                );
             if visible.get() {
                 column = column.push_child(
                     Portal::new().child(
-                        Align::new(Alignment::End)
-                            .child(SizedBox::new(Size::new(width.get(), 30.0)).color(Color::RED)),
+                        Align::new(crate::Alignment2D::BOTTOM_RIGHT).child(
+                            SizedBox::new(Size::new(width.get(), 30.0))
+                                .unwrap()
+                                .color(Color::RED),
+                        ),
                     ),
                 );
             }
@@ -280,7 +287,11 @@ fn nested_portals_paint_once_in_matching_hit_order_and_escape_inner_clip() {
                 .child(
                     DecoratedBox::new(BoxDecoration::new())
                         .clip_behavior(ClipBehavior::HardEdge)
-                        .child(Portal::new().child(Align::new(Alignment::End).child(target()))),
+                        .child(
+                            Portal::new().child(
+                                Align::new(crate::Alignment2D::BOTTOM_RIGHT).child(target()),
+                            ),
+                        ),
                 ),
         ),
     );
@@ -308,6 +319,7 @@ fn failed_escaped_measurement_does_not_partially_commit_ordinary_geometry() {
         Column::new()
             .push_child(
                 SizedBox::new(Size::new(if state.get() { 200.0 } else { 100.0 }, 60.0))
+                    .unwrap()
                     .color(Color::BLUE),
             )
             .push_child(Portal::new().child(View::new(FailingLeaf(state.get()), vec![], None)))
@@ -331,12 +343,14 @@ fn failed_escaped_measurement_does_not_partially_commit_ordinary_geometry() {
 fn focusing_escaped_content_does_not_scroll_its_declaring_scroll_view() {
     let scroll = crate::ScrollController::new();
     let handle = crate::FocusHandle::new();
-    let content =
-        Column::new()
-            .push_child(SizedBox::new(Size::new(100.0, 600.0)))
-            .push_child(Portal::new().child(
-                Align::new(Alignment::End).child(crate::Focus::new(target()).handle(handle)),
-            ));
+    let content = Column::new()
+        .push_child(SizedBox::new(Size::new(100.0, 600.0)).unwrap())
+        .push_child(
+            Portal::new().child(
+                Align::new(crate::Alignment2D::BOTTOM_RIGHT)
+                    .child(crate::Focus::new(target()).handle(handle)),
+            ),
+        );
     let mut rt = Runtime::new();
     rt.set_viewport(Viewport::new(300, 200, 1.0));
     rt.set_root(

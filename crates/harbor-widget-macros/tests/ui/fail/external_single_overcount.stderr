@@ -1,14 +1,12 @@
 error[E0277]: the trait bound `SingleChild: AcceptsChildCount<2>` is not satisfied
-  --> tests/ui/fail/external_single_overcount.rs:8:21
+  --> tests/ui/fail/external_single_overcount.rs:8:13
    |
- 8 |       let _ = view! { ExternalSingle(Padding::all(1.0)).keyed("external") => {
-   |               -       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
-   |  _____________|
-   | |
+ 8 |       let _ = view! { ExternalSingle(Padding::all(1.0).unwrap()).keyed("external") => {
+   |  _____________^
  9 | |         SizedBox::new(Size::ZERO);
 10 | |         SizedBox::new(Size::ZERO);
 11 | |     }};
-   | |______- required by a bound introduced by this call
+   | |______^ the trait `AcceptsChildCount<2>` is not implemented for `SingleChild`
    |
 help: `SingleChild` implements trait `AcceptsChildCount<N>`
   --> $WORKSPACE/crates/harbor-widget/src/construction.rs
@@ -25,3 +23,4 @@ note: required by a bound in `with_static_children`
 ...
    |     C::Capability: AcceptsChildCount<N>,
    |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)

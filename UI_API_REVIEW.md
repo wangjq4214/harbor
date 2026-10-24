@@ -6,9 +6,9 @@
 
 目前的复杂性主要来自构建生命周期、子节点协议、回调模型和布局组合不一致。建议方向是：
 
-> 统一构建语义，保留普通 Rust 表达式；明确组件的子节点契约；用少量组合方法降低嵌套。
+> 统一构建语义，保留普通 Rust 表达式；明确组件的子节点契约；以 Flutter 式显式组件树表达布局，不扩张通用链式包装 API。
 
-本文是源码审阅和设计建议。允许讨论破坏性变更。**状态更新（2026-10-23）：F1、F2 已实施并通过各自记录的自动化验证；F3 已实施并通过自动化验证及 native hidden-host smoke，但原生 IME 与实际 HMR DLL 卸载验收仍待完成；F4 已实施并通过自动化验证及 GPU/系统字体渲染验证，原生应用焦点/IME 与实际 HMR generation teardown 仍待验收，见第 9 节；F5–F8 仍为待实施建议。** 第 2–7 节保留原审阅基线与建议，不代表实施后的全部现状；F3 原建议中的 `on_activate` / `enabled` 命名方向已被后续决策修订。
+本文是源码审阅和设计建议。允许讨论破坏性变更。**状态更新（2026-10-23）：F1、F2 已实施并通过各自记录的自动化验证；F3 已实施并通过自动化验证及 native hidden-host smoke，但原生 IME 与实际 HMR DLL 卸载验收仍待完成；F4 已实施并通过自动化验证及 GPU/系统字体渲染验证，原生应用焦点/IME 与实际 HMR generation teardown 仍待验收，见第 9 节；F5–F8 仍为待实施建议。** 第 2–7 节保留原审阅基线与建议，不代表实施后的全部现状；F3 原建议中的 `on_activate` / `enabled` 命名方向已被后续决策修订。F5 及相关目标示例已按后续反馈改为显式声明式组件树，仍未实施。
 
 ## 2. 审阅基线与范围
 
@@ -187,48 +187,262 @@ IconButton 可以作为便利组件保留，但需共享行为和配置，不能
 
 保留现有共享交互状态机的价值，不为 API 统一复制输入处理，也不强制为每种责任增加一个公开类型或额外 Fiber。
 
-### F5 / P1：通过少量组合扩展方法降低布局嵌套
+### F5 / P1：采用 Flutter 式显式组件树，而非通用链式布局扩展
 
-#### 现状与影响
+> 本节是修订后的设计与实施建议，尚未实施。下面区分已核对的 Harbor 现状、Flutter 的设计和建议新增的接口；目标 API 草图不能作为当前可编译示例。具体公开签名须在实施前固定，并与 F6/F7/F8 协调。
 
-应用中固定宽度需要同时设置 min/max，常见的 padding、对齐、装饰需要多层 child 包装。
+#### F5.1：目标——借鉴 Flutter 的组合方式，而非只模仿缩进
 
-证据：
+希望 UI 声明直接回答三个问题：**有哪些组件、每个组件配置了什么、谁包含谁**。
 
-- `crates/harbor-app/src/workspace.rs`：`search_bar`
-- `crates/harbor-app/src/tab_view_ui.rs`：`tab_rail`、`close_tab_button`
-- `crates/harbor-app/src/appearance.rs`：`GlassAppearance::panel`
+Flutter 的典型声明是：
 
-#### 建议
-
-在 `ComponentExt` 上优先提供：
-
-- `padding`
-- `width` / `height` / `size`
-- `constraints`
-- `align`
-- `decorated`
-- `expanded`
-- `keyed`
-
-例如：
-
-```rust
-content
-    .padding(Insets::all(8.0))
-    .width(440.0)
-    .align(Alignment2D::TOP_RIGHT)
+```dart
+Align(
+  alignment: Alignment.topRight,
+  child: SizedBox(
+    width: 440,
+    child: Padding(
+      padding: const EdgeInsets.all(8),
+      child: content,
+    ),
+  ),
+)
 ```
 
-这些方法应是已有组合机制的便利入口，而不是给所有 widget 增加万能 style 对象。
+这不是给 `content` 逐步附加全局样式，而是创建三个职责明确的组件：Align 定位、SizedBox 施加尺寸约束、Padding 分配内边距。声明从外到内阅读，不需要从链尾反推父节点。
 
-必须明确：
+Harbor 应采用相同的组合思路，但保留普通 Rust 表达式与现有 `view!` 子树协议：
 
-- 方法链顺序表示从内到外的包装顺序。
-- padding、clip、背景、命中区域不能随意合并或重排。
-- `.expanded()` 必须满足直接父级消费 flex metadata 的现有契约。
-- 包装不得意外丢失 key、状态或增加焦点停靠点。
-- 区分控件内部 padding 和外部包装。当前 `TextField::padding` 已有内部含义，不能让同名扩展方法产生不同语义。
+```rust
+// 目标 API 草图：Insets、Alignment2D 和 SizedBox 单槽能力尚待实现。
+view! {
+    Align::new(Alignment2D::TOP_RIGHT) => {
+        SizedBox::width(440.0) => {
+            Padding::new(Insets::all(8.0)) => {
+                content;
+            }
+        }
+    }
+}
+```
+
+因此，F5 的目标不再是“减少嵌套”，而是：
+
+- **布局关系显式化**：接受有语义的嵌套，不用通用方法链隐藏包装。
+- **配置声明集中化**：简单组件用具名构造入口；配置较多时用组件专属配置值，减少长属性链。
+- **行为保持可解释**：布局约束、绘制顺序、命中范围和身份仍有明确归属，不由宏猜测。
+
+#### F5.2：与 Flutter 的逐项对比
+
+| 维度 | Flutter | Harbor 建议 | 不照搬的部分 |
+| --- | --- | --- | --- |
+| 布局组合 | `Padding(child: ...)`、`Align(child: ...)` 等具名 widget | `Padding::new(...) => { ... }` 等显式父节点 | 不新增 `content.padding(...).align(...)` 通用布局链 |
+| 属性声明 | Dart 构造器具名参数，如 `alignment:`、`padding:` | 简单参数用具名类型；较多参数用普通 Rust 配置结构体字段 | Rust 没有同等的原生具名调用参数，不把 Dart 语法直接塞进宏 |
+| 子节点 | 单槽 `child`，多槽 `children` | 宏 block 附加子树；手写 `.child/.children` 共用 F2 能力协议 | 保留 Harbor 的静态数量检查、动态错误策略和替换语义 |
+| 固定尺寸 | SizedBox 可有子节点，也可作为空白占位；尺寸服从父约束 | 将现有叶子 SizedBox 扩为可空的 SingleChild，并增加单轴构造入口 | 不把固定宽度解释成可以突破父约束 |
+| 布局过程 | “Constraints go down. Sizes go up. Parent sets position.” | 保留已有父驱动测量与 BoxConstraints，不引入另一套 CSS/style 布局模型 | 不为语法改造重写布局引擎 |
+| flex 分配 | Expanded/Flexible 提供给祖先 Flex 的 parent data | 显式 Expanded/Flexible；继续遵守 Harbor 的直接布局父级契约 | Flutter 允许路径中存在 StatelessWidget/StatefulWidget；不能据此假设 Harbor metadata 会穿透普通包装 |
+| 身份与状态 | widget 的 type/key 决定 element 更新；GlobalKey 另有跨父级迁移能力 | 保留已有 `.keyed(...)` 及 parent-local key/type reconciliation | 不新增 GlobalKey，不承诺跨父级移动自动保状态 |
+| 复用 | 提取具名 widget/组合 | 提取 Component 或返回 UI 描述的函数 | 不强制每个 helper 都变成新增状态边界或 runtime 节点 |
+| 便利容器 | Container 按固定规则组合布局、装饰和命中行为 | 优先使用已有布局和装饰组件；业务预设留在应用层 | Flutter 确实有 Container；本轮不照搬其整套复合行为，不宣称 Flutter 禁止便利容器 |
+
+重点是学习 Flutter 的**组件组合、局部配置、约束模型**，不是迁入 Widget/Element/RenderObject 的整套运行时，更不是把所有方法名改成 Flutter 的名字。
+
+#### F5.3：已核对的 Harbor 现状与差距
+
+| 位置 | 当前接口/行为 | 需要做的修改 |
+| --- | --- | --- |
+| `widgets/sized_box.rs` | `SizedBox::new(Size)` 是叶子；只有固定二维 size 和可选 color，没有 child | 增加可空单槽、单轴尺寸表达和父驱动 child 测量；保留无 child 占位用途 |
+| `widgets/constrained_box.rs` | `.min_width(w).max_width(w)` 表达固定宽度；支持动态 `max_height_with` | 固定尺寸场景迁到 SizedBox；真正的区间约束和动态高度继续使用 ConstrainedBox |
+| `widgets/padding.rs` | `Padding::new(top, right, bottom, left)`、`Padding::all(value)`，已为单槽 | 与 F8 共用 Insets，减少位置参数；保留其已有布局职责，不新增全局 `.padding(...)` |
+| `widgets/align.rs` | 一维 Alignment，加 `.vertical_alignment(...)`；另有 `.insets(...)` | 与 F8 协同提供真正的二维定位值；明确现有 inset 行为，不能机械换层 |
+| `widgets/row.rs`、`column.rs`、`flex.rs` | 已共用 Flex 引擎，gap/主轴/交叉轴配置靠 builder | 为常见多属性声明提供共享的局部布局配置入口，不复制引擎 |
+| `widgets/flexible.rs` | Expanded/Flexible 已为单槽，metadata 不穿透普通布局节点 | 保留组件与现有诊断；主要修改示例和调用结构，不另加 `.expanded()` |
+| `construction.rs` | `ComponentExt` 当前已有 `.keyed(...)`，Keyed 转发组件和 child 能力 | 保留现有 key 功能，只禁止继续扩张为通用布局扩展集 |
+| `harbor-widget-macros/src/{ast,parse,expand}.rs` | 节点接收普通 Rust 表达式，经共享协议附加 child block | 主方案不需要新的属性语法、widget 名称白名单或运行时分支 |
+
+应用中的实际样板包括：
+
+- `workspace.rs::search_bar`：状态文本固定 120dp；面板固定 440dp 宽及既定高度；顶部对齐通过 vertical override 表达。
+- `tab_view_ui.rs::tab_rail`：rail 宽度重复设置 min/max，四方向 padding 使用位置参数。
+- `tab_view_ui.rs::close_tab_button`：固定宽度与最大高度混合；不能直接替换为固定二维尺寸。
+- `appearance.rs::GlassAppearance::panel`：维护真实滤镜、装饰和裁剪的产品预设；不是单纯的布局样板，不能为“显式树”拆散其业务不变量。
+
+#### F5.4：具体 API 修改方案
+
+##### A. 不新增通用布局扩展，保留必要的现有接口
+
+不在 `ComponentExt` 上新增 `padding/width/height/size/constraints/align/decorated/expanded` 等隐式包装方法。对应能力通过具名组件提供。
+
+**现有 `.keyed(...)` 保留**。它是已有的身份标记入口，不是布局包装方法，不应为了减少链式调用删除，也不需要给每个组件复制一个 key setter。
+
+组件自身的短配置方法可继续存在，例如 `TextField::disabled`、`Button::on_click`。本轮不要求删除所有 builder，不改 F3 已确定的命名与回调契约；新的声明方式应与这些方法写入相同的组件配置，不能形成两套行为。
+
+##### B. 将 SizedBox 从 Leaf 扩为可空 SingleChild
+
+建议保留 `SizedBox::new(Size)`，新增关联构造入口 `SizedBox::width(f32)` 与 `SizedBox::height(f32)`；“只固定一轴”在内部应显式表示为未指定另一轴，而不是以 0 或无穷冒充缺省值。
+
+需要实现的行为：
+
+1. 存储可空 child，提供 `.child(value)`，并实现 F2 的 `WithChildren<Capability = SingleChild>`。
+2. 指定轴将期望尺寸夹入父级允许区间，再作为该轴的 tight 约束测量 child；未指定轴继承父约束，并由 child 的测量结果决定尺寸。
+3. 无 child 时，未指定轴以零作为自然尺寸，再服从父级最小约束；已有 `new(Size)` 空白占位的行为保持。
+4. child 放在局部原点，纯尺寸包装不增加输入处理、焦点停靠点或默认裁剪。
+5. 旧 `.color(...)` 绘制能力本轮保留，仍覆盖实际分配的 rect；不要夹带删除既有绘制 API 的重构。
+6. 当前公开的 `size` 字段无法完整表达单轴缺省。实施时必须明确字段兼容策略、迁移直接字段访问；建议改为能表达可选轴的内部配置并提供只读访问，不假装这只是无破坏性的构造器增补。
+
+这是对 **SizedBox 个体能力** 的有意变更，不放宽“叶子不能接收 child”的总体规则。`crates/harbor-widget-macros/tests/ui/fail/leaf_blocks.rs` 及 `.stderr` 等将 SizedBox 当作叶子的编译失败 fixture 要改用真正的叶子（如 TextLabel），并新增 SizedBox 单槽通过、超量失败及空 block 清空的测试。
+
+本轮不顺手实现 Flutter 的 `SizedBox.expand/fromSize/shrink` 全家桶，也不新增第二个同义尺寸包装类型。
+
+##### C. Padding/Align 使用具名配置，与 F8 共用类型
+
+- `Padding::new(Insets)` 替代四个裸数；`Insets::all(...)` 和具名字段表达不同方向。已有 `Padding::all(...)` 可保留为便利构造，不是通用扩展链。
+- `Align::new(Alignment2D)` 一次表达横纵定位，提供 `TOP_RIGHT/CENTER` 等常用值；不要让只负责定位的二维值包含 Stretch。
+- Row/Column 的交叉轴 Stretch 是实际布局能力，不因 Align 的收敛而被删除。
+- `TextField::padding` 仍是编辑控件内部配置；外部留白使用 Padding 组件，不能混为同一 API。
+- 现有 `Align::insets` 的迁移须保留它缩减可用定位区域的语义。`Padding => Align` 与 `Align => Padding` 在 tight/loose/unbounded 条件下不保证相同，不能只凭最终视觉相似互换。
+
+这些类型的定义和数值验证应与 F7/F8 一次协调，不在 F5 内另做一份 Insets、Alignment2D 或独立校验规则。
+
+##### D. 多属性配置借鉴 Flutter 具名参数，但用普通 Rust 值实现
+
+显式嵌套只解决“树”，不解决 `Row::new().gap(...).cross_axis_alignment(...).main_axis_alignment(...)` 的配置链。建议为 Row/Column/Flex 提供一个仅描述自身布局的共享配置入口。
+
+以下名称是建议签名，**不是已有接口或最终命名承诺**：
+
+```rust
+view! {
+    Row::with_options(FlexOptions {
+        gap: 4.0,
+        cross_axis_alignment: Alignment::Center,
+        ..Default::default()
+    }) => {
+        Expanded::new() => {
+            TextField::new(controller.clone()).disabled(!enabled);
+        }
+        Button::text("Close").on_click(on_close);
+    }
+}
+```
+
+对应 Flutter 的阅读方式是：
+
+```dart
+Row(
+  crossAxisAlignment: CrossAxisAlignment.center,
+  children: [
+    Expanded(child: TextField(controller: controller, enabled: enabled)),
+    TextButton(onPressed: onClose, child: const Text('Close')),
+  ],
+)
+```
+
+这里不要求 gap 在两份示例中采用完全相同的 API；对比的是“本节点属性集中声明、children 单独组织”。
+
+配置入口的具体要求：
+
+- 配置只含 gap、主轴分布、交叉轴对齐等局部布局属性；axis 仍由 Row/Column 或 Flex 构造表达，children 仍走统一 slot 协议。
+- 默认值保持当前 Flex 的默认行为；配置值和旧短 builder 共用同一份实际配置与校验路径。
+- 不含任意组件通用的 padding、margin、key、事件回调或业务主题；它不是万能 Style。
+- 不为所有控件机械生成一套 Props/Options。只对真实多属性调用有收益的组件引入，Button 的一个回调无需因此增加复杂泛型配置类型。
+- 不新增宏内 `Row { gap: ..., children: ... }` 属性语言。普通结构体表达式已经能提供字段名、类型检查和 IDE 补全；若未来要求完全仿 Dart 的节点属性语法，应作为单独的宏/ADR 决策，而不是 F5 默认前提。
+
+##### E. 保持装饰、flex 和产品预设的责任边界
+
+- 外部背景、边框和 clip 继续通过 DecoratedBox 等已有组件表达，不通过 `.decorated(...)` 隐式插层。
+- Expanded/Flexible 必须处于能消费它的直接布局父级下。通常应写 `Row => Expanded => Padding => content`，不能写成 `Row => Padding => Expanded => content` 并期待 metadata 穿透。
+- Flutter 对 Expanded 路径的限制与 Harbor 并非完全相同；本轮不为“兼容 Flutter 写法”新增 parent-data 穿透机制。
+- `GlassAppearance::panel` 可以作为有业务意义的组合入口保留。若需调整为返回延迟描述，应另核对其 BuildCx、主题与 generation 生命周期，不借布局迁移顺手改变构建时机。
+- 不新增全能 Container 来吸收 padding、尺寸、装饰、滤镜、事件和 key；需要的布局层级必须仍可从声明或具名产品组件契约理解。
+
+#### F5.5：迁移前后应具体长什么样
+
+固定宽度当前常见写法：
+
+```rust
+// 现有 API
+ConstrainedBox::new().min_width(440.0).max_width(440.0)
+```
+
+目标声明：
+
+```rust
+// 目标 API
+view! {
+    SizedBox::width(440.0) => {
+        panel_content;
+    }
+}
+```
+
+注意三个不能机械替换的情况：
+
+1. `.max_width(440.0)` 只是上限，不能改成固定 440dp。
+2. `.min_width(20.0).max_width(20.0).max_height(24.0)` 是固定宽度加高度上限，不是固定 20×24；保留对应 ConstrainedBox，或组合单轴 SizedBox 与高度上限，并验证新增层级。
+3. `max_height_with` 依赖当前字体度量，不能替换成一次求值的静态 height。
+
+推荐先在 `search_bar` 与 `tab_rail` 验证新 API：迁移固定尺寸、Insets、二维定位和 Row/Column 多属性配置；保留 popup generation/source 校验、Dispatcher、controller、focus handle 和 glass preset 的职责。UI 结构改写不能同时改变命令来源或编辑事件顺序。
+
+#### F5.6：宏和运行时哪些不改
+
+- `view!` 仍接受普通 Rust 表达式，`=>` 附加子树，`for/if/match` 组织 children；不解析一份新的属性 DSL。
+- 根、child 和内容 slot 继续使用 F1 已落地的描述/延迟构建边界，不新增 Flutter 式 Element 系统。
+- 单槽覆盖、空 block 清空、静态数量诊断、动态数量错误继续遵守 F2；宏不硬编码 SizedBox 等 widget 名称。
+- 描述表达式仍只求值一次，兄弟顺序、分支惰性及 children-before-parent 构造顺序保持。Flutter 的语法外观不构成改变 Harbor 求值顺序的理由。
+- 保留现有 key/type reconciliation 和独立 slot hooks/订阅清理。新增/删除 wrapper 是结构变化，必须逐场景验证，不能承诺任意树形改写天然保状态。
+
+相关约束来自 [ADR 0032](.grimoire/adr/0032-view-macro-rust-expression-grammar.md)、[ADR 0079](.grimoire/adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md) 和 [ADR 0080](.grimoire/adr/0080-unify-child-cardinality-and-replacement-semantics.md)。后续只需修订受影响的个别 widget 能力与公开签名，不据 F5 重新打开这些基础契约。
+
+#### F5.7：实施顺序与修改范围
+
+| 步骤 | 修改位置 | 具体产出 | 验证出口 |
+| --- | --- | --- | --- |
+| 1. 固定目标签名与基线 | 本节、相关 F2/F7/F8 契约、child/layout/macro 测试 | 定下 SizedBox 单槽及单轴缺省、Insets/Alignment2D、FlexOptions 候选接口；记录原几何/路由/key 行为 | 每个 breaking change 有迁移表；代表性场景有基线 |
+| 2. 尺寸组件 | `widgets/sized_box.rs`、必要的共享约束辅助与 construction 测试 | 可空 SingleChild、width/height 构造、child 测量、原占位/color 行为与字段访问迁移 | 父约束、单轴/双轴/无 child、数量和替换测试通过 |
+| 3. 具名配置 | `layout/`、`widgets/{padding,align,flex,row,column}.rs`、相关配置测试 | 共用 Insets/Alignment2D，局部 Flex 配置入口；复用现有引擎与验证规则 | 新旧等价输入具有相同布局，必要差异有明确契约 |
+| 4. 应用迁移 | `harbor-app/src/{workspace,tab_view_ui,appearance}.rs` 及真实受影响调用 | 先迁 search/rail，检查混合约束；保留有意义的 helper 和产品预设 | 窄窗口、文本变化、popup、嵌套关闭与焦点回归通过 |
+| 5. 导出和文档收尾 | `lib.rs`、`widgets/mod.rs`、F6 prelude、README、learn/catalog、宏 fixtures | 一套推荐声明风格；修正 SizedBox 原 leaf fixture；清晰区分支持的短配置与不新增的通用扩展 | 新示例可编译，旧入口按确认的策略迁移，跨 crate/依赖重命名不回归 |
+
+步骤 2/3 的调用迁移可随 breaking change 原子提交，不要求仓库经过无法编译的中间态。修改宏生产代码不是预设任务：若普通表达式和现有 capability 已足够，只调整覆盖和示例。
+
+#### F5.8：验收与边界场景
+
+- **尺寸服从父级**：期望宽 440dp，父级最大 300dp 时结果为 300dp；父级 tight 500dp 时不能强行缩成 440dp；父级松约束允许时才取 440dp。
+- **单轴不是二维固定**：仅设 width 时高度跟随 child；无 child 时未设轴以零为自然值并服从父级最小值。内容改变和约束收紧/放宽后结果正确。
+- **数值错误不被藏起**：NaN、无穷、负值及溢出遵循 F7 最终确定的边界校验策略；不以新便利入口偷偷忽略、归零或改成无条件 panic。
+- **结构与 slot**：SizedBox 的普通根、宏单 child、手写 child、替换和空 block 清空均正确；静态两个 child 编译失败；动态超量沿用 F2 的错误路径。
+- **语义顺序**：交换 Padding/DecoratedBox/clip 等节点能够产生各自约定的区别；实现不得优化成与声明无关的统一包装。比较场景、clip 和命中范围，不只比较外框尺寸。
+- **flex**：Expanded 的正确层级分配到剩余空间；被普通 wrapper 隔开的错误层级继续得到既有诊断；无界主轴与 overflow 行为保持现有规则。
+- **身份与生命周期**：keyed 列表插入/重排保持应保持的状态和焦点；不新增 Tab stop；检查主题继承、外部 draw/IME 注册及 slot 替换/卸载清理。树形改写可能导致的 remount 必须被识别，而不是由 key“兜底”。
+- **应用回归**：搜索框输入、状态文本固定槽、Enter/Shift+Enter/Escape、关闭按钮与 popup generation 校验不变；rail 宽度与滚动、嵌套关闭不触发父行激活；glass 的滤镜/clip/命中顺序不变。
+- **编译与集成**：宏/child/layout 测试、跨 crate fixtures、文档示例及受影响 workspace 构建通过；需要真实渲染的布局/clip 差异补 GPU 证据，涉及焦点/IME/HMR 的集成项单列人工验收，不能由 headless 通过替代。
+
+完成标准是“树结构可读、配置集中、约束与生命周期可验证”，不是 LOC 或嵌套层数下降。
+
+实施后建议执行以下检查（**不是本轮已运行的结果**），并记录单独的 native/GPU/HMR 验收证据：
+
+```sh
+cargo test -p harbor-widget -p harbor-widget-macros -p harbor-app --all-features
+cargo check --workspace --all-targets --all-features
+python scripts/docs/check_examples.py --include-readmes
+cargo fmt --all -- --check
+git diff --check
+```
+
+#### F5.9：Flutter 参考与方案边界
+
+本节对照以下官方文档中的设计；这些是设计参考，不是 Harbor 已有能力的证明：
+
+- [Understanding constraints](https://docs.flutter.dev/ui/layout/constraints)：父约束、child 尺寸与父级定位。
+- [Padding 构造器](https://api.flutter.dev/flutter/widgets/Padding/Padding.html)：具名 padding、child 与 key。
+- [SizedBox](https://api.flutter.dev/flutter/widgets/SizedBox-class.html)：可选 child、可选轴与父约束优先。
+- [Expanded](https://api.flutter.dev/flutter/widgets/Expanded-class.html)：Flex parent data 及路径限制。
+- [Widget.key](https://api.flutter.dev/flutter/widgets/Widget/key.html)：type/key 更新规则及 GlobalKey 的额外能力。
+- [Container](https://api.flutter.dev/flutter/widgets/Container-class.html)：便利组合存在，但其布局、绘制与命中具有具体规则，不能当成任意合并 wrapper 的依据。
+
+本轮只修订方案，不实现上述 API，不修改 F4；新类型和签名仍需实施前确认。若后续要求完全去掉控件自身的 builder，或引入 Flutter 式宏属性语法，应单独明确范围与 ADR 取舍，不能视为本节已授权。
 
 ### F6 / P1：统一构造器、导入入口和配置命名
 
@@ -332,30 +546,39 @@ Actions::new(child, handler)
 5. 保留表达式求值一次、兄弟顺序、分支惰性执行等保证。
 6. 对目前测试固定的 children-before-parent 构造顺序做显式处置，不借重构无意改变副作用顺序。
 
-以下是目标 API 草图，**不是当前可编译代码**：
+以下是目标 API 草图，**不是当前可编译代码**；SizedBox 单槽、Insets、Alignment2D、FlexOptions 与 `with_options` 均按 F5 的候选方案展示，不代表已存在的接口：
 
 ```rust
 use harbor_widget::prelude::*;
 
 view! {
-    Column::new().gap(8.0) => {
-        TextLabel::new("Search");
+    SizedBox::width(440.0) => {
+        Padding::new(Insets::all(8.0)) => {
+            Column::with_options(FlexOptions {
+                gap: 8.0,
+                ..Default::default()
+            }) => {
+                TextLabel::new("Search");
 
-        Row::new().gap(4.0).cross_align(CrossAlign::Center) => {
-            TextField::new(controller.clone())
-                .enabled(enabled)
-                .expanded();
+                Row::with_options(FlexOptions {
+                    gap: 4.0,
+                    cross_axis_alignment: Alignment::Center,
+                    ..Default::default()
+                }) => {
+                    Expanded::new() => {
+                        TextField::new(controller.clone()).disabled(!enabled);
+                    }
 
-            Button::icon(LucideIcon::X, "Close")
-                .on_activate(move |_| actions.dispatch(Action::Close));
+                    Button::icon(LucideIcon::X, "Close")
+                        .on_click(move |_| actions.dispatch(Action::Close));
+                }
+            }
         }
     }
 }
-.padding(Insets::all(8.0))
-.width(440.0)
 ```
 
-目标不是少几个符号，而是让调用者不再手动安排 `.build(cx)`、类型转换和临时布局包装。
+目标不是少几个符号，而是让调用者不再手动安排 `.build(cx)` 和类型转换，并能从显式组件树直接读出布局关系；组件自身的属性配置不等于通用链式布局包装。
 
 ## 5. 依赖有序的实施单元
 
@@ -381,15 +604,15 @@ view! {
 - 验证：局部 Signal 可被 UI 回调捕获；鼠标/键盘激活一致；关闭子按钮不激活父行；macro/builder child 语义一致。
 - 预期收益：同类控件可以互换，减少样板协议与重复内容展示路径。
 
-### U3：组合方法与具名配置
+### U3：显式布局组合与具名配置
 
 - 对应：F5、F7、F8。
 - 前置：U1；依赖 U2 已稳定的 child 接口。
-- 写入所有权：`ComponentExt`、布局 wrapper、配置类型及相关调用。
+- 写入所有权：SizedBox 单槽/尺寸测量、具名布局组件、局部 Flex 配置类型及相关声明式调用；不新增通用 `ComponentExt` 布局包装方法集，保留现有 `.keyed(...)`。
 - 读取依赖：父约束、flex parent data、clip/paint/hit-test 契约。
-- 保留：包装顺序、父约束权威、key/state、命中区域与焦点数量。
-- 验证：便利方法与显式 wrapper 的几何/场景/事件等价；非法输入策略一致。
-- 预期收益：降低常见布局深度和参数误用。
+- 保留：显式包装顺序、父约束权威、key/state、命中区域与焦点数量。
+- 验证：按 F5.7 的依赖顺序落实 F5.8 验收；显式树与等价手写 slot 的几何/场景/事件一致；覆盖单轴尺寸、父约束优先、SizedBox 的 Leaf → SingleChild fixture 迁移及多属性配置等价；非法输入策略与 F7 一致。
+- 预期收益：组件树直接呈现布局关系，减少配置样板和参数误用，而非压平有语义的嵌套。
 
 ### U4：统一构建链与宏
 
@@ -423,7 +646,7 @@ view! {
 - 内容 slot 的状态独立性与主题继承。
 - 单子节点、叶子、多子节点规则及动态数量错误。
 - Button/IconButton/自定义内容的激活、disabled、焦点环、capture、嵌套关闭行为。
-- 组合方法的 padding/clip/paint/hit-test 顺序与 flex metadata。
+- 显式布局组件的 padding/clip/paint/hit-test 层级与 flex metadata；不依赖通用链式包装扩展。
 - 文本测量变化对长标题、多语言文字和窄空间的影响。
 - 外部 draw/schedule/IME 注册与 unmount 清理。
 - 原生输入、剪贴板、IME、终端嵌入与 HMR teardown。

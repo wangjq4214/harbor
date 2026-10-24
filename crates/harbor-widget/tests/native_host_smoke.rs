@@ -30,7 +30,8 @@ impl NativeHostSmoke {
                 .with_inner_size(winit::dpi::LogicalSize::new(64.0, 64.0)),
             |_context: HostInitContext<'_>, _setup: &()| {
                 Ok::<_, anyhow::Error>((
-                    harbor_widget::widgets::sized_box::SizedBox::new(Size::new(64.0, 64.0)),
+                    harbor_widget::widgets::sized_box::SizedBox::new(Size::new(64.0, 64.0))
+                        .unwrap(),
                     17_u32,
                 ))
             },

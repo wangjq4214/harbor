@@ -2189,10 +2189,10 @@ mod decoration_tests {
             false,
             harbor_config::WindowBackdropStyle::default().fallback,
         );
-        assert_eq!(root.top, 4.0);
-        assert_eq!(root.right, 4.0);
-        assert_eq!(root.bottom, 4.0);
-        assert_eq!(root.left, 4.0);
+        assert_eq!(root.insets().top, 4.0);
+        assert_eq!(root.insets().right, 4.0);
+        assert_eq!(root.insets().bottom, 4.0);
+        assert_eq!(root.insets().left, 4.0);
         assert_opaque_fallback_color(root.background.expect("opaque root background"));
     }
 

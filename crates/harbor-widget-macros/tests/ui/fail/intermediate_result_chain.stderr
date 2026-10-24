@@ -1,0 +1,15 @@
+error[E0599]: no method named `child` found for enum `Result<T, E>` in the current scope
+ --> tests/ui/fail/intermediate_result_chain.rs:5:43
+  |
+5 |     let _ = view! { SizedBox::width(10.0).child(TextLabel::new("child")); };
+  |                                           ^^^^^ method not found in `Result<SizedBox, LayoutConfigError>`
+  |
+note: the method `child` exists on the type `SizedBox`
+ --> $WORKSPACE/crates/harbor-widget/src/widgets/sized_box.rs
+  |
+  |     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: consider using `Result::expect` to unwrap the `SizedBox` value, panicking if the value is a `Result::Err`
+  |
+5 |     let _ = view! { SizedBox::width(10.0).expect("REASON").child(TextLabel::new("child")); };
+  |                                          +++++++++++++++++

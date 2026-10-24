@@ -1,6 +1,7 @@
-use super::flex::{Axis, Flex, MainAxisAlignment};
+use super::flex::{Axis, Flex, FlexOptions, MainAxisAlignment};
 use crate::layout::{
-    Alignment, BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size,
+    Alignment, BoxConstraints, ChildMeasurer, LayoutConfigError, LayoutError, ParentLayout, Point,
+    Rect, Size,
 };
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
@@ -25,15 +26,25 @@ impl Column {
         }
     }
 
+    pub fn with_options(options: FlexOptions) -> Result<Self, LayoutConfigError> {
+        Ok(Self {
+            inner: Flex::with_options(Axis::Vertical, options)?,
+        })
+    }
+
+    pub fn options(&self) -> FlexOptions {
+        self.inner.options()
+    }
+
     pub fn cross_axis_alignment(mut self, alignment: Alignment) -> Self {
         self.inner = self.inner.cross_axis_alignment(alignment);
         self
     }
 
     /// Sets a finite, nonnegative minimum gap in logical pixels.
-    pub fn gap(mut self, gap: f32) -> Self {
-        self.inner = self.inner.gap(gap);
-        self
+    pub fn gap(mut self, gap: f32) -> Result<Self, LayoutConfigError> {
+        self.inner = self.inner.gap(gap)?;
+        Ok(self)
     }
 
     pub fn main_axis_alignment(mut self, alignment: MainAxisAlignment) -> Self {
@@ -129,9 +140,9 @@ mod tests {
     #[test]
     fn column_three_children() {
         let column = Column::new()
-            .push_child(SizedBox::new(Size::new(50.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(50.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(50.0, 50.0)));
+            .push_child(SizedBox::new(Size::new(50.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(50.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(50.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![
             Size::new(50.0, 50.0),
@@ -153,8 +164,8 @@ mod tests {
     #[test]
     fn column_different_child_sizes() {
         let column = Column::new()
-            .push_child(SizedBox::new(Size::new(50.0, 100.0)))
-            .push_child(SizedBox::new(Size::new(75.0, 200.0)));
+            .push_child(SizedBox::new(Size::new(50.0, 100.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(75.0, 200.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(50.0, 100.0), Size::new(75.0, 200.0)];
         let (own, _positions) = column.layout_children(
@@ -169,8 +180,8 @@ mod tests {
     fn column_cross_axis_center() {
         let column = Column::new()
             .cross_axis_alignment(Alignment::Center)
-            .push_child(SizedBox::new(Size::new(20.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(100.0, 50.0)));
+            .push_child(SizedBox::new(Size::new(20.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(20.0, 50.0), Size::new(100.0, 50.0)];
         let (own, positions) = column.layout_children(
@@ -197,7 +208,7 @@ mod tests {
 
     #[test]
     fn column_child_taller_than_constraints() {
-        let column = Column::new().push_child(SizedBox::new(Size::new(50.0, 1000.0)));
+        let column = Column::new().push_child(SizedBox::new(Size::new(50.0, 1000.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
         let child_sizes = vec![Size::new(50.0, 1000.0)];
         let (own, _positions) = column.layout_children(
@@ -213,8 +224,8 @@ mod tests {
     fn column_cross_axis_end() {
         let column = Column::new()
             .cross_axis_alignment(Alignment::End)
-            .push_child(SizedBox::new(Size::new(20.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(100.0, 50.0)));
+            .push_child(SizedBox::new(Size::new(20.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(20.0, 50.0), Size::new(100.0, 50.0)];
         let (own, positions) = column.layout_children(
@@ -252,8 +263,8 @@ mod tests {
     #[test]
     fn column_all_children_taller_than_max() {
         let column = Column::new()
-            .push_child(SizedBox::new(Size::new(50.0, 400.0)))
-            .push_child(SizedBox::new(Size::new(50.0, 400.0)));
+            .push_child(SizedBox::new(Size::new(50.0, 400.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(50.0, 400.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
         let child_sizes = vec![Size::new(50.0, 400.0), Size::new(50.0, 400.0)];
         let (own, _positions) = column.layout_children(
@@ -269,8 +280,8 @@ mod tests {
     fn column_cross_axis_stretch() {
         let column = Column::new()
             .cross_axis_alignment(Alignment::Stretch)
-            .push_child(SizedBox::new(Size::new(20.0, 50.0)))
-            .push_child(SizedBox::new(Size::new(100.0, 50.0)));
+            .push_child(SizedBox::new(Size::new(20.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));
         let child_sizes = vec![Size::new(20.0, 50.0), Size::new(100.0, 50.0)];
         let (own, positions) = column.layout_children(
@@ -286,7 +297,7 @@ mod tests {
 
     #[test]
     fn column_intrinsic_size() {
-        let column = Column::new().push_child(SizedBox::new(Size::new(50.0, 50.0)));
+        let column = Column::new().push_child(SizedBox::new(Size::new(50.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let size = column.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // Column fills available max in loose mode

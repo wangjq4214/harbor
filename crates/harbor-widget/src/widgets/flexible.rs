@@ -169,7 +169,7 @@ impl Default for Spacer {
 impl Spacer {
     pub fn new() -> Self {
         Self {
-            inner: Expanded::new().child(super::sized_box::SizedBox::new(Size::ZERO)),
+            inner: Expanded::new().child(super::sized_box::SizedBox::new(Size::ZERO).unwrap()),
         }
     }
 

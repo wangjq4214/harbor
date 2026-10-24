@@ -4,8 +4,8 @@ use super::{RailPresentation, TabCommand, TabUiController, TabUiState};
 use crate::{command::AppCommandRequest, tab_manager::TabSnapshot};
 use harbor_widget::{
     Alignment, BoxDecoration, ClipBehavior, Column, ComponentExt as _, ConstrainedBox,
-    ControlColors, ControlStyle, DecoratedBox, Dispatcher, Expanded, Icon, IconButton,
-    InteractionState, InteractiveRegion, LucideIcon, Row, ScrollView,
+    ControlColors, ControlStyle, DecoratedBox, Dispatcher, Expanded, FlexOptions, Icon, IconButton,
+    Insets, InteractionState, InteractiveRegion, LucideIcon, Row, ScrollView, SizedBox,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
     widgets::{padding::Padding, text_label::TextLabel},
@@ -19,12 +19,10 @@ pub(crate) fn tab_rail(
     controller: &TabUiController,
     dispatcher: Dispatcher<AppCommandRequest>,
 ) -> View {
-    harbor_widget::view! { ConstrainedBox::new()
-            .min_width(state.presentation.width())
-            .max_width(state.presentation.width()) => {
+    harbor_widget::view! { SizedBox::width(state.presentation.width()) => {
             ScrollView::new().controller(controller.scroll.clone()) => {
-                Padding::new(0.0, 6.0, 4.0, 6.0) => {
-                    Column::new().cross_axis_alignment(Alignment::Stretch).gap(4.0) => {
+                Padding::new(Insets { top: 0.0, right: 6.0, bottom: 4.0, left: 6.0 }) => {
+                    Column::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: Alignment::Stretch, ..Default::default() }) => {
                         for snapshot in state.snapshots.iter() {
                             tab_row(cx, snapshot, state.presentation, controller, dispatcher.clone());
                         }
@@ -63,9 +61,9 @@ fn tab_row(
         })
         .content(move |cx, state| {
             let color = rail_style(cx, compact).resolve_state(&state).foreground;
-            harbor_widget::view! { Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 2.0 } else { 8.0 }) => {
+            harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 2.0 } else { 8.0 }, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
                     if !compact {
-                        ConstrainedBox::new().min_width(24.0).max_width(24.0) => {
+                        SizedBox::width(24.0) => {
                             Icon::new(icon).size(20.0).color(color);
                         }
                     }
@@ -126,8 +124,8 @@ fn new_tab_button(
             })
             .content(move |cx, state| {
                 let color = rail_style(cx, compact).resolve_state(&state).foreground;
-                harbor_widget::view! { Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 0.0 } else { 8.0 }) => {
-                        ConstrainedBox::new().min_width(24.0).max_width(24.0) => {
+                harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 0.0 } else { 8.0 }, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
+                        SizedBox::width(24.0) => {
                             Icon::new(LucideIcon::Plus).size(20.0).color(color);
                         }
                         if !compact {
@@ -154,6 +152,7 @@ fn close_tab_button(
     style.radius = 4.0;
     let foreground = style.normal.foreground;
     let visible = row_state.selected || row_state.hovered || row_state.focused;
+    // Width is fixed; height remains a cap, not a second fixed dimension.
     ConstrainedBox::new()
         .min_width(20.0)
         .max_width(20.0)

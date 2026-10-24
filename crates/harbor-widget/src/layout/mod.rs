@@ -1,3 +1,5 @@
+pub mod configuration;
+pub use configuration::{Alignment2D, Insets, LayoutConfigError, PositionAlignment};
 pub mod align;
 pub(crate) mod child_layout;
 pub mod constraints;

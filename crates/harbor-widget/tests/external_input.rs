@@ -294,7 +294,7 @@ fn should_not_queue_when_no_custom_paint_in_tree() {
     // Arrange: Runtime with SizedBox (no CustomPaint, no external input handlers)
     use harbor_widget::widgets::sized_box::SizedBox;
     let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
     rt.update(now());
 
     // Act: dispatch events
@@ -407,7 +407,7 @@ fn should_clone_and_maintain_draw_id() {
 fn should_support_child_widgets_in_runtime() {
     use harbor_widget::widgets::sized_box::SizedBox;
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(7).child(SizedBox::new(Size::new(50.0, 30.0))));
+    rt.set_root(CustomPaint::new(7).child(SizedBox::new(Size::new(50.0, 30.0)).unwrap()));
     rt.update(now());
 
     // Verify the tree built without panicking and has expected structure

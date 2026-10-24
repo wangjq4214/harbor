@@ -1,13 +1,46 @@
-error[E0277]: the trait bound `(): IntoChildView` is not satisfied
+error[E0277]: the trait bound `(): harbor_widget::construction::ResolveNode<harbor_widget::construction::PlainNode>` is not satisfied
  --> tests/ui/fail/non_component_interpolation.rs:7:13
   |
-7 |             { let _value = 42usize; };
-  |             ^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `for<'a> Fn(&'a mut BuildCx)` is not implemented for `()`
+5 |       let _ = view! {
+  |  _____________-
+6 | |         Column::new() => {
+7 | |             { let _value = 42usize; };
+  | |             ^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `for<'a> Fn(&'a mut BuildCx)` is not implemented for `()`
+8 | |         }
+9 | |     };
+  | |_____- required by a bound introduced by this call
   |
-help: the trait `IntoChildView` is implemented for `View`
+help: the trait `harbor_widget::construction::ResolveNode<harbor_widget::construction::FallibleNode>` is implemented for `Result<T, E>`
  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
   |
-  | impl IntoChildView for View {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  | impl<T: IntoChildView, E: fmt::Display> ResolveNode<FallibleNode> for Result<T, E> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   = note: required for `()` to implement `harbor_widget::view::Component`
   = note: required for `()` to implement `IntoChildView`
+  = note: required for `()` to implement `harbor_widget::construction::ResolveNode<harbor_widget::construction::PlainNode>`
+note: required by a bound in `harbor_widget::construction::resolve_node`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | pub fn resolve_node<T: ResolveNode<Kind>, Kind>(
+  |                        ^^^^^^^^^^^^^^^^^ required by this bound in `resolve_node`
+
+error[E0277]: the trait bound `(): IntoChildView` is not satisfied
+ --> tests/ui/fail/non_component_interpolation.rs:5:13
+  |
+5 |       let _ = view! {
+  |  _____________^
+6 | |         Column::new() => {
+7 | |             { let _value = 42usize; };
+8 | |         }
+9 | |     };
+  | |_____^ the trait `for<'a> Fn(&'a mut BuildCx)` is not implemented for `()`
+  |
+help: the trait `harbor_widget::construction::ResolveNode<harbor_widget::construction::FallibleNode>` is implemented for `Result<T, E>`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | impl<T: IntoChildView, E: fmt::Display> ResolveNode<FallibleNode> for Result<T, E> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = note: required for `()` to implement `harbor_widget::view::Component`
+  = note: required for `()` to implement `IntoChildView`
+  = note: required for `()` to implement `harbor_widget::construction::ResolveNode<harbor_widget::construction::PlainNode>`
+  = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1332,7 +1332,7 @@ mod tests {
         assert!(!back_to_b.has_deferred_externals);
 
         assert!(manager.close(b).close_window);
-        runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO));
+        runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO).unwrap());
         runtime.update(std::time::Instant::now());
         assert!(!runtime.has_external_draws());
     }

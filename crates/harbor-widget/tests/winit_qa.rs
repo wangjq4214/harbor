@@ -40,7 +40,7 @@ fn should_route_wheel_invalidation_as_a_handled_redraw_effect() {
             .child(
                 ScrollView::new()
                     .controller(offset.clone())
-                    .child(SizedBox::new(Size::new(200.0, 400.0))),
+                    .child(SizedBox::new(Size::new(200.0, 400.0)).unwrap()),
             ),
     );
     runtime.update(Instant::now());
@@ -253,7 +253,7 @@ fn should_not_request_redraw_when_wheel_is_clamped_at_scroll_boundary() {
             .child(
                 ScrollView::new()
                     .controller(offset.clone())
-                    .child(SizedBox::new(Size::new(200.0, 20.0))),
+                    .child(SizedBox::new(Size::new(200.0, 20.0)).unwrap()),
             ),
     );
     runtime.update(Instant::now());
@@ -706,7 +706,7 @@ fn lifecycle_update_consumes_focus_effects_before_the_next_encode_turn() {
 fn adapter_scheduler_coalesces_external_wake_frame_lifecycle_and_idle_wait() {
     // Arrange: a rooted runtime with an independent adapter-owned scheduler.
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     assert!(runtime.update(Instant::now()).request_redraw);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
@@ -739,7 +739,7 @@ fn adapter_scheduler_coalesces_external_wake_frame_lifecycle_and_idle_wait() {
     let past = now - Duration::from_millis(1);
     let mut deadline_presenter = WindowPresenter::new(800, 600, 1.0);
     let mut deadline_runtime = Runtime::new();
-    deadline_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)));
+    deadline_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)).unwrap());
     let _ = deadline_runtime.update(now);
     let _ = deadline_presenter.fold_effects(RuntimeEffects {
         control_flow: Some(ControlFlowEffect::WaitUntil(past)),
@@ -751,7 +751,7 @@ fn adapter_scheduler_coalesces_external_wake_frame_lifecycle_and_idle_wait() {
 
     // Independent presenters do not suppress each other's redraw edges.
     let mut other_runtime = Runtime::new();
-    other_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
+    other_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)).unwrap());
     let _ = other_runtime.update(now);
     let mut other = WindowPresenter::new(800, 600, 1.0);
     // Clear the continuation edge left by frame_completed before asserting isolation.
@@ -787,7 +787,7 @@ fn should_preserve_host_deadline_when_due_runtime_deadline_schedules_redraw() {
     // Arrange: fold a past WaitUntil into scheduler state, then leave a dirty
     // Fiber that would otherwise re-emit control flow through merge.
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     let _ = runtime.update(Instant::now());
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
@@ -816,7 +816,7 @@ fn should_preserve_host_deadline_when_due_runtime_deadline_schedules_redraw() {
 fn should_honor_host_deadline_when_adapter_is_idle() {
     // Arrange
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(16.0, 16.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(16.0, 16.0)).unwrap());
     let now = Instant::now();
     assert!(runtime.update(now).request_redraw);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -837,7 +837,7 @@ fn should_honor_host_deadline_when_adapter_is_idle() {
 fn should_request_redraw_when_idle_turn_finds_dirty_fiber() {
     // Arrange — set_root dirties the tree; no update yet.
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(12.0, 12.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(12.0, 12.0)).unwrap());
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
 
@@ -853,12 +853,13 @@ fn should_keep_confirmation_idle_when_main_adapter_has_pending_redraw() {
     // Arrange — paired adapters model main + confirmation window schedulers.
     let now = Instant::now();
     let mut main_runtime = Runtime::new();
-    main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     assert!(main_runtime.update(now).request_redraw);
     let mut main = WindowPresenter::new(800, 600, 1.0);
 
     let mut confirmation_runtime = Runtime::new();
-    confirmation_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)));
+    confirmation_runtime
+        .set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)).unwrap());
     assert!(confirmation_runtime.update(now).request_redraw);
     let mut confirmation = WindowPresenter::new(800, 600, 1.0);
 
@@ -887,12 +888,13 @@ fn should_request_independent_edges_when_both_adapters_need_redraw() {
     // Arrange
     let now = Instant::now();
     let mut main_runtime = Runtime::new();
-    main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     assert!(main_runtime.update(now).request_redraw);
     let mut main = WindowPresenter::new(800, 600, 1.0);
 
     let mut confirmation_runtime = Runtime::new();
-    confirmation_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)));
+    confirmation_runtime
+        .set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)).unwrap());
     assert!(confirmation_runtime.update(now).request_redraw);
     let mut confirmation = WindowPresenter::new(800, 600, 1.0);
 
@@ -915,7 +917,7 @@ fn should_coalesce_host_retry_until_frame_starts_on_adapter() {
     let first = presenter.request_frame();
     let second = presenter.request_frame();
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)).unwrap());
     let _ = runtime.update(Instant::now());
     let _ = presenter.redraw_requested(&mut runtime, Instant::now());
     let after_frame = presenter.request_frame();
@@ -931,7 +933,7 @@ fn should_request_recovery_frame_after_drawable_window_is_restored() {
     // Arrange — the runtime is clean while a minimized adapter receives a due deadline.
     let now = Instant::now();
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)).unwrap());
     let _ = runtime.update(now);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let _ = presenter.set_drawable(false);
@@ -959,7 +961,7 @@ fn should_not_request_another_frame_when_due_deadline_is_covered_by_redraw_edge(
     // Arrange — a pending redraw edge already covers a runtime deadline that is due.
     let now = Instant::now();
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)).unwrap());
     let _ = runtime.update(now);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let scheduled = presenter.fold_effects(RuntimeEffects {

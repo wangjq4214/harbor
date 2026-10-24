@@ -288,7 +288,7 @@ fn replaced_and_removed_local_callbacks_release_captures_and_use_current_closure
             cx.track(&observed);
             let v = *observed.read();
             if v == 0 {
-                return SizedBox::new(Size::new(240.0, 120.0)).build(cx);
+                return SizedBox::new(Size::new(240.0, 120.0)).unwrap().build(cx);
             }
             let token = Rc::new(Cell::new(v));
             weak_captures.borrow_mut().push(Rc::downgrade(&token));
@@ -311,11 +311,11 @@ fn replaced_and_removed_local_callbacks_release_captures_and_use_current_closure
                     .build(cx),
                 CallbackKind::Enter => MouseRegion::new()
                     .on_enter(move |_| callback())
-                    .child(SizedBox::new(Size::new(80.0, 40.0)))
+                    .child(SizedBox::new(Size::new(80.0, 40.0)).unwrap())
                     .build(cx),
                 CallbackKind::Exit => MouseRegion::new()
                     .on_exit(move |_| callback())
-                    .child(SizedBox::new(Size::new(80.0, 40.0)))
+                    .child(SizedBox::new(Size::new(80.0, 40.0)).unwrap())
                     .build(cx),
                 CallbackKind::Dismiss => Notification::new("Notice", callback).build(cx),
             }
@@ -376,7 +376,7 @@ fn replaced_and_removed_local_callbacks_release_captures_and_use_current_closure
         // headless assertion does not simulate a DLL unload/barrier.
         version.set(3);
         update(&mut runtime);
-        runtime.set_root(SizedBox::new(Size::new(240.0, 120.0)));
+        runtime.set_root(SizedBox::new(Size::new(240.0, 120.0)).unwrap());
         update(&mut runtime);
         assert!(
             captures.borrow().iter().all(|w| w.upgrade().is_none()),

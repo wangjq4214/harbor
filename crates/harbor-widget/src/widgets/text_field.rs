@@ -92,7 +92,7 @@ impl TextField {
 impl Component for TextField {
     fn build(&self, cx: &mut BuildCx) -> View {
         let editor = self.editor.build(cx);
-        let padded = Padding::all(self.padding).child(editor).build(cx);
+        let padded = Padding::all(self.padding).unwrap().child(editor).build(cx);
         DecoratedBox::new(self.decoration.clone())
             .child(padded)
             .build(cx)

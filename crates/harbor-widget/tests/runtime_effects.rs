@@ -152,7 +152,7 @@ fn runtime_external_invalidation_is_noop_without_root() {
 #[test]
 fn runtime_external_invalidation_requests_redraw_with_root() {
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     runtime.update(Instant::now());
 
     let effects = runtime.invalidate_external(ExternalInvalidation::new());
@@ -163,7 +163,7 @@ fn runtime_external_invalidation_requests_redraw_with_root() {
 #[test]
 fn should_coalesce_repeated_external_invalidations_into_one_update() {
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     assert!(runtime.update(Instant::now()).request_redraw);
 
     let first = runtime.invalidate_external(ExternalInvalidation::new());

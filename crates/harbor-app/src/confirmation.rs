@@ -31,7 +31,7 @@ impl Component for ConfirmationDialogProps {
         let cancelled = Arc::clone(&self.cancelled);
         let confirmed = Arc::clone(&self.confirmed);
         harbor_widget::view! { FocusScope::new() => {
-            Padding::new(24.0, 16.0, 24.0, 16.0) => {
+            Padding::new(harbor_widget::Insets { top: 24.0, right: 16.0, bottom: 24.0, left: 16.0 }) => {
                 Column::new() => {
                     TextLabel::new(self.header_text.clone());
                     SizedBox::new(Size::new(0.0, 8.0));

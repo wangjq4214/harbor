@@ -483,7 +483,7 @@ mod content_slot_tests {
                         ExternalDrawId::new(7_034),
                         Arc::new(|_id, _now| ExternalScheduleDemand::empty()),
                     );
-                    SizedBox::new(Size::new(4.0, 4.0)).build(cx)
+                    SizedBox::new(Size::new(4.0, 4.0)).unwrap().build(cx)
                 })
             } else {
                 InteractiveRegion::new()
@@ -602,7 +602,7 @@ mod content_slot_tests {
                     ExternalDrawId::new(7_035),
                     Arc::new(|_, _| ExternalScheduleDemand::empty()),
                 );
-                SizedBox::new(Size::new(4.0, 4.0)).build(cx)
+                SizedBox::new(Size::new(4.0, 4.0)).unwrap().build(cx)
             };
             let region = InteractiveRegion::new().content(builder.clone());
             let mode = *self.mode.read();
@@ -610,9 +610,11 @@ mod content_slot_tests {
                 0 => crate::view! { region; },
                 1 => crate::view! { region => { SizedBox::new(Size::new(8.0, 8.0)); } },
                 2 => crate::view! { region => {} },
-                4 => crate::view! { region.child(SizedBox::new(Size::ZERO)) => {} },
+                4 => crate::view! { region.child(SizedBox::new(Size::ZERO).unwrap()) => {} },
                 // content must replace an explicit child, in either setting order.
-                _ => crate::view! { region.child(SizedBox::new(Size::ZERO)).content(builder); },
+                _ => {
+                    crate::view! { region.child(SizedBox::new(Size::ZERO).unwrap()).content(builder); }
+                }
             };
             crate::view! { Column::new() => { description; } }
         }

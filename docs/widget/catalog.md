@@ -8,7 +8,7 @@ Browse by the job you need to do. The tables describe available public APIs and 
 
 | Need | Available building blocks | Constraints |
 | --- | --- | --- |
-| Horizontal or vertical composition | `Row`, `Column`, `Flex`, `MainAxisAlignment`, `Alignment`, `.gap(...)` | Shared constrained flex engine, not CSS; [layout contract](../flex-layout.md) |
+| Horizontal or vertical composition | `Row`, `Column`, `Flex`, `FlexOptions`, `MainAxisAlignment`, `Alignment` | Shared constrained flex engine; fallible options/gaps; [layout contract](../flex-layout.md) |
 | Allocate flexible space | `Expanded`, `Flexible`, `FlexFit`, `Spacer` | Flex-parent relationships and bounded/unbounded constraints matter |
 | Impose size, insets or alignment | `SizedBox`, `ConstrainedBox`, `Padding`, `Align` | Logical pixels; `Align` can position overlay content without making its empty area hit-testable |
 | Layer ordinary children | `Stack` | Shared parent allocation, not a generic positioned/anchored popover engine |
@@ -18,7 +18,7 @@ Browse by the job you need to do. The tables describe available public APIs and 
 
 `ScrollView` replaces the former `ScrollArea` name and module (`widgets::scroll_view`); no old-name alias is retained. Wheel/key movement and scrollbar gestures preserve focus. `ScrollController::reveal_range(start, end)` minimally reveals a content-local vertical range using committed metrics; ordinary focus traversal also reveals offscreen controls. `ConstrainedBox::max_height_with` can cap a viewport or its surrounding layout using current `TextMetrics`, without hard-coding font sizes.
 
-`SizedBox`, `Padding`, `Align` and `Stack` are imported through `harbor_widget::widgets::<module>::Type`, rather than all being crate-root exports. Check [public exports](../../crates/harbor-widget/src/lib.rs) instead of guessing import paths from type names.
+`SizedBox`, `Padding`, `Align`, `Insets` and `Alignment2D` are available at the crate root; `Stack` remains in `widgets::stack`. See [explicit layout and fallible nodes](layout.md) for validation, slot replacement and wrapper order.
 
 ## Display and activate
 
