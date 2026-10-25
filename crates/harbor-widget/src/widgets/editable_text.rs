@@ -635,7 +635,6 @@ impl AnyView for EditorView {
         }
         self.changed(&old);
         ctx.invalidate_paint();
-        ctx.stop_propagation();
         EventHandled::Handled
     }
 

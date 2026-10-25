@@ -331,7 +331,10 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Synonyms:** Event
 
 ### EventCtx
-- **Definition:** Deferred event-handler commands for focus, pointer capture/release, paint invalidation and propagation; applied after routing.
+- **Definition:** Per-handler context accumulating deferred side-effect requests such as focus, pointer capture/release, paint invalidation and clipboard operations for submission after routing. Propagation is controlled by the handler's EventHandled result, not a public context stop operation. See [ADR 0085](./adr/0085-return-driven-event-consumption-and-unconditional-commit.md); native/lifecycle acceptance is separate from this definition.
+
+### EventHandled
+- **Definition:** The single public propagation-control result: Handled stops further delivery in the current event walk after the handler finishes; Ignored permits continued propagation without asserting that no side effects occurred. Consumption neither rolls back accumulated commands nor cancels separately delivered notifications or later input events. See [ADR 0085](./adr/0085-return-driven-event-consumption-and-unconditional-commit.md); this definition does not establish native/IME/HMR acceptance.
 
 ### FocusScope
 - **Definition:** A widget that wraps a subtree and manages Tab/Shift+Tab focus traversal within it; supports a modal flag that blocks events from reaching widgets outside the scope.
@@ -348,7 +351,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Per-Runtime focused/hovered FiberId and pointer captures, separate from scheduling state.
 
 ### Event Routing
-- **Definition:** Capture → target → bubble through Fiber, using Hit Testing and InputState; applies EventCtx commands after the walk.
+- **Definition:** Capture → target → bubble through Fiber, using Hit Testing and InputState, plus separately delivered direct notifications. EventHandled controls propagation; accumulated side effects submit even when propagation stops or hover already requires redraw. See [ADR 0085](./adr/0085-return-driven-event-consumption-and-unconditional-commit.md); native/lifecycle acceptance remains separately tracked.
 - **Synonyms:** Event Walk
 
 ### Button

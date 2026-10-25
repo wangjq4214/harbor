@@ -411,7 +411,6 @@ impl AnyView for ScrollViewport {
             && self.handle_scrollbar(pointer, ctx, rect)
         {
             ctx.invalidate_paint();
-            ctx.stop_propagation();
             return EventHandled::Handled;
         }
         if ctx.is_capture_phase() {
@@ -464,7 +463,6 @@ impl AnyView for ScrollViewport {
         };
         if changed {
             ctx.invalidate_paint();
-            ctx.stop_propagation();
             EventHandled::Handled
         } else {
             EventHandled::Ignored

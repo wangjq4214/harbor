@@ -1817,15 +1817,6 @@ mod tests {
         assert!(rt.finish_event(ctx));
     }
 
-    #[test]
-    fn finish_event_returns_true_when_stop_propagation_without_paint() {
-        // stop_propagation itself does not request paint, but we check
-        let mut rt = Runtime::new();
-        let mut ctx = EventCtx::new();
-        ctx.stop_propagation();
-        assert!(!rt.finish_event(ctx));
-    }
-
     // ── route_to_single ────────────────────────────────────────────────
 
     #[test]

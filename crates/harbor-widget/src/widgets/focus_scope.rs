@@ -88,8 +88,11 @@ impl AnyView for FocusScope {
                 key: Key::Tab,
                 modifiers,
             }) if !modifiers.ctrl && !modifiers.alt && !modifiers.meta => {
-                ctx.navigate_focus(!modifiers.shift);
-                EventHandled::Handled
+                if ctx.navigate_focus(!modifiers.shift) {
+                    EventHandled::Handled
+                } else {
+                    EventHandled::Ignored
+                }
             }
             _ => EventHandled::Ignored,
         }
@@ -164,8 +167,31 @@ mod tests {
             modifiers: Default::default(),
         });
         let mut ctx = EventCtx::new();
+        ctx.set_current_fiber(dummy_fiber_id());
         let result = scope.handle_event(&event, &mut ctx, rect);
         assert_eq!(result, EventHandled::Handled);
+    }
+
+    #[test]
+    fn focus_scope_does_not_consume_tab_when_navigation_cannot_be_queued() {
+        let scope = FocusScope::new();
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0));
+        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: Modifiers::default(),
+        });
+        for suppressed in [false, true] {
+            let mut ctx = EventCtx::new();
+            if suppressed {
+                ctx.set_current_fiber(dummy_fiber_id());
+                ctx.suppress_focus_navigation();
+            }
+            assert_eq!(
+                scope.handle_event(&event, &mut ctx, rect),
+                EventHandled::Ignored
+            );
+            assert!(ctx.take_commands().is_empty());
+        }
     }
 
     #[test]

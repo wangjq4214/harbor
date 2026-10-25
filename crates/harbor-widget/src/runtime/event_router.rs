@@ -6,7 +6,7 @@ use crate::fiber::{FiberArena, FiberId};
 use crate::input::event::{
     FocusEvent, Key, KeyboardEvent, PointerBoundaryKind, PointerPhase, UiEvent,
 };
-use crate::input::event_ctx::{EventCommand, EventCtx, EventPhase};
+use crate::input::event_ctx::{EventCommand, EventCtx, EventHandled, EventPhase};
 use crate::input::state::InputState;
 use crate::layout::{Point, Rect};
 use crate::scene::primitive::ExternalDrawId;
@@ -366,33 +366,37 @@ impl EventRouter {
             ctx.suppress_focus_navigation();
         }
 
-        ctx.set_phase(EventPhase::Capture);
-        for &ancestor_id in ancestors {
-            if Self::is_modal_block(arena, ancestor_id, target) {
-                return self.finish_event(arena, ctx);
+        'walk: {
+            ctx.set_phase(EventPhase::Capture);
+            for &ancestor_id in ancestors {
+                if Self::is_modal_block(arena, ancestor_id, target)
+                    || Self::invoke_handler(arena, ancestor_id, event, &mut ctx)
+                        == EventHandled::Handled
+                {
+                    break 'walk;
+                }
             }
-            Self::invoke_handler(arena, ancestor_id, event, &mut ctx);
-            if ctx.is_propagation_stopped() {
-                return self.finish_event(arena, ctx);
-            }
-        }
 
-        ctx.set_phase(EventPhase::Target);
-        if let Some(target) = target {
-            Self::invoke_handler(arena, target, event, &mut ctx);
-            if ctx.is_propagation_stopped() {
-                return self.finish_event(arena, ctx);
+            ctx.set_phase(EventPhase::Target);
+            if let Some(target) = target
+                && Self::invoke_handler(arena, target, event, &mut ctx) == EventHandled::Handled
+            {
+                break 'walk;
             }
-        }
 
-        ctx.set_phase(EventPhase::Bubble);
-        for &ancestor_id in ancestors.iter().rev() {
-            Self::invoke_handler(arena, ancestor_id, event, &mut ctx);
-            if ctx.is_propagation_stopped() {
-                return self.finish_event(arena, ctx);
+            ctx.set_phase(EventPhase::Bubble);
+            for &ancestor_id in ancestors.iter().rev() {
+                if Self::invoke_handler(arena, ancestor_id, event, &mut ctx)
+                    == EventHandled::Handled
+                {
+                    break 'walk;
+                }
             }
         }
-        hover_needs_redraw || self.finish_event(arena, ctx)
+        // Consumption only stops delivery. Always commit this walk, even when
+        // an earlier, independently delivered hover notification requested paint.
+        let event_needs_redraw = self.finish_event(arena, ctx);
+        hover_needs_redraw || event_needs_redraw
     }
 
     pub(crate) fn route_to_single(
@@ -1004,12 +1008,19 @@ impl EventRouter {
             .and_then(|fiber| fiber.view.as_ref())
             .is_some_and(|view| view.accepts_pointer_boundaries())
     }
-    fn invoke_handler(arena: &FiberArena, fiber: FiberId, event: &UiEvent, ctx: &mut EventCtx) {
+    fn invoke_handler(
+        arena: &FiberArena,
+        fiber: FiberId,
+        event: &UiEvent,
+        ctx: &mut EventCtx,
+    ) -> EventHandled {
         let rect = arena.get(fiber).and_then(|fiber| fiber.layout_rect);
         let view = arena.get(fiber).and_then(|fiber| fiber.view.clone());
         if let (Some(view), Some(rect)) = (view, rect) {
             ctx.set_current_fiber(fiber);
-            view.handle_event(event, ctx, rect);
+            view.handle_event(event, ctx, rect)
+        } else {
+            EventHandled::Ignored
         }
     }
 }
@@ -1022,3 +1033,6 @@ fn valid_non_empty_rect(rect: Rect) -> bool {
         && rect.max.x > rect.min.x
         && rect.max.y > rect.min.y
 }
+
+#[cfg(test)]
+mod tests;

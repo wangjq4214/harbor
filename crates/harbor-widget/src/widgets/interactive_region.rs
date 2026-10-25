@@ -302,7 +302,7 @@ impl AnyView for InteractiveRegionView {
         if ctx.is_capture_phase() {
             return EventHandled::Ignored;
         }
-        let handled = match event {
+        match event {
             UiEvent::PointerBoundary(boundary) => {
                 self.update(ctx, |state| {
                     state.visual.hovered = boundary.kind == PointerBoundaryKind::Enter;
@@ -400,11 +400,7 @@ impl AnyView for InteractiveRegionView {
                 EventHandled::Handled
             }
             _ => EventHandled::Ignored,
-        };
-        if handled == EventHandled::Handled {
-            ctx.stop_propagation();
         }
-        handled
     }
 
     fn focus_metadata(&self) -> Option<FocusMetadata> {

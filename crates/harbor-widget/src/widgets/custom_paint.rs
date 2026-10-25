@@ -10,6 +10,33 @@ use std::sync::Arc;
 ///
 /// When set on [`CustomPaint`], routed events are delivered here instead of
 /// being queued for [`crate::runtime::Runtime::drain_external_input`].
+/// Return `Handled` to consume this event or `Ignored` to let it continue.
+/// Requested EventCtx effects commit with either result; this callback does not
+/// also trigger automatic external-queue delivery.
+///
+/// ```
+/// use std::sync::Arc;
+/// use harbor_widget::input::event::{PointerPhase, UiEvent};
+/// use harbor_widget::input::event_ctx::EventHandled;
+/// use harbor_widget::widgets::custom_paint::CustomPaint;
+///
+/// // An input adapter owns wheel input, but leaves other events available.
+/// let consuming = CustomPaint::new(1).on_input(Arc::new(|event, ctx| {
+///     if matches!(event, UiEvent::Pointer(p) if matches!(p.phase,
+///         PointerPhase::WheelLine { .. } | PointerPhase::WheelPixel { .. }))
+///     {
+///         ctx.invalidate_paint();
+///         EventHandled::Handled
+///     } else {
+///         EventHandled::Ignored
+///     }
+/// }));
+/// // Observing/requesting an effect need not consume the input.
+/// let observing = CustomPaint::new(2).on_input(Arc::new(|_, ctx| {
+///     ctx.invalidate_paint();
+///     EventHandled::Ignored
+/// }));
+/// ```
 pub type ExternalInputFn = dyn Fn(&UiEvent, &mut EventCtx) -> EventHandled;
 
 /// Callback invoked when an external-paint leaf leaves the mounted tree.

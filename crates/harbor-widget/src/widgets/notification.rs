@@ -445,7 +445,6 @@ impl AnyView for Card {
         }
         // The card, unlike empty composition space, prevents input leaking into
         // the terminal behind it. It never requests keyboard focus.
-        ctx.stop_propagation();
         EventHandled::Handled
     }
 }

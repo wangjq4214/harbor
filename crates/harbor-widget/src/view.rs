@@ -432,7 +432,8 @@ pub(crate) trait AnyView: 'static {
     }
 
     /// Handles an input event delivered to this widget.
-    /// Returns `EventHandled::Handled` if consumed.
+    /// Returning `EventHandled::Handled` stops remaining delivery in this walk;
+    /// accumulated commands still commit. `Ignored` continues propagation.
     /// Default: ignores all events.
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {
         let _ = (event, ctx, rect);
@@ -522,6 +523,9 @@ pub(crate) trait AnyView: 'static {
 pub trait PrimitiveLeaf: 'static {
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive>;
+    /// Processes routed input. Return [`EventHandled::Handled`] to stop further
+    /// propagation after this handler, or `Ignored` to continue. Both results
+    /// retain requested effects; neither implicitly requests paint.
     fn handle_event(&self, _event: &UiEvent, _ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
         EventHandled::Ignored
     }
