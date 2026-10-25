@@ -96,7 +96,11 @@ fn rail_root(rail: f32, content: impl Component + 'static) -> Row {
     Row::new()
         .cross_axis_alignment(Alignment::Stretch)
         .push_child(bounded_external(rail, 1))
-        .push_child(Separator::vertical().color(Color::WHITE))
+        .push_child(
+            Separator::vertical()
+                .color(Color::WHITE)
+                .expect("valid color"),
+        )
         .push_child(Expanded::new().child(content))
 }
 

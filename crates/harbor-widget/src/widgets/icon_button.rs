@@ -68,27 +68,27 @@ impl IconButton {
     }
 
     /// Overrides the inherited `theme.icon_button` control style.
-    pub fn style(mut self, style: ControlStyle) -> Self {
+    pub fn style(mut self, style: ControlStyle) -> Result<Self, crate::theme::AppearanceError> {
+        style.validate()?;
         self.style = Some(style);
-        self
+        Ok(self)
     }
 
     /// Overrides the resolved style's `icon_size` in logical pixels.
-    ///
-    /// Invalid (negative or non-finite) values leave the previous size unchanged.
-    pub fn icon_size(mut self, size: f32) -> Self {
-        if size.is_finite() && size >= 0.0 {
-            self.icon_size = Some(size);
-        }
-        self
+    /// Zero is legal; negative or non-finite sizes are rejected.
+    pub fn icon_size(mut self, size: f32) -> Result<Self, crate::LayoutConfigError> {
+        crate::layout::configuration::validate_scalar("IconButton.icon_size", size)?;
+        self.icon_size = Some(size);
+        Ok(self)
     }
 
     /// Replaces the state-resolved style foreground as the icon tint.
     ///
     /// The callback receives this control's retained interaction state, so callers can
     /// express appearance rules a [`ControlStyle`] cannot, such as an enclosing row's
-    /// visibility or keyboard focus.
-    pub fn color_with(mut self, color: impl Fn(&InteractionState) -> Color + 'static) -> Self {
+    /// visibility or keyboard focus. Each consumed result must have finite RGBA
+    /// components; an invalid result panics with the field name, without fallback.
+    pub fn foreground_with(mut self, color: impl Fn(&InteractionState) -> Color + 'static) -> Self {
         self.color = Some(Rc::new(color));
         self
     }
@@ -96,7 +96,7 @@ impl IconButton {
     /// Text label retained for accessibility integrations and test inspection.
     ///
     /// The label is never painted; the control renders its icon only.
-    pub fn label(&self) -> &str {
+    pub fn get_label(&self) -> &str {
         &self.label
     }
 }
@@ -109,6 +109,7 @@ impl Component for IconButton {
             .unwrap_or_else(|| cx.theme().icon_button.clone());
         let mut region = InteractiveRegion::new()
             .style(style.clone())
+            .expect("validated icon-button style")
             .disabled(self.disabled)
             .selected(self.selected);
         if let Some(handle) = self.focus_handle {
@@ -127,7 +128,14 @@ impl Component for IconButton {
                     || style.resolve_state(&state).foreground,
                     |color| color(&state),
                 );
-                Icon::new(icon).size(size).color(tint).build(cx)
+                crate::theme::validate_color("IconButton.foreground_with", tint)
+                    .unwrap_or_else(|error| panic!("{error}"));
+                Icon::new(icon)
+                    .size(size)
+                    .expect("validated icon size")
+                    .foreground(tint)
+                    .expect("validated icon foreground")
+                    .build(cx)
             })
             .build(cx)
     }

@@ -43,7 +43,7 @@ fn idle_caret_blinks_without_rebuilding_or_notifying_text_changes() {
         observed_builds.set(observed_builds.get() + 1);
         let changes = observed_changes.clone();
         EditableText::new(controller.clone())
-            .on_changed(move |_| changes.set(changes.get() + 1))
+            .on_change(move |_| changes.set(changes.get() + 1))
             .build(cx)
     });
     let start = Instant::now();

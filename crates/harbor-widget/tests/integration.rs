@@ -357,7 +357,8 @@ fn zero_padding_is_noop_at_runtime_level() {
         .child(
             SizedBox::new(Size::new(100.0, 50.0))
                 .unwrap()
-                .color(Color::RED),
+                .background(Color::RED)
+                .expect("valid color"),
         ),
     );
     let req = rt.update(Instant::now());
@@ -390,7 +391,8 @@ fn should_paint_decorated_box_in_background_child_border_order_with_child_clip_o
             .child(
                 SizedBox::new(Size::new(40.0, 24.0))
                     .unwrap()
-                    .color(Color::GREEN),
+                    .background(Color::GREEN)
+                    .expect("valid color"),
             ),
     );
 
@@ -453,7 +455,8 @@ fn should_emit_no_decoration_fill_when_color_is_absent() {
         DecoratedBox::new(BoxDecoration::new()).child(
             SizedBox::new(Size::new(12.0, 12.0))
                 .unwrap()
-                .color(Color::GREEN),
+                .background(Color::GREEN)
+                .expect("valid color"),
         ),
     );
 
@@ -535,15 +538,18 @@ fn stack_with_background_paint_count() {
     rt.set_root(
         Stack::new()
             .background(Color::BLACK)
+            .expect("finite background")
             .push_child(
                 SizedBox::new(Size::new(80.0, 80.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             )
             .push_child(
                 SizedBox::new(Size::new(60.0, 60.0))
                     .unwrap()
-                    .color(Color::GREEN),
+                    .background(Color::GREEN)
+                    .expect("valid color"),
             ),
     );
     rt.update(Instant::now());

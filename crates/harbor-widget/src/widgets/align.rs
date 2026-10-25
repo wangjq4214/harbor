@@ -10,7 +10,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 #[derive(Clone)]
 pub struct Align {
     pub alignment: Alignment2D,
-    pub background: Option<Color>,
+    background: Option<Color>,
     child: Option<View>,
     insets: Insets,
 }
@@ -36,9 +36,10 @@ impl Align {
         self.insets
     }
 
-    pub fn background(mut self, color: Color) -> Self {
+    pub fn background(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("Align.background", color)?;
         self.background = Some(color);
-        self
+        Ok(self)
     }
 
     /// Replaces the child slot.
@@ -300,7 +301,9 @@ mod tests {
 
     #[test]
     fn align_background_paint() {
-        let align = Align::new(crate::Alignment2D::CENTER).background(Color::BLUE);
+        let align = Align::new(crate::Alignment2D::CENTER)
+            .background(Color::BLUE)
+            .expect("finite background");
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         let prims = align.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);

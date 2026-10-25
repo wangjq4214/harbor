@@ -12,7 +12,7 @@ use harbor_widget::{TextEditingController, TextField};
 let controller = TextEditingController::new("");
 let field = TextField::new(controller.clone())
     .placeholder("Search")
-    .on_changed(|text| {
+    .on_change(|text| {
         // Submit application intent here; do not run search while painting.
         let _ = text;
     });
@@ -34,8 +34,8 @@ focus through the runtime/host instead of wrapping it in another focus stop.
   paragraph separators are rejected rather than converted to submission.
 - `with_acceptance(initial, predicate)` validates resulting committed text after
   selection replacement. Applications may impose their own byte budgets.
-- `on_changed` reports user committed-text changes only. Programmatic writes,
-  selection movement and IME preedit do not invoke it. `on_submitted` receives
+- `on_change` reports user committed-text changes only. Programmatic writes,
+  selection movement and IME preedit do not invoke it. `on_submit` receives
   Enter modifiers; `on_escape` permits consumer-owned cancellation behavior.
 - Windows editing chords are Ctrl+A/C/X/V/Z/Y and Ctrl+Shift+Z for redo. Arrows,
   Home/End, Shift extension, Backspace/Delete and pointer drag edit/select locally.
@@ -50,11 +50,21 @@ focus through the runtime/host instead of wrapping it in another focus stop.
 - Read-only fields permit selection/copy but not user mutation; disabled fields
   accept no editing and are excluded from focus traversal.
 
+The shared `VerticalDirection::{Up, Down}` is passed to
+`on_vertical_navigation` on both editor layers. It observes unmodified vertical
+navigation only, after IME handling; it adds no horizontal navigation. Up/Down
+correspond to the former false/true values. Callbacks retain UI-local captures,
+committed-text data/order, and Enter modifiers.
+
 ## Presentation and Hosting
 
 `TextField` accepts `.placeholder(...)`, `.padding(...)`, `.decoration(...)`,
-`.color(...)`, `.disabled(...)` and `.read_only(...)`. `EditableText` exposes the
-same editing callbacks without the outer border/padding. Editor content is
+`.foreground(...)`, `.disabled(...)` and `.read_only(...)`. `EditableText` exposes the
+same editing callbacks without the outer border/padding. `padding` returns
+`Result` and accepts finite nonnegative values, including zero; `foreground`
+returns `Result` and accepts finite RGBA components (including outside [0,1]).
+Handle an intermediate Result before chaining another setter. Foreground affects
+edited text only, not decoration, caret or selection. Editor content is
 clipped; horizontal scrolling keeps the active caret usable. Caret and selection
 are separate draw primitives, not characters in the text.
 

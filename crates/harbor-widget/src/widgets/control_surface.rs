@@ -1,6 +1,6 @@
 //! Shared control chrome. Interaction stays in InteractiveRegion; content measures itself.
 use super::interactive_region::InteractionState;
-use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::layout::{BoxConstraints, Insets, LayoutError, Point, Rect, Size};
 use crate::scene::primitive::Primitive;
 use crate::theme::ControlStyle;
 use crate::view::PaintPhase;
@@ -21,8 +21,20 @@ impl ControlSurface {
         }
     }
 
-    pub fn layout(&self, constraints: BoxConstraints, children: &[Size]) -> (Size, Vec<Point>) {
+    pub fn layout(
+        &self,
+        constraints: BoxConstraints,
+        children: &[Size],
+    ) -> Result<(Size, Vec<Point>), LayoutError> {
         let child = children.first().copied().unwrap_or(Size::ZERO);
+        // Individually valid scalars can overflow only when layout combines them.
+        // Check before the parent clamp can hide the unrepresentable natural size.
+        Insets {
+            left: self.style.horizontal_padding,
+            right: self.style.horizontal_padding,
+            ..Insets::default()
+        }
+        .checked_inflate(child)?;
         let size = constraints.constrain(Size::new(
             child.width + self.style.horizontal_padding * 2.0,
             child.height.max(self.style.min_height),
@@ -33,7 +45,7 @@ impl ControlSurface {
             self.style.horizontal_padding.min(size.width)
         };
         let origin = Point::new(x, ((size.height - child.height) / 2.0).max(0.0));
-        (size, vec![origin; children.len()])
+        Ok((size, vec![origin; children.len()]))
     }
 
     pub fn paint(&self, phase: PaintPhase, rect: Rect, state: InteractionState) -> Vec<Primitive> {
@@ -65,5 +77,54 @@ impl ControlSurface {
             });
         }
         primitives
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_scalars_overflow_only_when_combined_even_under_parent_clamps_or_unbounded_maxima() {
+        let mut style = crate::Theme::default().button;
+        style.horizontal_padding = f32::MAX;
+        assert!(style.validate().is_ok());
+        let surface = ControlSurface {
+            style,
+            centered: true,
+        };
+        for constraints in [
+            BoxConstraints::tight(Size::new(1.0, 1.0)),
+            BoxConstraints::loose(Size::new(100.0, 50.0)),
+            BoxConstraints::loose(Size::new(800.0, 600.0)),
+            BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
+        ] {
+            assert_eq!(
+                surface.layout(constraints, &[Size::new(10.0, 5.0)]),
+                Err(LayoutError::InvalidGeometry)
+            );
+        }
+
+        let mut style = crate::Theme::default().button;
+        style.horizontal_padding = 4.0;
+        style.min_height = f32::MAX;
+        let surface = ControlSurface {
+            style,
+            centered: false,
+        };
+        let (size, _) = surface
+            .layout(
+                BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
+                &[Size::new(10.0, 5.0)],
+            )
+            .unwrap();
+        assert_eq!(size, Size::new(18.0, f32::MAX));
+        let (size, _) = surface
+            .layout(
+                BoxConstraints::tight(Size::new(8.0, 6.0)),
+                &[Size::new(0.0, 0.0)],
+            )
+            .unwrap();
+        assert_eq!(size, Size::new(8.0, 6.0));
     }
 }

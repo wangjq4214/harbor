@@ -1,0 +1,52 @@
+error[E0599]: no method named `foreground` found for enum `Result<T, E>` in the current scope
+ --> tests/ui/fail/appearance_intermediate_result.rs:7:57
+  |
+7 |     let _ = view! { Icon::new(LucideIcon::X).size(20.0).foreground(Color::RED); };
+  |                     ------------------------            ^^^^^^^^^^ method not found in `Result<harbor_widget::Icon, LayoutConfigError>`
+  |                     |
+  |                     method `foreground` is available on `harbor_widget::Icon`
+  |
+note: the method `foreground` exists on the type `harbor_widget::Icon`
+ --> $WORKSPACE/crates/harbor-widget/src/widgets/icon.rs
+  |
+  |     pub fn foreground(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: consider using `Result::expect` to unwrap the `harbor_widget::Icon` value, panicking if the value is a `Result::Err`
+  |
+7 |     let _ = view! { Icon::new(LucideIcon::X).size(20.0).expect("REASON").foreground(Color::RED); };
+  |                                                        +++++++++++++++++
+
+error[E0599]: no method named `child` found for enum `Result<T, E>` in the current scope
+ --> tests/ui/fail/appearance_intermediate_result.rs:8:50
+  |
+8 |     let _ = ThemeProvider::new(Theme::default()).child(Icon::new(LucideIcon::X));
+  |                                                  ^^^^^ method not found in `Result<ThemeProvider, AppearanceError>`
+  |
+note: the method `child` exists on the type `ThemeProvider`
+ --> $WORKSPACE/crates/harbor-widget/src/widgets/theme.rs
+  |
+  |     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: consider using `Result::expect` to unwrap the `ThemeProvider` value, panicking if the value is a `Result::Err`
+  |
+8 |     let _ = ThemeProvider::new(Theme::default()).expect("REASON").child(Icon::new(LucideIcon::X));
+  |                                                 +++++++++++++++++
+
+error[E0631]: type mismatch in closure arguments
+ --> tests/ui/fail/appearance_intermediate_result.rs:9:60
+  |
+9 |     let _ = TextField::new(TextEditingController::new("")).on_vertical_navigation(|_: bool| {});
+  |                                                            ^^^^^^^^^^^^^^^^^^^^^^ --------- found signature defined here
+  |                                                            |
+  |                                                            expected due to this
+  |
+  = note: expected closure signature `fn(VerticalDirection) -> _`
+             found closure signature `fn(bool) -> _`
+note: required by a bound in `TextField::on_vertical_navigation`
+ --> $WORKSPACE/crates/harbor-widget/src/widgets/text_field.rs
+  |
+  |     pub fn on_vertical_navigation(
+  |            ---------------------- required by a bound in this associated function
+  |         mut self,
+  |         callback: impl Fn(crate::VerticalDirection) + 'static,
+  |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `TextField::on_vertical_navigation`

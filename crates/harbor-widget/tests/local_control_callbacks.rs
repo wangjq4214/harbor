@@ -135,7 +135,7 @@ fn button_handles_target_single_existing_stops_across_rebuild_and_disablement() 
             .push_child(
                 IconButton::new(LucideIcon::Plus, "Second")
                     .focus_handle(second)
-                    .color_with({
+                    .foreground_with({
                         let visible = visible.clone();
                         move |state| {
                             visible.set(state.focus_visible);
@@ -195,7 +195,9 @@ fn local_boundary_callbacks_are_edges_and_color_uses_normal_signal_rebuilds() {
                 let exited = exited.clone();
                 move |_| exited.borrow_mut().push("exit")
             })
-            .child(IconButton::new(LucideIcon::Plus, "Tint").color_with(move |_| *color.read()))
+            .child(
+                IconButton::new(LucideIcon::Plus, "Tint").foreground_with(move |_| *color.read()),
+            )
             .build(cx)
     });
     update(&mut runtime);
@@ -304,7 +306,7 @@ fn replaced_and_removed_local_callbacks_release_captures_and_use_current_closure
                     .on_click(move |_| callback())
                     .build(cx),
                 CallbackKind::Color => IconButton::new(LucideIcon::Plus, "Tint")
-                    .color_with(move |_| {
+                    .foreground_with(move |_| {
                         callback();
                         Color::RED
                     })

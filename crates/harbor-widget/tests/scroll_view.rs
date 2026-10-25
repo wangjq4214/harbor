@@ -54,7 +54,8 @@ fn scroll_view_commits_metrics_moves_content_and_settles_at_boundaries() {
             .child(Focus::new(
                 SizedBox::new(Size::new(100.0, 100.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             )),
     );
 
@@ -145,7 +146,8 @@ fn scroll_view_attaches_hard_viewport_clip_to_descendant_paint() {
         ScrollView::new().child(
             SizedBox::new(Size::new(80.0, 90.0))
                 .unwrap()
-                .color(Color::BLUE),
+                .background(Color::BLUE)
+                .expect("valid color"),
         ),
     );
     update(&mut runtime);
@@ -637,7 +639,8 @@ fn scrollbar_is_painted_above_content_and_drag_preserves_focus_and_capture() {
                 .push_child(
                     SizedBox::new(Size::new(100.0, 400.0))
                         .unwrap()
-                        .color(Color::BLUE),
+                        .background(Color::BLUE)
+                        .expect("valid color"),
                 ),
         ),
     );

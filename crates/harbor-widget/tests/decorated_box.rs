@@ -73,7 +73,8 @@ fn gradient_paints_preserve_decoration_order_geometry_and_child_clipping() {
         .child(
             SizedBox::new(Size::new(40.0, 24.0))
                 .unwrap()
-                .color(Color::GREEN),
+                .background(Color::GREEN)
+                .expect("valid color"),
         ),
     );
     assert_eq!(delta.added.len(), 4);
@@ -731,7 +732,8 @@ fn active_clip_policy_attaches_normalized_clip_to_child_items() {
             .child(
                 SizedBox::new(Size::new(10.0, 10.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             );
     assert_eq!(box_widget.clip_behavior_value(), ClipBehavior::AntiAlias);
 
@@ -828,12 +830,14 @@ fn should_keep_only_the_last_staged_child_and_preserve_its_layout() {
             .child(
                 SizedBox::new(Size::new(12.0, 8.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             )
             .child(
                 SizedBox::new(Size::new(20.0, 14.0))
                     .unwrap()
-                    .color(Color::BLUE),
+                    .background(Color::BLUE)
+                    .expect("valid color"),
             ),
     );
 
@@ -928,7 +932,8 @@ fn should_emit_no_clip_when_policy_is_none() {
         ClipBehavior::None,
         SizedBox::new(Size::new(20.0, 20.0))
             .unwrap()
-            .color(Color::RED),
+            .background(Color::RED)
+            .expect("valid color"),
     );
 
     // Act
@@ -959,7 +964,8 @@ fn should_leave_shadow_fill_and_border_unclipped_when_child_clip_is_active() {
         .child(
             SizedBox::new(Size::new(40.0, 24.0))
                 .unwrap()
-                .color(Color::RED),
+                .background(Color::RED)
+                .expect("valid color"),
         );
 
     // Act
@@ -1004,7 +1010,8 @@ fn should_accumulate_clips_outer_to_inner_when_decorated_boxes_are_nested() {
             ClipBehavior::AntiAlias,
             SizedBox::new(Size::new(20.0, 20.0))
                 .unwrap()
-                .color(Color::RED),
+                .background(Color::RED)
+                .expect("valid color"),
         )),
     );
 
@@ -1045,7 +1052,8 @@ fn should_keep_child_layout_rect_when_clip_policy_changes() {
     // Arrange
     let child = SizedBox::new(Size::new(40.0, 24.0))
         .unwrap()
-        .color(Color::RED);
+        .background(Color::RED)
+        .expect("valid color");
     let rect_of = |behavior: ClipBehavior| {
         let delta = paint(rounded_box(8.0, behavior, child.clone()));
         match delta.added[0].primitive {
@@ -1076,7 +1084,8 @@ fn should_normalize_oversized_radii_when_child_clip_is_emitted() {
         ClipBehavior::HardEdge,
         SizedBox::new(Size::new(20.0, 10.0))
             .unwrap()
-            .color(Color::RED),
+            .background(Color::RED)
+            .expect("valid color"),
     );
 
     // Act

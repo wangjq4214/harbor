@@ -35,7 +35,7 @@ fn generic_controls_and_actions_need_no_application_models() {
     runtime.set_viewport(Viewport::new(320, 200, 1.0));
     runtime.set_root(move |cx: &mut BuildCx| {
         let action = dispatcher.clone();
-        harbor_widget::view! { ThemeProvider::new(harbor_widget::Theme::default()) => {
+        harbor_widget::view! { ThemeProvider::new(harbor_widget::Theme::default()).expect("valid theme") => {
                 FocusScope::new() => {
                     Actions::handler(move |value: u8| { action.dispatch(value); harbor_widget::ActionOutcome::Consumed }) => {
                         Shortcuts::empty().bind(KeyChord::new(Key::F6, Modifiers::default()), 7u8) => {

@@ -47,7 +47,9 @@ pub mod theme;
 pub mod view;
 pub mod widgets;
 pub use layout::{Alignment, Alignment2D, FlexFit, Insets, LayoutConfigError, PositionAlignment};
-pub use theme::{ControlColors, ControlStyle, ControlVisualState, Theme};
+pub use theme::{
+    AppearanceError, ColorConfigError, ControlColors, ControlStyle, ControlVisualState, Theme,
+};
 pub use widgets::backdrop_filter::{BackdropFilter, BackdropMaterial, EdgeRefraction};
 pub use widgets::decorated_box::DecoratedBox;
 pub use widgets::{
@@ -57,7 +59,7 @@ pub use widgets::{
     LayoutChangedCallback, LayoutObserver, MainAxisAlignment, MouseRegion, Notification, Portal,
     Row, ScrollController, ScrollMetrics, ScrollView, Separator, Shortcuts, Spacer, ThemeProvider,
 };
-pub use widgets::{EditableText, TextField};
+pub use widgets::{EditableText, TextField, VerticalDirection};
 pub use widgets::{align::Align, padding::Padding, sized_box::SizedBox};
 
 #[cfg(test)]

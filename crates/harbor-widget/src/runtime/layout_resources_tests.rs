@@ -173,7 +173,11 @@ fn should_retain_gpu_handles_and_external_allocations_across_flex_resize_and_dpi
                     .max_width(200.0)
                     .child(TextLabel::new("Rail")),
             )
-            .push_child(Separator::vertical().color(Color::WHITE))
+            .push_child(
+                Separator::vertical()
+                    .color(Color::WHITE)
+                    .expect("valid color"),
+            )
             .push_child(
                 Expanded::new().child(
                     DecoratedBox::new(

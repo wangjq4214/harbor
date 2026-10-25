@@ -24,7 +24,7 @@ Browse by the job you need to do. The tables describe available public APIs and 
 
 | Need | Available control | Constraints |
 | --- | --- | --- |
-| Single-line text | `widgets::text_label::TextLabel`, `.color(...)`, `.ellipsis()` | Renderer-advance label, not rich text or a general shaping/layout engine |
+| Single-line text | `widgets::text_label::TextLabel`, `.foreground(...)`, `.ellipsis()` | Renderer-advance label, not rich text or a general shaping/layout engine |
 | Built-in vector artwork | `Icon`, `LucideIcon` | Built-in Lucide inventory, not arbitrary SVG loading |
 | Composable activation | `Button::new()`, `Button::text(text)`, `Button::icon(icon, text)` | Single replaceable child/content slot; `.on_click`, `.disabled`, `.selected`, `.focus_handle`, `.style` |
 | Icon activation | `IconButton::new(icon, label)` | Icon-only; label is non-painted metadata, not proof of a native accessibility bridge |
@@ -32,7 +32,7 @@ Browse by the job you need to do. The tables describe available public APIs and 
 | Pointer-specific response | `MouseRegion` | Lower-level pointer hooks/cursor behavior; use an existing control when activation is the goal |
 | Transient dismissible message | `Notification` | A reusable message composition, not a global notification center, timer service or OS toast API |
 
-Button/IconButton `on_click`, IconButton `color_with`, MouseRegion `on_enter`/`on_exit` and Notification dismissal accept UI-local `Fn(...) + 'static` captures, stored with `Rc`. Use direct Signals for local UI state and Dispatcher for business intent; see [Learn](learn.md). Button and IconButton accept `.focus_handle(handle)` on their existing interactive region, without another focus wrapper.
+Button/IconButton `on_click`, IconButton `foreground_with`, MouseRegion `on_enter`/`on_exit` and Notification dismissal accept UI-local `Fn(...) + 'static` captures, stored with `Rc`. Use direct Signals for local UI state and Dispatcher for business intent; see [Learn](learn.md). Button and IconButton accept `.focus_handle(handle)` on their existing interactive region, without another focus wrapper.
 
 ### Button content and appearance
 
@@ -49,10 +49,10 @@ use harbor_widget::scene::primitive::Color;
 let controls = view! { Column::new() => {
     Button::text("Save");
     Button::icon(LucideIcon::Plus, "New");
-    Button::new() => { TextLabel::new("Custom").color(Color::GREEN); }
+    Button::new() => { TextLabel::new("Custom").foreground(Color::GREEN); }
     Button::new().content(|cx, state| {
         TextLabel::new(if state.pressed { "Release" } else { "Press" })
-            .color(Color::BLUE).build(cx)
+            .foreground(Color::BLUE).expect("finite foreground").build(cx)
     });
 }};
 ```
@@ -78,8 +78,47 @@ first; wider layouts recover the retained full text. Parent constraints remain
 authoritative even below padding/icon size. Custom content chooses its own
 wrapping/truncation. IconButton stays icon-only: its label is metadata, while
 Button's `icon(icon, text)` paints visible text. IconButton's `icon_size` and
-`color_with` overrides are unchanged. Existing styled InteractiveRegion
+`foreground_with` overrides retain their scope and interaction timing. Query the non-painted label with `get_label()`. Existing styled InteractiveRegion
 compositions need no new surface wrapper.
+
+### Appearance validation
+
+Direct appearance inputs return `Result`: `Icon::size`, `IconButton::icon_size`,
+`TextField::padding`, `Separator::thickness`, ordinary `foreground` setters,
+`SizedBox/Align/Padding/Row/Column/Flex/Stack::background`, `Separator::color`,
+control `style` setters, and
+`ThemeProvider::new`. Dimensions and theme spacing must be finite and nonnegative
+(zero is legal). Solid colors require finite RGBA components, not [0,1] bounds.
+`ControlStyle::validate()` checks every state and focus-ring color;
+`Theme::validate()` also checks both roles and spacing. Public configuration
+structs are raw inputs, not validation tokens. Errors name the field and rule.
+
+`ThemeProvider::from_signal` validates the whole theme on every consumption,
+including the first one. `IconButton::foreground_with` validates every consumed
+result. Invalid dynamic values panic with the field; there is no fallback or
+post-panic Runtime recovery promise. Providers retain their original UI-local
+capture and evaluation timing.
+
+Handle direct errors before attaching children or callbacks. Ordinary `view!`
+handles only the **final node** Result, panicking with error and source location;
+it does not unwrap intermediate chains:
+
+```rust
+use harbor_widget::{Icon, LucideIcon, SizedBox, Theme, ThemeProvider, view};
+use harbor_widget::scene::primitive::Color;
+
+// Recoverable direct calls (inside a Result-returning function):
+let icon = Icon::new(LucideIcon::Plus).size(18.0)?;
+let icon = icon.foreground(Color::WHITE)?;
+let themed = ThemeProvider::new(Theme::default())?.child(icon);
+
+// Final fallible nodes work without an intermediate unwrap:
+let box_view = view! { SizedBox::width(40.0).unwrap().background(Color::BLACK); };
+```
+
+A legal finite scalar is not a guarantee that its derived layout combinations
+fit in f32: actual overflow remains a layout error, checked before parent clamps.
+Legal unbounded parent maxima and existing layout scalar rules are unchanged.
 
 ## Edit a single line
 
@@ -92,7 +131,7 @@ compositions need no new surface wrapper.
 TextField and EditableText are enabled by default. `.disabled(true)` disables and `.disabled(false)` enables; the old `.enabled(value)` builder is removed (migrate to `.disabled(!value)`). Read-only remains separate and allows selection/copy.
 Use `TextField::new(controller.clone())`, not a parallel application string editor. It is already focusable: assign `.focus_handle(handle)` directly instead of adding another focus stop.
 
-Current behavior includes grapheme-safe navigation/replacement/deletion, selection drag, local Windows editing chords, undo/redo and tagged clipboard completion. Public positions are **UTF-8 byte offsets normalized to extended grapheme boundaries**, not character counts. `on_changed` reports user committed-text changes only; programmatic replacement, selection movement and preedit do not fire it. `on_submitted` receives Enter modifiers; `on_escape` leaves cancellation policy to the consumer.
+Current behavior includes grapheme-safe navigation/replacement/deletion, selection drag, local Windows editing chords, undo/redo and tagged clipboard completion. Public positions are **UTF-8 byte offsets normalized to extended grapheme boundaries**, not character counts. `on_change` reports user committed-text changes only; programmatic replacement, selection movement and preedit do not fire it. `on_submit` receives Enter modifiers; `on_escape` leaves cancellation policy to the consumer.
 
 This is single-line plain text, not multiline, password or rich-text editing. See the [input contract](../widget-input.md).
 

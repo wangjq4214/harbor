@@ -35,9 +35,10 @@ impl TextLabel {
         self
     }
 
-    pub fn color(mut self, color: Color) -> Self {
+    pub fn foreground(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("TextLabel.foreground", color)?;
         self.color = color;
-        self
+        Ok(self)
     }
 }
 
@@ -347,7 +348,7 @@ mod tests {
             b: 0.0,
             a: 1.0,
         };
-        let label = TextLabel::new("X").color(color);
+        let label = TextLabel::new("X").foreground(color).expect("valid color");
         let rect = Rect::from_min_size(Point::ZERO, Size::new(10.0, 20.0));
         let prims = label.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         match &prims[0] {

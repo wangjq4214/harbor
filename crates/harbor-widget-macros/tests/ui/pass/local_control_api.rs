@@ -20,7 +20,7 @@ fn main() {
     let _ = IconButton::new(LucideIcon::Plus, "Local")
         .focus_handle(FocusHandle::new())
         .on_click(move |_| click.set(1))
-        .color_with(move |_| {
+        .foreground_with(move |_| {
             color.set(2);
             Color::RED
         });

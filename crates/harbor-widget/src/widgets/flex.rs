@@ -87,7 +87,7 @@ pub struct Flex {
     pub axis: Axis,
     pub main_axis_alignment: MainAxisAlignment,
     pub cross_axis_alignment: Alignment,
-    pub background: Option<Color>,
+    background: Option<Color>,
     pub(crate) gap: f32,
     pub(crate) children: Vec<View>,
 }
@@ -136,9 +136,10 @@ impl Flex {
         self
     }
 
-    pub fn background(mut self, color: Color) -> Self {
+    pub fn background(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("Flex.background", color)?;
         self.background = Some(color);
-        self
+        Ok(self)
     }
 
     /// Replaces the ordered child list, clearing it for empty input.

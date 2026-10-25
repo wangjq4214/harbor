@@ -69,9 +69,10 @@ fn search_bar(
     let entry = TextField::new(input)
         .decoration(appearance.input())
         .padding(6.0)
+        .expect("valid field padding")
         .placeholder("Find…")
         .focus_handle(controller.search_focus)
-        .on_changed(move |_| {
+        .on_change(move |_| {
             if !changed_ui
                 .store
                 .state()
@@ -90,7 +91,7 @@ fn search_bar(
                     generation,
                 ));
         })
-        .on_submitted(move |modifiers| {
+        .on_submit(move |modifiers| {
             submit.dispatch(AppCommandRequest::popup(
                 if modifiers.shift {
                     AppCommand::SearchPrevious
@@ -121,7 +122,7 @@ fn search_bar(
                 // Status text changes frequently; reserve its slot instead of resizing the editor.
                 SizedBox::width(120.0) => {
                     harbor_widget::widgets::text_label::TextLabel::new(status)
-                        .color(cx.theme().button.normal.foreground).ellipsis();
+                        .foreground(cx.theme().button.normal.foreground).expect("valid color").ellipsis();
                 }
                 button(LucideIcon::ChevronUp, AppCommand::SearchPrevious);
                 button(LucideIcon::ChevronDown, AppCommand::SearchNext);
@@ -154,10 +155,13 @@ fn search_icon_button(
     style.radius = 12.0; // Match the search panel's outer corners.
     InteractiveRegion::new()
         .style(style.clone())
+        .expect("valid control style")
         .content(move |cx, state| {
             let content = Icon::new(icon)
                 .size(style.icon_size)
-                .color(style.resolve_state(&state).foreground)
+                .expect("valid icon size")
+                .foreground(style.resolve_state(&state).foreground)
+                .expect("valid color")
                 .build(cx);
             let content = Padding::new(Insets {
                 top: vertical_padding,
@@ -539,12 +543,15 @@ pub(crate) fn root_padding(backdrop_available: bool, fallback_rgb: [f32; 3]) -> 
     if backdrop_available {
         Padding::all(4.0).unwrap()
     } else {
-        Padding::all(4.0).unwrap().background(Color {
-            r: fallback[0],
-            g: fallback[1],
-            b: fallback[2],
-            a: 1.0,
-        })
+        Padding::all(4.0)
+            .unwrap()
+            .background(Color {
+                r: fallback[0],
+                g: fallback[1],
+                b: fallback[2],
+                a: 1.0,
+            })
+            .expect("finite background")
     }
 }
 

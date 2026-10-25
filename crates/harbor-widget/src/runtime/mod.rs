@@ -1182,10 +1182,15 @@ mod tests {
                             .child(
                                 SizedBox::new(Size::new(200.0, 80.0))
                                     .unwrap()
-                                    .color(Color::RED),
+                                    .background(Color::RED)
+                                    .expect("valid color"),
                             ),
                     )
-                    .push_child(Separator::vertical().color(Color::WHITE))
+                    .push_child(
+                        Separator::vertical()
+                            .color(Color::WHITE)
+                            .expect("valid color"),
+                    )
                     .push_child(
                         Expanded::new()
                             .child(CustomPaint::new(42).handler(handler).schedule(schedule)),
@@ -1373,7 +1378,8 @@ mod tests {
         rt.set_root(
             SizedBox::new(Size::new(100.0, 50.0))
                 .unwrap()
-                .color(Color::RED),
+                .background(Color::RED)
+                .expect("valid color"),
         );
         let scene_ids: Vec<u64> = rt.scene_graph.items().iter().map(|item| item.id).collect();
 
@@ -1410,11 +1416,12 @@ mod tests {
             fn build(&self, cx: &mut BuildCx) -> View {
                 SizedBox::new(Size::new(100.0, 50.0))
                     .unwrap()
-                    .color(if self.0.get() {
+                    .background(if self.0.get() {
                         Color::BLUE
                     } else {
                         Color::RED
                     })
+                    .expect("valid color")
                     .build(cx)
             }
         }
@@ -1462,7 +1469,8 @@ mod tests {
                     col = col.push_child(
                         SizedBox::new(Size::new(50.0, 20.0))
                             .unwrap()
-                            .color(Color::RED)
+                            .background(Color::RED)
+                            .expect("valid color")
                             .keyed(*key),
                     );
                 }
@@ -1542,7 +1550,8 @@ mod tests {
                     col = col.push_child(
                         SizedBox::new(Size::new(50.0, 20.0))
                             .unwrap()
-                            .color(Color::RED)
+                            .background(Color::RED)
+                            .expect("valid color")
                             .keyed(*key),
                     );
                 }

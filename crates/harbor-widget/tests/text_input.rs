@@ -70,7 +70,7 @@ fn keyboard_replacement_history_and_notifications_are_editor_local() {
     let changes = Rc::new(Cell::new(0));
     let observed = changes.clone();
     let mut runtime =
-        mount(TextField::new(c.clone()).on_changed(move |_| observed.set(observed.get() + 1)));
+        mount(TextField::new(c.clone()).on_change(move |_| observed.set(observed.get() + 1)));
     press(&mut runtime, Key::Home);
     press(&mut runtime, Key::ArrowRight);
     press(&mut runtime, Key::Character('X'));
@@ -160,8 +160,8 @@ fn ime_composition_does_not_notify_or_double_submit_and_loss_clears_it() {
     let (changes, submitted) = (changed.clone(), submits.clone());
     let mut runtime = mount(
         EditableText::new(c.clone())
-            .on_changed(move |_| changes.set(changes.get() + 1))
-            .on_submitted(move |_| submitted.set(submitted.get() + 1)),
+            .on_change(move |_| changes.set(changes.get() + 1))
+            .on_submit(move |_| submitted.set(submitted.get() + 1)),
     );
     c.set_selection(TextSelection::collapsed(1));
     runtime.dispatch(UiEvent::ImePreedit(ImePreedit::new("ni", Some((0, 2)))));
@@ -418,5 +418,97 @@ fn both_editor_layers_preserve_defaults_readonly_copy_and_disabled_rebuilds() {
         runtime.dispatch(ctrl('a'));
         press(&mut runtime, Key::Character('z'));
         assert_eq!(controller.text(), "z");
+    }
+}
+
+#[test]
+fn explicit_vertical_directions_and_text_callbacks_keep_ime_priority_data_and_submit_modifiers() {
+    use harbor_widget::VerticalDirection::{Down, Up};
+    use std::cell::RefCell;
+    for decorated in [false, true] {
+        let controller = TextEditingController::new("a");
+        let directions = Rc::new(RefCell::new(Vec::new()));
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let submits = Rc::new(RefCell::new(Vec::new()));
+        let (navigate, changed, submitted) = (directions.clone(), changes.clone(), submits.clone());
+        let observed = controller.clone();
+        let mut runtime = if decorated {
+            mount(
+                TextField::new(controller.clone())
+                    .on_vertical_navigation(move |direction| navigate.borrow_mut().push(direction))
+                    .on_change(move |text| {
+                        changed
+                            .borrow_mut()
+                            .push((text.to_owned(), observed.text()))
+                    })
+                    .on_submit(move |modifiers| submitted.borrow_mut().push(modifiers)),
+            )
+        } else {
+            mount(
+                EditableText::new(controller.clone())
+                    .on_vertical_navigation(move |direction| navigate.borrow_mut().push(direction))
+                    .on_change(move |text| {
+                        changed
+                            .borrow_mut()
+                            .push((text.to_owned(), observed.text()))
+                    })
+                    .on_submit(move |modifiers| submitted.borrow_mut().push(modifiers)),
+            )
+        };
+        press(&mut runtime, Key::ArrowUp);
+        press(&mut runtime, Key::ArrowDown);
+        assert_eq!(&*directions.borrow(), &[Up, Down]);
+        for modifiers in [
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+            Modifiers {
+                meta: true,
+                ..Default::default()
+            },
+        ] {
+            runtime.dispatch(key(Key::ArrowDown, modifiers));
+        }
+        assert_eq!(&*directions.borrow(), &[Up, Down]);
+        runtime.dispatch(UiEvent::ImePreedit(ImePreedit::new("draft", None)));
+        press(&mut runtime, Key::ArrowUp);
+        press(&mut runtime, Key::ArrowDown);
+        press(&mut runtime, Key::Enter);
+        assert_eq!(&*directions.borrow(), &[Up, Down]);
+        assert!(submits.borrow().is_empty());
+        assert!(changes.borrow().is_empty());
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("你".into())));
+        assert_eq!(
+            &*changes.borrow(),
+            &[("a你".to_string(), "a你".to_string())]
+        );
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        }));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        runtime.dispatch(key(Key::Enter, shift));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: Key::Enter,
+            modifiers: shift,
+        }));
+        press(&mut runtime, Key::NumpadEnter);
+        assert_eq!(&*submits.borrow(), &[shift, Modifiers::default()]);
+        controller.set_text("programmatic");
+        controller.set_selection(TextSelection::collapsed(0));
+        update(&mut runtime);
+        assert_eq!(changes.borrow().len(), 1);
     }
 }

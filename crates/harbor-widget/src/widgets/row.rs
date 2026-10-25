@@ -52,9 +52,10 @@ impl Row {
         self
     }
 
-    pub fn background(mut self, color: Color) -> Self {
-        self.inner = self.inner.background(color);
-        self
+    pub fn background(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("Row.background", color)?;
+        self.inner = self.inner.background(color)?;
+        Ok(self)
     }
 
     /// Replaces the ordered child list, clearing it for empty input.
@@ -304,7 +305,9 @@ mod tests {
 
     #[test]
     fn row_background_paint() {
-        let row = Row::new().background(Color::BLUE);
+        let row = Row::new()
+            .background(Color::BLUE)
+            .expect("finite background");
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 100.0));
         let prims = row.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);

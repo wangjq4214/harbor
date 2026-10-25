@@ -274,7 +274,7 @@ fn layout_only_resize_keeps_identity_and_color_covers_allocated_rectangle() {
     runtime.set_viewport(Viewport::new(600, 100, 1.0));
     runtime.set_root(move |_: &mut BuildCx| {
         output.set(output.get() + 1);
-        view! { SizedBox::width(440.0).map(|s| s.color(harbor_widget::scene::primitive::Color::RED)) => { TextLabel::new("content"); } }
+        view! { SizedBox::width(440.0).map(|s| s.background(harbor_widget::scene::primitive::Color::RED).expect("valid color")) => { TextLabel::new("content"); } }
     });
     update(&mut runtime);
     let root = runtime.root_id().unwrap();

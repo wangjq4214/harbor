@@ -165,11 +165,15 @@ fn macro_and_builder_have_identical_geometry_scenes_and_activation() {
     let b = runtime(view! { Button::icon(LucideIcon::Plus, "New"); }, 240);
     assert_eq!(primitives(&a), primitives(&b));
     let a = runtime(
-        Button::text("discard").child(TextLabel::new("Custom").color(Color::RED)),
+        Button::text("discard").child(
+            TextLabel::new("Custom")
+                .foreground(Color::RED)
+                .expect("valid color"),
+        ),
         240,
     );
     let b = runtime(
-        view! { Button::text("discard") => { TextLabel::new("Custom").color(Color::RED); } },
+        view! { Button::text("discard") => { TextLabel::new("Custom").foreground(Color::RED).expect("valid color"); } },
         240,
     );
     assert_eq!(primitives(&a), primitives(&b));
@@ -279,9 +283,11 @@ fn builtins_center_but_custom_colors_and_region_padding_remain_owned_by_callers(
         32.0 + 20.0 + Theme::default().spacing + 2.0 * icon_rt.text_metrics().cell_width
     );
     let rt = runtime(
-        Button::text("old")
-            .disabled(true)
-            .child(TextLabel::new("Custom").color(Color::RED)),
+        Button::text("old").disabled(true).child(
+            TextLabel::new("Custom")
+                .foreground(Color::RED)
+                .expect("valid color"),
+        ),
         240,
     );
     assert!(primitives(&rt).iter().any(|p| matches!(
@@ -294,6 +300,7 @@ fn builtins_center_but_custom_colors_and_region_padding_remain_owned_by_callers(
     let rt = runtime(
         harbor_widget::InteractiveRegion::new()
             .style(Theme::default().button)
+            .expect("valid control style")
             .child(
                 harbor_widget::widgets::padding::Padding::all(3.0)
                     .unwrap()
@@ -368,7 +375,9 @@ fn same_style_and_state_drive_builtin_text_icon_and_surface_and_theme_rebuilds()
     let mut override_style = Theme::default().button;
     override_style.normal.foreground = Color::GREEN;
     let rt = runtime(
-        Button::icon(LucideIcon::Plus, "Override").style(override_style),
+        Button::icon(LucideIcon::Plus, "Override")
+            .style(override_style)
+            .expect("valid control style"),
         240,
     );
     check(&rt, Color::GREEN);
@@ -486,7 +495,7 @@ fn content_has_independent_hooks_theme_and_subscriptions_and_releases_old_captur
         let mut theme = Theme::default();
         theme.button.normal.foreground = Color::GREEN;
         let mut rt = runtime(
-            ThemeProvider::new(theme).child(move |cx: &mut BuildCx| {
+            ThemeProvider::new(theme).expect("valid theme").child(move |cx: &mut BuildCx| {
                 cx.track(&observed_mode);
                 let parent_hook = cx.use_state(|| 77u32);
                 assert_eq!(*parent_hook.read(), 77);
@@ -502,7 +511,7 @@ fn content_has_independent_hooks_theme_and_subscriptions_and_releases_old_captur
                     *state.borrow_mut() = Some(local.clone());
                     builds.set(builds.get() + 1);
                     TextLabel::new(format!("{}", *source.read() + *local.read()))
-                        .color(cx.theme().button.normal.foreground)
+                        .foreground(cx.theme().button.normal.foreground).expect("valid color")
                         .build(cx)
                 });
                 match *observed_mode.read() {

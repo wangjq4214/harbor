@@ -152,7 +152,10 @@ fn shortcut_badges(
         bound = true;
         let mut keys = Row::new().gap(4.0).unwrap();
         for key in chord_keys(chord) {
-            let label = TextLabel::new(key).color(foreground).build(cx);
+            let label = TextLabel::new(key)
+                .foreground(foreground)
+                .expect("valid color")
+                .build(cx);
             keys = keys.push_child(
                 DecoratedBox::new(keycap.clone())
                     .child(
@@ -172,7 +175,12 @@ fn shortcut_badges(
         shortcuts = shortcuts.push_child(keys.build(cx));
     }
     if !bound {
-        shortcuts = shortcuts.push_child(TextLabel::new("Unbound").color(foreground).build(cx));
+        shortcuts = shortcuts.push_child(
+            TextLabel::new("Unbound")
+                .foreground(foreground)
+                .expect("valid color")
+                .build(cx),
+        );
     }
     shortcuts.build(cx)
 }
@@ -349,7 +357,7 @@ impl WorkspaceUiController {
         }
     }
 
-    fn palette_navigate(&self, generation: u64, down: bool) {
+    fn palette_navigate(&self, generation: u64, direction: harbor_widget::VerticalDirection) {
         let mut state = self.store.state().read().clone();
         if state
             .popups
@@ -360,7 +368,7 @@ impl WorkspaceUiController {
                 let count = candidates(&palette.input.text()).len();
                 palette.selected = if count == 0 {
                     0
-                } else if down {
+                } else if direction == harbor_widget::VerticalDirection::Down {
                     (palette.selected.min(count - 1) + 1) % count
                 } else {
                     (palette.selected.min(count - 1) + count - 1) % count
@@ -465,11 +473,12 @@ fn palette_panel(
     let input = TextField::new(palette.input.clone())
         .decoration(appearance.input())
         .padding(6.0)
+        .expect("valid field padding")
         .placeholder("Type a command label or ID…")
         .focus_handle(controller.palette_focus)
-        .on_changed(move |_| changed.palette_changed(generation))
-        .on_vertical_navigation(move |down| navigate.palette_navigate(generation, down))
-        .on_submitted(move |_| submit.palette_submit(generation))
+        .on_change(move |_| changed.palette_changed(generation))
+        .on_vertical_navigation(move |direction| navigate.palette_navigate(generation, direction))
+        .on_submit(move |_| submit.palette_submit(generation))
         .on_escape(move || {
             close.dispatch(AppCommandRequest::shortcut(
                 AppCommand::CloseCommandPalette(generation),
@@ -514,7 +523,8 @@ fn palette_panel(
     if entries.is_empty() {
         rows = rows.push_child(
             TextLabel::new("No matching commands")
-                .color(foreground)
+                .foreground(foreground)
+                .expect("valid color")
                 .build(cx),
         );
     } else {
@@ -528,7 +538,8 @@ fn palette_panel(
                 foreground
             };
             let label = TextLabel::new(entry.label)
-                .color(foreground)
+                .foreground(foreground)
+                .expect("valid color")
                 .ellipsis()
                 .build(cx);
             let shortcuts = shortcut_badges(cx, bindings, entry.command, foreground);
@@ -566,6 +577,7 @@ fn palette_panel(
             style.disabled = transparent;
             let region = InteractiveRegion::new()
                 .style(style)
+                .expect("valid control style")
                 .focusable(false)
                 .selected(index == palette.selected)
                 .disabled(disabled)
@@ -623,7 +635,8 @@ fn palette_panel(
                 palette.selected + 1,
                 entries.len()
             ))
-            .color(foreground)
+            .foreground(foreground)
+            .expect("valid color")
             .build(cx),
         );
     }

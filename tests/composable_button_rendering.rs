@@ -233,7 +233,12 @@ fn measured_button_geometry_and_rendered_samples() {
                 let button = match form {
                     0 => Button::text(source),
                     1 => Button::icon(LucideIcon::Plus, source),
-                    2 => Button::new().child(TextLabel::new(source).ellipsis().color(Color::GREEN)),
+                    2 => Button::new().child(
+                        TextLabel::new(source)
+                            .ellipsis()
+                            .foreground(Color::GREEN)
+                            .expect("valid color"),
+                    ),
                     _ => Button::new().content(move |cx, state| {
                         TextLabel::new(if state.pressed {
                             "Pressed 中文"
@@ -241,7 +246,8 @@ fn measured_button_geometry_and_rendered_samples() {
                             source
                         })
                         .ellipsis()
-                        .color(Color::BLUE)
+                        .foreground(Color::BLUE)
+                        .expect("valid color")
                         .build(cx)
                     }),
                 }

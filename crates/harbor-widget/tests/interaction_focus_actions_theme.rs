@@ -306,7 +306,9 @@ fn disabled_focus_wrapper_suppresses_focusable_descendants() {
 fn root_traversal_enters_a_nested_focus_scope() {
     let mut runtime = Runtime::new();
     runtime.set_root(
-        ThemeProvider::new(Theme::default()).child(FocusScope::new().child(Button::text("Nested"))),
+        ThemeProvider::new(Theme::default())
+            .expect("valid theme")
+            .child(FocusScope::new().child(Button::text("Nested"))),
     );
     runtime.update(now());
 
@@ -623,7 +625,11 @@ fn theme_provider_overrides_button_primitives() {
     let mut theme = Theme::default();
     theme.button.normal.background = Color::RED;
     let mut runtime = Runtime::new();
-    runtime.set_root(ThemeProvider::new(theme).child(Button::text("Themed")));
+    runtime.set_root(
+        ThemeProvider::new(theme)
+            .expect("valid theme")
+            .child(Button::text("Themed")),
+    );
     runtime.update(now());
 
     let delta = runtime.pending_delta().expect("initial scene delta");
@@ -649,7 +655,11 @@ fn disabled_button_uses_the_resolved_theme_foreground() {
     theme.button.normal.foreground = Color::WHITE;
     theme.button.disabled.foreground = Color::RED;
     let mut runtime = Runtime::new();
-    runtime.set_root(ThemeProvider::new(theme).child(Button::text("Disabled").disabled(true)));
+    runtime.set_root(
+        ThemeProvider::new(theme)
+            .expect("valid theme")
+            .child(Button::text("Disabled").disabled(true)),
+    );
     runtime.update(now());
 
     assert!(runtime.pending_delta().is_some_and(|delta| {

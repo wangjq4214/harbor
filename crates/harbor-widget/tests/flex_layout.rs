@@ -124,11 +124,22 @@ fn rail(axis: Axis, extent: f32) -> Flex {
     Flex::new(axis)
         .cross_axis_alignment(Alignment::Stretch)
         .push_child(
-            bounds(axis, extent, extent)
-                .child(SizedBox::new(Size::ZERO).unwrap().color(Color::RED)),
+            bounds(axis, extent, extent).child(
+                SizedBox::new(Size::ZERO)
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color"),
+            ),
         )
-        .push_child(separator.color(Color::BLACK))
-        .push_child(Expanded::new().child(SizedBox::new(Size::ZERO).unwrap().color(Color::BLUE)))
+        .push_child(separator.color(Color::BLACK).expect("valid color"))
+        .push_child(
+            Expanded::new().child(
+                SizedBox::new(Size::ZERO)
+                    .unwrap()
+                    .background(Color::BLUE)
+                    .expect("valid color"),
+            ),
+        )
 }
 
 #[test]
@@ -398,6 +409,7 @@ fn facades_preserve_type_identity_existing_backgrounds_and_shared_flex_behavior(
     let runtime = mount(
         Row::new()
             .background(Color::RED)
+            .expect("finite background")
             .gap(1.0)
             .unwrap()
             .main_axis_alignment(MainAxisAlignment::End)
@@ -424,6 +436,7 @@ fn facades_preserve_type_identity_existing_backgrounds_and_shared_flex_behavior(
     let runtime = mount(
         Column::new()
             .background(Color::BLUE)
+            .expect("finite background")
             .gap(1.0)
             .unwrap()
             .main_axis_alignment(MainAxisAlignment::Start)
@@ -506,14 +519,7 @@ fn metadata_does_not_tunnel_and_conflicting_immediate_wrappers_are_diagnosed() {
 fn invalid_widget_numeric_values_abort_without_invalid_geometry_or_retry_loop() {
     for value in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         assert!(Row::new().gap(value).is_err());
-        let runtime = mount(
-            Separator::vertical().thickness(value),
-            Size::new(100.0, 50.0),
-        );
-        assert_eq!(
-            fiber(&runtime, &[]).layout_error(),
-            Some(LayoutError::InvalidConstraints)
-        );
+        assert!(Separator::vertical().thickness(value).is_err());
     }
     let runtime = mount(
         ConstrainedBox::new().min_width(200.0).max_width(100.0),

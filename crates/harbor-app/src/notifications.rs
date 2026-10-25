@@ -39,6 +39,7 @@ pub(crate) fn configuration_notification(
                 ..Default::default()
             })
             .close_button_style(glass_icon_button_style(cx))
+            .expect("valid close style")
             .build(cx);
         let panel = appearance.panel(cx, card);
         Portal::new()

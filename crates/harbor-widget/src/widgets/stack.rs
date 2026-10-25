@@ -6,7 +6,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 /// Overlay container. Positions all children at the same origin (0,0).
 #[derive(Clone)]
 pub struct Stack {
-    pub background: Option<Color>,
+    background: Option<Color>,
     children: Vec<View>,
 }
 
@@ -24,9 +24,10 @@ impl Stack {
         }
     }
 
-    pub fn background(mut self, color: Color) -> Self {
+    pub fn background(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("Stack.background", color)?;
         self.background = Some(color);
-        self
+        Ok(self)
     }
 
     /// Replaces the ordered child list, clearing it for empty input.
@@ -139,7 +140,9 @@ mod tests {
 
     #[test]
     fn stack_background_paint() {
-        let stack = Stack::new().background(Color::GREEN);
+        let stack = Stack::new()
+            .background(Color::GREEN)
+            .expect("finite background");
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 100.0));
         let prims = stack.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);

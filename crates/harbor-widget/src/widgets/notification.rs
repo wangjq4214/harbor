@@ -149,9 +149,13 @@ impl Notification {
     }
 
     /// Appearance of the vector close control. It remains non-focus-stealing.
-    pub fn close_button_style(mut self, style: ControlStyle) -> Self {
+    pub fn close_button_style(
+        mut self,
+        style: ControlStyle,
+    ) -> Result<Self, crate::theme::AppearanceError> {
+        style.validate()?;
         self.close_style = Some(style);
-        self
+        Ok(self)
     }
 
     pub fn style(mut self, style: NotificationStyle) -> Self {
@@ -319,7 +323,9 @@ impl AnyView for Card {
         items.extend(
             Icon::new(LucideIcon::X)
                 .size(self.close_style.icon_size)
-                .color(colors.foreground)
+                .expect("validated close icon size")
+                .foreground(colors.foreground)
+                .expect("validated close foreground")
                 .paint_primitives(close, metrics),
         );
         if let Some(title) = &self.title {

@@ -39,14 +39,11 @@ impl TextField {
         self.decoration = decoration;
         self
     }
-    /// Negative/non-finite padding is normalized to zero.
-    pub fn padding(mut self, padding: f32) -> Self {
-        self.padding = if padding.is_finite() {
-            padding.max(0.0)
-        } else {
-            0.0
-        };
-        self
+    /// Sets finite, nonnegative padding. Zero is legal.
+    pub fn padding(mut self, padding: f32) -> Result<Self, crate::LayoutConfigError> {
+        crate::layout::configuration::validate_scalar("TextField.padding", padding)?;
+        self.padding = padding;
+        Ok(self)
     }
     /// Disables editing and focus eligibility. Enabled by default.
     /// Read-only is separate and still permits selection and copy.
@@ -62,20 +59,21 @@ impl TextField {
         self.editor = self.editor.focus_handle(handle);
         self
     }
-    pub fn color(mut self, color: Color) -> Self {
-        self.editor = self.editor.color(color);
-        self
+    pub fn foreground(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("TextField.foreground", color)?;
+        self.editor = self.editor.foreground(color)?;
+        Ok(self)
     }
     pub fn placeholder(mut self, text: impl Into<String>) -> Self {
         self.editor = self.editor.placeholder(text);
         self
     }
-    pub fn on_changed(mut self, callback: impl Fn(&str) + 'static) -> Self {
-        self.editor = self.editor.on_changed(callback);
+    pub fn on_change(mut self, callback: impl Fn(&str) + 'static) -> Self {
+        self.editor = self.editor.on_change(callback);
         self
     }
-    pub fn on_submitted(mut self, callback: impl Fn(Modifiers) + 'static) -> Self {
-        self.editor = self.editor.on_submitted(callback);
+    pub fn on_submit(mut self, callback: impl Fn(Modifiers) + 'static) -> Self {
+        self.editor = self.editor.on_submit(callback);
         self
     }
     pub fn on_escape(mut self, callback: impl Fn() + 'static) -> Self {
@@ -83,7 +81,10 @@ impl TextField {
         self
     }
     /// Observe vertical navigation after the editor's IME handling.
-    pub fn on_vertical_navigation(mut self, callback: impl Fn(bool) + 'static) -> Self {
+    pub fn on_vertical_navigation(
+        mut self,
+        callback: impl Fn(crate::VerticalDirection) + 'static,
+    ) -> Self {
         self.editor = self.editor.on_vertical_navigation(callback);
         self
     }

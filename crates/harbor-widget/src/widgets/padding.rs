@@ -10,7 +10,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 #[derive(Clone)]
 pub struct Padding {
     insets: Insets,
-    pub background: Option<Color>,
+    background: Option<Color>,
     child: Option<View>,
 }
 
@@ -32,9 +32,10 @@ impl Padding {
         self.insets
     }
 
-    pub fn background(mut self, color: Color) -> Self {
+    pub fn background(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("Padding.background", color)?;
         self.background = Some(color);
-        self
+        Ok(self)
     }
 
     /// Sets this padding's only child, replacing any previously staged child.
@@ -289,7 +290,8 @@ mod tests {
             left: 5.0,
         })
         .unwrap()
-        .background(Color::RED);
+        .background(Color::RED)
+        .expect("finite background");
         let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 50.0));
         let prims = padding.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);

@@ -2193,7 +2193,17 @@ mod decoration_tests {
         assert_eq!(root.insets().right, 4.0);
         assert_eq!(root.insets().bottom, 4.0);
         assert_eq!(root.insets().left, 4.0);
-        assert_opaque_fallback_color(root.background.expect("opaque root background"));
+        let mut runtime = Runtime::new();
+        runtime.set_root(root);
+        runtime.update(Instant::now());
+        let items = painted_items(&runtime);
+        let [item] = items.as_slice() else {
+            panic!("one opaque root background quad");
+        };
+        let Primitive::Quad { color, .. } = item.primitive else {
+            panic!("opaque root background quad");
+        };
+        assert_opaque_fallback_color(color);
     }
 
     #[test]
@@ -2202,7 +2212,14 @@ mod decoration_tests {
             true,
             harbor_config::WindowBackdropStyle::default().fallback,
         );
-        assert_eq!(root.background, None);
+        let mut runtime = Runtime::new();
+        runtime.set_root(root);
+        runtime.update(Instant::now());
+        assert!(
+            runtime
+                .pending_delta()
+                .is_none_or(|delta| delta.added.is_empty())
+        );
     }
 
     #[test]

@@ -23,7 +23,7 @@ fn main() {
 
     let _ = view! {
         Column::new() => {
-            SizedBox::new(Size::new(1.0, 2.0)).unwrap().color(harbor_widget::scene::primitive::Color::RED);
+            SizedBox::new(Size::new(1.0, 2.0)).unwrap().background(harbor_widget::scene::primitive::Color::RED).expect("valid color");
             StructLeaf { size: Size::new(2.0, 2.0) };
             {
                 let size = Size::new(2.0, 3.0);

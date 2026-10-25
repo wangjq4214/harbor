@@ -5,7 +5,7 @@ use crate::input::event::{
     FocusEvent, Key, KeyboardEvent, PointerBoundaryKind, PointerButton, PointerPhase, UiEvent,
 };
 use crate::input::event_ctx::{EventCtx, EventHandled};
-use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::layout::{BoxConstraints, Rect};
 use crate::scene::primitive::Primitive;
 use crate::signal::Signal;
 use crate::theme::ControlStyle;
@@ -114,9 +114,10 @@ impl InteractiveRegion {
     }
 
     /// Overrides control appearance without replacing the inherited theme.
-    pub fn style(mut self, style: ControlStyle) -> Self {
+    pub fn style(mut self, style: ControlStyle) -> Result<Self, crate::theme::AppearanceError> {
+        style.validate()?;
         self.style = Some(style);
-        self
+        Ok(self)
     }
 
     /// Assigns a stable focus identity while retaining nested control tab stops.
@@ -270,13 +271,22 @@ impl AnyView for InteractiveRegionView {
         self.surface.child_constraints(constraints)
     }
 
-    fn layout_children(
+    fn layout(
         &self,
         constraints: BoxConstraints,
-        child_sizes: &[Size],
+        children: &mut dyn crate::layout::ChildMeasurer,
         _metrics: &crate::text::TextMetrics,
-    ) -> (Size, Vec<Point>) {
-        self.surface.layout(constraints, child_sizes)
+    ) -> Result<crate::layout::ParentLayout, crate::layout::LayoutError> {
+        let child_constraints = self.surface.child_constraints(constraints);
+        let child_sizes = (0..children.len())
+            .map(|index| children.measure(index, child_constraints))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (size, origins) = self.surface.layout(constraints, &child_sizes)?;
+        Ok(crate::layout::ParentLayout {
+            size,
+            placements: origins.into_iter().enumerate().collect(),
+            diagnostics: Vec::new(),
+        })
     }
 
     fn paint_primitives(&self, rect: Rect, _metrics: &crate::text::TextMetrics) -> Vec<Primitive> {
@@ -630,7 +640,11 @@ mod content_slot_tests {
             let mut theme = crate::Theme::default();
             theme.button.normal.foreground = Color::GREEN;
             let mut runtime = Runtime::new();
-            runtime.set_root(ThemeProvider::new(theme).child(host.clone()));
+            runtime.set_root(
+                ThemeProvider::new(theme)
+                    .expect("valid theme")
+                    .child(host.clone()),
+            );
             runtime.update(Instant::now());
             let provider_id = runtime.root_id().unwrap();
             let host_id = runtime.arena().get(provider_id).unwrap().children()[0];

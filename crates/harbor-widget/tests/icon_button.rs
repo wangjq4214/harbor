@@ -55,7 +55,7 @@ fn icon_button_paints_only_its_icon_with_the_theme_size_and_color() {
     assert_eq!(color, theme.icon_button.normal.foreground);
     assert!(!painted_text(&runtime), "the label is never painted");
     assert_eq!(
-        IconButton::new(LucideIcon::Plus, "New terminal").label(),
+        IconButton::new(LucideIcon::Plus, "New terminal").get_label(),
         "New terminal"
     );
 }
@@ -68,7 +68,11 @@ fn icon_button_tint_follows_pointer_interaction_states() {
     theme.icon_button.pressed.foreground = Color::BLUE;
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(80, 80, 1.0));
-    runtime.set_root(ThemeProvider::new(theme).child(IconButton::new(LucideIcon::X, "Close")));
+    runtime.set_root(
+        ThemeProvider::new(theme)
+            .expect("valid theme")
+            .child(IconButton::new(LucideIcon::X, "Close")),
+    );
     runtime.update(Instant::now());
     assert_eq!(icon_primitive(&runtime).unwrap().2, Color::RED);
 
@@ -95,7 +99,7 @@ fn disabled_icon_button_uses_the_disabled_tint_and_does_not_activate() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(80, 80, 1.0));
     runtime.set_root(
-        ThemeProvider::new(theme).child(
+        ThemeProvider::new(theme).expect("valid theme").child(
             IconButton::new(LucideIcon::X, "Close")
                 .disabled(true)
                 .on_click(move |_| {
@@ -149,13 +153,15 @@ fn enabled_icon_button_activates_from_keyboard_and_pointer() {
 fn color_with_overrides_resolution_and_observes_focus() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(80, 80, 1.0));
-    runtime.set_root(IconButton::new(LucideIcon::X, "Close").color_with(|state| {
-        if state.focused {
-            Color::RED
-        } else {
-            Color::BLUE
-        }
-    }));
+    runtime.set_root(
+        IconButton::new(LucideIcon::X, "Close").foreground_with(|state| {
+            if state.focused {
+                Color::RED
+            } else {
+                Color::BLUE
+            }
+        }),
+    );
     runtime.update(Instant::now());
     assert_eq!(icon_primitive(&runtime).unwrap().2, Color::BLUE);
 
@@ -171,7 +177,11 @@ fn style_and_icon_size_overrides_win_over_the_theme() {
 
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(80, 80, 1.0));
-    runtime.set_root(ThemeProvider::new(expected).child(IconButton::new(LucideIcon::Plus, "New")));
+    runtime.set_root(
+        ThemeProvider::new(expected)
+            .expect("valid theme")
+            .child(IconButton::new(LucideIcon::Plus, "New")),
+    );
     runtime.update(Instant::now());
     let (_, rect, _) = icon_primitive(&runtime).unwrap();
     assert_eq!(rect.size(), Size::new(24.0, 24.0));
@@ -184,7 +194,9 @@ fn style_and_icon_size_overrides_win_over_the_theme() {
     runtime.set_root(
         IconButton::new(LucideIcon::Plus, "New")
             .style(style)
-            .icon_size(12.0),
+            .expect("valid style")
+            .icon_size(12.0)
+            .expect("valid size"),
     );
     runtime.update(Instant::now());
     let (_, rect, color) = icon_primitive(&runtime).unwrap();

@@ -10,7 +10,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 pub struct SizedBox {
     requested_width: Option<f32>,
     requested_height: Option<f32>,
-    pub color: Option<Color>,
+    background: Option<Color>,
     child: Option<View>,
 }
 
@@ -37,7 +37,7 @@ impl SizedBox {
         Ok(Self {
             requested_width: width,
             requested_height: height,
-            color: None,
+            background: None,
             child: None,
         })
     }
@@ -49,9 +49,10 @@ impl SizedBox {
         self.requested_height
     }
 
-    pub fn color(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
+    pub fn background(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("SizedBox.background", color)?;
+        self.background = Some(color);
+        Ok(self)
     }
 
     /// Replaces the optional content slot.
@@ -110,7 +111,7 @@ impl AnyView for SizedBox {
     }
 
     fn paint_primitives(&self, rect: Rect, _metrics: &TextMetrics) -> Vec<Primitive> {
-        match self.color {
+        match self.background {
             Some(color) => vec![Primitive::Quad {
                 rect,
                 color,
@@ -154,7 +155,8 @@ mod tests {
     fn paint_primitives_with_color() {
         let sb = SizedBox::new(Size::new(100.0, 50.0))
             .unwrap()
-            .color(Color::RED);
+            .background(Color::RED)
+            .expect("valid color");
         let rect = Rect::from_min_size(Point::new(10.0, 20.0), Size::new(100.0, 50.0));
         let prims = sb.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);

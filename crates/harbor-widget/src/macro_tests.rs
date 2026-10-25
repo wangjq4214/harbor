@@ -25,19 +25,19 @@ struct MacroTree {
 impl Component for MacroTree {
     fn build(&self, cx: &mut BuildCx) -> View {
         crate::view! { Column::new() => {
-            SizedBox::new(Size::new(10.0, 10.0)).unwrap().color(Color::RED);
-            SizedBox::new(Size::new(20.0, 10.0)).unwrap().color(Color::GREEN);
+            SizedBox::new(Size::new(10.0, 10.0)).unwrap().background(Color::RED).expect("valid color");
+            SizedBox::new(Size::new(20.0, 10.0)).unwrap().background(Color::GREEN).expect("valid color");
             for (index, size) in self.values.iter().copied().enumerate() {
-                SizedBox::new(size).unwrap().color(Color::BLUE).keyed(index.to_string());
+                SizedBox::new(size).unwrap().background(Color::BLUE).expect("valid color").keyed(index.to_string());
             }
             if self.show_extra {
-                SizedBox::new(Size::new(30.0, 10.0)).unwrap().color(Color::WHITE);
+                SizedBox::new(Size::new(30.0, 10.0)).unwrap().background(Color::WHITE).expect("valid color");
             } else {
-                SizedBox::new(Size::new(40.0, 10.0)).unwrap().color(Color::BLACK);
+                SizedBox::new(Size::new(40.0, 10.0)).unwrap().background(Color::BLACK).expect("valid color");
             }
             match self.values.first().copied() {
                 Some(size) if size.width > 0.0 => {
-                    SizedBox::new(size).unwrap().color(Color::TRANSPARENT);
+                    SizedBox::new(size).unwrap().background(Color::TRANSPARENT).expect("valid color");
                 },
                 Some(_) => {},
                 None => {},
@@ -58,18 +58,21 @@ impl Component for HandwrittenTree {
         children.push(
             SizedBox::new(Size::new(10.0, 10.0))
                 .unwrap()
-                .color(Color::RED),
+                .background(Color::RED)
+                .expect("valid color"),
         );
         children.push(
             SizedBox::new(Size::new(20.0, 10.0))
                 .unwrap()
-                .color(Color::GREEN),
+                .background(Color::GREEN)
+                .expect("valid color"),
         );
         for (index, size) in self.values.iter().copied().enumerate() {
             children.push(
                 SizedBox::new(size)
                     .unwrap()
-                    .color(Color::BLUE)
+                    .background(Color::BLUE)
+                    .expect("valid color")
                     .keyed(index.to_string()),
             );
         }
@@ -77,18 +80,25 @@ impl Component for HandwrittenTree {
             children.push(
                 SizedBox::new(Size::new(30.0, 10.0))
                     .unwrap()
-                    .color(Color::WHITE),
+                    .background(Color::WHITE)
+                    .expect("valid color"),
             );
         } else {
             children.push(
                 SizedBox::new(Size::new(40.0, 10.0))
                     .unwrap()
-                    .color(Color::BLACK),
+                    .background(Color::BLACK)
+                    .expect("valid color"),
             );
         }
         match self.values.first().copied() {
             Some(size) if size.width > 0.0 => {
-                children.push(SizedBox::new(size).unwrap().color(Color::TRANSPARENT));
+                children.push(
+                    SizedBox::new(size)
+                        .unwrap()
+                        .background(Color::TRANSPARENT)
+                        .expect("valid color"),
+                );
             }
             Some(_) | None => {}
         }

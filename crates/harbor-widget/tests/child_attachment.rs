@@ -206,7 +206,7 @@ single_child_contract!(portal, harbor_widget::Portal::new());
 single_child_contract!(scroll_view, harbor_widget::ScrollView::new());
 single_child_contract!(
     theme_provider,
-    harbor_widget::ThemeProvider::new(Default::default())
+    harbor_widget::ThemeProvider::new(Default::default()).expect("valid theme")
 );
 single_child_contract!(focus, harbor_widget::Focus::empty(), constructor_child);
 single_child_contract!(

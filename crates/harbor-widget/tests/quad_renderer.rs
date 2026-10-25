@@ -726,7 +726,8 @@ fn generic_glass_composes_gradient_fill_stroke_live_blur_and_sharp_foreground() 
             .push_child(
                 SizedBox::new(Size::new(32.0, 32.0))
                     .unwrap()
-                    .color(Color::GREEN),
+                    .background(Color::GREEN)
+                    .expect("valid color"),
             )
             .push_child(
                 Padding::new(harbor_widget::Insets {
@@ -739,7 +740,8 @@ fn generic_glass_composes_gradient_fill_stroke_live_blur_and_sharp_foreground() 
                 .child(
                     SizedBox::new(Size::new(16.0, 32.0))
                         .unwrap()
-                        .color(background),
+                        .background(background)
+                        .expect("valid color"),
                 ),
             )
             .push_child(glass())
@@ -747,7 +749,8 @@ fn generic_glass_composes_gradient_fill_stroke_live_blur_and_sharp_foreground() 
                 Padding::all(13.0).unwrap().child(
                     SizedBox::new(Size::new(6.0, 6.0))
                         .unwrap()
-                        .color(Color::RED),
+                        .background(Color::RED)
+                        .expect("valid color"),
                 ),
             )
     };
@@ -1128,7 +1131,8 @@ fn should_render_a_visible_hard_edge_for_a_zero_blur_decorated_shadow() {
         DecoratedBox::new(BoxDecoration::new().shadow(shadow)).child(
             SizedBox::new(Size::new(16.0, 16.0))
                 .unwrap()
-                .color(Color::GREEN),
+                .background(Color::GREEN)
+                .expect("valid color"),
         ),
     );
     let viewport = Viewport::new(32, 32, 1.0);
@@ -2050,7 +2054,8 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
             .push_child(
                 SizedBox::new(Size::new(24.0, 24.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             )
             .push_child(
                 Padding::new(harbor_widget::Insets {
@@ -2065,7 +2070,8 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
             .push_child(
                 SizedBox::new(Size::new(24.0, 24.0))
                     .unwrap()
-                    .color(Color::GREEN),
+                    .background(Color::GREEN)
+                    .expect("valid color"),
             )
             .push_child(
                 Padding::new(harbor_widget::Insets {
@@ -2080,7 +2086,8 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
             .push_child(
                 SizedBox::new(Size::new(24.0, 24.0))
                     .unwrap()
-                    .color(Color::BLUE),
+                    .background(Color::BLUE)
+                    .expect("valid color"),
             )
             .push_child(
                 Padding::new(harbor_widget::Insets {
@@ -2162,7 +2169,8 @@ fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive()
             .push_child(
                 SizedBox::new(Size::new(8.0, 8.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             ),
     );
     runtime.set_viewport(viewport.clone());
@@ -2685,7 +2693,7 @@ fn explicit_padding_decoration_order_changes_gpu_pixels_and_clip_bounds() {
         SizedBox::new(Size::new(48.0, 48.0)) => {
             Padding::all(8.0) => {
                 DecoratedBox::new(decoration.clone()).clip_behavior(ClipBehavior::HardEdge) => {
-                    SizedBox::new(Size::new(32.0, 32.0)).map(|s| s.color(Color::GREEN));
+                    SizedBox::new(Size::new(32.0, 32.0)).map(|s| s.background(Color::GREEN).expect("valid color"));
                 }
             }
         }
@@ -2694,7 +2702,7 @@ fn explicit_padding_decoration_order_changes_gpu_pixels_and_clip_bounds() {
         SizedBox::new(Size::new(48.0, 48.0)) => {
             DecoratedBox::new(decoration).clip_behavior(ClipBehavior::HardEdge) => {
                 Padding::all(8.0) => {
-                    SizedBox::new(Size::new(32.0, 32.0)).map(|s| s.color(Color::GREEN));
+                    SizedBox::new(Size::new(32.0, 32.0)).map(|s| s.background(Color::GREEN).expect("valid color"));
                 }
             }
         }
@@ -2914,7 +2922,8 @@ fn should_not_punch_following_widget_outside_custom_paint_allocation() {
             .push_child(
                 SizedBox::new(Size::new(8.0, 8.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             )
             .push_child(
                 Padding::new(harbor_widget::Insets {
@@ -3074,7 +3083,8 @@ fn should_dest_in_underlapping_pixels_inside_custom_paint_allocation_aabb() {
             .push_child(
                 SizedBox::new(Size::new(32.0, 32.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             )
             .push_child(clipped_external(&device, ClipBehavior::HardEdge, 8.0)),
         Viewport::new(32, 32, 1.0),
@@ -3299,7 +3309,9 @@ fn lucide_icon_uses_runtime_frame_encoding_and_ancestor_clip() {
         &queue,
         harbor_widget::Icon::new(harbor_widget::LucideIcon::Plus)
             .size(24.0)
-            .color(Color::GREEN),
+            .expect("valid icon size")
+            .foreground(Color::GREEN)
+            .expect("valid color"),
         Viewport::new(24, 24, 1.0),
         24,
     );
@@ -3509,7 +3521,8 @@ fn backdrop_refraction_moves_edges_and_corners_but_not_center_outside_or_foregro
                             .child(
                                 SizedBox::new(Size::new(4.0, 2.0))
                                     .unwrap()
-                                    .color(Color::RED),
+                                    .background(Color::RED)
+                                    .expect("valid color"),
                             ),
                         )
                 };
@@ -3697,7 +3710,8 @@ fn backdrop_large_sigma_softens_a_thin_line_without_a_sparse_sampling_comb() {
             .child(
                 SizedBox::new(Size::new(1.0, 32.0))
                     .unwrap()
-                    .color(Color::WHITE),
+                    .background(Color::WHITE)
+                    .expect("valid color"),
             )
         };
         runtime.set_viewport(viewport.clone());
@@ -3797,7 +3811,8 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
                         Padding::all(13.0).unwrap().child(
                             SizedBox::new(Size::new(6.0, 6.0))
                                 .unwrap()
-                                .color(Color::RED),
+                                .background(Color::RED)
+                                .expect("valid color"),
                         ),
                     ),
             );
@@ -3870,7 +3885,8 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
                 .push_child(
                     SizedBox::new(Size::new(32.0, 32.0))
                         .unwrap()
-                        .color(translucent),
+                        .background(translucent)
+                        .expect("valid color"),
                 )
                 .push_child(
                     Padding::all(4.0).unwrap().child(
@@ -3909,7 +3925,8 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
         runtime.set_root(
             SizedBox::new(Size::new(32.0, 32.0))
                 .unwrap()
-                .color(Color::BLUE),
+                .background(Color::BLUE)
+                .expect("valid color"),
         );
         runtime.update(Instant::now());
         let pixels = encode_filter_frame(&device, &queue, &mut runtime, Viewport::new(32, 32, 1.0));
@@ -3931,7 +3948,8 @@ fn backdrop_multiple_regions_use_distinct_uniforms_and_respect_ancestor_clip() {
                 .push_child(
                     SizedBox::new(Size::new(32.0, 32.0))
                         .unwrap()
-                        .color(Color::GREEN),
+                        .background(Color::GREEN)
+                        .expect("valid color"),
                 )
                 .push_child(
                     Padding::new(harbor_widget::Insets {
@@ -3944,7 +3962,8 @@ fn backdrop_multiple_regions_use_distinct_uniforms_and_respect_ancestor_clip() {
                     .child(
                         SizedBox::new(Size::new(16.0, 32.0))
                             .unwrap()
-                            .color(Color::BLUE),
+                            .background(Color::BLUE)
+                            .expect("valid color"),
                     ),
                 )
                 .push_child(
@@ -4038,11 +4057,13 @@ fn transparent_icon_button_has_no_zero_width_border_fill() {
             .push_child(
                 SizedBox::new(Size::new(32.0, 32.0))
                     .unwrap()
-                    .color(Color::GREEN),
+                    .background(Color::GREEN)
+                    .expect("valid color"),
             )
             .push_child(
                 harbor_widget::IconButton::new(harbor_widget::LucideIcon::Plus, "transparent")
-                    .style(style),
+                    .style(style)
+                    .expect("valid style"),
             ),
     );
     let viewport = Viewport::new(32, 32, 1.0);
@@ -4105,7 +4126,8 @@ fn material_test_scene(start: Color, end: Color, filter: harbor_widget::Backdrop
             .child(
                 SizedBox::new(Size::new(4.0, 2.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             ),
         )
 }
@@ -4261,7 +4283,8 @@ fn backdrop_material_broad_frost_blurs_both_axes_and_releases_when_disabled() {
             .push_child(
                 SizedBox::new(Size::new(32.0, 32.0))
                     .unwrap()
-                    .color(Color::BLACK),
+                    .background(Color::BLACK)
+                    .expect("valid color"),
             )
             .push_child(
                 Padding::new(harbor_widget::Insets {
@@ -4274,7 +4297,8 @@ fn backdrop_material_broad_frost_blurs_both_axes_and_releases_when_disabled() {
                 .child(
                     SizedBox::new(Size::new(2.0, 2.0))
                         .unwrap()
-                        .color(Color::WHITE),
+                        .background(Color::WHITE)
+                        .expect("valid color"),
                 ),
             )
             .push_child(

@@ -53,7 +53,7 @@ fn tab_row(
     let short = abbreviation(snapshot);
     let select_dispatcher = dispatcher.clone();
     let region = InteractiveRegion::new()
-        .style(rail_style(cx, compact))
+        .style(rail_style(cx, compact)).expect("valid control style")
         .selected(snapshot.active)
         .focus_handle(controller.tab_focus(id).expect("live tab has a focus handle"))
         .on_activate(move |_| {
@@ -64,16 +64,16 @@ fn tab_row(
             harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 2.0 } else { 8.0 }, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
                     if !compact {
                         SizedBox::width(24.0) => {
-                            Icon::new(icon).size(20.0).color(color);
+                            Icon::new(icon).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
                         }
                     }
                     if compact && unread {
-                        Icon::new(LucideIcon::Dot).size(12.0).color(color);
+                        Icon::new(LucideIcon::Dot).size(12.0).expect("valid icon size").foreground(color).expect("valid color");
                     }
                     Expanded::new() => {
                         DecoratedBox::new(BoxDecoration::new()).clip_behavior(ClipBehavior::HardEdge) => {
                             TextLabel::new(if compact { short.clone() } else { title.clone() })
-                                .color(color).ellipsis();
+                                .foreground(color).expect("valid color").ellipsis();
                         }
                     }
                     if !compact {
@@ -117,7 +117,7 @@ fn new_tab_button(
     move |cx: &mut BuildCx| {
         let compact = presentation == RailPresentation::Compact;
         InteractiveRegion::new()
-            .style(rail_style(cx, compact))
+            .style(rail_style(cx, compact)).expect("valid control style")
             .on_activate({
                 let dispatcher = dispatcher.clone();
                 move |_| dispatcher.dispatch(AppCommandRequest::rail(TabCommand::New))
@@ -126,11 +126,11 @@ fn new_tab_button(
                 let color = rail_style(cx, compact).resolve_state(&state).foreground;
                 harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 0.0 } else { 8.0 }, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
                         SizedBox::width(24.0) => {
-                            Icon::new(LucideIcon::Plus).size(20.0).color(color);
+                            Icon::new(LucideIcon::Plus).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
                         }
                         if !compact {
                             Expanded::new() => {
-                                TextLabel::new("New terminal").color(color).ellipsis();
+                                TextLabel::new("New terminal").foreground(color).expect("valid color").ellipsis();
                             }
                         }
                     }
@@ -160,8 +160,10 @@ fn close_tab_button(
         .child(
             IconButton::new(LucideIcon::X, "Close tab")
                 .style(style)
+                .expect("valid control style")
                 .icon_size(16.0)
-                .color_with(move |state| {
+                .expect("valid size")
+                .foreground_with(move |state| {
                     if visible || state.focused {
                         foreground
                     } else {

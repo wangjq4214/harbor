@@ -57,9 +57,9 @@ impl Button {
     }
 
     /// Overrides the inherited `theme.button` style.
-    pub fn style(mut self, style: ControlStyle) -> Self {
-        self.region = self.region.style(style);
-        self
+    pub fn style(mut self, style: ControlStyle) -> Result<Self, crate::theme::AppearanceError> {
+        self.region = self.region.style(style)?;
+        Ok(self)
     }
 
     /// Runs on the UI thread with local captures and existing activation timing.
@@ -96,7 +96,10 @@ impl Component for Button {
             let gap = cx.theme().spacing;
             region = region.centered().content(move |cx, state| {
                 let color = style.resolve_state(&state).foreground;
-                let label = TextLabel::new(text.clone()).ellipsis().color(color);
+                let label = TextLabel::new(text.clone())
+                    .ellipsis()
+                    .foreground(color)
+                    .expect("valid color");
                 match icon {
                     None => label.build(cx),
                     Some(icon) => View::new(
@@ -104,7 +107,9 @@ impl Component for Button {
                         vec![
                             Icon::new(icon)
                                 .size(style.icon_size)
-                                .color(color)
+                                .expect("valid icon size")
+                                .foreground(color)
+                                .expect("valid color")
                                 .into_child_view(),
                             label.into_child_view(),
                         ],

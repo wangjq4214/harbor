@@ -870,7 +870,8 @@ mod tests {
         use crate::widgets::sized_box::SizedBox;
         let sb = SizedBox::new(Size::new(100.0, 50.0))
             .unwrap()
-            .color(Color::RED);
+            .background(Color::RED)
+            .expect("valid color");
         let mut cx = crate::view::BuildCx::stub();
         let view = sb.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
@@ -1037,17 +1038,20 @@ mod tests {
             .push_child(
                 SizedBox::new(Size::new(50.0, 30.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             )
             .push_child(
                 SizedBox::new(Size::new(50.0, 30.0))
                     .unwrap()
-                    .color(Color::GREEN),
+                    .background(Color::GREEN)
+                    .expect("valid color"),
             )
             .push_child(
                 SizedBox::new(Size::new(50.0, 30.0))
                     .unwrap()
-                    .color(Color::BLUE),
+                    .background(Color::BLUE)
+                    .expect("valid color"),
             );
         let mut cx = crate::view::BuildCx::stub();
         let view = column.build(&mut cx);
@@ -1094,11 +1098,15 @@ mod tests {
         let mut arena = FiberArena::new();
 
         // Column with background + one child
-        let column = Column::new().background(Color::BLACK).push_child(
-            SizedBox::new(Size::new(50.0, 30.0))
-                .unwrap()
-                .color(Color::RED),
-        );
+        let column = Column::new()
+            .background(Color::BLACK)
+            .expect("finite background")
+            .push_child(
+                SizedBox::new(Size::new(50.0, 30.0))
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color"),
+            );
         let mut cx = crate::view::BuildCx::stub();
         let view = column.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
@@ -1140,10 +1148,12 @@ mod tests {
             })
             .unwrap()
             .background(Color::BLACK)
+            .expect("finite background")
             .child(
                 SizedBox::new(Size::new(32.0, 32.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             ),
         );
         let mut cx = crate::view::BuildCx::stub();
@@ -1177,15 +1187,18 @@ mod tests {
 
         let stack = Stack::new()
             .background(Color::BLACK)
+            .expect("finite background")
             .push_child(
                 SizedBox::new(Size::new(100.0, 100.0))
                     .unwrap()
-                    .color(Color::RED),
+                    .background(Color::RED)
+                    .expect("valid color"),
             )
             .push_child(
                 SizedBox::new(Size::new(80.0, 80.0))
                     .unwrap()
-                    .color(Color::GREEN),
+                    .background(Color::GREEN)
+                    .expect("valid color"),
             );
         let mut cx = crate::view::BuildCx::stub();
         let view = stack.build(&mut cx);
@@ -1494,7 +1507,8 @@ mod tests {
 
         let sb = SizedBox::new(Size::new(100.0, 50.0))
             .unwrap()
-            .color(Color::RED);
+            .background(Color::RED)
+            .expect("valid color");
         let mut cx = crate::view::BuildCx::stub();
         let view = sb.build(&mut cx);
         let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);

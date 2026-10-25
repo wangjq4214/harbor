@@ -29,7 +29,7 @@ pub mod sized_box;
 pub mod stack;
 pub mod text_field;
 pub mod text_label;
-pub use editable_text::EditableText;
+pub use editable_text::{EditableText, VerticalDirection};
 pub use text_field::TextField;
 pub mod theme;
 

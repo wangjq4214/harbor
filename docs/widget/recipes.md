@@ -109,8 +109,8 @@ fn main() {
     let field = TextField::new(controller.clone())
         .focus_handle(focus.clone())
         .placeholder("Name")
-        .on_changed(move |text| changed.dispatch(Intent::Changed(text.to_owned())))
-        .on_submitted(move |_modifiers| submitted.dispatch(Intent::Submit))
+        .on_change(move |text| changed.dispatch(Intent::Changed(text.to_owned())))
+        .on_submit(move |_modifiers| submitted.dispatch(Intent::Submit))
         .on_escape(move || cancelled.dispatch(Intent::Cancel));
 
     let mut runtime = Runtime::new();
@@ -118,7 +118,7 @@ fn main() {
     let _ = runtime.request_focus(&focus);
     let _ = runtime.update(Instant::now());
     assert!(controller.set_text("New name"));
-    assert!(inbox.drain_actions().is_empty()); // programmatic writes do not on_changed
+    assert!(inbox.drain_actions().is_empty()); // programmatic writes do not on_change
     let _ = runtime.update(Instant::now());
 }
 ```
@@ -126,7 +126,7 @@ fn main() {
 In a native application, call `host.request_focus(&focus)` and apply its wait result instead of discarding the runtime effects. Draining the inbox is application-owned; this snippet only verifies the programmatic-write notification boundary, not user typing or submit routing.
 
 - `with_acceptance(initial, predicate)` can enforce an application text policy on the resulting committed string; rejected replacements leave state unchanged. Do not copy Harbor search's 128-byte budget into unrelated fields by default.
-- Programmatic text/value replacement clears undo history; selection and IME preedit are not committed-change notifications. If an application-originated edit must also issue a business command, issue that intent explicitly—do not expect `on_changed` to echo it.
+- Programmatic text/value replacement clears undo history; selection and IME preedit are not committed-change notifications. If an application-originated edit must also issue a business command, issue that intent explicitly—do not expect `on_change` to echo it.
 - Public positions use UTF-8 bytes, normalized to grapheme boundaries. Use controller operations rather than byte slicing to implement user editing.
 - Tagged `ClipboardEffect::Editor` results go back to `Runtime::complete_clipboard`. `WinitWindowHost` implements that path; a custom host must return text on successful reads, an empty string on successful writes, and content-free errors. Do not feed completion through generic `dispatch`, log payloads, or reuse terminal paste authorization.
 

@@ -134,7 +134,12 @@ fn portal_lifetime_updates_and_remounts_without_layout_slots_or_stale_hits() {
                 .gap(17.0)
                 .unwrap()
                 .push_child(
-                    Expanded::new().child(SizedBox::new(Size::ZERO).unwrap().color(Color::BLUE)),
+                    Expanded::new().child(
+                        SizedBox::new(Size::ZERO)
+                            .unwrap()
+                            .background(Color::BLUE)
+                            .expect("valid color"),
+                    ),
                 );
             if visible.get() {
                 column = column.push_child(
@@ -142,7 +147,8 @@ fn portal_lifetime_updates_and_remounts_without_layout_slots_or_stale_hits() {
                         Align::new(crate::Alignment2D::BOTTOM_RIGHT).child(
                             SizedBox::new(Size::new(width.get(), 30.0))
                                 .unwrap()
-                                .color(Color::RED),
+                                .background(Color::RED)
+                                .expect("valid color"),
                         ),
                     ),
                 );
@@ -320,7 +326,8 @@ fn failed_escaped_measurement_does_not_partially_commit_ordinary_geometry() {
             .push_child(
                 SizedBox::new(Size::new(if state.get() { 200.0 } else { 100.0 }, 60.0))
                     .unwrap()
-                    .color(Color::BLUE),
+                    .background(Color::BLUE)
+                    .expect("valid color"),
             )
             .push_child(Portal::new().child(View::new(FailingLeaf(state.get()), vec![], None)))
             .build(cx)
