@@ -1,7 +1,8 @@
 //! Non-terminal callers exercise the reusable presentation/extension surface.
 use harbor_widget::{
-    Actions, Alignment, Button, Column, ConstrainedBox, FocusScope, Icon, KeyChord, LucideIcon,
-    Notification, Portal, ScrollView, Shortcuts, Store, ThemeProvider,
+    ActionHandler, Alignment, BuildCx, Button, Column, Component, ConstrainedBox, FocusScope, Icon,
+    KeyChord, LucideIcon, Notification, Portal, ScrollView, ShortcutMap, SizedBox, Stack, Store,
+    TextLabel, ThemeProvider, View,
     input::{
         event::{
             Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
@@ -13,11 +14,8 @@ use harbor_widget::{
     runtime::Runtime,
     scene::primitive::{Color, Primitive},
     text::TextMetrics,
-    view::{BuildCx, Component, PrimitiveLeaf, View},
-    widgets::{
-        notification::{NotificationPlacement, NotificationStyle},
-        sized_box::SizedBox,
-    },
+    view::PrimitiveLeaf,
+    widgets::notification::{NotificationPlacement, NotificationStyle},
 };
 use std::{
     sync::{
@@ -37,10 +35,11 @@ fn generic_controls_and_actions_need_no_application_models() {
         let action = dispatcher.clone();
         harbor_widget::view! { ThemeProvider::new(harbor_widget::Theme::default()).expect("valid theme") => {
                 FocusScope::new() => {
-                    Actions::handler(move |value: u8| { action.dispatch(value); harbor_widget::ActionOutcome::Consumed }) => {
-                        Shortcuts::empty().bind(KeyChord::new(Key::F6, Modifiers::default()), 7u8) => {
+                    ActionHandler::new(move |value: u8| { action.dispatch(value); harbor_widget::ActionOutcome::Consumed }) => {
+                        ShortcutMap::new().bind(KeyChord::new(Key::F6, Modifiers::default()), 7u8) => {
                             Column::new() => {
                                 Button::text("Test content");
+                                Stack::new() => { TextLabel::new("Root imports"); }
                                 Icon::new(LucideIcon::Plus);
                                 ConstrainedBox::new().max_height(60.0) => {
                                     ScrollView::new() => {

@@ -2,7 +2,7 @@
 use std::{cell::RefCell, collections::HashSet, rc::Rc, time::Instant};
 
 use harbor_widget::{
-    ActionOutcome, Actions, Focus, KeyChord, Shortcuts,
+    ActionHandler, ActionOutcome, Focus, KeyChord, ShortcutMap,
     input::{
         event::{Key, KeyboardEvent, Modifiers, UiEvent},
         event_ctx::{EventCtx, EventHandled},
@@ -122,14 +122,17 @@ fn mounted_chords_normalize_case_but_keep_exact_modifiers_and_keypad_identity() 
             let delivered = Rc::new(RefCell::new(Vec::new()));
             let observed = actions.clone();
             let mut runtime = Runtime::new();
-            runtime.set_root(Actions::new(
-                Shortcuts::new(Focus::new(View::leaf(KeySink(delivered.clone()))))
-                    .bind(KeyChord::new(bound, modifiers), 7u8),
-                move |action: u8| {
+            runtime.set_root(
+                ActionHandler::new(move |action: u8| {
                     observed.borrow_mut().push(action);
                     outcome
-                },
-            ));
+                })
+                .child(
+                    ShortcutMap::new()
+                        .child(Focus::new().child(View::leaf(KeySink(delivered.clone()))))
+                        .bind(KeyChord::new(bound, modifiers), 7u8),
+                ),
+            );
             runtime.update(Instant::now());
             assert!(runtime.focus_first_focusable());
 
@@ -194,15 +197,18 @@ fn duplicate_normalized_bindings_choose_the_first_action() {
         let observed = actions.clone();
         let delivered = Rc::new(RefCell::new(Vec::new()));
         let mut runtime = Runtime::new();
-        runtime.set_root(Actions::new(
-            Shortcuts::new(Focus::new(View::leaf(KeySink(delivered.clone()))))
-                .bind(KeyChord::new(Key::Character('A'), modifiers), 1u8)
-                .bind(KeyChord::new(Key::Character('a'), modifiers), 2u8),
-            move |action: u8| {
+        runtime.set_root(
+            ActionHandler::new(move |action: u8| {
                 observed.borrow_mut().push(action);
                 outcome
-            },
-        ));
+            })
+            .child(
+                ShortcutMap::new()
+                    .child(Focus::new().child(View::leaf(KeySink(delivered.clone()))))
+                    .bind(KeyChord::new(Key::Character('A'), modifiers), 1u8)
+                    .bind(KeyChord::new(Key::Character('a'), modifiers), 2u8),
+            ),
+        );
         runtime.update(Instant::now());
         assert!(runtime.focus_first_focusable());
         press(&mut runtime, Key::Character('a'), modifiers);
@@ -221,20 +227,27 @@ fn nested_shortcuts_still_choose_the_nearest_map_and_action_handler() {
     let outer = actions.clone();
     let inner = actions.clone();
     let mut runtime = Runtime::new();
-    runtime.set_root(Actions::new(
-        Shortcuts::new(Actions::new(
-            Shortcuts::new(Focus::new(View::leaf(KeySink(Default::default())))).bind(chord, 2u8),
-            move |action: u8| {
-                inner.borrow_mut().push(("inner", action));
-                ActionOutcome::Consumed
-            },
-        ))
-        .bind(chord, 1u8),
-        move |action: u8| {
+    runtime.set_root(
+        ActionHandler::new(move |action: u8| {
             outer.borrow_mut().push(("outer", action));
             ActionOutcome::Consumed
-        },
-    ));
+        })
+        .child(
+            ShortcutMap::new()
+                .child(
+                    ActionHandler::new(move |action: u8| {
+                        inner.borrow_mut().push(("inner", action));
+                        ActionOutcome::Consumed
+                    })
+                    .child(
+                        ShortcutMap::new()
+                            .child(Focus::new().child(View::leaf(KeySink(Default::default()))))
+                            .bind(chord, 2u8),
+                    ),
+                )
+                .bind(chord, 1u8),
+        ),
+    );
     runtime.update(Instant::now());
     assert!(runtime.focus_first_focusable());
     press(&mut runtime, Key::Character('a'), Modifiers::default());

@@ -168,12 +168,6 @@ macro_rules! single_child_contract {
             );
         }
     };
-    ($name:ident, $parent:expr, constructor_child) => {
-        #[test]
-        fn $name() {
-            verify_single_child_contract($parent);
-        }
-    };
 }
 
 single_child_contract!(align, Align::new(harbor_widget::Alignment2D::CENTER));
@@ -208,14 +202,9 @@ single_child_contract!(
     theme_provider,
     harbor_widget::ThemeProvider::new(Default::default()).expect("valid theme")
 );
-single_child_contract!(focus, harbor_widget::Focus::empty(), constructor_child);
+single_child_contract!(focus, harbor_widget::Focus::new());
+single_child_contract!(shortcut_map, harbor_widget::ShortcutMap::<()>::new());
 single_child_contract!(
-    shortcuts,
-    harbor_widget::Shortcuts::<()>::empty(),
-    constructor_child
-);
-single_child_contract!(
-    actions,
-    harbor_widget::Actions::<()>::handler(|_| harbor_widget::ActionOutcome::Consumed),
-    constructor_child
+    action_handler,
+    harbor_widget::ActionHandler::<()>::new(|_| harbor_widget::ActionOutcome::Consumed)
 );

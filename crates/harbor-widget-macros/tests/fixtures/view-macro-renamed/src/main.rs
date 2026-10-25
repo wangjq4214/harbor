@@ -1,7 +1,5 @@
 use widget_alias::layout::Size;
-use widget_alias::view;
-use widget_alias::widgets::column::Column;
-use widget_alias::widgets::sized_box::SizedBox;
+use widget_alias::{Column, SizedBox, Stack, TextLabel, view};
 
 fn main() {
     let _ = view! {
@@ -9,8 +7,8 @@ fn main() {
             SizedBox::new(Size::new(10.0, 10.0));
         }
     };
-    use widget_alias::view::{BuildCx, Component, View};
-    use widget_alias::widgets::padding::Padding;
+    use widget_alias::Padding;
+    use widget_alias::{BuildCx, Component, View};
     use widget_alias::{ChildConstructionError, Children, ComponentExt, SingleChild, WithChildren};
     struct External(Padding);
     impl WithChildren for External {
@@ -24,6 +22,7 @@ fn main() {
             self.0.build(cx)
         }
     }
+    let _ = view! { Stack::new() => { TextLabel::new("root exports"); } };
     let enabled = std::env::args().len() > 1;
     let _ = view! { External(Padding::all(1.0).unwrap()).keyed("external") => {
         if enabled { SizedBox::new(Size::ZERO); } else {}

@@ -735,7 +735,7 @@ fn active_clip_policy_attaches_normalized_clip_to_child_items() {
                     .background(Color::RED)
                     .expect("valid color"),
             );
-    assert_eq!(box_widget.clip_behavior_value(), ClipBehavior::AntiAlias);
+    assert_eq!(box_widget.get_clip_behavior(), ClipBehavior::AntiAlias);
 
     let mut runtime = Runtime::new();
     runtime.set_root(box_widget);

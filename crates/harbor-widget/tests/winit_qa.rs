@@ -61,7 +61,7 @@ fn should_route_wheel_invalidation_as_a_handled_redraw_effect() {
     // Assert
     assert!(outcome.is_handled());
     assert!(outcome.effects.request_redraw);
-    assert!(offset.offset() < 80.0 && offset.offset() > 0.0);
+    assert!(offset.requested_offset() < 80.0 && offset.requested_offset() > 0.0);
 }
 
 #[test]
@@ -272,7 +272,7 @@ fn should_not_request_redraw_when_wheel_is_clamped_at_scroll_boundary() {
     // Assert
     assert!(outcome.is_handled());
     assert!(!outcome.effects.request_redraw);
-    assert_eq!(offset.offset(), 0.0);
+    assert_eq!(offset.requested_offset(), 0.0);
 }
 
 #[test]

@@ -34,5 +34,5 @@ fn main() {
     let _ = EditableText::new(TextEditingController::new(""))
         .disabled(true)
         .disabled(false);
-    let _ = Focus::empty().enabled(true); // unrelated positive API remains
+    let _ = Focus::new().focusable(true); // unrelated positive API remains
 }

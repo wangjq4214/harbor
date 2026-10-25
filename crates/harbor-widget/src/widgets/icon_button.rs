@@ -123,7 +123,7 @@ impl Component for IconButton {
         let size = self.icon_size.unwrap_or(style.icon_size);
         let color = self.color.clone();
         region
-            .content(move |cx, state| {
+            .child_with(move |cx, state| {
                 let tint = color.as_ref().map_or_else(
                     || style.resolve_state(&state).foreground,
                     |color| color(&state),

@@ -127,7 +127,7 @@ fn hover_redraw_never_skips_move_clipboard_focus_capture_or_ordered_external_inp
         let requested = focus.clone();
         let moves = Rc::new(Cell::new(0));
         let counted = moves.clone();
-        let root = Focus::new(
+        let root = Focus::new().child(
             MouseRegion::new()
                 .on_enter(|ctx| {
                     ctx.invalidate_paint();
@@ -313,8 +313,8 @@ fn handled_focus_loss_does_not_cancel_the_new_owners_focus_gain() {
     let b = harbor_widget::FocusHandle::new();
     let mut rt = mount(
         Row::new()
-            .push_child(Focus::new(focused("a")).handle(a))
-            .push_child(Focus::new(focused("b")).handle(b)),
+            .push_child(Focus::new().child(focused("a")).focus_handle(a))
+            .push_child(Focus::new().child(focused("b")).focus_handle(b)),
     );
     rt.request_focus(&a);
     rt.take_pending_effects();

@@ -582,7 +582,7 @@ fn palette_panel(
                 .selected(index == palette.selected)
                 .disabled(disabled)
                 .on_activate(move |_| activate.palette_submit_command(generation, command))
-                .content(move |cx, state| {
+                .child_with(move |cx, state| {
                     let content = Padding::new(harbor_widget::Insets {
                         top: 6.0,
                         right: 8.0,

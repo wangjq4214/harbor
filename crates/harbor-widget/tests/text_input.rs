@@ -1,5 +1,5 @@
 use harbor_widget::{
-    ActionOutcome, Actions, EditableText, FocusHandle, FocusScope, KeyChord, Shortcuts,
+    ActionHandler, ActionOutcome, EditableText, FocusHandle, FocusScope, KeyChord, ShortcutMap,
     TextEditingController, TextField, TextSelection,
     effects::{ClipboardEffect, ClipboardEffectError},
     input::event::{
@@ -270,7 +270,7 @@ fn editor_chords_bypass_terminal_like_actions_but_other_shortcuts_still_work() {
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
     let c = TextEditingController::new("abc");
-    let shortcuts = Shortcuts::empty()
+    let shortcuts = ShortcutMap::new()
         .bind(
             KeyChord::new(
                 Key::Character('c'),
@@ -282,7 +282,7 @@ fn editor_chords_bypass_terminal_like_actions_but_other_shortcuts_still_work() {
             1_u8,
         )
         .bind(KeyChord::new(Key::F3, Default::default()), 2_u8);
-    let actions = Actions::handler(move |_: u8| {
+    let actions = ActionHandler::new(move |_: u8| {
         observed.fetch_add(1, Ordering::SeqCst);
         ActionOutcome::Consumed
     });

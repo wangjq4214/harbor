@@ -10,7 +10,7 @@ A component receives a `BuildCx` and returns a `View`. Closures with the signatu
 
 ```rust
 use harbor_widget::{Column, runtime::Runtime, view};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::TextLabel;
 use std::time::Instant;
 
 fn main() {
@@ -30,7 +30,9 @@ fn main() {
 
 `.child(component)` defers that component's build until reconciliation assigns its fiber. The equivalent `view!` construction is shown in step 3. Prefer deferred construction for stateful children: eagerly calling each child's `.build(cx)` can put its hooks into the caller's slot sequence instead of giving it independent identity.
 
-Child attachment is component-owned: leaves have no child block; single-child containers use `.child(value)` to replace their slot; `Row`, `Column`, `Flex`, and `Stack` use `.children(values)` to replace the list and `.push_child(value)` / `.extend_children(values)` to append. A `=> { ... }` block is one replacement, not an append. An empty block clears existing content; an ordinary value statement preserves it. `Align` owns one child (use `Stack` for overlays). `InteractiveRegion::child` and `.content` replace each other.
+Prefer the `harbor_widget` root for common widgets, `Component`/`BuildCx`/`View`, and construction traits (`IntoChildView`, `WithChildren`, `ComponentExt`); detailed configuration stays in its owning module. No prelude is needed.
+
+Child attachment is component-owned: leaves have no child block; single-child containers use `.child(value)` to replace their slot; `Row`, `Column`, `Flex`, and `Stack` use `.children(values)` to replace the list and `.push_child(value)` / `.extend_children(values)` to append. A `=> { ... }` block is one replacement, not an append. An empty block clears existing content; an ordinary value statement preserves it. `Align` owns one child (use `Stack` for overlays). `InteractiveRegion::child` and `.child_with` replace each other.
 
 Static over-counts on single-child containers and all leaf blocks fail compilation. Runtime-dependent lists validate during construction: handwritten `.with_children(Children)` returns `ChildConstructionError`; ordinary `view!` panics with the receiver, allowed count, and incoming count. External components implement public `WithChildren` with `type Capability = SingleChild` or `MultiChild` and the same replacement/clearing rules; `Children::into_single` validates and replaces an `Option<View>` without building components.
 
@@ -42,7 +44,7 @@ Do not recreate an editor controller on every build. Store its handle in a hook 
 
 ```rust
 use harbor_widget::{TextEditingController, TextField, runtime::Runtime};
-use harbor_widget::view::{BuildCx, Component, View};
+use harbor_widget::{BuildCx, Component, View};
 use std::time::Instant;
 
 struct Draft;
@@ -75,8 +77,8 @@ Ordinary UI callbacks can capture local Signals. Keep explicit clones for repeat
 
 ```rust
 use harbor_widget::{Button, Column, runtime::Runtime, view};
-use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::{BuildCx, Component, View};
+use harbor_widget::TextLabel;
 use std::time::Instant;
 
 struct LocalCounter;
@@ -110,8 +112,8 @@ This complete example also supplies a tiny **application-owned** reducer. Callin
 
 ```rust
 use harbor_widget::{Button, Column, Store, view};
-use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::{BuildCx, Component, View};
+use harbor_widget::TextLabel;
 use harbor_widget::runtime::Runtime;
 use std::time::Instant;
 

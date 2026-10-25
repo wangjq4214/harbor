@@ -153,11 +153,11 @@ impl DecoratedBox {
         self
     }
 
-    pub fn decoration(&self) -> &BoxDecoration {
+    pub fn get_decoration(&self) -> &BoxDecoration {
         &self.decoration
     }
 
-    pub fn clip_behavior_value(&self) -> ClipBehavior {
+    pub fn get_clip_behavior(&self) -> ClipBehavior {
         self.clip_behavior
     }
 }

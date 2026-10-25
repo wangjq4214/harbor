@@ -72,7 +72,7 @@ Hover Enter/Leave and focus-transition notifications are separate deliveries. Co
 
 `Store<S, A>` combines a state signal and a FIFO action inbox. `Dispatcher<A>` is cloneable and write-only; it can cross threads when its action type permits. It does not own a reducer or effect executor. The host/application drains actions at a safe event-turn boundary, decides what they mean, executes business effects and publishes state with `set_state`.
 
-`Shortcuts<A>` maps key chords to typed actions; `Actions<A>` supplies a compatible ancestor handler. `ActionOutcome::Consumed` stops the triggering keyboard event, while `PassThrough` declines and allows routing to continue. These synchronous routing mechanisms are not the Store's FIFO queue. A handler can enqueue Store intent, but the host must still drain it.
+`ShortcutMap<A>` maps key chords to typed actions; `ActionHandler<A>` supplies a compatible ancestor handler. `ActionOutcome::Consumed` stops the triggering keyboard event, while `PassThrough` declines and allows routing to continue. These synchronous routing mechanisms are not the Store's FIFO queue. A handler can enqueue Store intent, but the host must still drain it.
 
 In particular, **enqueuing does not automatically wake the runtime**. For background producers, sending an action and waking the native event loop are separate responsibilities. Even on a UI turn, arrange reduction/publication and runtime invalidation rather than assuming dispatch changes the screen.
 

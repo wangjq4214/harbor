@@ -2165,8 +2165,8 @@ mod decoration_tests {
     fn should_expose_product_decoration_values() {
         let wrapped = TerminalDecorationPreset::container();
 
-        assert_eq!(wrapped.clip_behavior_value(), ClipBehavior::AntiAlias);
-        let decoration = wrapped.decoration();
+        assert_eq!(wrapped.get_clip_behavior(), ClipBehavior::AntiAlias);
+        let decoration = wrapped.get_decoration();
         assert_eq!(decoration.color(), None);
         assert_eq!(decoration.border_value(), None);
         let radii = decoration
@@ -2189,10 +2189,10 @@ mod decoration_tests {
             false,
             harbor_config::WindowBackdropStyle::default().fallback,
         );
-        assert_eq!(root.insets().top, 4.0);
-        assert_eq!(root.insets().right, 4.0);
-        assert_eq!(root.insets().bottom, 4.0);
-        assert_eq!(root.insets().left, 4.0);
+        assert_eq!(root.get_insets().top, 4.0);
+        assert_eq!(root.get_insets().right, 4.0);
+        assert_eq!(root.get_insets().bottom, 4.0);
+        assert_eq!(root.get_insets().left, 4.0);
         let mut runtime = Runtime::new();
         runtime.set_root(root);
         runtime.update(Instant::now());

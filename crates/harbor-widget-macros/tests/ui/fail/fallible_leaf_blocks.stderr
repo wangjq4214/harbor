@@ -5,7 +5,7 @@ error[E0277]: the trait bound `TextLabel: WithChildren` is not satisfied
   |                     ^^ the trait `WithChildren` is not implemented for `TextLabel`
   |
   = help: the following other types implement trait `WithChildren`:
-            Actions<A>
+            ActionHandler<A>
             Align
             BackdropFilter
             Button
@@ -27,7 +27,7 @@ error[E0277]: the trait bound `TextLabel: WithChildren` is not satisfied
   |         ^^ the trait `WithChildren` is not implemented for `TextLabel`
   |
   = help: the following other types implement trait `WithChildren`:
-            Actions<A>
+            ActionHandler<A>
             Align
             BackdropFilter
             Button

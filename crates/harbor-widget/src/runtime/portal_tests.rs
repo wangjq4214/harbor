@@ -355,7 +355,7 @@ fn focusing_escaped_content_does_not_scroll_its_declaring_scroll_view() {
         .push_child(
             Portal::new().child(
                 Align::new(crate::Alignment2D::BOTTOM_RIGHT)
-                    .child(crate::Focus::new(target()).handle(handle)),
+                    .child(crate::Focus::new().child(target()).focus_handle(handle)),
             ),
         );
     let mut rt = Runtime::new();
@@ -371,12 +371,12 @@ fn focusing_escaped_content_does_not_scroll_its_declaring_scroll_view() {
             ),
     );
     rt.update(Instant::now());
-    assert_eq!(scroll.offset(), 0.0);
+    assert_eq!(scroll.requested_offset(), 0.0);
     rt.request_focus(&handle);
     rt.update(Instant::now());
     assert!(rt.events.input().focused.is_some());
     assert_eq!(
-        scroll.offset(),
+        scroll.requested_offset(),
         0.0,
         "logical ancestors must not reveal root-relative content"
     );

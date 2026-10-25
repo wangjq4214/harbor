@@ -38,25 +38,30 @@ impl KeyChord {
 
 /// Maps key chords to typed action values for one descendant subtree.
 #[derive(Clone)]
-pub struct Shortcuts<A: Clone + 'static> {
+pub struct ShortcutMap<A: Clone + 'static> {
     bindings: Vec<(KeyChord, A)>,
     child: Option<View>,
 }
 
-impl<A: Clone + 'static> Shortcuts<A> {
+impl<A: Clone + 'static> Default for ShortcutMap<A> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<A: Clone + 'static> ShortcutMap<A> {
     /// Creates an empty shortcut map for declarative `view!` composition.
-    pub fn empty() -> Self {
+    pub fn new() -> Self {
         Self {
             bindings: Vec::new(),
             child: None,
         }
     }
 
-    pub fn new(child: impl crate::IntoChildView) -> Self {
-        Self {
-            bindings: Vec::new(),
-            child: Some(child.into_child_view()),
-        }
+    /// Replaces the single child slot.
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.child = Some(child.into_child_view());
+        self
     }
 
     /// Adds a binding. If equal normalized chords are bound more than once,
@@ -67,24 +72,24 @@ impl<A: Clone + 'static> Shortcuts<A> {
     }
 }
 
-impl<A: Clone + 'static> Component for Shortcuts<A> {
+impl<A: Clone + 'static> Component for ShortcutMap<A> {
     fn build(&self, _cx: &mut BuildCx) -> View {
         View::new(self.clone(), self.child.iter().cloned().collect(), None)
     }
 }
 
-impl<A: Clone + 'static> crate::WithChildren for Shortcuts<A> {
+impl<A: Clone + 'static> crate::WithChildren for ShortcutMap<A> {
     type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        children.into_single("Shortcuts", &mut self.child)?;
+        children.into_single("ShortcutMap", &mut self.child)?;
         Ok(self)
     }
 }
 
-impl<A: Clone + 'static> AnyView for Shortcuts<A> {
+impl<A: Clone + 'static> AnyView for ShortcutMap<A> {
     fn layout_children(
         &self,
         constraints: BoxConstraints,
@@ -100,7 +105,7 @@ impl<A: Clone + 'static> AnyView for Shortcuts<A> {
     }
 }
 
-impl<A: Clone + 'static> ActionProviderView for Shortcuts<A> {
+impl<A: Clone + 'static> ActionProviderView for ShortcutMap<A> {
     fn shortcut_action(&self, chord: KeyChord) -> Option<Box<dyn Any>> {
         self.bindings
             .iter()

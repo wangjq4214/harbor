@@ -10,8 +10,8 @@ This independent Rust example demonstrates explicit subscription and pull semant
 
 ```rust
 use harbor_widget::{runtime::Runtime, signal::Signal};
-use harbor_widget::view::{BuildCx, Component};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::{BuildCx, Component};
+use harbor_widget::TextLabel;
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
 fn main() {

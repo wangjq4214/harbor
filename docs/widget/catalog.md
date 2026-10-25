@@ -16,19 +16,21 @@ Browse by the job you need to do. The tables describe available public APIs and 
 | Observe committed allocation | `LayoutObserver`, `LayoutChangedCallback` | Geometry notification, not application resize policy |
 | Add a rule | `Separator` | Layout/presentation primitive |
 
+`ScrollController::requested_offset()` reports the normalized request; `controller.metrics().offset()` reports the latest successful layout position. A request can differ from the committed offset until successful layout clamps and commits it.
+
 `ScrollView` replaces the former `ScrollArea` name and module (`widgets::scroll_view`); no old-name alias is retained. Wheel/key movement and scrollbar gestures preserve focus. `ScrollController::reveal_range(start, end)` minimally reveals a content-local vertical range using committed metrics; ordinary focus traversal also reveals offscreen controls. `ConstrainedBox::max_height_with` can cap a viewport or its surrounding layout using current `TextMetrics`, without hard-coding font sizes.
 
-`SizedBox`, `Padding`, `Align`, `Insets` and `Alignment2D` are available at the crate root; `Stack` remains in `widgets::stack`. See [explicit layout and fallible nodes](layout.md) for validation, slot replacement and wrapper order.
+`SizedBox`, `Padding`, `Align`, `Insets` and `Alignment2D` are available at the crate root; `Stack` and `TextLabel` are also root exports. See [explicit layout and fallible nodes](layout.md) for validation, slot replacement and wrapper order.
 
 ## Display and activate
 
 | Need | Available control | Constraints |
 | --- | --- | --- |
-| Single-line text | `widgets::text_label::TextLabel`, `.foreground(...)`, `.ellipsis()` | Renderer-advance label, not rich text or a general shaping/layout engine |
+| Single-line text | `TextLabel`, `.foreground(...)`, `.ellipsis()` | Renderer-advance label, not rich text or a general shaping/layout engine |
 | Built-in vector artwork | `Icon`, `LucideIcon` | Built-in Lucide inventory, not arbitrary SVG loading |
 | Composable activation | `Button::new()`, `Button::text(text)`, `Button::icon(icon, text)` | Single replaceable child/content slot; `.on_click`, `.disabled`, `.selected`, `.focus_handle`, `.style` |
 | Icon activation | `IconButton::new(icon, label)` | Icon-only; label is non-painted metadata, not proof of a native accessibility bridge |
-| Compose custom visuals with activation | `InteractiveRegion`, `InteractionState`, `ControlStyle` | Hover/press/focus/disabled/selected state and `.content(...)`/`.child(...)`; not a gesture-recognition suite |
+| Compose custom visuals with activation | `InteractiveRegion`, `InteractionState`, `ControlStyle` | Hover/press/focus/disabled/selected state and `.child_with(...)`/`.child(...)`; not a gesture-recognition suite |
 | Pointer-specific response | `MouseRegion` | Lower-level pointer hooks/cursor behavior; use an existing control when activation is the goal |
 | Transient dismissible message | `Notification` | A reusable message composition, not a global notification center, timer service or OS toast API |
 
@@ -42,22 +44,22 @@ All four content forms are ordinary deferred descriptions:
 
 ```rust
 use harbor_widget::{Button, Column, LucideIcon, view};
-use harbor_widget::view::Component;
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::Component;
+use harbor_widget::TextLabel;
 use harbor_widget::scene::primitive::Color;
 
 let controls = view! { Column::new() => {
     Button::text("Save");
     Button::icon(LucideIcon::Plus, "New");
     Button::new() => { TextLabel::new("Custom").foreground(Color::GREEN); }
-    Button::new().content(|cx, state| {
+    Button::new().child_with(|cx, state| {
         TextLabel::new(if state.pressed { "Release" } else { "Press" })
             .foreground(Color::BLUE).expect("finite foreground").build(cx)
     });
 }};
 ```
 
-Conveniences, `.child(...)`, `.content(...)` and macro blocks select **one slot**:
+Conveniences, `.child(...)`, `.child_with(...)` and macro blocks select **one slot**:
 later choices replace earlier choices, repeated children do not append, and an
 empty macro block clears even a convenience or builder. Multiple incoming
 children fail statically where provable, otherwise at construction (handwritten
@@ -142,13 +144,13 @@ This is single-line plain text, not multiline, password or rich-text editing. Se
 | --- | --- | --- |
 | Stable focus request | `FocusHandle`, `Focus`; `Runtime::request_focus` / `WinitWindowHost::request_focus` | Retain the handle, attach it to the intended control, ask the host/runtime to focus it |
 | Traversal or in-runtime modal routing | `FocusScope`, `.modal(true)` | Tab/Shift+Tab and modal routing within one runtime, not a cross-window dialog product |
-| Typed shortcut routing | `Shortcuts<A>`, `KeyChord`, `Actions<A>`, `ActionOutcome` | Nearest compatible ancestor action handler can consume or pass through; separate from Store queues |
+| Typed shortcut routing | `ShortcutMap<A>`, `KeyChord`, `ActionHandler<A>`, `ActionOutcome` | Nearest compatible ancestor action handler can consume or pass through; separate from Store queues |
 | Low-level event behavior | `input::event::UiEvent`, `input::event_ctx::EventCtx` | Capture/target/bubble routing, focus/capture/paint commands |
 
 Construct chords with `KeyChord::new(key, modifiers)` and inspect them with
 `key()` / `modifiers()`; fields are private. ASCII character keys normalize to
 lowercase without changing modifiers or merging ordinary/keypad keys. Non-ASCII
-characters are unchanged. Within one `Shortcuts` instance, the first matching
+characters are unchanged. Within one `ShortcutMap` instance, the first matching
 binding wins, including duplicates that differ only in ASCII case. This does not
 relax Harbor's application-level duplicate/conflict validation.
 
@@ -159,6 +161,10 @@ primitive leaves with `View::leaf`. Track external state in a mounted build with
 `BuildCx::track` or `Store::watch`; use `BuildCx::use_state` for hook state. Reads
 alone do not subscribe, and state publication does not automatically wake a host.
 Read-only inspection through `Runtime::arena` remains available.
+
+`Focus::new()`, `ShortcutMap::new()`, and `ActionHandler::new(handler)` start without children; `.child(...)` replaces their single slot. Macro blocks replace it too, including clearing with `{}`. Focus uses `.focus_handle(handle)`, `.tab_order(order)`, and `.focusable(bool)`: focusability is not a blanket disable of subtree input. Disabled controls and read-only editing keep their separate policies.
+
+`LayoutObserver::new(callback)` requires a callback; `from_shared_callback(handle)` retains the actual shared callback handle. Notifications still run after successful layout, paint and dirty settlement, not during measurement.
 
 Focus and labels do not implement Windows UIA, a semantic accessibility tree or screen-reader support. Application shortcut precedence and cross-window policy remain application-owned.
 

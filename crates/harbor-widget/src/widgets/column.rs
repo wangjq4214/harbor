@@ -32,8 +32,8 @@ impl Column {
         })
     }
 
-    pub fn options(&self) -> FlexOptions {
-        self.inner.options()
+    pub fn get_options(&self) -> FlexOptions {
+        self.inner.get_options()
     }
 
     pub fn cross_axis_alignment(mut self, alignment: Alignment) -> Self {

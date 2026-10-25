@@ -78,7 +78,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** A stable identity marker used during reconciliation to match views between build passes and preserve fiber state.
 
 ### KeyChord
-- **Definition:** A shortcut value combining an input key with its complete modifier set, distinct from the reconciliation Key. The selected invariant normalizes ASCII character keys to lowercase while preserving ordinary/keypad distinction and exact modifiers, with private fields and read-only accessors. Within one shortcut-map instance (`Shortcuts` in current code; selected name `ShortcutMap` under ADR 0087) the first matching binding wins; application configuration still rejects duplicate chords. See [ADR 0086](./adr/0086-normalized-key-chords-and-private-runtime-control.md).
+- **Definition:** A shortcut value combining an input key with its complete modifier set, distinct from the reconciliation Key. The selected invariant normalizes ASCII character keys to lowercase while preserving ordinary/keypad distinction and exact modifiers, with private fields and read-only accessors. Within one `ShortcutMap` instance the first matching binding wins; application configuration still rejects duplicate chords. See [ADR 0086](./adr/0086-normalized-key-chords-and-private-runtime-control.md).
 - **Relationships:**
   - belongs to Harbor Widget Runtime
 

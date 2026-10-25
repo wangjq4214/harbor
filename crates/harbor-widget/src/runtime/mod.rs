@@ -1090,7 +1090,11 @@ mod tests {
         rt.set_root(SizedBox::new(Size::new(1.0, 1.0)).unwrap());
         rt.request_focus(&handle);
 
-        rt.set_root(Focus::new(Button::text("replacement")).handle(handle));
+        rt.set_root(
+            Focus::new()
+                .child(Button::text("replacement"))
+                .focus_handle(handle),
+        );
 
         assert!(rt.input().focused().is_some());
     }
@@ -2058,8 +2062,8 @@ mod tests {
         rt.set_root(
             FocusScope::new().child(
                 crate::widgets::stack::Stack::new()
-                    .push_child(Focus::new(CustomPaint::new(1)))
-                    .push_child(Focus::new(CustomPaint::new(2))),
+                    .push_child(Focus::new().child(CustomPaint::new(1)))
+                    .push_child(Focus::new().child(CustomPaint::new(2))),
             ),
         );
         rt.update(now());

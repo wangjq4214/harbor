@@ -14,49 +14,45 @@ pub enum ActionOutcome {
 
 /// Typed action handler selected by the nearest compatible ancestor provider.
 #[derive(Clone)]
-pub struct Actions<A: Clone + 'static> {
+pub struct ActionHandler<A: Clone + 'static> {
     handler: Arc<dyn Fn(A) -> ActionOutcome>,
     child: Option<View>,
 }
 
-impl<A: Clone + 'static> Actions<A> {
-    /// Creates an action provider without a child for declarative `view!` composition.
-    pub fn handler(handler: impl Fn(A) -> ActionOutcome + 'static) -> Self {
+impl<A: Clone + 'static> ActionHandler<A> {
+    /// Creates an action provider with the required handler and no child.
+    pub fn new(handler: impl Fn(A) -> ActionOutcome + 'static) -> Self {
         Self {
             handler: Arc::new(handler),
             child: None,
         }
     }
 
-    pub fn new(
-        child: impl crate::IntoChildView,
-        handler: impl Fn(A) -> ActionOutcome + 'static,
-    ) -> Self {
-        Self {
-            handler: Arc::new(handler),
-            child: Some(child.into_child_view()),
-        }
+    /// Replaces the single child slot.
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.child = Some(child.into_child_view());
+        self
     }
 }
 
-impl<A: Clone + 'static> Component for Actions<A> {
+impl<A: Clone + 'static> Component for ActionHandler<A> {
     fn build(&self, _cx: &mut BuildCx) -> View {
         View::new(self.clone(), self.child.iter().cloned().collect(), None)
     }
 }
 
-impl<A: Clone + 'static> crate::WithChildren for Actions<A> {
+impl<A: Clone + 'static> crate::WithChildren for ActionHandler<A> {
     type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        children.into_single("Actions", &mut self.child)?;
+        children.into_single("ActionHandler", &mut self.child)?;
         Ok(self)
     }
 }
 
-impl<A: Clone + 'static> AnyView for Actions<A> {
+impl<A: Clone + 'static> AnyView for ActionHandler<A> {
     fn layout_children(
         &self,
         constraints: BoxConstraints,
@@ -71,7 +67,7 @@ impl<A: Clone + 'static> AnyView for Actions<A> {
     }
 }
 
-impl<A: Clone + 'static> ActionProviderView for Actions<A> {
+impl<A: Clone + 'static> ActionProviderView for ActionHandler<A> {
     fn invoke_action(&self, action: &dyn Any) -> Option<ActionOutcome> {
         let action = action.downcast_ref::<A>()?;
         Some((self.handler)(action.clone()))

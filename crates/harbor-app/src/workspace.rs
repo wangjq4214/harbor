@@ -9,9 +9,9 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionOutcome, Actions, Align, Alignment, Alignment2D, BorderRadius, ComponentExt as _,
+    ActionHandler, ActionOutcome, Align, Alignment, Alignment2D, BorderRadius, ComponentExt as _,
     Expanded, FlexOptions, Focus, FocusHandle, FocusScope, Icon, Insets, InteractionState,
-    InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row, Shortcuts, SizedBox, Store,
+    InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row, ShortcutMap, SizedBox, Store,
     TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
@@ -156,7 +156,7 @@ fn search_icon_button(
     InteractiveRegion::new()
         .style(style.clone())
         .expect("valid control style")
-        .content(move |cx, state| {
+        .child_with(move |cx, state| {
             let content = Icon::new(icon)
                 .size(style.icon_size)
                 .expect("valid icon size")
@@ -458,12 +458,12 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         .active()
         .is_some_and(|popup| popup.blocks_shortcuts())
     {
-        Shortcuts::empty()
+        ShortcutMap::new()
     } else {
         shortcuts(bindings)
     };
     let command_bridge = active_bridge.clone();
-    let actions = Actions::handler(move |command| {
+    let actions = ActionHandler::new(move |command| {
         let outcome = command_outcome(command, &command_bridge);
         if outcome == ActionOutcome::Consumed {
             action_dispatcher.dispatch(AppCommandRequest::shortcut(command));
@@ -517,7 +517,7 @@ fn terminal_panel(
             Expanded::new().keyed("terminal-surface") => {
                 controller.allocation.observer() => {
                     TerminalDecorationPreset::container() => {
-                        Focus::empty().handle(controller.terminal_focus) => {
+                        Focus::new().focus_handle(controller.terminal_focus) => {
                             terminal_widget(active_bridge);
                         }
                     }
@@ -555,10 +555,10 @@ pub(crate) fn root_padding(backdrop_available: bool, fallback_rgb: [f32; 3]) -> 
     }
 }
 
-fn shortcuts(keybindings: &ResolvedKeybindings) -> Shortcuts<AppCommand> {
+fn shortcuts(keybindings: &ResolvedKeybindings) -> ShortcutMap<AppCommand> {
     keybindings
         .bindings()
-        .fold(Shortcuts::empty(), |shortcuts, (chord, command)| {
+        .fold(ShortcutMap::new(), |shortcuts, (chord, command)| {
             shortcuts.bind(chord, command)
         })
 }
@@ -602,6 +602,6 @@ impl TerminalAllocationMailbox {
     }
 
     fn observer(&self) -> LayoutObserver {
-        LayoutObserver::from_callback(Arc::clone(&self.callback))
+        LayoutObserver::from_shared_callback(Arc::clone(&self.callback))
     }
 }

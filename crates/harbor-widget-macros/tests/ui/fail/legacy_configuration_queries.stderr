@@ -1,0 +1,94 @@
+error[E0599]: no method named `insets` found for struct `Padding` in the current scope
+ --> tests/ui/fail/legacy_configuration_queries.rs:3:40
+  |
+3 |     let _ = Padding::all(1.0).unwrap().insets();
+  |                                        ^^^^^^ private field, not a method
+  |
+help: there is a method `get_insets` with a similar name
+  |
+3 |     let _ = Padding::all(1.0).unwrap().get_insets();
+  |                                        ++++
+
+error[E0599]: no method named `decoration` found for struct `DecoratedBox` in the current scope
+ --> tests/ui/fail/legacy_configuration_queries.rs:4:51
+  |
+4 |     let _ = DecoratedBox::new(Default::default()).decoration();
+  |                                                   ^^^^^^^^^^ private field, not a method
+  |
+help: there is a method `get_decoration` with a similar name
+  |
+4 |     let _ = DecoratedBox::new(Default::default()).get_decoration();
+  |                                                   ++++
+
+error[E0599]: no method named `clip_behavior_value` found for struct `DecoratedBox` in the current scope
+ --> tests/ui/fail/legacy_configuration_queries.rs:5:51
+  |
+5 |     let _ = DecoratedBox::new(Default::default()).clip_behavior_value();
+  |                                                   ^^^^^^^^^^^^^^^^^^^
+  |
+help: there is a method `clip_behavior` with a similar name, but with different arguments
+ --> $WORKSPACE/crates/harbor-widget/src/widgets/decorated_box.rs
+  |
+  |     pub fn clip_behavior(mut self, clip_behavior: ClipBehavior) -> Self {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `options` found for struct `Row` in the current scope
+ --> tests/ui/fail/legacy_configuration_queries.rs:6:24
+  |
+6 |     let _ = Row::new().options();
+  |                        ^^^^^^^
+  |
+help: there is a method `get_options` with a similar name
+  |
+6 |     let _ = Row::new().get_options();
+  |                        ++++
+
+error[E0599]: no method named `options` found for struct `Column` in the current scope
+ --> tests/ui/fail/legacy_configuration_queries.rs:7:27
+  |
+7 |     let _ = Column::new().options();
+  |                           ^^^^^^^
+  |
+help: there is a method `get_options` with a similar name
+  |
+7 |     let _ = Column::new().get_options();
+  |                           ++++
+
+error[E0599]: no method named `options` found for struct `Flex` in the current scope
+ --> tests/ui/fail/legacy_configuration_queries.rs:8:39
+  |
+8 |     let _ = Flex::new(Axis::Vertical).options();
+  |                                       ^^^^^^^
+  |
+help: there is a method `get_options` with a similar name
+  |
+8 |     let _ = Flex::new(Axis::Vertical).get_options();
+  |                                       ++++
+
+error[E0599]: no method named `requested_width` found for struct `SizedBox` in the current scope
+ --> tests/ui/fail/legacy_configuration_queries.rs:9:43
+  |
+9 |     let _ = SizedBox::width(1.0).unwrap().requested_width();
+  |                                           ^^^^^^^^^^^^^^^ private field, not a method
+  |
+help: there is a method `get_requested_width` with a similar name
+  |
+9 |     let _ = SizedBox::width(1.0).unwrap().get_requested_width();
+  |                                           ++++
+
+error[E0599]: no method named `requested_height` found for struct `SizedBox` in the current scope
+  --> tests/ui/fail/legacy_configuration_queries.rs:10:44
+   |
+10 |     let _ = SizedBox::height(1.0).unwrap().requested_height();
+   |                                            ^^^^^^^^^^^^^^^^ private field, not a method
+   |
+help: there is a method `get_requested_height` with a similar name
+   |
+10 |     let _ = SizedBox::height(1.0).unwrap().get_requested_height();
+   |                                            ++++
+
+error[E0599]: no method named `offset` found for struct `ScrollController` in the current scope
+  --> tests/ui/fail/legacy_configuration_queries.rs:11:37
+   |
+11 |     let _ = ScrollController::new().offset();
+   |                                     ^^^^^^ method not found in `ScrollController`

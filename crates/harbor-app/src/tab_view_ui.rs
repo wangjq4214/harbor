@@ -59,7 +59,7 @@ fn tab_row(
         .on_activate(move |_| {
             select_dispatcher.dispatch(AppCommandRequest::rail(TabCommand::Activate(id)));
         })
-        .content(move |cx, state| {
+        .child_with(move |cx, state| {
             let color = rail_style(cx, compact).resolve_state(&state).foreground;
             harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 2.0 } else { 8.0 }, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
                     if !compact {
@@ -122,7 +122,7 @@ fn new_tab_button(
                 let dispatcher = dispatcher.clone();
                 move |_| dispatcher.dispatch(AppCommandRequest::rail(TabCommand::New))
             })
-            .content(move |cx, state| {
+            .child_with(move |cx, state| {
                 let color = rail_style(cx, compact).resolve_state(&state).foreground;
                 harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 0.0 } else { 8.0 }, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
                         SizedBox::width(24.0) => {

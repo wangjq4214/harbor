@@ -239,7 +239,7 @@ fn measured_button_geometry_and_rendered_samples() {
                             .foreground(Color::GREEN)
                             .expect("valid color"),
                     ),
-                    _ => Button::new().content(move |cx, state| {
+                    _ => Button::new().child_with(move |cx, state| {
                         TextLabel::new(if state.pressed {
                             "Pressed 中文"
                         } else {

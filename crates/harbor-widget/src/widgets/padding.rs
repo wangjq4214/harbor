@@ -28,7 +28,7 @@ impl Padding {
         Self::new(Insets::all(value))
     }
 
-    pub fn insets(&self) -> Insets {
+    pub fn get_insets(&self) -> Insets {
         self.insets
     }
 
@@ -165,10 +165,10 @@ mod tests {
         let padding = Padding::all(inset).unwrap();
 
         // Assert
-        assert_eq!(padding.insets().top, inset);
-        assert_eq!(padding.insets().right, inset);
-        assert_eq!(padding.insets().bottom, inset);
-        assert_eq!(padding.insets().left, inset);
+        assert_eq!(padding.get_insets().top, inset);
+        assert_eq!(padding.get_insets().right, inset);
+        assert_eq!(padding.get_insets().bottom, inset);
+        assert_eq!(padding.get_insets().left, inset);
     }
 
     #[test]

@@ -239,7 +239,7 @@ pub(crate) trait ThemedView: 'static {
 pub(crate) trait ActionProviderView: 'static {
     fn shortcut_action(
         &self,
-        _chord: crate::widgets::shortcuts::KeyChord,
+        _chord: crate::widgets::shortcut_map::KeyChord,
     ) -> Option<Box<dyn std::any::Any>> {
         None
     }
@@ -247,7 +247,7 @@ pub(crate) trait ActionProviderView: 'static {
     fn invoke_action(
         &self,
         _action: &dyn std::any::Any,
-    ) -> Option<crate::widgets::actions::ActionOutcome> {
+    ) -> Option<crate::widgets::action_handler::ActionOutcome> {
         None
     }
 }
@@ -495,7 +495,7 @@ pub(crate) trait AnyView: 'static {
     /// Returns the typed action bound to this exact chord, if any.
     fn shortcut_action(
         &self,
-        chord: crate::widgets::shortcuts::KeyChord,
+        chord: crate::widgets::shortcut_map::KeyChord,
     ) -> Option<Box<dyn std::any::Any>> {
         self.as_action_provider()
             .and_then(|p| p.shortcut_action(chord))
@@ -505,7 +505,7 @@ pub(crate) trait AnyView: 'static {
     fn invoke_action(
         &self,
         action: &dyn std::any::Any,
-    ) -> Option<crate::widgets::actions::ActionOutcome> {
+    ) -> Option<crate::widgets::action_handler::ActionOutcome> {
         self.as_action_provider()
             .and_then(|provider| provider.invoke_action(action))
     }

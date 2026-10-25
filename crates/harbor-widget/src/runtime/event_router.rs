@@ -11,7 +11,7 @@ use crate::input::state::InputState;
 use crate::layout::{Point, Rect};
 use crate::scene::primitive::ExternalDrawId;
 use crate::view::EnsureVisibleResult;
-use crate::widgets::shortcuts::KeyChord;
+use crate::widgets::shortcut_map::KeyChord;
 use std::any::Any;
 
 /// A canceled action retains only its key ownership until release/new press.
@@ -303,7 +303,7 @@ impl EventRouter {
                         self.find_shortcut(arena, root_id, *key, *modifiers)
                 {
                     let outcome = self.invoke_action(arena, source, action.as_ref());
-                    if outcome == Some(crate::widgets::actions::ActionOutcome::Consumed) {
+                    if outcome == Some(crate::widgets::action_handler::ActionOutcome::Consumed) {
                         self.consumed_shortcuts.push(ConsumedShortcut {
                             key: KeyChord::new(*key, Default::default()).key(),
                             action: Some((source, action)),
@@ -707,7 +707,7 @@ impl EventRouter {
         }
 
         // With no focus, only the root's unambiguous single-child wrapper chain
-        // participates. This supports global Actions -> Shortcuts composition
+        // participates. This supports global ActionHandler -> ShortcutMap composition
         // without activating branch-local bindings arbitrarily.
         let mut current = Some(root);
         let mut matched = None;
@@ -735,7 +735,7 @@ impl EventRouter {
         arena: &FiberArena,
         source: FiberId,
         action: &dyn Any,
-    ) -> Option<crate::widgets::actions::ActionOutcome> {
+    ) -> Option<crate::widgets::action_handler::ActionOutcome> {
         let mut current = Some(source);
         while let Some(fiber) = current {
             if let Some(outcome) = arena

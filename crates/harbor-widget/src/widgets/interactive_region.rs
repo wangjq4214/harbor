@@ -35,7 +35,7 @@ type ActivateCallback = Rc<dyn Fn(&mut EventCtx)>;
 type ContentBuilder = Rc<dyn Fn(&mut BuildCx, InteractionState) -> View>;
 
 /// Reconciliation key carried by every content-slot fiber
-/// ([`InteractiveRegion::content`]), letting consumers recognize the slot's
+/// ([`InteractiveRegion::child_with`]), letting consumers recognize the slot's
 /// wrapper fiber without depending on its internal type.
 pub const CONTENT_SLOT_KEY: &str = "harbor-content-slot";
 
@@ -104,7 +104,7 @@ impl InteractiveRegion {
 
     /// Builds visual content from this region's retained interaction state.
     /// Like `child`, this replaces any previously supplied content.
-    pub fn content(
+    pub fn child_with(
         mut self,
         builder: impl Fn(&mut BuildCx, InteractionState) -> View + 'static,
     ) -> Self {
@@ -481,7 +481,7 @@ mod content_slot_tests {
             *self.show_slot.borrow_mut() = Some(show_slot.clone());
             let region = if show_slot.read().clone() {
                 let content_state = self.content_state.clone();
-                InteractiveRegion::new().content(move |cx, _state| {
+                InteractiveRegion::new().child_with(move |cx, _state| {
                     let value = cx.use_state(|| "slot-initial");
                     *content_state.borrow_mut() = Some(value.clone());
                     let _ = value.read().clone();
@@ -610,7 +610,7 @@ mod content_slot_tests {
                 );
                 SizedBox::new(Size::new(4.0, 4.0)).unwrap().build(cx)
             };
-            let region = InteractiveRegion::new().content(builder.clone());
+            let region = InteractiveRegion::new().child_with(builder.clone());
             let mode = *self.mode.read();
             let description = match mode {
                 0 => crate::view! { region; },
@@ -619,7 +619,7 @@ mod content_slot_tests {
                 4 => crate::view! { region.child(SizedBox::new(Size::ZERO).unwrap()) => {} },
                 // content must replace an explicit child, in either setting order.
                 _ => {
-                    crate::view! { region.child(SizedBox::new(Size::ZERO).unwrap()).content(builder); }
+                    crate::view! { region.child(SizedBox::new(Size::ZERO).unwrap()).child_with(builder); }
                 }
             };
             crate::view! { Column::new() => { description; } }

@@ -144,8 +144,8 @@ use harbor_widget::{Alignment, BackdropFilter, BorderRadius, BoxDecoration,
 use harbor_widget::layout::Point;
 use harbor_widget::scene::primitive::Color;
 use harbor_widget::runtime::Runtime;
-use harbor_widget::view::{BuildCx, Component};
-use harbor_widget::widgets::{align::Align, padding::Padding, text_label::TextLabel};
+use harbor_widget::{BuildCx, Component};
+use harbor_widget::{Align, Padding, TextLabel};
 use std::time::Instant;
 
 fn main() {

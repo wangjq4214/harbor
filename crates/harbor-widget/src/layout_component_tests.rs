@@ -58,8 +58,8 @@ fn sized_axes_enforce_parent_and_remeasure_content_without_replacing_fibers() {
             SizedBox::height(440.0)
         }
         .unwrap();
-        assert_eq!(sized.requested_width(), horizontal.then_some(440.0));
-        assert_eq!(sized.requested_height(), (!horizontal).then_some(440.0));
+        assert_eq!(sized.get_requested_width(), horizontal.then_some(440.0));
+        assert_eq!(sized.get_requested_height(), (!horizontal).then_some(440.0));
         let root = insert(&mut arena, sized, vec![child]);
         let axis = if horizontal {
             Axis::Horizontal
@@ -113,8 +113,8 @@ fn sized_axes_enforce_parent_and_remeasure_content_without_replacing_fibers() {
     ] {
         let mut arena = FiberArena::new();
         let expected = Size::new(
-            sized.requested_width().unwrap_or(17.0),
-            sized.requested_height().unwrap_or(19.0),
+            sized.get_requested_width().unwrap_or(17.0),
+            sized.get_requested_height().unwrap_or(19.0),
         );
         let root = insert(&mut arena, sized, vec![]);
         assert!(run(

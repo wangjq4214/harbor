@@ -28,9 +28,15 @@ pub struct Focus {
     child: Option<View>,
 }
 
+impl Default for Focus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Focus {
-    /// Creates a focus wrapper without a child for declarative `view!` composition.
-    pub fn empty() -> Self {
+    /// Creates a focus-eligible wrapper with no child.
+    pub fn new() -> Self {
         Self {
             enabled: true,
             order: 0,
@@ -39,26 +45,24 @@ impl Focus {
         }
     }
 
-    pub fn new(child: impl crate::IntoChildView) -> Self {
-        Self {
-            enabled: true,
-            order: 0,
-            handle: None,
-            child: Some(child.into_child_view()),
-        }
-    }
-
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
+    /// Replaces the single child slot.
+    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+        self.child = Some(child.into_child_view());
         self
     }
 
-    pub fn order(mut self, order: i32) -> Self {
+    /// Controls focus eligibility, not input delivery to the subtree.
+    pub fn focusable(mut self, focusable: bool) -> Self {
+        self.enabled = focusable;
+        self
+    }
+
+    pub fn tab_order(mut self, order: i32) -> Self {
         self.order = order;
         self
     }
 
-    pub fn handle(mut self, handle: FocusHandle) -> Self {
+    pub fn focus_handle(mut self, handle: FocusHandle) -> Self {
         self.handle = Some(handle);
         self
     }

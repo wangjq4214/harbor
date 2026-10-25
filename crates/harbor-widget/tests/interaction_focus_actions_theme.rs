@@ -8,8 +8,8 @@ use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::view::{Component, SizedBox};
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::{
-    ActionOutcome, Actions, Button, Focus, FocusHandle, FocusScope, KeyChord, MouseRegion,
-    Shortcuts, Theme, ThemeProvider, widgets::stack::Stack,
+    ActionHandler, ActionOutcome, Button, Focus, FocusHandle, FocusScope, KeyChord, MouseRegion,
+    ShortcutMap, Theme, ThemeProvider, widgets::stack::Stack,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -64,11 +64,17 @@ struct ToggleFocusedChild {
 impl Component for ToggleFocusedChild {
     fn build(&self, cx: &mut harbor_widget::view::BuildCx) -> harbor_widget::view::View {
         cx.track(&self.show_target);
-        let mut children = Stack::new()
-            .push_child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()).order(10));
+        let mut children = Stack::new().push_child(
+            Focus::new()
+                .child(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
+                .tab_order(10),
+        );
         if *self.show_target.read() {
-            children = children
-                .push_child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()).order(-1));
+            children = children.push_child(
+                Focus::new()
+                    .child(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
+                    .tab_order(-1),
+            );
         }
         FocusScope::new().child(children).build(cx)
     }
@@ -172,14 +178,16 @@ fn focus_scope_uses_explicit_order_and_focus_handles() {
         FocusScope::new().child(
             Stack::new()
                 .push_child(
-                    Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
-                        .order(10)
-                        .handle(second),
+                    Focus::new()
+                        .child(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
+                        .tab_order(10)
+                        .focus_handle(second),
                 )
                 .push_child(
-                    Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
-                        .order(-1)
-                        .handle(first),
+                    Focus::new()
+                        .child(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
+                        .tab_order(-1)
+                        .focus_handle(first),
                 ),
         ),
     );
@@ -213,9 +221,9 @@ fn tab_traversal_skips_custom_paint_in_both_directions() {
         FocusScope::new().child(
             Stack::new()
                 .push_child(CustomPaint::new(1))
-                .push_child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()))
+                .push_child(Focus::new().child(SizedBox::new(Size::new(20.0, 20.0)).unwrap()))
                 .push_child(CustomPaint::new(2))
-                .push_child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())),
+                .push_child(Focus::new().child(SizedBox::new(Size::new(20.0, 20.0)).unwrap())),
         ),
     );
     runtime.update(now());
@@ -252,9 +260,11 @@ fn focus_wrapper_delegates_keyboard_activation_to_its_child() {
     let activations = Arc::new(AtomicUsize::new(0));
     let observed = activations.clone();
     let mut runtime = Runtime::new();
-    runtime.set_root(Focus::new(Button::text("Wrapped").on_click(move |_| {
-        observed.fetch_add(1, Ordering::SeqCst);
-    })));
+    runtime.set_root(
+        Focus::new().child(Button::text("Wrapped").on_click(move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })),
+    );
     runtime.update(now());
 
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
@@ -272,7 +282,7 @@ fn focus_wrapper_delegates_keyboard_activation_to_its_child() {
 #[test]
 fn focus_wrapper_contributes_one_logical_tab_stop() {
     let mut runtime = Runtime::new();
-    runtime.set_root(Focus::new(Button::text("Wrapped")).order(-10));
+    runtime.set_root(Focus::new().child(Button::text("Wrapped")).tab_order(-10));
     runtime.update(now());
 
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
@@ -289,9 +299,17 @@ fn focus_wrapper_contributes_one_logical_tab_stop() {
 }
 
 #[test]
-fn disabled_focus_wrapper_suppresses_focusable_descendants() {
+fn non_focusable_wrapper_skips_tab_but_preserves_subtree_pointer_activation() {
+    let activations = Arc::new(AtomicUsize::new(0));
+    let observed = activations.clone();
     let mut runtime = Runtime::new();
-    runtime.set_root(Focus::new(Button::text("Disabled wrapper")).enabled(false));
+    runtime.set_root(
+        Focus::new()
+            .child(Button::text("Non-focusable wrapper").on_click(move |_| {
+                observed.fetch_add(1, Ordering::SeqCst);
+            }))
+            .focusable(false),
+    );
     runtime.update(now());
 
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
@@ -300,6 +318,9 @@ fn disabled_focus_wrapper_suppresses_focusable_descendants() {
     }));
 
     assert!(runtime.input().focused().is_none());
+    runtime.dispatch(pointer(Point::new(10.0, 10.0), PointerPhase::Down));
+    runtime.dispatch(pointer(Point::new(10.0, 10.0), PointerPhase::Up));
+    assert_eq!(activations.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -325,7 +346,11 @@ fn pending_focus_handle_restores_keyboard_visible_focus() {
     let handle = FocusHandle::new();
     let mut runtime = Runtime::new();
     runtime.request_focus(&handle);
-    runtime.set_root(Focus::new(Button::text("Restored")).handle(handle));
+    runtime.set_root(
+        Focus::new()
+            .child(Button::text("Restored"))
+            .focus_handle(handle),
+    );
     runtime.update(now());
     assert!(runtime.input().focused().is_some());
 
@@ -399,14 +424,18 @@ fn shortcuts_claim_exact_chords_and_invoke_nearest_actions_provider() {
         },
     );
     let mut runtime = Runtime::new();
-    runtime.set_root(Actions::new(
-        Shortcuts::new(Button::text("Target")).bind(chord, TestAction::NewTab),
-        move |action| {
+    runtime.set_root(
+        ActionHandler::new(move |action| {
             assert!(matches!(action, TestAction::NewTab));
             observed.fetch_add(1, Ordering::SeqCst);
             ActionOutcome::Consumed
-        },
-    ));
+        })
+        .child(
+            ShortcutMap::new()
+                .child(Button::text("Target"))
+                .bind(chord, TestAction::NewTab),
+        ),
+    );
     runtime.update(now());
     assert!(runtime.input().focused().is_none());
 
@@ -448,13 +477,15 @@ fn shortcut_outcome_controls_focused_delivery() {
         let observed = Arc::clone(&clicked);
         let chord = KeyChord::new(Key::Enter, Modifiers::default());
         let mut runtime = Runtime::new();
-        runtime.set_root(Actions::new(
-            Shortcuts::new(Button::text("Target").on_click(move |_| {
-                observed.store(true, Ordering::SeqCst);
-            }))
-            .bind(chord, TestAction::NewTab),
-            move |_: TestAction| outcome,
-        ));
+        runtime.set_root(
+            ActionHandler::new(move |_: TestAction| outcome).child(
+                ShortcutMap::new()
+                    .child(Button::text("Target").on_click(move |_| {
+                        observed.store(true, Ordering::SeqCst);
+                    }))
+                    .bind(chord, TestAction::NewTab),
+            ),
+        );
         runtime.update(now());
         assert!(runtime.focus_first_focusable());
 
@@ -477,10 +508,13 @@ fn keyboard_shortcut_restores_focus_visible_modality() {
         },
     );
     let mut runtime = Runtime::new();
-    runtime.set_root(Actions::new(
-        Shortcuts::new(Button::text("Target")).bind(chord, TestAction::NewTab),
-        |_: TestAction| ActionOutcome::Consumed,
-    ));
+    runtime.set_root(
+        ActionHandler::new(|_: TestAction| ActionOutcome::Consumed).child(
+            ShortcutMap::new()
+                .child(Button::text("Target"))
+                .bind(chord, TestAction::NewTab),
+        ),
+    );
     runtime.update(now());
     runtime.dispatch(pointer(Point::new(10.0, 10.0), PointerPhase::Down));
     runtime.dispatch(pointer(Point::new(10.0, 10.0), PointerPhase::Up));
@@ -515,21 +549,24 @@ fn ctrl_tab_prefers_the_exact_shortcut_over_focus_traversal() {
         },
     );
     let mut runtime = Runtime::new();
-    runtime.set_root(Actions::new(
-        Shortcuts::new(
-            FocusScope::new().child(
-                Stack::new()
-                    .push_child(Button::text("First"))
-                    .push_child(Button::text("Second")),
-            ),
-        )
-        .bind(chord, TestAction::NextTab),
-        move |action| {
+    runtime.set_root(
+        ActionHandler::new(move |action| {
             assert!(matches!(action, TestAction::NextTab));
             observed.fetch_add(1, Ordering::SeqCst);
             ActionOutcome::Consumed
-        },
-    ));
+        })
+        .child(
+            ShortcutMap::new()
+                .child(
+                    FocusScope::new().child(
+                        Stack::new()
+                            .push_child(Button::text("First"))
+                            .push_child(Button::text("Second")),
+                    ),
+                )
+                .bind(chord, TestAction::NextTab),
+        ),
+    );
     runtime.update(now());
     assert!(runtime.focus_first_focusable());
     let focused = runtime.input().focused();
@@ -567,7 +604,8 @@ fn standard_tab_chords_map_to_typed_actions() {
         shift: true,
         ..Modifiers::default()
     };
-    let mut shortcuts = Shortcuts::new(Button::text("Target"))
+    let mut shortcuts = ShortcutMap::new()
+        .child(Button::text("Target"))
         .bind(KeyChord::new(Key::Character('t'), ctrl), TabCommand::New)
         .bind(KeyChord::new(Key::Character('w'), ctrl), TabCommand::Close)
         .bind(KeyChord::new(Key::Tab, ctrl), TabCommand::Next)
@@ -585,17 +623,20 @@ fn standard_tab_chords_map_to_typed_actions() {
     let observed = Arc::new(AtomicUsize::new(usize::MAX));
     let callback_observed = observed.clone();
     let mut runtime = Runtime::new();
-    runtime.set_root(Actions::new(shortcuts, move |action| {
-        let code = match action {
-            TabCommand::New => 0,
-            TabCommand::Close => 1,
-            TabCommand::Next => 2,
-            TabCommand::Previous => 3,
-            TabCommand::Select(index) => 10 + index,
-        };
-        callback_observed.store(code, Ordering::SeqCst);
-        ActionOutcome::Consumed
-    }));
+    runtime.set_root(
+        ActionHandler::new(move |action| {
+            let code = match action {
+                TabCommand::New => 0,
+                TabCommand::Close => 1,
+                TabCommand::Next => 2,
+                TabCommand::Previous => 3,
+                TabCommand::Select(index) => 10 + index,
+            };
+            callback_observed.store(code, Ordering::SeqCst);
+            ActionOutcome::Consumed
+        })
+        .child(shortcuts),
+    );
     runtime.update(now());
 
     let mut cases = vec![

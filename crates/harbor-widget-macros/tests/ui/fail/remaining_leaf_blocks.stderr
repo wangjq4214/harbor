@@ -5,7 +5,7 @@ error[E0277]: the trait bound `EditableText: WithChildren` is not satisfied
   |                     ^^^^^^^^^^^^ the trait `WithChildren` is not implemented for `EditableText`
   |
   = help: the following other types implement trait `WithChildren`:
-            Actions<A>
+            ActionHandler<A>
             Align
             BackdropFilter
             Button
@@ -27,7 +27,7 @@ error[E0277]: the trait bound `TextField: WithChildren` is not satisfied
   |                     ^^^^^^^^^ the trait `WithChildren` is not implemented for `TextField`
   |
   = help: the following other types implement trait `WithChildren`:
-            Actions<A>
+            ActionHandler<A>
             Align
             BackdropFilter
             Button
@@ -49,7 +49,7 @@ error[E0277]: the trait bound `Notification: WithChildren` is not satisfied
   |                     ^^^^^^^^^^^^ the trait `WithChildren` is not implemented for `Notification`
   |
   = help: the following other types implement trait `WithChildren`:
-            Actions<A>
+            ActionHandler<A>
             Align
             BackdropFilter
             Button
@@ -71,7 +71,7 @@ error[E0277]: the trait bound `Separator: WithChildren` is not satisfied
   |                     ^^^^^^^^^ the trait `WithChildren` is not implemented for `Separator`
   |
   = help: the following other types implement trait `WithChildren`:
-            Actions<A>
+            ActionHandler<A>
             Align
             BackdropFilter
             Button
@@ -93,7 +93,7 @@ error[E0277]: the trait bound `Spacer: WithChildren` is not satisfied
    |                     ^^^^^^ the trait `WithChildren` is not implemented for `Spacer`
    |
    = help: the following other types implement trait `WithChildren`:
-             Actions<A>
+             ActionHandler<A>
              Align
              BackdropFilter
              Button

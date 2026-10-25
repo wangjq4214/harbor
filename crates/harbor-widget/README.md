@@ -48,8 +48,8 @@ The core runtime has no default features. Enable only the native integration nee
 Components implement [`Component`](src/view.rs) and return a [`View`](src/view.rs). The `view!` macro constructs child trees while preserving the same component model used by the builder APIs.
 
 ```rust
-use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::{BuildCx, Component, View};
+use harbor_widget::TextLabel;
 use harbor_widget::{Button, Column, Store, view};
 
 #[derive(Clone, Copy)]
@@ -99,7 +99,7 @@ The host must be created from `ApplicationHandler::resumed`, where an `ActiveEve
 
 ```rust,no_run
 use harbor_widget::winit::{HostInitContext, WinitWindowHostBuilder};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::TextLabel;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
@@ -130,12 +130,12 @@ See [`tests/native_host_smoke.rs`](tests/native_host_smoke.rs) for a compact lif
 ## Common building blocks
 
 - **Layout:** `Row`, `Column`, `Flex`, `Flexible`, `Expanded`, `Padding`, `SizedBox`, `ConstrainedBox`, `Align`, and `Stack`.
-- **Controls and editing:** `Button`, `IconButton`, `InteractiveRegion`, `MouseRegion`, `Focus`, `FocusScope`, `Shortcuts`, `Actions`, `TextEditingController`, `EditableText`, and `TextField`.
+- **Controls and editing:** `Button`, `IconButton`, `InteractiveRegion`, `MouseRegion`, `Focus`, `FocusScope`, `ShortcutMap`, `ActionHandler`, `TextEditingController`, `EditableText`, and `TextField`.
 - **Presentation and overlays:** `TextLabel`, `Icon`, `DecoratedBox`, `Separator`, `ThemeProvider`, `ScrollView`, `Notification`, and `Portal`. `Paint`/`LinearGradient` support fills and border strokes; `BackdropFilter` supports local blur with optional `EdgeRefraction`.
 - **State:** `BuildCx::use_state`, `Signal`, `Store`, and `Dispatcher`.
 - **External rendering:** `CustomPaint` registers draw, scheduling, IME, input, and unmount callbacks for a renderer owned outside the widget crate.
 
-Some widgets are available from `harbor_widget::widgets::<module>` rather than the crate root. The crate root re-exports the most commonly used construction, layout, control, and theme types.
+Prefer root imports for common widgets (including `Stack` and `TextLabel`), `Component`/`BuildCx`/`View`, and the construction/extension traits such as `IntoChildView`, `WithChildren`, and `ComponentExt`. Detailed configuration remains available in its owning `widgets::<module>`; there is no prelude.
 
 `TextLabel` measures its natural width and optional `ellipsis()` against the renderer's actual UI-font glyph advances at the current DPI. It adds no implicit padding; use `Padding` explicitly. Truncation preserves grapheme boundaries and the full source for later wider layouts. Without initialized text resources, headless layout uses the same per-Unicode-scalar fallback as text rendering, not UTF-8 byte counts.
 

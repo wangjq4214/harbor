@@ -111,7 +111,7 @@ impl Flex {
             .gap(options.gap)
     }
 
-    pub fn options(&self) -> FlexOptions {
+    pub fn get_options(&self) -> FlexOptions {
         FlexOptions {
             gap: self.gap,
             main_axis_alignment: self.main_axis_alignment,

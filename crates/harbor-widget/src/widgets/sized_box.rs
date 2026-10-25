@@ -42,10 +42,10 @@ impl SizedBox {
         })
     }
 
-    pub fn requested_width(&self) -> Option<f32> {
+    pub fn get_requested_width(&self) -> Option<f32> {
         self.requested_width
     }
-    pub fn requested_height(&self) -> Option<f32> {
+    pub fn get_requested_height(&self) -> Option<f32> {
         self.requested_height
     }
 

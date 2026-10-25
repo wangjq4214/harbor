@@ -193,3 +193,33 @@ fn replacing_callback_without_geometry_change_does_not_notify_again() {
     update(&mut runtime);
     assert_eq!(&*calls.borrow(), &[0]);
 }
+
+#[test]
+fn shared_callback_retains_the_original_handle_and_runs_only_after_layout() {
+    use harbor_widget::LayoutChangedCallback;
+    use std::sync::Arc;
+
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let observed = calls.clone();
+    let callback: LayoutChangedCallback = Arc::new(move |rect| observed.borrow_mut().push(rect));
+    let weak = Arc::downgrade(&callback);
+    let observer = LayoutObserver::from_shared_callback(callback.clone())
+        .child(SizedBox::new(Size::new(20.0, 10.0)).unwrap());
+    assert_eq!(Arc::strong_count(&callback), 2);
+    drop(callback);
+    assert!(weak.upgrade().is_some());
+    assert!(calls.borrow().is_empty());
+
+    let mut runtime = Runtime::new();
+    runtime.set_root(observer);
+    assert!(calls.borrow().is_empty(), "construction must not notify");
+    update(&mut runtime);
+    assert_eq!(*calls.borrow(), [root_rect(&runtime)]);
+    update(&mut runtime);
+    assert_eq!(calls.borrow().len(), 1);
+    drop(runtime);
+    assert!(
+        weak.upgrade().is_none(),
+        "unmount releases the shared callback"
+    );
+}

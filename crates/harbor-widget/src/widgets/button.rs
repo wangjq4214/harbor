@@ -11,7 +11,7 @@ use crate::widgets::text_label::TextLabel;
 
 /// A single-slot control sharing InteractiveRegion's interaction and surface.
 ///
-/// `text` and `icon` select replaceable built-in content. `child`, `content`
+/// `text` and `icon` select replaceable built-in content. `child`, `child_with`
 /// and macro child blocks replace that choice, never append to it.
 #[derive(Clone, Default)]
 pub struct Button {
@@ -47,12 +47,12 @@ impl Button {
     }
 
     /// Replaces the slot with a builder on its own child Fiber and hook sequence.
-    pub fn content(
+    pub fn child_with(
         mut self,
         builder: impl Fn(&mut BuildCx, InteractionState) -> View + 'static,
     ) -> Self {
         self.builtin = None;
-        self.region = self.region.content(builder);
+        self.region = self.region.child_with(builder);
         self
     }
 
@@ -94,7 +94,7 @@ impl Component for Button {
             // Resolve the exact same local override/theme role as the surface.
             let style = region.resolved_style(cx);
             let gap = cx.theme().spacing;
-            region = region.centered().content(move |cx, state| {
+            region = region.centered().child_with(move |cx, state| {
                 let color = style.resolve_state(&state).foreground;
                 let label = TextLabel::new(text.clone())
                     .ellipsis()

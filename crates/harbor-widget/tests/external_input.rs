@@ -195,7 +195,7 @@ fn should_focus_custom_paint_at_startup_and_after_pointer_down() {
 #[test]
 fn should_forward_tab_and_shift_tab_from_pointer_focused_custom_paint() {
     let mut rt = Runtime::new();
-    rt.set_root(FocusScope::new().child(Focus::new(CustomPaint::new(21))));
+    rt.set_root(FocusScope::new().child(Focus::new().child(CustomPaint::new(21))));
     rt.update(now());
     rt.clear_focus();
 

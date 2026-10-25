@@ -93,7 +93,7 @@ fn constructors_setters_and_macro_blocks_select_one_replaceable_slot() {
     for staged in [
         Button::text("old"),
         Button::icon(LucideIcon::Plus, "old"),
-        Button::new().content(|cx, _| TextLabel::new("old").build(cx)),
+        Button::new().child_with(|cx, _| TextLabel::new("old").build(cx)),
     ] {
         let rt = runtime(
             staged
@@ -130,7 +130,7 @@ fn constructors_setters_and_macro_blocks_select_one_replaceable_slot() {
         texts(&runtime(
             Button::new()
                 .child(TextLabel::new("old"))
-                .content(|cx, _| TextLabel::new("new").build(cx)),
+                .child_with(|cx, _| TextLabel::new("new").build(cx)),
             240
         )),
         ["new"]
@@ -504,7 +504,7 @@ fn content_has_independent_hooks_theme_and_subscriptions_and_releases_old_captur
                 let source = observed_source.clone();
                 let state = captured_state.clone();
                 let builds = captured_builds.clone();
-                let button = Button::new().content(move |cx, _| {
+                let button = Button::new().child_with(move |cx, _| {
                     let _keep_alive = &token;
                     cx.track(&source);
                     let local = cx.use_state(|| 10u32);
@@ -573,7 +573,7 @@ fn keyed_button_reorder_preserves_content_fiber_and_state() {
             let button = |name| {
                 let log = log.clone();
                 Button::new()
-                    .content(move |cx, _| {
+                    .child_with(move |cx, _| {
                         let value = cx.use_state(|| name);
                         log.borrow_mut().push((name, *value.read()));
                         TextLabel::new(*value.read()).build(cx)

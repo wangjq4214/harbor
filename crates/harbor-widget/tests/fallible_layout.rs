@@ -109,10 +109,10 @@ fn scalar_matrix_is_recoverable_and_equivalent_across_entry_points() {
             .is_ok()
         );
     }
-    assert_eq!(Row::new().options(), FlexOptions::default());
-    assert_eq!(Column::new().options(), FlexOptions::default());
+    assert_eq!(Row::new().get_options(), FlexOptions::default());
+    assert_eq!(Column::new().get_options(), FlexOptions::default());
     assert_eq!(
-        Flex::new(Axis::Horizontal).options(),
+        Flex::new(Axis::Horizontal).get_options(),
         FlexOptions::default()
     );
 }

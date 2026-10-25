@@ -51,12 +51,14 @@ fn scroll_view_commits_metrics_moves_content_and_settles_at_boundaries() {
         ScrollView::new()
             .controller(controller.clone())
             .line_step(25.0)
-            .child(Focus::new(
-                SizedBox::new(Size::new(100.0, 100.0))
-                    .unwrap()
-                    .background(Color::RED)
-                    .expect("valid color"),
-            )),
+            .child(
+                Focus::new().child(
+                    SizedBox::new(Size::new(100.0, 100.0))
+                        .unwrap()
+                        .background(Color::RED)
+                        .expect("valid color"),
+                ),
+            ),
     );
 
     assert!(update(&mut runtime));
@@ -68,17 +70,17 @@ fn scroll_view_commits_metrics_moves_content_and_settles_at_boundaries() {
 
     let toward_start_at_top = runtime.dispatch(wheel(10.0, 1.0));
     assert!(!toward_start_at_top.request_redraw);
-    assert_eq!(controller.offset(), 0.0);
+    assert_eq!(controller.requested_offset(), 0.0);
 
     let effects = runtime.dispatch(wheel(10.0, -1.0));
     assert!(effects.request_redraw);
-    assert_eq!(controller.offset(), 25.0);
+    assert_eq!(controller.requested_offset(), 25.0);
     assert!(update(&mut runtime));
     assert_eq!(child_rect(&runtime).min.y, -25.0);
 
     assert!(runtime.dispatch(key(Key::End)).request_redraw);
     assert!(update(&mut runtime));
-    assert_eq!(controller.offset(), 60.0);
+    assert_eq!(controller.requested_offset(), 60.0);
     assert_eq!(child_rect(&runtime).min.y, -60.0);
 
     let boundary = runtime.dispatch(wheel(10.0, -1.0));
@@ -94,7 +96,7 @@ fn pixel_page_home_and_ignored_input_follow_committed_boundaries() {
     runtime.set_root(
         ScrollView::new()
             .controller(controller.clone())
-            .child(Focus::new(SizedBox::new(Size::new(100.0, 100.0)).unwrap())),
+            .child(Focus::new().child(SizedBox::new(Size::new(100.0, 100.0)).unwrap())),
     );
     update(&mut runtime);
     runtime.dispatch(key(Key::Tab));
@@ -106,14 +108,14 @@ fn pixel_page_home_and_ignored_input_follow_committed_boundaries() {
         2,
     ));
     assert!(runtime.dispatch(pixel).request_redraw);
-    assert_eq!(controller.offset(), 7.5);
+    assert_eq!(controller.requested_offset(), 7.5);
     update(&mut runtime);
 
     assert!(runtime.dispatch(key(Key::PageDown)).request_redraw);
-    assert_eq!(controller.offset(), 47.5);
+    assert_eq!(controller.requested_offset(), 47.5);
     update(&mut runtime);
     assert!(runtime.dispatch(key(Key::Home)).request_redraw);
-    assert_eq!(controller.offset(), 0.0);
+    assert_eq!(controller.requested_offset(), 0.0);
     update(&mut runtime);
 
     let horizontal = UiEvent::Pointer(PointerEvent::new(
@@ -231,12 +233,12 @@ fn nested_scroll_view_bubbles_to_outer_only_after_inner_reaches_boundary() {
     for expected in [10.0, 20.0, 30.0, 40.0] {
         assert!(runtime.dispatch(wheel(10.0, -1.0)).request_redraw);
         update(&mut runtime);
-        assert_eq!(inner.offset(), expected);
-        assert_eq!(outer.offset(), 0.0);
+        assert_eq!(inner.requested_offset(), expected);
+        assert_eq!(outer.requested_offset(), 0.0);
     }
     assert!(runtime.dispatch(wheel(10.0, -1.0)).request_redraw);
-    assert_eq!(inner.offset(), 40.0);
-    assert_eq!(outer.offset(), 10.0);
+    assert_eq!(inner.requested_offset(), 40.0);
+    assert_eq!(outer.requested_offset(), 10.0);
 }
 
 #[test]
@@ -247,20 +249,20 @@ fn focus_navigation_reveals_offscreen_descendant_with_minimal_offset() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap())),
+                .push_child(Focus::new().child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new().child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new().child(SizedBox::new(Size::new(100.0, 30.0)).unwrap())),
         ),
     );
     update(&mut runtime);
 
     runtime.dispatch(key(Key::Tab));
-    assert_eq!(controller.offset(), 0.0);
+    assert_eq!(controller.requested_offset(), 0.0);
     runtime.dispatch(key(Key::Tab));
-    assert_eq!(controller.offset(), 20.0);
+    assert_eq!(controller.requested_offset(), 20.0);
     update(&mut runtime);
     runtime.dispatch(key(Key::Tab));
-    assert_eq!(controller.offset(), 50.0);
+    assert_eq!(controller.requested_offset(), 50.0);
     update(&mut runtime);
     assert_eq!(controller.metrics().offset(), 50.0);
     assert!(!update(&mut runtime));
@@ -276,10 +278,12 @@ fn pending_focus_handle_reveals_target_after_first_successful_layout() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new().child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new().child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
                 .push_child(
-                    Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()).handle(target),
+                    Focus::new()
+                        .child(SizedBox::new(Size::new(100.0, 30.0)).unwrap())
+                        .focus_handle(target),
                 ),
         ),
     );
@@ -299,20 +303,22 @@ fn pending_focus_reveal_retries_after_zero_viewport_restores() {
     runtime.set_root(
         ScrollView::new().controller(controller.clone()).child(
             Column::new()
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
-                .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new().child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
+                .push_child(Focus::new().child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
                 .push_child(
-                    Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()).handle(target),
+                    Focus::new()
+                        .child(SizedBox::new(Size::new(100.0, 30.0)).unwrap())
+                        .focus_handle(target),
                 ),
         ),
     );
 
     assert!(update(&mut runtime));
-    assert_eq!(controller.offset(), 0.0);
+    assert_eq!(controller.requested_offset(), 0.0);
 
     runtime.set_viewport(Viewport::new(100, 40, 1.0));
     assert!(update(&mut runtime));
-    assert_eq!(controller.offset(), 50.0);
+    assert_eq!(controller.requested_offset(), 50.0);
     assert!(update(&mut runtime));
     assert_eq!(controller.metrics().offset(), 50.0);
     assert!(!update(&mut runtime));
@@ -337,15 +343,18 @@ fn nested_focus_reveal_accounts_for_inner_scroll_before_outer_scroll() {
                         .child(
                             ScrollView::new().controller(inner.clone()).child(
                                 Column::new()
-                                    .push_child(Focus::new(
-                                        SizedBox::new(Size::new(100.0, 30.0)).unwrap(),
-                                    ))
-                                    .push_child(Focus::new(
-                                        SizedBox::new(Size::new(100.0, 30.0)).unwrap(),
-                                    ))
                                     .push_child(
-                                        Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap())
-                                            .handle(target),
+                                        Focus::new()
+                                            .child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()),
+                                    )
+                                    .push_child(
+                                        Focus::new()
+                                            .child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()),
+                                    )
+                                    .push_child(
+                                        Focus::new()
+                                            .child(SizedBox::new(Size::new(100.0, 30.0)).unwrap())
+                                            .focus_handle(target),
                                     ),
                             ),
                         ),
@@ -424,11 +433,16 @@ fn failed_layout_defers_focus_reveal_until_fresh_geometry_commits() {
                 .child(
                     ScrollView::new().controller(self.controller.clone()).child(
                         Column::new()
-                            .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
-                            .push_child(Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap()))
                             .push_child(
-                                Focus::new(SizedBox::new(Size::new(100.0, 30.0)).unwrap())
-                                    .handle(self.target),
+                                Focus::new().child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()),
+                            )
+                            .push_child(
+                                Focus::new().child(SizedBox::new(Size::new(100.0, 30.0)).unwrap()),
+                            )
+                            .push_child(
+                                Focus::new()
+                                    .child(SizedBox::new(Size::new(100.0, 30.0)).unwrap())
+                                    .focus_handle(self.target),
                             ),
                     ),
                 )
@@ -451,11 +465,11 @@ fn failed_layout_defers_focus_reveal_until_fresh_geometry_commits() {
     invalid.set(true);
     assert!(update(&mut runtime));
     runtime.request_focus(&target);
-    assert_eq!(controller.offset(), 0.0);
+    assert_eq!(controller.requested_offset(), 0.0);
 
     invalid.set(false);
     assert!(update(&mut runtime));
-    assert_eq!(controller.offset(), 50.0);
+    assert_eq!(controller.requested_offset(), 50.0);
     assert!(update(&mut runtime));
     assert_eq!(controller.metrics().offset(), 50.0);
     assert!(!update(&mut runtime));
@@ -558,7 +572,7 @@ fn scrollbar_expands_only_over_its_track_without_moving_content() {
     assert_eq!(expanded.size().height, resting.size().height);
     assert_eq!(track(&runtime).unwrap().size(), Size::new(10.0, 100.0));
     assert_eq!(child_rect(&runtime), content);
-    assert_eq!(controller.offset(), 0.0);
+    assert_eq!(controller.requested_offset(), 0.0);
 
     // Moving down the track, away from the thumb, must not collapse it.
     pointer(&mut runtime, 91.0, 90.0, PointerPhase::Move, 1);
@@ -680,7 +694,7 @@ fn scrollbar_is_painted_above_content_and_drag_preserves_focus_and_capture() {
     update(&mut runtime); // Reconciliation must retain the active drag.
     pointer(&mut runtime, -50.0, 1000.0, PointerPhase::Move, 8);
     assert_eq!(
-        controller.offset(),
+        controller.requested_offset(),
         0.0,
         "another pointer cannot move this thumb"
     );
@@ -715,28 +729,28 @@ fn scrollbar_track_pages_and_cancel_releases_without_further_dragging() {
     assert_eq!(thumb(&runtime).unwrap().0.size().height, 25.0);
     pointer(&mut runtime, 97.0, 90.0, PointerPhase::Down, 3);
     assert_eq!(
-        controller.offset(),
+        controller.requested_offset(),
         100.0,
         "track click moves exactly one viewport"
     );
     update(&mut runtime);
     pointer(&mut runtime, 97.0, 99.0, PointerPhase::Move, 3);
     assert_eq!(
-        controller.offset(),
+        controller.requested_offset(),
         100.0,
         "track capture is not a thumb drag"
     );
     pointer(&mut runtime, 97.0, 99.0, PointerPhase::Up, 3);
     assert!(runtime.input().captor(3).is_none());
     pointer(&mut runtime, 97.0, 1.0, PointerPhase::Down, 3);
-    assert_eq!(controller.offset(), 0.0);
+    assert_eq!(controller.requested_offset(), 0.0);
     pointer(&mut runtime, 97.0, 1.0, PointerPhase::Up, 3);
     update(&mut runtime);
     pointer(&mut runtime, 97.0, 5.0, PointerPhase::Down, 3);
     pointer(&mut runtime, 97.0, 5.0, PointerPhase::Cancel, 3);
     assert!(runtime.input().captor(3).is_none());
     pointer(&mut runtime, 97.0, 80.0, PointerPhase::Move, 3);
-    assert_eq!(controller.offset(), 0.0);
+    assert_eq!(controller.requested_offset(), 0.0);
 }
 
 #[test]
@@ -773,7 +787,7 @@ fn scrollbar_hides_on_content_shrink_and_zero_or_fitting_viewports() {
     pointer(&mut runtime, 97.0, 80.0, PointerPhase::Move, 5);
     pointer(&mut runtime, 97.0, 80.0, PointerPhase::Up, 5);
     assert!(runtime.input().captor(5).is_none());
-    assert_eq!(controller.offset(), 0.0);
+    assert_eq!(controller.requested_offset(), 0.0);
 }
 
 #[test]
@@ -832,4 +846,74 @@ fn switching_between_internal_and_external_controller_keeps_hook_types_stable() 
         update(&mut runtime);
         assert!(thumb(&runtime).is_some());
     }
+}
+
+#[test]
+fn requested_offset_waits_for_a_successful_layout_commit() {
+    #[derive(Clone)]
+    struct Host {
+        invalid: Signal<bool>,
+        controller: ScrollController,
+    }
+    impl Component for Host {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            cx.track(&self.invalid);
+            let bounds = if *self.invalid.read() {
+                ConstrainedBox::new().min_width(100.0).max_width(50.0)
+            } else {
+                ConstrainedBox::new()
+            };
+            bounds
+                .child(
+                    ScrollView::new()
+                        .controller(self.controller.clone())
+                        .child(SizedBox::height(100.0).unwrap()),
+                )
+                .build(cx)
+        }
+    }
+
+    let controller = ScrollController::new();
+    let invalid = Signal::new_distinct(false);
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(100, 40, 1.0));
+    runtime.set_root(Host {
+        invalid: invalid.clone(),
+        controller: controller.clone(),
+    });
+    update(&mut runtime);
+    let committed = controller.metrics();
+
+    invalid.set(true);
+    assert!(controller.jump_to(f32::INFINITY));
+    assert_eq!(controller.requested_offset(), f32::MAX);
+    assert_eq!(controller.metrics(), committed);
+    update(&mut runtime);
+    assert_eq!(
+        controller.requested_offset(),
+        f32::MAX,
+        "failed layout must not clamp a request"
+    );
+    assert_eq!(
+        controller.metrics(),
+        committed,
+        "failed layout must not publish metrics"
+    );
+
+    invalid.set(false);
+    update(&mut runtime);
+    assert_eq!(controller.requested_offset(), 60.0);
+    assert_eq!(controller.metrics().offset(), 60.0);
+    for request in [f32::NAN, -1.0, f32::NEG_INFINITY] {
+        controller.jump_to(20.0);
+        controller.jump_to(request);
+        assert_eq!(controller.requested_offset(), 0.0);
+        assert_eq!(
+            controller.metrics().offset(),
+            60.0,
+            "request is not a commit"
+        );
+    }
+    update(&mut runtime);
+    assert_eq!(controller.metrics().offset(), 0.0);
 }

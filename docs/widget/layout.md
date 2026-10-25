@@ -11,7 +11,7 @@ Ordinary `view!` accepts either a component/existing View or a final `Result` co
 ```rust
 use harbor_widget::{Align, Alignment, Alignment2D, Button, Column, Expanded,
     FlexOptions, Insets, Padding, Row, SizedBox, TextEditingController, TextField, view};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::TextLabel;
 
 fn main() {
     let controller = TextEditingController::new("");
@@ -48,7 +48,7 @@ Requested dimensions, gaps and every individual inset side must be finite and no
 
 ```rust
 use harbor_widget::{Insets, LayoutConfigError, Padding, SizedBox, view};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::TextLabel;
 
 fn padded(width: f32) -> Result<Padding, LayoutConfigError> {
     let sized = SizedBox::width(width)?.child(TextLabel::new("content"));
@@ -77,3 +77,5 @@ Scalar validity is separate from geometry: two opposing `f32::MAX` inset sides c
 - `ConstrainedBox` remains for real ranges, caps and current-font-metric-dependent `max_height_with`. Fixed width plus a maximum height is not a two-axis fixed size.
 
 Keys retain identity only for stable parent-local key/type relationships. Inserting a wrapper or changing its type may remount descendants; keys do not promise preservation across arbitrary tree rewrites. Native focus/IME and actual HMR teardown still require separate host evidence.
+
+Configuration queries use `get_insets` (Padding and Align), `get_decoration`/`get_clip_behavior` (DecoratedBox), `get_options` (Row/Column/Flex), and `get_requested_width`/`get_requested_height` (SizedBox). Requested dimensions are configuration, not measured geometry. Immutable values and controllers retain their own semantic query names.
