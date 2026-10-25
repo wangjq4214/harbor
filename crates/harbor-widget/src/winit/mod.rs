@@ -619,7 +619,7 @@ mod tests {
     use crate::runtime::Runtime;
     use crate::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
     use crate::widgets::button::Button;
-    use crate::widgets::custom_paint::CustomPaint;
+    use crate::widgets::external_surface::ExternalSurface;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use winit::dpi::PhysicalPosition;
@@ -2077,7 +2077,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(91).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(91).schedule_with(schedule));
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
         let armed = presenter.fold_effects(RuntimeEffects {
             request_redraw: true,
@@ -2153,7 +2153,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2181,7 +2181,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2203,7 +2203,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
         // Act
@@ -2229,7 +2229,7 @@ mod tests {
             })
         };
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2259,7 +2259,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2293,7 +2293,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2325,7 +2325,7 @@ mod tests {
             })
         };
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2367,7 +2367,7 @@ mod tests {
             })
         };
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);

@@ -7,7 +7,7 @@ use harbor_widget::input::event::{
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::ExternalDrawId;
 use harbor_widget::widgets::button::Button;
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::winit::{
     FrameError, FrameOutcome, HostEventOutcome, HostFrameOutcome, HostIdleOutcome, HostInitContext,
     HostStartupError, SharedGpu, WindowPlatformHooks, WindowPresenter, WindowSurfaceInfo,
@@ -273,9 +273,9 @@ async fn owned_host_contract(
     Ok(())
 }
 
-fn custom_paint_runtime(draw_id: u64) -> Runtime {
+fn external_surface_runtime(draw_id: u64) -> Runtime {
     let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(draw_id));
+    runtime.set_root(ExternalSurface::new(draw_id));
     runtime.update(Instant::now());
     assert!(runtime.focus_first_focusable());
     runtime.drain_external_input();
@@ -285,7 +285,7 @@ fn custom_paint_runtime(draw_id: u64) -> Runtime {
 #[test]
 fn adapter_reports_unsupported_events_without_dispatching_them() {
     // Arrange: a focused external-input target and events the adapter does not own.
-    let mut runtime = custom_paint_runtime(10);
+    let mut runtime = external_surface_runtime(10);
     let mut adapter = WinitAdapter::new();
     let unsupported = [
         WindowEvent::RedrawRequested,
@@ -308,7 +308,7 @@ fn adapter_reports_unsupported_events_without_dispatching_them() {
 #[test]
 fn adapter_dispatches_pointer_events_with_scaled_position_and_latest_cursor_state() {
     // Arrange
-    let mut runtime = custom_paint_runtime(11);
+    let mut runtime = external_surface_runtime(11);
     let mut adapter = WinitAdapter::new();
     adapter.set_scale_factor(2.0);
 
@@ -371,7 +371,7 @@ fn adapter_dispatches_pointer_events_with_scaled_position_and_latest_cursor_stat
 #[test]
 fn adapter_keeps_valid_scale_and_pointer_state_when_invalid_scale_is_offered() {
     // Arrange
-    let mut runtime = custom_paint_runtime(12);
+    let mut runtime = external_surface_runtime(12);
     let mut adapter = WinitAdapter::new();
     adapter.set_scale_factor(2.0);
     adapter.set_scale_factor(0.0);
@@ -406,7 +406,7 @@ fn adapter_keeps_valid_scale_and_pointer_state_when_invalid_scale_is_offered() {
 #[test]
 fn adapter_routes_preedit_updates_and_forwards_only_nonempty_commit() {
     // Arrange
-    let mut runtime = custom_paint_runtime(13);
+    let mut runtime = external_surface_runtime(13);
     let mut adapter = WinitAdapter::new();
 
     // Act: enable/preedit are state updates; only a non-empty commit is input.
@@ -454,8 +454,8 @@ fn adapter_routes_preedit_updates_and_forwards_only_nonempty_commit() {
 #[test]
 fn adapter_modifier_state_is_per_window_and_does_not_leak_between_runtimes() {
     // Arrange
-    let mut first_runtime = custom_paint_runtime(14);
-    let mut second_runtime = custom_paint_runtime(15);
+    let mut first_runtime = external_surface_runtime(14);
+    let mut second_runtime = external_surface_runtime(15);
     let mut first_adapter = WinitAdapter::new();
     let second_adapter = WinitAdapter::new();
 
@@ -476,8 +476,8 @@ fn adapter_modifier_state_is_per_window_and_does_not_leak_between_runtimes() {
 #[test]
 fn main_and_confirmation_adapters_route_only_events_offered_to_each_window() {
     // Arrange: each native window owns a distinct Runtime and adapter.
-    let mut main_runtime = custom_paint_runtime(16);
-    let mut confirmation_runtime = custom_paint_runtime(17);
+    let mut main_runtime = external_surface_runtime(16);
+    let mut confirmation_runtime = external_surface_runtime(17);
     let mut main_adapter = WinitAdapter::new();
     let mut confirmation_adapter = WinitAdapter::new();
     let main_event = WindowEvent::Ime(Ime::Commit("main".into()));
@@ -514,9 +514,9 @@ fn main_and_confirmation_adapters_route_only_events_offered_to_each_window() {
 }
 
 #[test]
-fn adapter_dispatch_reaches_runtime_custom_paint_with_public_event_outcome() {
+fn adapter_dispatch_reaches_runtime_external_surface_with_public_event_outcome() {
     // Arrange
-    let mut runtime = custom_paint_runtime(18);
+    let mut runtime = external_surface_runtime(18);
     let mut adapter = WinitAdapter::new();
 
     // Act
@@ -538,7 +538,7 @@ fn adapter_dispatch_reaches_runtime_custom_paint_with_public_event_outcome() {
 
 #[test]
 fn ime_enabled_without_preedit_does_not_suppress_character_keydown() {
-    let mut runtime = custom_paint_runtime(19);
+    let mut runtime = external_surface_runtime(19);
     let mut adapter = WinitAdapter::new();
     assert!(
         adapter
@@ -594,7 +594,7 @@ fn ime_enabled_without_preedit_does_not_suppress_character_keydown() {
 
 #[test]
 fn disabled_ime_restores_character_key_dispatch_from_active_preedit() {
-    let mut runtime = custom_paint_runtime(20);
+    let mut runtime = external_surface_runtime(20);
     let mut adapter = WinitAdapter::new();
     adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
     adapter.handle_event(
@@ -643,7 +643,7 @@ fn disabled_ime_restores_character_key_dispatch_from_active_preedit() {
 
 #[test]
 fn disabled_ime_restores_character_key_dispatch_and_empty_commit_is_a_handled_noop() {
-    let mut runtime = custom_paint_runtime(20);
+    let mut runtime = external_surface_runtime(20);
     let mut adapter = WinitAdapter::new();
     adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
     adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Disabled));
@@ -699,7 +699,7 @@ fn disabled_ime_restores_character_key_dispatch_and_empty_commit_is_a_handled_no
 #[test]
 fn modifier_changes_are_applied_to_dispatched_keyboard_events() {
     // Arrange: update the adapter's per-window modifier snapshot.
-    let mut runtime = custom_paint_runtime(26);
+    let mut runtime = external_surface_runtime(26);
     let mut adapter = WinitAdapter::new();
     let modifiers = ModifiersState::SHIFT | ModifiersState::CONTROL;
     assert!(
@@ -740,7 +740,7 @@ fn modifier_changes_are_applied_to_dispatched_keyboard_events() {
 #[test]
 fn unsupported_keyboard_keys_are_unhandled_without_external_input() {
     // Arrange: keys with no widget mapping, including an empty character string.
-    let mut runtime = custom_paint_runtime(27);
+    let mut runtime = external_surface_runtime(27);
     let mut adapter = WinitAdapter::new();
 
     // Act and assert each malformed/unsupported key independently.
@@ -826,7 +826,7 @@ fn focus_loss_cancels_all_touch_captures_before_later_touch_ends() {
 #[test]
 fn ime_suppresses_only_character_keydown_during_preedit_and_keeps_keyup_handled() {
     // Arrange: composition (preedit) is active for this window.
-    let mut runtime = custom_paint_runtime(22);
+    let mut runtime = external_surface_runtime(22);
     let mut adapter = WinitAdapter::new();
     adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
     adapter.handle_event(
@@ -871,8 +871,8 @@ fn ime_suppresses_only_character_keydown_during_preedit_and_keeps_keyup_handled(
 }
 
 #[test]
-fn adapter_routes_focus_loss_to_custom_paint() {
-    let mut runtime = custom_paint_runtime(25);
+fn adapter_routes_focus_loss_to_external_surface() {
+    let mut runtime = external_surface_runtime(25);
     let mut adapter = WinitAdapter::new();
     assert!(
         adapter
@@ -891,7 +891,7 @@ fn adapter_routes_focus_loss_to_custom_paint() {
 
 #[test]
 fn adapter_routes_right_and_middle_button_down_up_events() {
-    let mut runtime = custom_paint_runtime(23);
+    let mut runtime = external_surface_runtime(23);
     let mut adapter = WinitAdapter::new();
     adapter.handle_event(
         &mut runtime,
@@ -960,7 +960,7 @@ fn adapter_routes_right_and_middle_button_down_up_events() {
 
 #[test]
 fn focus_loss_clears_ime_suppression_before_refocus() {
-    let mut runtime = custom_paint_runtime(24);
+    let mut runtime = external_surface_runtime(24);
     let mut adapter = WinitAdapter::new();
     adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
     adapter.handle_event(
@@ -1003,7 +1003,7 @@ fn focus_loss_clears_ime_suppression_before_refocus() {
 
 #[test]
 fn touch_events_map_to_pointer_phases_ids_and_scaled_positions() {
-    let mut runtime = custom_paint_runtime(21);
+    let mut runtime = external_surface_runtime(21);
     let mut adapter = WinitAdapter::new();
     adapter.set_scale_factor(2.0);
     for (phase, location) in [

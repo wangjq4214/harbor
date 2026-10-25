@@ -1286,12 +1286,12 @@ mod tests {
 
     #[test]
     fn should_allocate_terminal_content_inside_uniform_root_padding() {
-        use crate::widgets::custom_paint::CustomPaint;
+        use crate::widgets::external_surface::ExternalSurface;
         use crate::widgets::padding::Padding;
 
         // Arrange
         let mut arena = FiberArena::new();
-        let padding = Padding::all(16.0).unwrap().child(CustomPaint::new(1));
+        let padding = Padding::all(16.0).unwrap().child(ExternalSurface::new(1));
         let mut cx = crate::view::BuildCx::stub();
         let root_id = create_fiber_from_view(&mut arena, no_parent(), padding.build(&mut cx));
 
@@ -1380,7 +1380,7 @@ mod tests {
 
     #[test]
     fn should_allocate_zero_sized_child_when_root_is_smaller_than_padding_insets() {
-        use crate::widgets::custom_paint::CustomPaint;
+        use crate::widgets::external_surface::ExternalSurface;
         use crate::widgets::padding::Padding;
 
         // Arrange
@@ -1391,7 +1391,7 @@ mod tests {
             no_parent(),
             Padding::all(16.0)
                 .unwrap()
-                .child(CustomPaint::new(1))
+                .child(ExternalSurface::new(1))
                 .build(&mut cx),
         );
 

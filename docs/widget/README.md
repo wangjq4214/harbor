@@ -31,7 +31,7 @@ Host: window, clipboard, IME, surface, scheduling, presentation
 - A `Signal` holds UI-thread state. Writes invalidate subscribers; builds pull current values.
 - A `Store` separates published state from one-shot actions. Dispatch queues intent; it does **not** reduce state or wake a sleeping host.
 - `WinitWindowHost` supplies the ordinary native integration. A bare `Runtime` is useful for deterministic tests and custom hosts, but does not create a window.
-- `CustomPaint` embeds an externally owned renderer. A terminal is one consumer, not a dependency of the widget library.
+- `ExternalSurface` embeds an externally owned renderer. A terminal is one consumer, not a dependency of the widget library.
 
 ## Install and orient
 

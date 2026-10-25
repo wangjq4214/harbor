@@ -23,6 +23,23 @@ fn main() {
         }
     }
     let _ = view! { Stack::new() => { TextLabel::new("root exports"); } };
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+    use widget_alias::input::event_ctx::EventHandled;
+    use widget_alias::scene::primitive::{ExternalDrawFn, ExternalScheduleDemand};
+    let local = Rc::new(Cell::new(0));
+    let draw_local = local.clone();
+    let draw: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
+        draw_local.set(draw_local.get() + 1);
+    });
+    let _ = view! { widget_alias::ExternalSurface::new(7)
+        .on_draw(draw)
+        .schedule_with(Arc::new(|_, _| ExternalScheduleDemand::empty()))
+        .ime_with(Arc::new(|_, _| None))
+        .on_input(Arc::new(|_, _| EventHandled::Ignored))
+        .on_unmount(Arc::new(move || local.set(local.get() + 1))) => {
+            SizedBox::new(Size::ZERO);
+        }
+    };
     let enabled = std::env::args().len() > 1;
     let _ = view! { External(Padding::all(1.0).unwrap()).keyed("external") => {
         if enabled { SizedBox::new(Size::ZERO); } else {}

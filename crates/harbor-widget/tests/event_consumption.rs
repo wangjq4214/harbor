@@ -15,7 +15,7 @@ use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::{ExternalDrawId, Primitive};
 use harbor_widget::text::TextMetrics;
 use harbor_widget::view::{BuildCx, Component, PrimitiveLeaf, View};
-use harbor_widget::widgets::{custom_paint::CustomPaint, row::Row};
+use harbor_widget::widgets::{external_surface::ExternalSurface, row::Row};
 use harbor_widget::{Focus, InteractiveRegion, MouseRegion};
 
 type Input = dyn Fn(&UiEvent, &mut EventCtx) -> EventHandled;
@@ -97,14 +97,14 @@ fn primitive_leaf_handled_prevents_parent_activation_and_ignored_preserves_effec
 }
 
 #[test]
-fn custom_paint_adapter_consumes_nested_click_without_duplicate_external_delivery() {
+fn external_surface_adapter_consumes_nested_click_without_duplicate_external_delivery() {
     let activations = Rc::new(Cell::new(0));
     let observed = activations.clone();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = calls.clone();
     let mut rt = mount(InteractiveRegion::new()
         .on_activate(move |_| observed.set(observed.get() + 1))
-        .child(CustomPaint::new(102).on_input(Arc::new(move |event, _| {
+        .child(ExternalSurface::new(102).on_input(Arc::new(move |event, _| {
             if matches!(event, UiEvent::Pointer(p) if matches!(p.phase, PointerPhase::Down | PointerPhase::Up)) {
                 counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 EventHandled::Handled

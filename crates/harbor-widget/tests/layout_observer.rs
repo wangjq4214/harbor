@@ -3,7 +3,7 @@ use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::signal::Signal;
 use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{ConstrainedBox, LayoutObserver};
 use std::cell::RefCell;
@@ -129,7 +129,7 @@ fn observer_skips_zero_viewport_and_coalesces_restore_to_same_rect() {
     runtime.set_viewport(Viewport::new(0, 0, 1.0));
     runtime.set_root(
         LayoutObserver::new(move |rect| observed.borrow_mut().push(rect))
-            .child(CustomPaint::new(7)),
+            .child(ExternalSurface::new(7)),
     );
     update(&mut runtime);
     assert!(calls.borrow().is_empty());

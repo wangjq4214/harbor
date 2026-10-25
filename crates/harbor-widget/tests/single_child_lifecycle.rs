@@ -6,7 +6,7 @@ use harbor_widget::{
     scene::primitive::ExternalScheduleDemand,
     signal::Signal,
     view::{BuildCx, Component, View},
-    widgets::custom_paint::CustomPaint,
+    widgets::external_surface::ExternalSurface,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -24,7 +24,7 @@ struct Resources {
 }
 
 impl Resources {
-    fn surface(&self, draw_id: u64) -> CustomPaint {
+    fn surface(&self, draw_id: u64) -> ExternalSurface {
         // No strong token lives in the test/host. Only the actual callbacks own it.
         let draw = Rc::new(());
         let schedule = Rc::new(());
@@ -37,16 +37,16 @@ impl Resources {
         let unmounts = self.unmounts.clone();
         let schedule_calls = self.schedule_calls.clone();
         let ime_calls = self.ime_calls.clone();
-        CustomPaint::new(draw_id)
-            .handler(Arc::new(move |_, _, _, _, _| {
+        ExternalSurface::new(draw_id)
+            .on_draw(Arc::new(move |_, _, _, _, _| {
                 let _keep_alive = &draw;
             }))
-            .schedule(Arc::new(move |_, _| {
+            .schedule_with(Arc::new(move |_, _| {
                 let _keep_alive = &schedule;
                 schedule_calls.set(schedule_calls.get() + 1);
                 ExternalScheduleDemand::empty()
             }))
-            .ime(Arc::new(move |_, _| {
+            .ime_with(Arc::new(move |_, _| {
                 let _keep_alive = &ime;
                 ime_calls.set(ime_calls.get() + 1);
                 None
@@ -104,7 +104,7 @@ impl Component for TrackedChild {
 #[derive(Clone, Copy, Debug)]
 enum Parent {
     FocusScope,
-    CustomPaint,
+    ExternalSurface,
     Portal,
 }
 
@@ -145,7 +145,7 @@ fn description(
     }
     match parent {
         Parent::FocusScope => attach!(FocusScope::new()),
-        Parent::CustomPaint => attach!(parent_resources.surface(100)),
+        Parent::ExternalSurface => attach!(parent_resources.surface(100)),
         Parent::Portal => attach!(Portal::new()),
     }
 }
@@ -162,7 +162,7 @@ fn only_child(runtime: &Runtime) -> FiberId {
 
 #[test]
 fn all_three_wrappers_teardown_replaced_and_cleared_subtrees_without_unmounting_parent() {
-    for parent in [Parent::FocusScope, Parent::CustomPaint, Parent::Portal] {
+    for parent in [Parent::FocusScope, Parent::ExternalSurface, Parent::Portal] {
         for attachment in [Attachment::Setter, Attachment::Checked, Attachment::Block] {
             let a = TrackedChild::new(101);
             let b = TrackedChild::new(102);
@@ -246,7 +246,7 @@ fn all_three_wrappers_teardown_replaced_and_cleared_subtrees_without_unmounting_
             );
             assert_eq!(b.builds.get(), builds);
             assert_eq!(parent_resources.unmounts.get(), 0);
-            if matches!(parent, Parent::CustomPaint) {
+            if matches!(parent, Parent::ExternalSurface) {
                 assert!(
                     runtime.has_external_draws(),
                     "the parent's draw registration stays live"
@@ -273,7 +273,7 @@ fn all_three_wrappers_teardown_replaced_and_cleared_subtrees_without_unmounting_
             update(&mut runtime);
             a.resources.assert_live(false);
             assert_eq!(a.resources.unmounts.get(), 2);
-            if matches!(parent, Parent::CustomPaint) {
+            if matches!(parent, Parent::ExternalSurface) {
                 parent_resources.assert_live(false);
                 assert_eq!(parent_resources.unmounts.get(), 1);
             }
@@ -283,7 +283,7 @@ fn all_three_wrappers_teardown_replaced_and_cleared_subtrees_without_unmounting_
 
 #[test]
 fn overwritten_unmounted_descriptions_never_build_or_call_unmount() {
-    for parent in [Parent::FocusScope, Parent::CustomPaint, Parent::Portal] {
+    for parent in [Parent::FocusScope, Parent::ExternalSurface, Parent::Portal] {
         for attachment in [Attachment::Setter, Attachment::Checked, Attachment::Block] {
             let a = TrackedChild::new(101);
             let b = TrackedChild::new(102);

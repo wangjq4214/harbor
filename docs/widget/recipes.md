@@ -62,7 +62,7 @@ impl ApplicationHandler for App {
             self.host.take();
             event_loop.exit();
         }
-        // This root has no CustomPaint and therefore no external input to drain.
+        // This root has no ExternalSurface and therefore no external input to drain.
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -85,7 +85,7 @@ For multiple windows, route by `WindowId`, arbitrate their wait requests (using 
 
 With the [Learn counter](learn.md), keep a Store clone outside the root, route a native event, drain/reduce pending actions, and publish new state. After publication, `host.invalidate_external(ExternalInvalidation::new())` processes build invalidation and returns a wait outcome to apply. Background dispatchers also need a host/event-loop wake (for example a winit user event); invalidation code cannot run while its thread is asleep. `host.request_frame()` alone is not a reducer.
 
-If you embed `CustomPaint`, consume `HostEventOutcome::external_input` for that bridge unless an in-tree `.on_input(...)` callback already handled it. Keep the renderer with an application-owned lifetime; register draw/schedule/IME/input/unmount adapters rather than forking the widget event loop.
+If you embed `ExternalSurface`, consume `HostEventOutcome::external_input` for that bridge unless an in-tree `.on_input(...)` callback already handled it. Keep the renderer with an application-owned lifetime; attach `on_draw`, `schedule_with`, `ime_with`, `on_input` and `on_unmount` adapters rather than forking the widget event loop. The schedule/IME builders configure providers, not events: scheduling is queried before idle wait selection, IME while focused, and drawing only during scene encoding with borrowed frame-scoped GPU access. Provider `Arc`/lifetime/thread bounds are unchanged; the type name does not guarantee identity across DLL generations.
 
 ## 2. Connect an editing controller to typed intent
 

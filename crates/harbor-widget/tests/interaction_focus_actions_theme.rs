@@ -6,7 +6,7 @@ use harbor_widget::layout::{Point, Size};
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::view::{Component, SizedBox};
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::{
     ActionHandler, ActionOutcome, Button, Focus, FocusHandle, FocusScope, KeyChord, MouseRegion,
     ShortcutMap, Theme, ThemeProvider, widgets::stack::Stack,
@@ -215,14 +215,14 @@ fn focus_scope_uses_explicit_order_and_focus_handles() {
 }
 
 #[test]
-fn tab_traversal_skips_custom_paint_in_both_directions() {
+fn tab_traversal_skips_external_surface_in_both_directions() {
     let mut runtime = Runtime::new();
     runtime.set_root(
         FocusScope::new().child(
             Stack::new()
-                .push_child(CustomPaint::new(1))
+                .push_child(ExternalSurface::new(1))
                 .push_child(Focus::new().child(SizedBox::new(Size::new(20.0, 20.0)).unwrap()))
-                .push_child(CustomPaint::new(2))
+                .push_child(ExternalSurface::new(2))
                 .push_child(Focus::new().child(SizedBox::new(Size::new(20.0, 20.0)).unwrap())),
         ),
     );

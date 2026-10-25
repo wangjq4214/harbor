@@ -49,7 +49,7 @@ Painting updates an ordered flat scene; `SceneDelta` records additions, modifica
 
 Rectangular clipping uses scissors; rounded clipping also constrains painting and hit testing, including external draws. Decoration does not alter measured size. `BackdropFilter` samples already-drawn in-window content and leaves foreground sharp; it is not desktop capture or Windows Acrylic. Encoder-level `Runtime::encode_frame` supports these local filters; the caller-owned render-pass `encode` path rejects filter primitives. Product glass recipes remain outside the toolkit.
 
-`CustomPaint` registers an `ExternalDrawId` with independent draw, input, IME and schedule providers. Encoding flushes widget batches around the external item, supplies physical allocation/scissor and frame-scoped GPU access, then restores state for following items. The terminal owns its renderer and input semantics; the runtime owns the region's geometry, clipping, focus, routing and paint order.
+`ExternalSurface` registers an `ExternalDrawId` with independent draw, input, IME and schedule providers. Encoding flushes widget batches around the external item, supplies physical allocation/scissor and frame-scoped GPU access, then restores state for following items. The terminal owns its renderer and input semantics; the runtime owns the region's geometry, clipping, focus, routing and paint order.
 
 External eligibility is tracked per draw. A deferred terminal can reuse its retained projection while widgets in the same window continue updating; a forced commit can request live projection. Engine update acknowledgement belongs to the bridge, never the generic widget renderer. See [terminal session](terminal-session.md).
 

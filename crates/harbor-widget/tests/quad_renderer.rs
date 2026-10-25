@@ -13,7 +13,7 @@ use harbor_widget::scene::primitive::{
     Primitive,
 };
 use harbor_widget::scene::{SceneDelta, SceneItem};
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::stack::Stack;
@@ -1005,7 +1005,7 @@ fn should_preserve_shadow_fill_external_border_order_across_flushes() {
             left: 8.0,
         })
         .unwrap()
-        .child(DecoratedBox::new(decoration).child(CustomPaint::new(7).handler(handler))),
+        .child(DecoratedBox::new(decoration).child(ExternalSurface::new(7).on_draw(handler))),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -1884,7 +1884,7 @@ fn should_skip_external_draw_when_scissor_rect_is_empty() {
         return;
     };
 
-    // Arrange: CustomPaint fills the full viewport; handler must not run at zero size.
+    // Arrange: ExternalSurface fills the full viewport; handler must not run at zero size.
     let invoked = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&invoked);
     let handler: Arc<ExternalDrawFn<'static>> =
@@ -1894,7 +1894,7 @@ fn should_skip_external_draw_when_scissor_rect_is_empty() {
     let viewport = Viewport::new(0, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(99).handler(handler));
+    runtime.set_root(ExternalSurface::new(99).on_draw(handler));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -1949,13 +1949,13 @@ fn should_invoke_external_draw_with_correct_rect() {
 }
 
 #[test]
-fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
+fn should_invoke_registered_external_surface_handler_during_runtime_encode() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: a Runtime whose root CustomPaint registers a handler.
+    // Arrange: a Runtime whose root ExternalSurface registers a handler.
     let invoked_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let observed_draw_id = Arc::clone(&invoked_draw_id);
     let handler: Arc<ExternalDrawFn<'static>> =
@@ -1965,7 +1965,7 @@ fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(42).handler(handler));
+    runtime.set_root(ExternalSurface::new(42).on_draw(handler));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -1983,13 +1983,13 @@ fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
 }
 
 #[test]
-fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
+fn should_invoke_each_nested_external_surface_handler_for_its_draw_id() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: two handlers retained by CustomPaint children built through Stack.
+    // Arrange: two handlers retained by ExternalSurface children built through Stack.
     let first_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let first_observed = Arc::clone(&first_draw_id);
     let first_handler: Arc<ExternalDrawFn<'static>> =
@@ -2007,8 +2007,8 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .push_child(CustomPaint::new(1).handler(first_handler))
-            .push_child(CustomPaint::new(2).handler(second_handler)),
+            .push_child(ExternalSurface::new(1).on_draw(first_handler))
+            .push_child(ExternalSurface::new(2).on_draw(second_handler)),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -2026,13 +2026,13 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
 }
 
 #[test]
-fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitives() {
+fn should_preserve_retained_external_surface_order_and_rects_across_widget_primitives() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: retained CustomPaint handlers are interleaved with real Widget
+    // Arrange: retained ExternalSurface handlers are interleaved with real Widget
     // quad primitives. Asymmetric padding gives each callback a distinct exact
     // rectangle inside the viewport-filling Stack.
     let order = Arc::new(Mutex::new(Vec::new()));
@@ -2068,7 +2068,7 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
                     left: 4.0,
                 })
                 .unwrap()
-                .child(CustomPaint::new(1).handler(make_handler(order.clone(), rects.clone()))),
+                .child(ExternalSurface::new(1).on_draw(make_handler(order.clone(), rects.clone()))),
             )
             .push_child(
                 SizedBox::new(Size::new(24.0, 24.0))
@@ -2084,7 +2084,7 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
                     left: 8.0,
                 })
                 .unwrap()
-                .child(CustomPaint::new(2).handler(make_handler(order.clone(), rects.clone()))),
+                .child(ExternalSurface::new(2).on_draw(make_handler(order.clone(), rects.clone()))),
             )
             .push_child(
                 SizedBox::new(Size::new(24.0, 24.0))
@@ -2100,7 +2100,7 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
                     left: 12.0,
                 })
                 .unwrap()
-                .child(CustomPaint::new(3).handler(make_handler(order.clone(), rects.clone()))),
+                .child(ExternalSurface::new(3).on_draw(make_handler(order.clone(), rects.clone()))),
             ),
     );
     runtime.set_viewport(viewport.clone());
@@ -2127,13 +2127,13 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
 }
 
 #[test]
-fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive() {
+fn should_clip_external_surface_and_restore_scissor_for_following_widget_primitive() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: draw a full-target triangle through a CustomPaint padded into a 16×16 region.
+    // Arrange: draw a full-target triangle through a ExternalSurface padded into a 16×16 region.
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("custom-paint clipping test target"),
         size: wgpu::Extent3d {
@@ -2167,7 +2167,7 @@ fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive()
                     left: 8.0,
                 })
                 .unwrap()
-                .child(CustomPaint::new(1).handler(handler)),
+                .child(ExternalSurface::new(1).on_draw(handler)),
             )
             .push_child(
                 SizedBox::new(Size::new(8.0, 8.0))
@@ -2216,13 +2216,13 @@ fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive()
 }
 
 #[test]
-fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
+fn should_use_last_registered_handler_when_external_surfaces_share_draw_id() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: two CustomPaint children register distinct handlers for one draw ID.
+    // Arrange: two ExternalSurface children register distinct handlers for one draw ID.
     let first_calls = Arc::new(AtomicU64::new(0));
     let first_observed = Arc::clone(&first_calls);
     let first_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
@@ -2238,8 +2238,8 @@ fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .push_child(CustomPaint::new(42).handler(first_handler))
-            .push_child(CustomPaint::new(42).handler(last_handler)),
+            .push_child(ExternalSurface::new(42).on_draw(first_handler))
+            .push_child(ExternalSurface::new(42).on_draw(last_handler)),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -2258,13 +2258,13 @@ fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
 }
 
 #[test]
-fn should_remove_handler_when_custom_paint_is_replaced() {
+fn should_remove_handler_when_external_surface_is_replaced() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: a Runtime with an initially registered CustomPaint handler.
+    // Arrange: a Runtime with an initially registered ExternalSurface handler.
     let calls = Arc::new(AtomicU64::new(0));
     let observed_calls = Arc::clone(&calls);
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
@@ -2273,7 +2273,7 @@ fn should_remove_handler_when_custom_paint_is_replaced() {
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(42).handler(handler));
+    runtime.set_root(ExternalSurface::new(42).on_draw(handler));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -2291,8 +2291,8 @@ fn should_remove_handler_when_custom_paint_is_replaced() {
     initial_encoder.finish();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    // Act: replace the CustomPaint with an unregistered instance using the same draw ID.
-    runtime.set_root(CustomPaint::new(42));
+    // Act: replace the ExternalSurface with an unregistered instance using the same draw ID.
+    runtime.set_root(ExternalSurface::new(42));
     runtime.update(Instant::now());
     let mut replacement_encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -2302,22 +2302,22 @@ fn should_remove_handler_when_custom_paint_is_replaced() {
     }
     replacement_encoder.finish();
 
-    // Assert: the removed CustomPaint's handler is not retained across rebuilds.
+    // Assert: the removed ExternalSurface's handler is not retained across rebuilds.
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn should_skip_external_primitive_when_custom_paint_has_no_handler() {
+fn should_skip_external_primitive_when_external_surface_has_no_handler() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: a Runtime whose CustomPaint has the default, handler-free configuration.
+    // Arrange: a Runtime whose ExternalSurface has the default, handler-free configuration.
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(42));
+    runtime.set_root(ExternalSurface::new(42));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -2370,7 +2370,11 @@ fn should_pass_retain_or_live_mode_from_eligibility_and_commit() {
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(1).handler(handler).schedule(schedule));
+    runtime.set_root(
+        ExternalSurface::new(1)
+            .on_draw(handler)
+            .schedule_with(schedule),
+    );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -2412,7 +2416,7 @@ fn should_select_live_when_encode_has_no_deferred_ids() {
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(1).handler(handler));
+    runtime.set_root(ExternalSurface::new(1).on_draw(handler));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -2458,11 +2462,15 @@ fn should_select_distinct_modes_when_two_externals_differ_in_eligibility() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .push_child(CustomPaint::new(1).handler(live_handler).schedule(eligible))
             .push_child(
-                CustomPaint::new(2)
-                    .handler(retain_handler)
-                    .schedule(deferred),
+                ExternalSurface::new(1)
+                    .on_draw(live_handler)
+                    .schedule_with(eligible),
+            )
+            .push_child(
+                ExternalSurface::new(2)
+                    .on_draw(retain_handler)
+                    .schedule_with(deferred),
             ),
     );
     runtime.set_viewport(viewport.clone());
@@ -2787,17 +2795,23 @@ fn encode_root_to_pixels(
     read_texture_sized(device, queue, &target, size)
 }
 
-fn solid_external(device: &wgpu::Device, draw_id: u64) -> CustomPaint {
+fn solid_external(device: &wgpu::Device, draw_id: u64) -> ExternalSurface {
     solid_external_rgb(device, draw_id, 0.0, 1.0, 0.0)
 }
 
-fn solid_external_rgb(device: &wgpu::Device, draw_id: u64, r: f32, g: f32, b: f32) -> CustomPaint {
+fn solid_external_rgb(
+    device: &wgpu::Device,
+    draw_id: u64,
+    r: f32,
+    g: f32,
+    b: f32,
+) -> ExternalSurface {
     let pipeline = create_solid_pipeline_rgb(device, r, g, b);
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, pass, _| {
         pass.set_pipeline(&pipeline);
         pass.draw(0..3, 0..1);
     });
-    CustomPaint::new(draw_id).handler(handler)
+    ExternalSurface::new(draw_id).on_draw(handler)
 }
 
 fn clipped_external(device: &wgpu::Device, behavior: ClipBehavior, radius: f32) -> DecoratedBox {
@@ -2807,7 +2821,7 @@ fn clipped_external(device: &wgpu::Device, behavior: ClipBehavior, radius: f32) 
 }
 
 #[test]
-fn should_leave_custom_paint_corners_when_clip_policy_is_none() {
+fn should_leave_external_surface_corners_when_clip_policy_is_none() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2824,7 +2838,7 @@ fn should_leave_custom_paint_corners_when_clip_policy_is_none() {
 }
 
 #[test]
-fn should_discard_custom_paint_pixels_outside_arc_when_clip_is_hard_edge() {
+fn should_discard_external_surface_pixels_outside_arc_when_clip_is_hard_edge() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2847,7 +2861,7 @@ fn should_discard_custom_paint_pixels_outside_arc_when_clip_is_hard_edge() {
 }
 
 #[test]
-fn should_apply_fractional_coverage_when_custom_paint_clip_is_anti_alias() {
+fn should_apply_fractional_coverage_when_external_surface_clip_is_anti_alias() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2876,7 +2890,7 @@ fn should_apply_fractional_coverage_when_custom_paint_clip_is_anti_alias() {
 }
 
 #[test]
-fn should_keep_custom_paint_callback_geometry_when_rounded_clip_is_active() {
+fn should_keep_external_surface_callback_geometry_when_rounded_clip_is_active() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2900,7 +2914,7 @@ fn should_keep_custom_paint_callback_geometry_when_rounded_clip_is_active() {
         &queue,
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(CustomPaint::new(7).handler(handler)),
+            .child(ExternalSurface::new(7).on_draw(handler)),
         Viewport::new(32, 32, 1.0),
         32,
     );
@@ -2913,7 +2927,7 @@ fn should_keep_custom_paint_callback_geometry_when_rounded_clip_is_active() {
 }
 
 #[test]
-fn should_not_punch_following_widget_outside_custom_paint_allocation() {
+fn should_not_punch_following_widget_outside_external_surface_allocation() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2947,7 +2961,7 @@ fn should_not_punch_following_widget_outside_custom_paint_allocation() {
 }
 
 #[test]
-fn should_clip_nested_custom_paint_to_outer_rounded_bound() {
+fn should_clip_nested_external_surface_to_outer_rounded_bound() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2974,7 +2988,7 @@ fn should_clip_nested_custom_paint_to_outer_rounded_bound() {
 }
 
 #[test]
-fn should_clip_custom_paint_when_viewport_scale_is_two() {
+fn should_clip_external_surface_when_viewport_scale_is_two() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2991,7 +3005,7 @@ fn should_clip_custom_paint_when_viewport_scale_is_two() {
 }
 
 #[test]
-fn should_mask_custom_paint_corners_when_encode_mode_is_retain() {
+fn should_mask_external_surface_corners_when_encode_mode_is_retain() {
     use harbor_widget::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
 
     let Some((device, queue)) = try_create_device() else {
@@ -3013,7 +3027,11 @@ fn should_mask_custom_paint_corners_when_encode_mode_is_retain() {
         &queue,
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(CustomPaint::new(1).handler(handler).schedule(schedule)),
+            .child(
+                ExternalSurface::new(1)
+                    .on_draw(handler)
+                    .schedule_with(schedule),
+            ),
         Viewport::new(32, 32, 1.0),
         32,
     );
@@ -3022,7 +3040,7 @@ fn should_mask_custom_paint_corners_when_encode_mode_is_retain() {
 }
 
 #[test]
-fn should_apply_independent_masks_when_two_clipped_custom_paints_share_a_pass() {
+fn should_apply_independent_masks_when_two_clipped_external_surfaces_share_a_pass() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -3074,7 +3092,7 @@ fn should_apply_independent_masks_when_two_clipped_custom_paints_share_a_pass() 
 }
 
 #[test]
-fn should_dest_in_underlapping_pixels_inside_custom_paint_allocation_aabb() {
+fn should_dest_in_underlapping_pixels_inside_external_surface_allocation_aabb() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -3098,7 +3116,7 @@ fn should_dest_in_underlapping_pixels_inside_custom_paint_allocation_aabb() {
 }
 
 #[test]
-fn should_clip_custom_paint_when_viewport_scale_is_one_and_a_half() {
+fn should_clip_external_surface_when_viewport_scale_is_one_and_a_half() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -3240,7 +3258,7 @@ fn should_keep_rounded_mask_when_handler_rewrites_scissor_from_context() {
         &queue,
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(CustomPaint::new(1).handler(handler)),
+            .child(ExternalSurface::new(1).on_draw(handler)),
         Viewport::new(32, 32, 1.0),
         32,
     );
@@ -3824,7 +3842,7 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
             runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
             runtime.set_root(
                 Stack::new()
-                    .push_child(CustomPaint::new(1).handler(handler))
+                    .push_child(ExternalSurface::new(1).on_draw(handler))
                     .push_child(
                         Padding::all(4.0).unwrap().child(
                             harbor_widget::BackdropFilter::new(2.0)

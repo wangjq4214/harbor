@@ -133,7 +133,7 @@ See [`tests/native_host_smoke.rs`](tests/native_host_smoke.rs) for a compact lif
 - **Controls and editing:** `Button`, `IconButton`, `InteractiveRegion`, `MouseRegion`, `Focus`, `FocusScope`, `ShortcutMap`, `ActionHandler`, `TextEditingController`, `EditableText`, and `TextField`.
 - **Presentation and overlays:** `TextLabel`, `Icon`, `DecoratedBox`, `Separator`, `ThemeProvider`, `ScrollView`, `NotificationCard`, and `Portal`. `Paint`/`LinearGradient` support fills and border strokes; `BackdropFilter` supports local blur with optional `EdgeRefraction`.
 - **State:** `BuildCx::use_state`, `Signal`, `Store`, and `Dispatcher`.
-- **External rendering:** `CustomPaint` registers draw, scheduling, IME, input, and unmount callbacks for a renderer owned outside the widget crate.
+- **External rendering:** `ExternalSurface` registers draw, scheduling, IME, input, and unmount callbacks for a renderer owned outside the widget crate.
 
 Prefer root imports for common widgets (including `Stack` and `TextLabel`), `Component`/`BuildCx`/`View`, and the construction/extension traits such as `IntoChildView`, `WithChildren`, and `ComponentExt`. Detailed configuration remains available in its owning `widgets::<module>`; there is no prelude.
 
@@ -153,7 +153,7 @@ Prefer `WinitWindowHost` unless you need a custom platform adapter.
 
 ## Relationship to Harbor Terminal
 
-`harbor-widget` is terminal-agnostic and does not depend on `harbor-terminal`. Harbor embeds its terminal renderer through `CustomPaint`; the application-owned bridge translates widget allocation, input, IME, and scheduling contracts into terminal operations.
+`harbor-widget` is terminal-agnostic and does not depend on `harbor-terminal`. Harbor embeds its terminal renderer through `ExternalSurface`; the application-owned bridge translates widget allocation, input, IME, and scheduling contracts into terminal operations.
 
 See the [widget concepts](../../docs/widget/concepts.md) and [composition recipes](../../docs/widget/recipes.md) for runtime ownership and integration guidance.
 

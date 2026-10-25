@@ -50,9 +50,9 @@ Do not confuse these existing callbacks with a general hook system:
 
 | Public seam | When/why to use it |
 | --- | --- |
-| `CustomPaint::on_unmount(Arc<ExternalUnmountFn>)`, where `ExternalUnmountFn = dyn Fn()` | Teardown of a retained external-paint leaf when it leaves the mounted tree |
-| `CustomPaint::handler`, `schedule`, `ime`, `on_input` | External renderer, demand/deadline, focused IME and in-tree input adapters; not component mount effects |
-| `BuildCx::register_external_draw`, `register_external_schedule`, `register_external_ime` | Per-build external registrations; ordinarily supplied through `CustomPaint` builders |
+| `ExternalSurface::on_unmount(Arc<ExternalUnmountFn>)`, where `ExternalUnmountFn = dyn Fn()` | Teardown of a retained external-paint leaf when it leaves the mounted tree |
+| `ExternalSurface::on_draw`, `schedule_with`, `ime_with`, `on_input` | External renderer, demand/deadline, focused IME and in-tree input adapters; not component mount effects |
+| `BuildCx::register_external_draw`, `register_external_schedule`, `register_external_ime` | Per-build external registrations; ordinarily supplied through `ExternalSurface` builders |
 | `LayoutObserver::new(callback)` | Observe committed layout geometry; not a safe substitute for executing business work during build |
 | `WindowPlatformHooks::configure_attributes`, `window_created`, `surface_ready` | Native host construction setup with host-lifetime retained setup state, not hooks on every component |
 
@@ -60,13 +60,13 @@ Keep long-lived resources with an explicit owner. Root replacement tears down co
 
 ## Input consumption is a return value, not an effect
 
-Routed input follows capture → target → bubble. A handler returning `EventHandled::Handled` stops the remaining walk after it returns; `Ignored` continues it. `PrimitiveLeaf::handle_event` and `CustomPaint::on_input` use the same contract. Already executed capture handlers are not undone. Ordinary enclosing activation controls let descendants handle input first; intentional capture interception, such as a scrollbar owning its overlay track, remains possible.
+Routed input follows capture → target → bubble. A handler returning `EventHandled::Handled` stops the remaining walk after it returns; `Ignored` continues it. `PrimitiveLeaf::handle_event` and `ExternalSurface::on_input` use the same contract. Already executed capture handlers are not undone. Ordinary enclosing activation controls let descendants handle input first; intentional capture interception, such as a scrollbar owning its overlay track, remains possible.
 
 `EventCtx` accumulates focus, pointer capture/release, clipboard, paint and external-input requests. These commit even when the event is consumed, and an Ignored handler may still request effects. Handled does not automatically request repaint; `invalidate_paint()` does not automatically consume input. The public `stop_propagation()` method has been removed: migrate input handlers to returning Handled, not to a replacement context flag.
 
 Hover Enter/Leave and focus-transition notifications are separate deliveries. Consuming one cannot cancel other recipients' required notifications or the ordinary Move that follows hover bookkeeping. Hover repaint also cannot skip the Move's own command submission. An event's consumption does not automatically consume later Up/Cancel/KeyUp/IME events; explicit pointer, shortcut and composition ownership still governs those sequences.
 
-`on_click`/`on_activate` report activation and `on_enter`/`on_exit` observe boundary changes; their void callbacks do not decide propagation. The owning input handler makes that decision. See the compiled consuming/pass-through examples on `CustomPaint::on_input`'s `ExternalInputFn` and the mounted regressions in `tests/event_consumption.rs`.
+`on_click`/`on_activate` report activation and `on_enter`/`on_exit` observe boundary changes; their void callbacks do not decide propagation. The owning input handler makes that decision. See the compiled consuming/pass-through examples on `ExternalSurface::on_input`'s `ExternalInputFn` and the mounted regressions in `tests/event_consumption.rs`.
 
 ## Actions are intent, not state
 

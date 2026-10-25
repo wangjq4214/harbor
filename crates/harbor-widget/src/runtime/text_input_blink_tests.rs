@@ -5,7 +5,7 @@ use crate::{
     scene::primitive::{ExternalScheduleDemand, Primitive},
     signal::Signal,
     view::Component,
-    widgets::custom_paint::CustomPaint,
+    widgets::external_surface::ExternalSurface,
 };
 use std::{cell::Cell, rc::Rc, time::Duration};
 
@@ -220,7 +220,7 @@ fn caret_deadline_arbitrates_with_external_schedule() {
         let mut runtime = mount(
             Column::new()
                 .push_child(EditableText::new(TextEditingController::new("abc")))
-                .push_child(CustomPaint::new(1).schedule(schedule)),
+                .push_child(ExternalSurface::new(1).schedule_with(schedule)),
         );
         assert_deadline(
             &runtime.update(start),

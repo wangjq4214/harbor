@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 /// Optional in-tree input adapter for a focusable external-paint leaf.
 ///
-/// When set on [`CustomPaint`], routed events are delivered here instead of
+/// When set on [`ExternalSurface`], routed events are delivered here instead of
 /// being queued for [`crate::runtime::Runtime::drain_external_input`].
 /// Return `Handled` to consume this event or `Ignored` to let it continue.
 /// Requested EventCtx effects commit with either result; this callback does not
@@ -18,10 +18,10 @@ use std::sync::Arc;
 /// use std::sync::Arc;
 /// use harbor_widget::input::event::{PointerPhase, UiEvent};
 /// use harbor_widget::input::event_ctx::EventHandled;
-/// use harbor_widget::widgets::custom_paint::CustomPaint;
+/// use harbor_widget::widgets::external_surface::ExternalSurface;
 ///
 /// // An input adapter owns wheel input, but leaves other events available.
-/// let consuming = CustomPaint::new(1).on_input(Arc::new(|event, ctx| {
+/// let consuming = ExternalSurface::new(1).on_input(Arc::new(|event, ctx| {
 ///     if matches!(event, UiEvent::Pointer(p) if matches!(p.phase,
 ///         PointerPhase::WheelLine { .. } | PointerPhase::WheelPixel { .. }))
 ///     {
@@ -32,7 +32,7 @@ use std::sync::Arc;
 ///     }
 /// }));
 /// // Observing/requesting an effect need not consume the input.
-/// let observing = CustomPaint::new(2).on_input(Arc::new(|_, ctx| {
+/// let observing = ExternalSurface::new(2).on_input(Arc::new(|_, ctx| {
 ///     ctx.invalidate_paint();
 ///     EventHandled::Ignored
 /// }));
@@ -49,7 +49,7 @@ pub type ExternalUnmountFn = dyn Fn();
 /// During event handling, either invokes an optional [`ExternalInputFn`] or
 /// queues input for deferred delivery after the event walk completes.
 #[derive(Clone)]
-pub struct CustomPaint {
+pub struct ExternalSurface {
     draw_id: ExternalDrawId,
     handler: Option<Arc<ExternalDrawFn<'static>>>,
     schedule: Option<Arc<ExternalScheduleFn>>,
@@ -59,9 +59,9 @@ pub struct CustomPaint {
     child: Option<View>,
 }
 
-impl CustomPaint {
+impl ExternalSurface {
     pub fn new(draw_id: impl Into<ExternalDrawId>) -> Self {
-        CustomPaint {
+        ExternalSurface {
             draw_id: draw_id.into(),
             ime: None,
             handler: None,
@@ -78,13 +78,13 @@ impl CustomPaint {
     }
 
     /// Sets the renderer invoked for this widget's external primitive.
-    pub fn handler(mut self, handler: Arc<ExternalDrawFn<'static>>) -> Self {
+    pub fn on_draw(mut self, handler: Arc<ExternalDrawFn<'static>>) -> Self {
         self.handler = Some(handler);
         self
     }
 
     /// Sets the schedule provider consulted before idle wait selection.
-    pub fn schedule(mut self, schedule: Arc<ExternalScheduleFn>) -> Self {
+    pub fn schedule_with(mut self, schedule: Arc<ExternalScheduleFn>) -> Self {
         self.schedule = Some(schedule);
         self
     }
@@ -96,7 +96,7 @@ impl CustomPaint {
     }
 
     /// Sets the IME effect provider consulted while this external leaf owns focus.
-    pub fn ime(mut self, ime: Arc<crate::scene::primitive::ExternalImeFn>) -> Self {
+    pub fn ime_with(mut self, ime: Arc<crate::scene::primitive::ExternalImeFn>) -> Self {
         self.ime = Some(ime);
         self
     }
@@ -114,13 +114,13 @@ impl CustomPaint {
         self
     }
 
-    /// Returns whether this custom paint widget can receive focus.
+    /// Returns whether this external surface widget can receive focus.
     pub fn is_focusable(&self) -> bool {
         true
     }
 }
 
-impl Component for CustomPaint {
+impl Component for ExternalSurface {
     fn build(&self, cx: &mut BuildCx) -> View {
         if let Some(handler) = &self.handler {
             cx.register_external_draw(self.draw_id, Arc::clone(handler));
@@ -135,18 +135,18 @@ impl Component for CustomPaint {
     }
 }
 
-impl crate::WithChildren for CustomPaint {
+impl crate::WithChildren for ExternalSurface {
     type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        children.into_single("CustomPaint", &mut self.child)?;
+        children.into_single("ExternalSurface", &mut self.child)?;
         Ok(self)
     }
 }
 
-impl AnyView for CustomPaint {
+impl AnyView for ExternalSurface {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         // Fill bounded axes; an unbounded axis has no viewport to fill.
         constraints.fill_bounded(Size::ZERO)
@@ -217,14 +217,14 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn custom_paint_is_focusable() {
-        let cp = CustomPaint::new(1);
+    fn external_surface_is_focusable() {
+        let cp = ExternalSurface::new(1);
         assert!(cp.is_focusable());
     }
 
     #[test]
-    fn custom_paint_paint_primitives_contains_external() {
-        let cp = CustomPaint::new(42);
+    fn external_surface_paint_primitives_contains_external() {
+        let cp = ExternalSurface::new(42);
         let rect = Rect::from_min_size(Point::new(10.0, 20.0), Size::new(800.0, 600.0));
         let prims = cp.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_paint_has_finite_per_axis_unbounded_fallback_in_real_layout() {
+    fn external_surface_has_finite_per_axis_unbounded_fallback_in_real_layout() {
         use crate::runtime::DEFAULT_TEXT_METRICS;
         use crate::widgets::sized_box::SizedBox;
         for (max, expected) in [
@@ -294,7 +294,7 @@ mod tests {
             };
             let runtime = unbounded_runtime(
                 constraints,
-                CustomPaint::new(1).child(SizedBox::new(Size::new(40.0, 30.0)).unwrap()),
+                ExternalSurface::new(1).child(SizedBox::new(Size::new(40.0, 30.0)).unwrap()),
             );
             let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
             let child = runtime.arena().get(root.children()[0]).unwrap();
@@ -303,7 +303,8 @@ mod tests {
                 matches!(runtime.pending_delta().unwrap().added[0].primitive,
                 Primitive::External { rect, draw } if draw == 1 && rect.size() == expected)
             );
-            let natural = CustomPaint::new(1).intrinsic_size(constraints, &DEFAULT_TEXT_METRICS);
+            let natural =
+                ExternalSurface::new(1).intrinsic_size(constraints, &DEFAULT_TEXT_METRICS);
             assert_eq!(
                 natural.width,
                 if max.width.is_finite() {
@@ -326,7 +327,7 @@ mod tests {
                 min: Size::new(7.0, 11.0),
                 max: Size::new(f32::INFINITY, f32::INFINITY),
             },
-            CustomPaint::new(1),
+            ExternalSurface::new(1),
         );
         assert!(
             matches!(runtime.pending_delta().unwrap().added[0].primitive,
@@ -335,16 +336,15 @@ mod tests {
     }
 
     #[test]
-    fn unbounded_expanded_custom_paint_falls_back_to_finite_content() {
+    fn unbounded_expanded_external_surface_falls_back_to_finite_content() {
         use crate::widgets::sized_box::SizedBox;
         use crate::{Expanded, Row};
-        let runtime =
-            unbounded_runtime(
-                BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
-                Row::new().push_child(Expanded::new().child(
-                    CustomPaint::new(1).child(SizedBox::new(Size::new(33.0, 21.0)).unwrap()),
-                )),
-            );
+        let runtime = unbounded_runtime(
+            BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
+            Row::new().push_child(Expanded::new().child(
+                ExternalSurface::new(1).child(SizedBox::new(Size::new(33.0, 21.0)).unwrap()),
+            )),
+        );
         let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
         assert_eq!(root.layout_rect().unwrap().size(), Size::new(33.0, 21.0));
         assert!(
@@ -354,16 +354,16 @@ mod tests {
     }
 
     #[test]
-    fn custom_paint_fills_max_constraints() {
-        let cp = CustomPaint::new(1);
+    fn external_surface_fills_max_constraints() {
+        let cp = ExternalSurface::new(1);
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let size = cp.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(size, Size::new(800.0, 600.0));
     }
 
     #[test]
-    fn custom_paint_handle_event_returns_handled() {
-        let cp = CustomPaint::new(1);
+    fn external_surface_handle_event_returns_handled() {
+        let cp = ExternalSurface::new(1);
         let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0));
         let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
             key: Key::Enter,
@@ -375,8 +375,8 @@ mod tests {
     }
 
     #[test]
-    fn custom_paint_build_produces_view() {
-        let cp = CustomPaint::new(7);
+    fn external_surface_build_produces_view() {
+        let cp = ExternalSurface::new(7);
         let mut cx = BuildCx::stub();
         let view = cp.build(&mut cx);
         let (_inner, children, _key) = view.decompose();
@@ -384,14 +384,14 @@ mod tests {
     }
 
     #[test]
-    fn should_register_handler_when_custom_paint_is_built_with_one() {
-        // Arrange: a CustomPaint with a stable handler and real build context.
+    fn should_register_handler_when_external_surface_is_built_with_one() {
+        // Arrange: a ExternalSurface with a stable handler and real build context.
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
-        let custom_paint = CustomPaint::new(42).handler(Arc::clone(&handler));
+        let external_surface = ExternalSurface::new(42).on_draw(Arc::clone(&handler));
         let mut cx = BuildCx::stub();
 
         // Act: build the component.
-        custom_paint.build(&mut cx);
+        external_surface.build(&mut cx);
 
         // Assert: the handler is registered for the component's draw ID.
         assert_eq!(cx.externals.draws.len(), 1);
@@ -401,13 +401,13 @@ mod tests {
     }
 
     #[test]
-    fn should_not_register_handler_when_custom_paint_has_none() {
-        // Arrange: a CustomPaint using its default, handler-free configuration.
-        let custom_paint = CustomPaint::new(42);
+    fn should_not_register_handler_when_external_surface_has_none() {
+        // Arrange: a ExternalSurface using its default, handler-free configuration.
+        let external_surface = ExternalSurface::new(42);
         let mut cx = BuildCx::stub();
 
         // Act: build the component.
-        custom_paint.build(&mut cx);
+        external_surface.build(&mut cx);
 
         // Assert: no external draw registration is produced.
         assert!(cx.externals.draws.is_empty());
@@ -415,16 +415,16 @@ mod tests {
     }
 
     #[test]
-    fn should_register_schedule_when_custom_paint_is_built_with_one() {
+    fn should_register_schedule_when_external_surface_is_built_with_one() {
         use crate::scene::primitive::ExternalScheduleDemand;
 
         // Arrange
         let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
-        let custom_paint = CustomPaint::new(7).schedule(Arc::clone(&schedule));
+        let external_surface = ExternalSurface::new(7).schedule_with(Arc::clone(&schedule));
         let mut cx = BuildCx::stub();
 
         // Act
-        custom_paint.build(&mut cx);
+        external_surface.build(&mut cx);
 
         // Assert
         assert!(cx.externals.draws.is_empty());
@@ -440,13 +440,13 @@ mod tests {
         // Arrange
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
-        let custom_paint = CustomPaint::new(11)
-            .handler(Arc::clone(&handler))
-            .schedule(Arc::clone(&schedule));
+        let external_surface = ExternalSurface::new(11)
+            .on_draw(Arc::clone(&handler))
+            .schedule_with(Arc::clone(&schedule));
         let mut cx = BuildCx::stub();
 
         // Act
-        custom_paint.build(&mut cx);
+        external_surface.build(&mut cx);
 
         // Assert
         assert_eq!(cx.externals.draws.len(), 1);
@@ -464,7 +464,7 @@ mod tests {
         // Arrange
         let called = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&called);
-        let cp = CustomPaint::new(1).on_input(Arc::new(move |_event, _ctx| {
+        let cp = ExternalSurface::new(1).on_input(Arc::new(move |_event, _ctx| {
             flag.store(true, Ordering::Relaxed);
             EventHandled::Handled
         }));
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn should_return_adapter_result_when_on_input_returns_ignored() {
         // Arrange
-        let cp = CustomPaint::new(1).on_input(Arc::new(|_event, _ctx| EventHandled::Ignored));
+        let cp = ExternalSurface::new(1).on_input(Arc::new(|_event, _ctx| EventHandled::Ignored));
         let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
             key: Key::Tab,
             modifiers: Modifiers::default(),

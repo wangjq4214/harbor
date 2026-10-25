@@ -5,7 +5,7 @@ use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::scene::{SceneGraph, SceneItem};
 use harbor_widget::signal::Signal;
 use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecoratedBox};
@@ -1096,13 +1096,13 @@ fn should_normalize_oversized_radii_when_child_clip_is_emitted() {
 }
 
 #[test]
-fn should_attach_rounded_clip_to_custom_paint_external_item() {
+fn should_attach_rounded_clip_to_external_surface_external_item() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(40, 24, 1.0));
     runtime.set_root(
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(6.0).unwrap()))
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(CustomPaint::new(1)),
+            .child(ExternalSurface::new(1)),
     );
     runtime.update(Instant::now());
 
@@ -1114,7 +1114,7 @@ fn should_attach_rounded_clip_to_custom_paint_external_item() {
         .added
         .iter()
         .find(|item| matches!(item.primitive, Primitive::External { .. }))
-        .expect("CustomPaint emits Primitive::External");
+        .expect("ExternalSurface emits Primitive::External");
     assert_eq!(external.clips.len(), 1);
     assert_eq!(external.clips[0].behavior(), ClipBehavior::HardEdge);
     assert_eq!(external.clips[0].radii().as_array(), [6.0; 4]);
@@ -1125,7 +1125,7 @@ fn should_attach_rounded_clip_to_custom_paint_external_item() {
 }
 
 #[test]
-fn should_keep_wrapper_unclipped_when_custom_paint_child_receives_clip() {
+fn should_keep_wrapper_unclipped_when_external_surface_child_receives_clip() {
     let decoration = BoxDecoration::new()
         .shadow(
             BoxShadow::new()
@@ -1143,7 +1143,7 @@ fn should_keep_wrapper_unclipped_when_custom_paint_child_receives_clip() {
     runtime.set_root(
         DecoratedBox::new(decoration)
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(CustomPaint::new(1)),
+            .child(ExternalSurface::new(1)),
     );
     runtime.update(Instant::now());
 
@@ -1175,7 +1175,7 @@ fn should_keep_wrapper_unclipped_when_custom_paint_child_receives_clip() {
 }
 
 #[test]
-fn should_accumulate_nested_clips_on_custom_paint_external_item() {
+fn should_accumulate_nested_clips_on_external_surface_external_item() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(40, 40, 1.0));
     runtime.set_root(rounded_box(
@@ -1184,7 +1184,7 @@ fn should_accumulate_nested_clips_on_custom_paint_external_item() {
         Padding::all(10.0).unwrap().child(rounded_box(
             4.0,
             ClipBehavior::AntiAlias,
-            CustomPaint::new(1),
+            ExternalSurface::new(1),
         )),
     ));
     runtime.update(Instant::now());
@@ -1197,7 +1197,7 @@ fn should_accumulate_nested_clips_on_custom_paint_external_item() {
         .added
         .iter()
         .find(|item| matches!(item.primitive, Primitive::External { .. }))
-        .expect("nested CustomPaint");
+        .expect("nested ExternalSurface");
     assert_eq!(external.clips.len(), 2);
     assert_eq!(external.clips[0].behavior(), ClipBehavior::HardEdge);
     assert_eq!(external.clips[0].radii().as_array(), [8.0; 4]);

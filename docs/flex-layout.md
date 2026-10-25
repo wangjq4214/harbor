@@ -8,7 +8,7 @@ Components, invokes external draw callbacks, or publishes trial rectangles.
 
 ```rust
 use harbor_widget::{CrossAxisAlignment, ConstrainedBox, Expanded, Row, Separator};
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::text_label::TextLabel;
 
 let root = Row::new()
@@ -17,7 +17,7 @@ let root = Row::new()
         .min_width(200.0).max_width(200.0)
         .child(TextLabel::new("Rail")))
     .push_child(Separator::vertical())
-    .push_child(Expanded::new().child(CustomPaint::new(1)));
+    .push_child(Expanded::new().child(ExternalSurface::new(1)));
 ```
 
 At 1000dp width the allocations are 200dp, 1dp, and 799dp. Replacing both rail
@@ -47,7 +47,7 @@ maximum they fill that maximum, even under loose root constraints.
   and performs at most one corrective measurement per affected child.
 - Unbounded main constraints use finite content-driven layout and report
   `UnboundedFlex`; tight flex falls back to loose. Spacer contributes zero main
-  extent. Fill-style CustomPaint uses finite natural content/minimum on an
+  extent. Fill-style ExternalSurface uses finite natural content/minimum on an
   unbounded axis rather than returning infinity.
 - Separator thickness defaults to **1 logical pixel**, not one physical pixel.
   Its finite long-axis maximum is filled; an unbounded long axis defaults to zero

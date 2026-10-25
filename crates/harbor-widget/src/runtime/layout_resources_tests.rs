@@ -3,7 +3,7 @@ use crate::layout::{CrossAxisAlignment, Rect};
 use crate::renderer::Viewport;
 use crate::runtime::Runtime;
 use crate::scene::primitive::{Color, ExternalDrawFn, ExternalDrawGpu, Primitive};
-use crate::widgets::custom_paint::CustomPaint;
+use crate::widgets::external_surface::ExternalSurface;
 use crate::widgets::text_label::TextLabel;
 use crate::{
     BorderRadius, BoxDecoration, ClipBehavior, ConstrainedBox, DecoratedBox, Expanded, Row,
@@ -184,7 +184,7 @@ fn should_retain_gpu_handles_and_external_allocations_across_flex_resize_and_dpi
                         BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
                     )
                     .clip_behavior(ClipBehavior::HardEdge)
-                    .child(CustomPaint::new(99).handler(Arc::clone(&handler))),
+                    .child(ExternalSurface::new(99).on_draw(Arc::clone(&handler))),
                 ),
             ),
     );

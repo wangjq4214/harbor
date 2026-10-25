@@ -8,7 +8,7 @@ use harbor_widget::layout::Point;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::ExternalDrawId;
 use harbor_widget::widgets::button::Button;
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::winit::{WindowPresenter, WinitAdapter};
 use harbor_widget::{ConstrainedBox, ScrollController, ScrollView, layout::Size};
@@ -19,9 +19,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
 
-fn custom_paint_runtime(draw_id: u64) -> Runtime {
+fn external_surface_runtime(draw_id: u64) -> Runtime {
     let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(draw_id));
+    runtime.set_root(ExternalSurface::new(draw_id));
     runtime.update(Instant::now());
     assert!(runtime.focus_first_focusable());
     runtime.drain_external_input();
@@ -278,8 +278,8 @@ fn should_not_request_redraw_when_wheel_is_clamped_at_scroll_boundary() {
 #[test]
 fn should_keep_window_scale_modifiers_and_external_input_isolated() {
     // Arrange
-    let mut first_runtime = custom_paint_runtime(101);
-    let mut second_runtime = custom_paint_runtime(202);
+    let mut first_runtime = external_surface_runtime(101);
+    let mut second_runtime = external_surface_runtime(202);
     let mut first_adapter = WinitAdapter::new();
     let mut second_adapter = WinitAdapter::new();
     first_adapter.set_scale_factor(2.0);
@@ -365,7 +365,7 @@ fn should_keep_window_scale_modifiers_and_external_input_isolated() {
 #[test]
 fn should_reset_modifiers_for_keyboard_input_after_focus_loss() {
     // Arrange
-    let mut runtime = custom_paint_runtime(303);
+    let mut runtime = external_surface_runtime(303);
     let mut adapter = WinitAdapter::new();
     adapter.handle_event(
         &mut runtime,
@@ -454,8 +454,8 @@ fn should_request_redraw_when_programmatic_focus_changes() {
 
 #[test]
 fn programmatic_focus_events_and_effects_stay_with_the_owning_runtime() {
-    let mut owner = custom_paint_runtime(601);
-    let mut other = custom_paint_runtime(602);
+    let mut owner = external_surface_runtime(601);
+    let mut other = external_surface_runtime(602);
     let owner_id = owner.root_id().expect("owner root");
 
     owner.clear_focus();
@@ -498,7 +498,7 @@ fn mixed_mouse_and_touch_quarantine_is_scoped_to_each_pointer_source() {
     };
 
     // A fresh mouse press must not release a quarantined touch contact.
-    let mut touch_runtime = custom_paint_runtime(603);
+    let mut touch_runtime = external_surface_runtime(603);
     let mut touch_adapter = WinitAdapter::new();
     touch_adapter.handle_event(&mut touch_runtime, &touch(TouchPhase::Started, 41));
     touch_runtime.drain_external_input();
@@ -527,7 +527,7 @@ fn mixed_mouse_and_touch_quarantine_is_scoped_to_each_pointer_source() {
 
     // A fresh contact must not release a quarantined mouse button. The fresh
     // touch still receives its complete Down -> Up sequence.
-    let mut mouse_runtime = custom_paint_runtime(604);
+    let mut mouse_runtime = external_surface_runtime(604);
     let mut mouse_adapter = WinitAdapter::new();
     mouse_adapter.handle_event(
         &mut mouse_runtime,
@@ -591,7 +591,7 @@ fn should_consume_programmatic_focus_redraw_effect_once_at_runtime_boundary() {
 #[test]
 fn should_quarantine_each_supported_mouse_release_without_claiming_unsupported_buttons() {
     // Arrange: both supported buttons are held when the window loses focus.
-    let mut runtime = custom_paint_runtime(605);
+    let mut runtime = external_surface_runtime(605);
     let mut adapter = WinitAdapter::new();
     let mouse_input = |state, button| WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
@@ -999,7 +999,7 @@ fn should_wait_until_schedule_deadline_when_runtime_registers_external_schedule(
         ..ExternalScheduleDemand::empty()
     });
     let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(9).schedule(schedule));
+    runtime.set_root(ExternalSurface::new(9).schedule_with(schedule));
     let _ = runtime.update(Instant::now());
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
@@ -1031,7 +1031,7 @@ fn should_request_redraw_when_due_deadline_is_replaced_by_next_schedule_phase() 
         ..ExternalScheduleDemand::empty()
     });
     let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(3).schedule(schedule));
+    runtime.set_root(ExternalSurface::new(3).schedule_with(schedule));
     let _ = runtime.update(now);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let _ = presenter.fold_effects(RuntimeEffects {
@@ -1061,7 +1061,7 @@ fn should_not_request_redraw_from_ineligible_schedule_redraw_now() {
         ..ExternalScheduleDemand::empty()
     });
     let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(4).schedule(schedule));
+    runtime.set_root(ExternalSurface::new(4).schedule_with(schedule));
     let _ = runtime.update(now);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
 

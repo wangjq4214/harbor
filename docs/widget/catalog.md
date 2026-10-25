@@ -187,7 +187,7 @@ A consumer owns material tuning, translucent button styles, contrast and geometr
 | Need | Available API | Constraints |
 | --- | --- | --- |
 | Root overlay | `Portal` | Escapes ordinary parent layout slot, painting order and clipping; retains logical ancestry/lifetime; no automatic focus, dismissal or modal scope; [source](../../crates/harbor-widget/src/widgets/portal.rs) |
-| External renderer/input integration | `widgets::custom_paint::CustomPaint` | External draw ID, draw/schedule/IME/input/unmount callbacks; application owns the embedded renderer |
+| External renderer/input integration | `ExternalSurface` | `on_draw`, `schedule_with`, `ime_with`, `on_input`, `on_unmount`; ExternalDrawId links the providers; application owns the embedded renderer |
 | Ordinary native window | `winit::WinitWindowHostBuilder`, `WinitWindowHost`, `SharedGpu` | Feature-gated per-window host; application owns event loop/business/multi-window policy |
 
 An overlay is not an OS window. For embedding a terminal, see [TERMINAL](../terminal/README.md).

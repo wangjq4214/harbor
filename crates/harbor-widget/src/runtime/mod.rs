@@ -853,7 +853,7 @@ impl Runtime {
         std::mem::take(&mut self.pending_effects)
     }
 
-    /// Drains queued external input events produced by focusable CustomPaint
+    /// Drains queued external input events produced by focusable ExternalSurface
     /// widgets during the last event dispatch.
     pub fn drain_external_input(
         &mut self,
@@ -991,7 +991,7 @@ mod tests {
     use crate::view::{Component, View};
     use crate::widgets::button::Button;
     use crate::widgets::column::Column;
-    use crate::widgets::custom_paint::CustomPaint;
+    use crate::widgets::external_surface::ExternalSurface;
     use crate::widgets::focus::Focus;
     use crate::widgets::focus_scope::FocusScope;
     use crate::widgets::layout_observer::LayoutObserver;
@@ -1031,7 +1031,11 @@ mod tests {
             LayoutObserver::new(move |_| {
                 let _ = &layout_probe;
             })
-            .child(CustomPaint::new(91).handler(draw).schedule(schedule))
+            .child(
+                ExternalSurface::new(91)
+                    .on_draw(draw)
+                    .schedule_with(schedule),
+            )
             .build(cx)
         }
     }
@@ -1136,13 +1140,15 @@ mod tests {
         let deliveries = Arc::new(AtomicU64::new(0));
         let delivered = deliveries.clone();
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(42).on_input(Arc::new(move |event, _ctx| {
-            if matches!(event, UiEvent::Keyboard(_)) {
-                delivered.fetch_add(1, Ordering::SeqCst);
-            }
-            // Like the terminal input gate: consume without requesting paint.
-            EventHandled::Handled
-        })));
+        rt.set_root(
+            ExternalSurface::new(42).on_input(Arc::new(move |event, _ctx| {
+                if matches!(event, UiEvent::Keyboard(_)) {
+                    delivered.fetch_add(1, Ordering::SeqCst);
+                }
+                // Like the terminal input gate: consume without requesting paint.
+                EventHandled::Handled
+            })),
+        );
         assert!(rt.update(now()).request_redraw);
         assert!(rt.focus_first_focusable());
         let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
@@ -1196,8 +1202,11 @@ mod tests {
                             .expect("valid color"),
                     )
                     .push_child(
-                        Expanded::new()
-                            .child(CustomPaint::new(42).handler(handler).schedule(schedule)),
+                        Expanded::new().child(
+                            ExternalSurface::new(42)
+                                .on_draw(handler)
+                                .schedule_with(schedule),
+                        ),
                     )
                     .build(cx)
             }
@@ -1860,29 +1869,29 @@ mod tests {
     }
 
     #[test]
-    fn runtime_with_custom_paint_root_reports_external_draws() {
+    fn runtime_with_external_surface_root_reports_external_draws() {
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(77).handler(handler));
+        rt.set_root(ExternalSurface::new(77).on_draw(handler));
         rt.update(now());
 
         assert!(rt.has_external_draws());
     }
 
     #[test]
-    fn should_report_no_external_draws_when_custom_paint_has_no_handler() {
+    fn should_report_no_external_draws_when_external_surface_has_no_handler() {
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(77));
+        rt.set_root(ExternalSurface::new(77));
         rt.update(now());
 
         assert!(!rt.has_external_draws());
     }
 
     #[test]
-    fn should_report_no_external_draws_when_custom_paint_registers_only_a_schedule() {
+    fn should_report_no_external_draws_when_external_surface_registers_only_a_schedule() {
         let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(78).schedule(schedule));
+        rt.set_root(ExternalSurface::new(78).schedule_with(schedule));
         rt.update(now());
 
         assert!(!rt.has_external_draws());
@@ -1892,7 +1901,7 @@ mod tests {
     fn should_report_external_draws_when_handler_is_nested_in_subtree() {
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
-        rt.set_root(Column::new().push_child(CustomPaint::new(79).handler(handler)));
+        rt.set_root(Column::new().push_child(ExternalSurface::new(79).on_draw(handler)));
         rt.update(now());
 
         assert!(rt.has_external_draws());
@@ -1902,7 +1911,7 @@ mod tests {
     fn should_drop_external_draws_when_root_is_replaced_with_plain_widget() {
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(80).handler(handler));
+        rt.set_root(ExternalSurface::new(80).on_draw(handler));
         rt.update(now());
         assert!(rt.has_external_draws());
 
@@ -1924,7 +1933,7 @@ mod tests {
         });
         let mut rt = Runtime::new();
         rt.set_viewport(Viewport::new(100, 40, 1.0));
-        rt.set_root(CustomPaint::new(81).ime(provider));
+        rt.set_root(ExternalSurface::new(81).ime_with(provider));
 
         let initial = rt.update(now());
         assert!(initial.ime.is_none());
@@ -1968,7 +1977,11 @@ mod tests {
         });
         let mut rt = Runtime::new();
         rt.set_viewport(Viewport::new(100, 40, 1.0));
-        rt.set_root(CustomPaint::new(82).schedule(schedule).ime(ime));
+        rt.set_root(
+            ExternalSurface::new(82)
+                .schedule_with(schedule)
+                .ime_with(ime),
+        );
         rt.update(now());
         assert!(rt.focus_first_focusable());
         state.store(0, Ordering::SeqCst);
@@ -2062,8 +2075,8 @@ mod tests {
         rt.set_root(
             FocusScope::new().child(
                 crate::widgets::stack::Stack::new()
-                    .push_child(Focus::new().child(CustomPaint::new(1)))
-                    .push_child(Focus::new().child(CustomPaint::new(2))),
+                    .push_child(Focus::new().child(ExternalSurface::new(1)))
+                    .push_child(Focus::new().child(ExternalSurface::new(2))),
             ),
         );
         rt.update(now());
@@ -2454,7 +2467,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(1).schedule(schedule));
+        rt.set_root(ExternalSurface::new(1).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2487,8 +2500,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .push_child(CustomPaint::new(1).schedule(late_schedule))
-                .push_child(CustomPaint::new(2).schedule(early_schedule)),
+                .push_child(ExternalSurface::new(1).schedule_with(late_schedule))
+                .push_child(ExternalSurface::new(2).schedule_with(early_schedule)),
         );
         let _ = rt.update(now());
 
@@ -2508,7 +2521,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(4).schedule(schedule));
+        rt.set_root(ExternalSurface::new(4).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2531,7 +2544,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(5).schedule(schedule));
+        rt.set_root(ExternalSurface::new(5).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2550,7 +2563,7 @@ mod tests {
         // Arrange — empty demand must not invent blink-only Poll
         let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(6).schedule(schedule));
+        rt.set_root(ExternalSurface::new(6).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2574,7 +2587,7 @@ mod tests {
             ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(42).schedule(schedule));
+        rt.set_root(ExternalSurface::new(42).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2594,7 +2607,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(1).schedule(schedule));
+        rt.set_root(ExternalSurface::new(1).schedule_with(schedule));
         let _ = rt.update(now());
         assert_eq!(
             rt.update(now()).control_flow,
@@ -2622,7 +2635,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(7).schedule(schedule));
+        rt.set_root(ExternalSurface::new(7).schedule_with(schedule));
         let _ = rt.update(now());
 
         let idle = rt.update(now());
@@ -2642,7 +2655,7 @@ mod tests {
             ordinary_present_eligible: false,
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(8).schedule(schedule));
+        rt.set_root(ExternalSurface::new(8).schedule_with(schedule));
         let _ = rt.update(now());
 
         let idle = rt.update(now());
@@ -2670,8 +2683,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .push_child(CustomPaint::new(1).schedule(eligible))
-                .push_child(CustomPaint::new(2).schedule(deferred)),
+                .push_child(ExternalSurface::new(1).schedule_with(eligible))
+                .push_child(ExternalSurface::new(2).schedule_with(deferred)),
         );
         let _ = rt.update(now());
 
@@ -2708,7 +2721,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(9).schedule(schedule));
+        rt.set_root(ExternalSurface::new(9).schedule_with(schedule));
 
         // Act — first update rebuilds dirty Fibers and then folds schedule demand
         let first = rt.update(now());
@@ -2732,8 +2745,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .push_child(CustomPaint::new(10).schedule(eligible))
-                .push_child(CustomPaint::new(11).schedule(deferred)),
+                .push_child(ExternalSurface::new(10).schedule_with(eligible))
+                .push_child(ExternalSurface::new(11).schedule_with(deferred)),
         );
         let _ = rt.update(now());
 
@@ -2755,7 +2768,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(12).schedule(schedule));
+        rt.set_root(ExternalSurface::new(12).schedule_with(schedule));
         let _ = rt.update(now());
         assert!(rt.update(now()).has_deferred_externals);
 

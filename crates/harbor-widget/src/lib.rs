@@ -59,8 +59,8 @@ pub use widgets::backdrop_filter::{
 pub use widgets::decorated_box::DecoratedBox;
 pub use widgets::{
     ActionHandler, ActionOutcome, Axis, Button, CONTENT_SLOT_KEY, Column, ConstrainedBox,
-    DEFAULT_SCROLL_LINE_STEP, Expanded, Flex, FlexOptions, Flexible, Focus, FocusHandle,
-    FocusScope, Icon, IconButton, InteractionState, InteractiveRegion, KeyChord,
+    DEFAULT_SCROLL_LINE_STEP, Expanded, ExternalSurface, Flex, FlexOptions, Flexible, Focus,
+    FocusHandle, FocusScope, Icon, IconButton, InteractionState, InteractiveRegion, KeyChord,
     LayoutChangedCallback, LayoutObserver, MainAxisAlignment, MouseRegion, NotificationCard,
     Portal, Row, ScrollController, ScrollMetrics, ScrollView, Separator, ShortcutMap, Spacer,
     Stack, TextLabel, ThemeProvider,

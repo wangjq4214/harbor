@@ -374,17 +374,17 @@ fn fallible_keyed_children_retain_state_focus_and_remount_only_when_parent_type_
 fn explicit_wrapper_order_preserves_scene_clips_and_hit_ranges() {
     use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
     use harbor_widget::scene::primitive::Primitive;
-    use harbor_widget::widgets::custom_paint::CustomPaint;
+    use harbor_widget::widgets::external_surface::ExternalSurface;
     use harbor_widget::{BorderRadius, BoxDecoration, ClipBehavior, DecoratedBox};
     for padding_outside in [true, false] {
         let decoration = BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap());
         let content = if padding_outside {
             view! { Padding::all(8.0) => {
-                DecoratedBox::new(decoration).clip_behavior(ClipBehavior::HardEdge) => { CustomPaint::new(91); }
+                DecoratedBox::new(decoration).clip_behavior(ClipBehavior::HardEdge) => { ExternalSurface::new(91); }
             }}
         } else {
             view! { DecoratedBox::new(decoration).clip_behavior(ClipBehavior::HardEdge) => {
-                Padding::all(8.0) => { CustomPaint::new(91); }
+                Padding::all(8.0) => { ExternalSurface::new(91); }
             }}
         };
         let mut runtime = Runtime::new();
@@ -419,7 +419,7 @@ fn clearing_sized_slot_releases_external_draw_schedule_ime_and_unmount_ownership
     use harbor_widget::scene::primitive::{
         ExternalDrawFn, ExternalImeFn, ExternalScheduleDemand, ExternalScheduleFn,
     };
-    use harbor_widget::widgets::custom_paint::CustomPaint;
+    use harbor_widget::widgets::external_surface::ExternalSurface;
     use std::sync::Arc;
     let selected = Signal::new(true);
     let input = selected.clone();
@@ -441,7 +441,7 @@ fn clearing_sized_slot_releases_external_draw_schedule_ime_and_unmount_ownership
                 {
                     let (draw, schedule, ime) = pending.borrow_mut().take().unwrap();
                     let unmounted = unmounted.clone();
-                    Ok::<_, &str>(CustomPaint::new(92).handler(draw).schedule(schedule).ime(ime)
+                    Ok::<_, &str>(ExternalSurface::new(92).on_draw(draw).schedule_with(schedule).ime_with(ime)
                         .on_unmount(Arc::new(move || unmounted.set(unmounted.get() + 1))))
                 };
             }

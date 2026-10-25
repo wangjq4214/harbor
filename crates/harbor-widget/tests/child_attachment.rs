@@ -183,8 +183,8 @@ single_child_contract!(
 single_child_contract!(button, harbor_widget::Button::new());
 single_child_contract!(constrained_box, harbor_widget::ConstrainedBox::new());
 single_child_contract!(
-    custom_paint,
-    harbor_widget::widgets::custom_paint::CustomPaint::new(1)
+    external_surface,
+    harbor_widget::widgets::external_surface::ExternalSurface::new(1)
 );
 single_child_contract!(
     decorated_box,

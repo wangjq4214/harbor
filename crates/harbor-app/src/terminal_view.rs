@@ -20,7 +20,7 @@ use harbor_widget::scene::primitive::{
 };
 #[cfg(test)]
 use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::custom_paint::{CustomPaint, ExternalInputFn};
+use harbor_widget::widgets::external_surface::{ExternalInputFn, ExternalSurface};
 
 use harbor_widget::layout::{Point, Rect};
 use harbor_widget::renderer::Viewport;
@@ -290,7 +290,7 @@ impl DecorationProjection {
     }
 }
 
-/// Component that owns the widget draw id and embeds a shared [`Terminal`] via [`CustomPaint`].
+/// Component that owns the widget draw id and embeds a shared [`Terminal`] via [`ExternalSurface`].
 #[derive(Clone)]
 pub struct TerminalWidgetBridge {
     decorations: Arc<Mutex<DecorationProjection>>,
@@ -302,7 +302,7 @@ pub struct TerminalWidgetBridge {
     schedule: Arc<ExternalScheduleFn>,
     ime: Arc<ExternalImeFn>,
     on_input: Arc<ExternalInputFn>,
-    on_unmount: Arc<harbor_widget::widgets::custom_paint::ExternalUnmountFn>,
+    on_unmount: Arc<harbor_widget::widgets::external_surface::ExternalUnmountFn>,
     renderer: Option<Arc<Mutex<TerminalRenderPipeline>>>,
 }
 
@@ -496,7 +496,7 @@ impl TerminalWidgetBridge {
 
         let unmount_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]
-        let on_unmount: Arc<harbor_widget::widgets::custom_paint::ExternalUnmountFn> =
+        let on_unmount: Arc<harbor_widget::widgets::external_surface::ExternalUnmountFn> =
             Arc::new(move || {
                 if let Ok(mut term) = unmount_terminal.lock() {
                     term.clear_preedit();
@@ -560,11 +560,11 @@ impl TerminalWidgetBridge {
 }
 
 /// Creates the leaf widget that renders a terminal bridge without an extra component wrapper.
-pub(crate) fn terminal_widget(bridge: TerminalWidgetBridge) -> CustomPaint {
-    CustomPaint::new(bridge.draw_id())
-        .handler(Arc::clone(&bridge.handler))
-        .schedule(Arc::clone(&bridge.schedule))
-        .ime(Arc::clone(&bridge.ime))
+pub(crate) fn terminal_widget(bridge: TerminalWidgetBridge) -> ExternalSurface {
+    ExternalSurface::new(bridge.draw_id())
+        .on_draw(Arc::clone(&bridge.handler))
+        .schedule_with(Arc::clone(&bridge.schedule))
+        .ime_with(Arc::clone(&bridge.ime))
         .on_input(Arc::clone(&bridge.on_input))
         .on_unmount(Arc::clone(&bridge.on_unmount))
 }
@@ -1734,7 +1734,7 @@ mod tests {
         use harbor_widget::effects::ControlFlowEffect;
         use std::time::Duration;
 
-        // Arrange — fake schedule via CustomPaint-equivalent bridge registration
+        // Arrange — fake schedule via ExternalSurface-equivalent bridge registration
         // is exercised through Runtime with a scripted provider in widget tests;
         // here verify bridge root registers a schedule that headless empties.
         let terminal = headless_terminal(2, 4);
@@ -2070,7 +2070,7 @@ mod decoration_tests {
     use harbor_widget::runtime::Runtime;
     use harbor_widget::scene::SceneItem;
     use harbor_widget::scene::primitive::{Color, Primitive};
-    use harbor_widget::widgets::custom_paint::CustomPaint;
+    use harbor_widget::widgets::external_surface::ExternalSurface;
     use harbor_widget::widgets::padding::Padding;
     use harbor_widget::{
         BorderRadius, ClipBehavior, ControlFlowEffect, DecoratedBox, RuntimeEffects,
@@ -2113,7 +2113,7 @@ mod decoration_tests {
         if let Some(viewport) = viewport {
             runtime.set_viewport(viewport);
         }
-        runtime.set_root(test_main_terminal_root(false, CustomPaint::new(1)));
+        runtime.set_root(test_main_terminal_root(false, ExternalSurface::new(1)));
         let effects = runtime.update(Instant::now());
         (runtime, effects)
     }
@@ -2225,7 +2225,7 @@ mod decoration_tests {
     #[test]
     fn should_emit_no_root_quad_and_keep_inset_when_backdrop_is_available() {
         let mut runtime = Runtime::new();
-        runtime.set_root(test_main_terminal_root(true, CustomPaint::new(1)));
+        runtime.set_root(test_main_terminal_root(true, ExternalSurface::new(1)));
         let _effects = runtime.update(Instant::now());
         let items = painted_items(&runtime);
 
@@ -2267,7 +2267,7 @@ mod decoration_tests {
         for (width, height) in [(800, 600), (40, 40)] {
             let mut runtime = Runtime::new();
             runtime.set_viewport(Viewport::new(width, height, 1.0));
-            runtime.set_root(test_main_terminal_root(true, CustomPaint::new(1)));
+            runtime.set_root(test_main_terminal_root(true, ExternalSurface::new(1)));
             runtime.update(Instant::now());
             let items = painted_items(&runtime);
 
@@ -2307,7 +2307,7 @@ mod decoration_tests {
         for (width, height) in [(0, 0), (4, 4), (8, 8)] {
             let mut runtime = Runtime::new();
             runtime.set_viewport(Viewport::new(width, height, 1.0));
-            runtime.set_root(test_main_terminal_root(true, CustomPaint::new(1)));
+            runtime.set_root(test_main_terminal_root(true, ExternalSurface::new(1)));
             let effects = runtime.update(Instant::now());
             let items = painted_items(&runtime);
 
@@ -2345,10 +2345,10 @@ mod decoration_tests {
         // the concrete Padding materializes onto it without an extra layer.
         assert_eq!(
             padding_type,
-            TypeId::of::<TestMainTerminalRoot<CustomPaint>>()
+            TypeId::of::<TestMainTerminalRoot<ExternalSurface>>()
         );
         assert_eq!(decorated_type, TypeId::of::<DecoratedBox>());
-        assert_eq!(external_type, TypeId::of::<CustomPaint>());
+        assert_eq!(external_type, TypeId::of::<ExternalSurface>());
         assert_eq!(padding_rect.min, Point::new(0.0, 0.0));
         assert_eq!(padding_rect.size(), Size::new(800.0, 600.0));
         let expected_child = Rect::from_min_size(Point::new(4.0, 4.0), Size::new(792.0, 592.0));
@@ -2404,7 +2404,7 @@ mod decoration_tests {
         let external = items
             .iter()
             .find(|item| matches!(item.primitive, Primitive::External { .. }))
-            .expect("CustomPaint emits External");
+            .expect("ExternalSurface emits External");
         assert!(matches!(
             external.primitive,
             Primitive::External {
@@ -2466,7 +2466,7 @@ mod decoration_tests {
         let external = items
             .iter()
             .find(|item| matches!(item.primitive, Primitive::External { .. }))
-            .expect("CustomPaint emits External");
+            .expect("ExternalSurface emits External");
         let innermost = external
             .clips
             .last()
