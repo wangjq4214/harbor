@@ -72,33 +72,150 @@ fn multi_child_setters_and_blocks_replace_while_explicit_appends_preserve_order(
     verify!(harbor_widget::Flex::new(harbor_widget::Axis::Horizontal));
 }
 
-#[test]
-fn align_owns_one_replaceable_slot_and_rejects_dynamic_overcount() {
-    let staged = || Align::new(harbor_widget::Alignment2D::CENTER).child(child("a"));
-    assert_eq!(
-        mounted_keys(staged().child(child("b")).into_child_view()),
-        vec![Key::new("b")]
-    );
+fn verify_single_child_contract<C>(parent: C)
+where
+    C: harbor_widget::view::Component
+        + WithChildren<Capability = harbor_widget::SingleChild>
+        + Clone
+        + 'static,
+{
+    let staged = || {
+        parent
+            .clone()
+            .with_children(Children::one(child("a")))
+            .unwrap()
+    };
+    assert!(mounted_keys(parent.clone().into_child_view()).is_empty());
+    assert_eq!(mounted_keys(view! { staged(); }), vec![Key::new("a")]);
     assert_eq!(
         mounted_keys(view! { staged() => { child("b"); } }),
         vec![Key::new("b")]
     );
     assert!(mounted_keys(view! { staged() => {} }).is_empty());
-    for count in 0..=2 {
-        let incoming = (0..count).map(|_| child("b")).collect();
-        match staged().with_children(incoming) {
-            Ok(parent) => assert_eq!(mounted_keys(parent.into_child_view()).len(), count),
-            Err(error) => {
-                assert_eq!(count, 2);
-                assert_eq!(error.widget, "Align");
-                assert_eq!(error.received, 2);
+
+    // Key wrappers must preserve both the capability and the parent's identity.
+    let mut runtime = Runtime::new();
+    runtime.set_root(view! { staged().keyed("parent") => { child("b"); } });
+    runtime.update(Instant::now());
+    assert_eq!(
+        runtime
+            .arena()
+            .get(runtime.root_id().unwrap())
+            .unwrap()
+            .key(),
+        Some(&Key::new("parent"))
+    );
+
+    for has_staged_child in [false, true] {
+        for count in 0..=2 {
+            let make_parent = || {
+                if has_staged_child {
+                    staged()
+                } else {
+                    parent.clone()
+                }
+            };
+            let incoming = (0..count).map(|_| child("b")).collect();
+            match make_parent().with_children(incoming) {
+                Ok(parent) => {
+                    assert!(count <= 1);
+                    assert_eq!(
+                        mounted_keys(parent.into_child_view()),
+                        if count == 0 {
+                            vec![]
+                        } else {
+                            vec![Key::new("b")]
+                        }
+                    );
+                }
+                Err(error) => {
+                    assert_eq!(count, 2);
+                    assert_eq!(error.cardinality, harbor_widget::ChildCardinality::Single);
+                    assert_eq!(error.received, 2);
+                    assert!(!error.widget.is_empty());
+                }
+            }
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                view! { make_parent() => { for _ in 0..count { child("b"); } } }
+            }));
+            if count == 2 {
+                assert!(outcome.is_err());
+            } else {
+                assert_eq!(
+                    mounted_keys(outcome.unwrap()),
+                    if count == 0 {
+                        vec![]
+                    } else {
+                        vec![Key::new("b")]
+                    }
+                );
             }
         }
-        let outcome = std::panic::catch_unwind(|| {
-            view! {
-                staged() => { for _ in 0..count { child("b"); } }
-            }
-        });
-        assert_eq!(outcome.is_err(), count == 2);
     }
 }
+
+// Keep this inventory aligned with every built-in WithChildren implementation.
+// MultiChild widgets are covered above; leaves are compile-fail macro fixtures.
+macro_rules! single_child_contract {
+    ($name:ident, $parent:expr) => {
+        #[test]
+        fn $name() {
+            let parent = $parent;
+            verify_single_child_contract(parent.clone());
+            assert_eq!(
+                mounted_keys(parent.child(child("a")).child(child("b")).into_child_view()),
+                vec![Key::new("b")]
+            );
+        }
+    };
+    ($name:ident, $parent:expr, constructor_child) => {
+        #[test]
+        fn $name() {
+            verify_single_child_contract($parent);
+        }
+    };
+}
+
+single_child_contract!(align, Align::new(harbor_widget::Alignment2D::CENTER));
+single_child_contract!(padding, harbor_widget::Padding::all(1.0).unwrap());
+single_child_contract!(
+    sized_box,
+    harbor_widget::SizedBox::new(Size::new(20.0, 20.0)).unwrap()
+);
+single_child_contract!(
+    backdrop_filter,
+    harbor_widget::BackdropFilter::new(2.0).unwrap()
+);
+single_child_contract!(button, harbor_widget::Button::new());
+single_child_contract!(constrained_box, harbor_widget::ConstrainedBox::new());
+single_child_contract!(
+    custom_paint,
+    harbor_widget::widgets::custom_paint::CustomPaint::new(1)
+);
+single_child_contract!(
+    decorated_box,
+    harbor_widget::DecoratedBox::new(Default::default())
+);
+single_child_contract!(flexible, harbor_widget::Flexible::new());
+single_child_contract!(expanded, harbor_widget::Expanded::new());
+single_child_contract!(focus_scope, harbor_widget::FocusScope::new());
+single_child_contract!(interactive_region, harbor_widget::InteractiveRegion::new());
+single_child_contract!(layout_observer, harbor_widget::LayoutObserver::new(|_| {}));
+single_child_contract!(mouse_region, harbor_widget::MouseRegion::new());
+single_child_contract!(portal, harbor_widget::Portal::new());
+single_child_contract!(scroll_view, harbor_widget::ScrollView::new());
+single_child_contract!(
+    theme_provider,
+    harbor_widget::ThemeProvider::new(Default::default())
+);
+single_child_contract!(focus, harbor_widget::Focus::empty(), constructor_child);
+single_child_contract!(
+    shortcuts,
+    harbor_widget::Shortcuts::<()>::empty(),
+    constructor_child
+);
+single_child_contract!(
+    actions,
+    harbor_widget::Actions::<()>::handler(|_| harbor_widget::ActionOutcome::Consumed),
+    constructor_child
+);

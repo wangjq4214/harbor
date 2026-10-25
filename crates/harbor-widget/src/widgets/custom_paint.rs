@@ -29,7 +29,7 @@ pub struct CustomPaint {
     ime: Option<Arc<crate::scene::primitive::ExternalImeFn>>,
     on_input: Option<Arc<ExternalInputFn>>,
     on_unmount: Option<Arc<ExternalUnmountFn>>,
-    children: Vec<View>,
+    child: Option<View>,
 }
 
 impl CustomPaint {
@@ -41,7 +41,7 @@ impl CustomPaint {
             schedule: None,
             on_input: None,
             on_unmount: None,
-            children: vec![],
+            child: None,
         }
     }
 
@@ -81,8 +81,9 @@ impl CustomPaint {
         self
     }
 
+    /// Replaces the optional child slot.
     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
-        self.children.push(child.into_child_view());
+        self.child = Some(child.into_child_view());
         self
     }
 
@@ -103,7 +104,7 @@ impl Component for CustomPaint {
         if let Some(ime) = &self.ime {
             cx.register_external_ime(self.draw_id, Arc::clone(ime));
         }
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), self.child.iter().cloned().collect(), None)
     }
 }
 
@@ -113,7 +114,7 @@ impl crate::WithChildren for CustomPaint {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        self.children.extend(children.into_views());
+        children.into_single("CustomPaint", &mut self.child)?;
         Ok(self)
     }
 }
@@ -130,7 +131,7 @@ impl AnyView for CustomPaint {
         child_sizes: &[Size],
         _metrics: &TextMetrics,
     ) -> (Size, Vec<Point>) {
-        // Children overlap at the origin. On unbounded axes preserve their
+        // The optional child starts at the origin. On unbounded axes preserve its
         // natural extent rather than publishing infinite external draw geometry.
         let natural = child_sizes.iter().fold(Size::ZERO, |size, child| {
             Size::new(size.width.max(child.width), size.height.max(child.height))

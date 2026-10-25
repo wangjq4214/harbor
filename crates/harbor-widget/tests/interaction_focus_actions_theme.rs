@@ -9,7 +9,7 @@ use harbor_widget::view::{Component, SizedBox};
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::{
     ActionOutcome, Actions, Button, Focus, FocusHandle, FocusScope, KeyChord, MouseRegion,
-    Shortcuts, Theme, ThemeProvider,
+    Shortcuts, Theme, ThemeProvider, widgets::stack::Stack,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -64,13 +64,13 @@ struct ToggleFocusedChild {
 impl Component for ToggleFocusedChild {
     fn build(&self, cx: &mut harbor_widget::view::BuildCx) -> harbor_widget::view::View {
         cx.track(&self.show_target);
-        let mut scope = FocusScope::new()
-            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()).order(10));
+        let mut children = Stack::new()
+            .push_child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()).order(10));
         if *self.show_target.read() {
-            scope =
-                scope.child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()).order(-1));
+            children = children
+                .push_child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()).order(-1));
         }
-        scope.build(cx)
+        FocusScope::new().child(children).build(cx)
     }
 }
 
@@ -169,17 +169,19 @@ fn focus_scope_uses_explicit_order_and_focus_handles() {
     let second = FocusHandle::new();
     let mut runtime = Runtime::new();
     runtime.set_root(
-        FocusScope::new()
-            .child(
-                Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
-                    .order(10)
-                    .handle(second),
-            )
-            .child(
-                Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
-                    .order(-1)
-                    .handle(first),
-            ),
+        FocusScope::new().child(
+            Stack::new()
+                .push_child(
+                    Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
+                        .order(10)
+                        .handle(second),
+                )
+                .push_child(
+                    Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())
+                        .order(-1)
+                        .handle(first),
+                ),
+        ),
     );
     runtime.update(now());
 
@@ -208,11 +210,13 @@ fn focus_scope_uses_explicit_order_and_focus_handles() {
 fn tab_traversal_skips_custom_paint_in_both_directions() {
     let mut runtime = Runtime::new();
     runtime.set_root(
-        FocusScope::new()
-            .child(CustomPaint::new(1))
-            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()))
-            .child(CustomPaint::new(2))
-            .child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())),
+        FocusScope::new().child(
+            Stack::new()
+                .push_child(CustomPaint::new(1))
+                .push_child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap()))
+                .push_child(CustomPaint::new(2))
+                .push_child(Focus::new(SizedBox::new(Size::new(20.0, 20.0)).unwrap())),
+        ),
     );
     runtime.update(now());
 
@@ -511,9 +515,11 @@ fn ctrl_tab_prefers_the_exact_shortcut_over_focus_traversal() {
     let mut runtime = Runtime::new();
     runtime.set_root(Actions::new(
         Shortcuts::new(
-            FocusScope::new()
-                .child(Button::text("First"))
-                .child(Button::text("Second")),
+            FocusScope::new().child(
+                Stack::new()
+                    .push_child(Button::text("First"))
+                    .push_child(Button::text("Second")),
+            ),
         )
         .bind(chord, TestAction::NextTab),
         move |action| {

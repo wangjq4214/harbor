@@ -132,9 +132,11 @@ fn clipboard_completion_cannot_follow_focus_or_remounted_controller() {
     let a = FocusHandle::new();
     let b = FocusHandle::new();
     let mut runtime = mount(
-        FocusScope::new()
-            .child(TextField::new(first.clone()).focus_handle(a))
-            .child(TextField::new(second.clone()).focus_handle(b)),
+        FocusScope::new().child(
+            harbor_widget::widgets::stack::Stack::new()
+                .push_child(TextField::new(first.clone()).focus_handle(a))
+                .push_child(TextField::new(second.clone()).focus_handle(b)),
+        ),
     );
     let request_id = request(&mut runtime, ctrl('v'));
     runtime.request_focus(&b);

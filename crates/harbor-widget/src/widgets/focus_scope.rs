@@ -11,7 +11,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 #[derive(Clone)]
 pub struct FocusScope {
     pub modal: bool,
-    children: Vec<View>,
+    child: Option<View>,
 }
 
 impl Default for FocusScope {
@@ -24,7 +24,7 @@ impl FocusScope {
     pub fn new() -> Self {
         FocusScope {
             modal: false,
-            children: vec![],
+            child: None,
         }
     }
 
@@ -33,15 +33,16 @@ impl FocusScope {
         self
     }
 
+    /// Replaces the optional child slot.
     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
-        self.children.push(child.into_child_view());
+        self.child = Some(child.into_child_view());
         self
     }
 }
 
 impl Component for FocusScope {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), self.child.iter().cloned().collect(), None)
     }
 }
 
@@ -51,15 +52,15 @@ impl crate::WithChildren for FocusScope {
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        self.children.extend(children.into_views());
+        children.into_single("FocusScope", &mut self.child)?;
         Ok(self)
     }
 }
 
 impl AnyView for FocusScope {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        // FocusScope delegates to children — it's a passthrough container
-        let child_size = if self.children.is_empty() {
+        // FocusScope delegates to its optional child — it's a passthrough container
+        let child_size = if self.child.is_none() {
             Size::ZERO
         } else {
             constraints.fill_bounded(Size::ZERO)
@@ -117,13 +118,9 @@ mod tests {
             min: Size::new(10.0, 40.0),
             max: Size::new(f32::INFINITY, f32::INFINITY),
         };
-        let (size, origins) = scope.layout_children(
-            constraints,
-            &[Size::new(30.0, 20.0), Size::new(20.0, 60.0)],
-            metrics,
-        );
+        let (size, origins) = scope.layout_children(constraints, &[Size::new(30.0, 60.0)], metrics);
         assert_eq!(size, Size::new(30.0, 60.0));
-        assert_eq!(origins, vec![Point::ZERO; 2]);
+        assert_eq!(origins, vec![Point::ZERO; 1]);
         assert_eq!(
             scope.layout_children(constraints, &[], metrics).0,
             constraints.min
