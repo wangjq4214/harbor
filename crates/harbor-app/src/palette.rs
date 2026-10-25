@@ -6,8 +6,8 @@ use crate::command::{
 };
 use crate::tab_manager::{TabId, TabManager, TabSnapshot};
 use harbor_widget::{
-    Alignment, Column, ConstrainedBox, ControlColors, DecoratedBox, InteractiveRegion, KeyChord,
-    ScrollController, ScrollView,
+    Column, ConstrainedBox, ControlColors, CrossAxisAlignment, DecoratedBox, InteractiveRegion,
+    KeyChord, ScrollController, ScrollView,
     decoration::{Border, BorderRadius, BoxDecoration},
     layout::{BoxConstraints, Size},
     scene::primitive::Primitive,
@@ -144,7 +144,7 @@ fn shortcut_badges(
         )
         .border_radius(BorderRadius::all(4.0).unwrap());
     let mut shortcuts = Column::new()
-        .cross_axis_alignment(Alignment::End)
+        .cross_axis_alignment(CrossAxisAlignment::End)
         .gap(2.0)
         .unwrap();
     let mut bound = false;
@@ -510,11 +510,11 @@ fn palette_panel(
         .max(1);
     let entries_count = entries.len();
     let mut rows = Column::new()
-        .cross_axis_alignment(Alignment::Stretch)
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
         .gap(4.0)
         .unwrap();
     let mut content = Column::new()
-        .cross_axis_alignment(Alignment::Stretch)
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
         .gap(4.0)
         .unwrap()
         .push_child(View::deferred(
@@ -544,7 +544,7 @@ fn palette_panel(
                 .build(cx);
             let shortcuts = shortcut_badges(cx, bindings, entry.command, foreground);
             let row = Row::new()
-                .cross_axis_alignment(Alignment::Center)
+                .cross_axis_alignment(CrossAxisAlignment::Center)
                 .push_child(View::leaf(PaletteRowHeight { shortcut_rows }))
                 .push_child(Expanded::new().child(label).build(cx))
                 .push_child(

@@ -1,8 +1,8 @@
 use harbor_widget::scene::primitive::Color;
 use harbor_widget::signal::Signal;
 use harbor_widget::{
-    Button, EditableText, Focus, FocusHandle, IconButton, LucideIcon, MouseRegion, Notification,
-    TextEditingController, TextField,
+    Button, EditableText, Focus, FocusHandle, IconButton, LucideIcon, MouseRegion,
+    NotificationCard, TextEditingController, TextField,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -27,7 +27,7 @@ fn main() {
     let _ = MouseRegion::new()
         .on_enter(move |_| enter.set(3))
         .on_exit(move |_| exit.set(4));
-    let _ = Notification::new("Local", move || local.set(5));
+    let _ = NotificationCard::new("Local", move || local.set(5));
     let _ = TextField::new(TextEditingController::new(""))
         .disabled(true)
         .disabled(false);

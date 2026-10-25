@@ -5,8 +5,8 @@ use crate::scene::primitive::{Color, Primitive};
 use crate::view::{AnyView, Component, View};
 use crate::widgets::{align::Align, sized_box::SizedBox};
 use crate::{
-    Alignment, BoxDecoration, ClipBehavior, Column, ConstrainedBox, DecoratedBox, Expanded,
-    Notification, Portal,
+    BoxDecoration, ClipBehavior, Column, ConstrainedBox, CrossAxisAlignment, DecoratedBox,
+    Expanded, NotificationCard, Portal,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -130,7 +130,7 @@ fn portal_lifetime_updates_and_remounts_without_layout_slots_or_stale_hits() {
         let width = width.clone();
         move |cx: &mut BuildCx| {
             let mut column = Column::new()
-                .cross_axis_alignment(Alignment::Stretch)
+                .cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .gap(17.0)
                 .unwrap()
                 .push_child(
@@ -241,7 +241,7 @@ fn notification_lifetime_is_caller_owned_and_close_follows_resized_position() {
     let mut rt = Runtime::new();
     rt.set_viewport(Viewport::new(900, 600, 1.0));
     let count = dismissed.clone();
-    rt.set_root(Portal::new().child(Notification::new("Action required: requested changes were not applied. Previously accepted settings remain effective.", move || { count.fetch_add(1, Ordering::Relaxed); }).placement(crate::widgets::notification::NotificationPlacement { horizontal: Alignment::End, vertical: Alignment::Start, inset: 12.0 })));
+    rt.set_root(Portal::new().child(NotificationCard::new("Action required: requested changes were not applied. Previously accepted settings remain effective.", move || { count.fetch_add(1, Ordering::Relaxed); }).placement(crate::widgets::notification_card::NotificationCardPlacement { horizontal: crate::PositionAlignment::End, vertical: crate::PositionAlignment::Start, inset: 12.0 }).unwrap()));
     rt.update(Instant::now());
     assert!(rt.events.input().focused.is_none());
     assert!(

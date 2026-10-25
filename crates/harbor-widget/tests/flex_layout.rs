@@ -13,8 +13,8 @@ use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{
-    Alignment, Axis, BoxDecoration, Column, ConstrainedBox, DecoratedBox, Expanded, Flex, FlexFit,
-    Flexible, MainAxisAlignment, Row, Separator, Spacer,
+    Axis, BoxDecoration, Column, ConstrainedBox, CrossAxisAlignment, DecoratedBox, Expanded, Flex,
+    FlexFit, Flexible, MainAxisAlignment, Row, Separator, Spacer,
 };
 
 fn size(axis: Axis, main: f32, cross: f32) -> Size {
@@ -122,7 +122,7 @@ fn rail(axis: Axis, extent: f32) -> Flex {
         Axis::Vertical => Separator::horizontal(),
     };
     Flex::new(axis)
-        .cross_axis_alignment(Alignment::Stretch)
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
         .push_child(
             bounds(axis, extent, extent).child(
                 SizedBox::new(Size::ZERO)
@@ -230,10 +230,10 @@ fn main_and_cross_alignment_matrix_uses_actual_occupied_extent_plus_minimum_gaps
     for axis in [Axis::Horizontal, Axis::Vertical] {
         for (alignment, offsets) in alignments {
             for cross in [
-                Alignment::Start,
-                Alignment::Center,
-                Alignment::End,
-                Alignment::Stretch,
+                CrossAxisAlignment::Start,
+                CrossAxisAlignment::Center,
+                CrossAxisAlignment::End,
+                CrossAxisAlignment::Stretch,
             ] {
                 let runtime = mount(
                     tight(size(axis, 100.0, 40.0)).child(
@@ -251,10 +251,10 @@ fn main_and_cross_alignment_matrix_uses_actual_occupied_extent_plus_minimum_gaps
                 for (index, &offset) in offsets.iter().enumerate() {
                     let natural = (index + 1) as f32 * 10.0;
                     let (cross_offset, extent) = match cross {
-                        Alignment::Start => (0.0, natural),
-                        Alignment::Center => ((40.0 - natural) / 2.0, natural),
-                        Alignment::End => (40.0 - natural, natural),
-                        Alignment::Stretch => (0.0, 40.0),
+                        CrossAxisAlignment::Start => (0.0, natural),
+                        CrossAxisAlignment::Center => ((40.0 - natural) / 2.0, natural),
+                        CrossAxisAlignment::End => (40.0 - natural, natural),
+                        CrossAxisAlignment::Stretch => (0.0, 40.0),
                     };
                     assert_rect(
                         rect(&runtime, &[0, index]),
@@ -558,7 +558,7 @@ fn deterministic_finite_inputs_keep_all_allocations_and_diagnostics_finite() {
             let flex = Flex::new(axis)
                 .gap(gap)
                 .unwrap()
-                .cross_axis_alignment(Alignment::Stretch)
+                .cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .push_child(bounds(axis, fixed, fixed))
                 .push_child(
                     Flexible::new()
@@ -637,7 +637,7 @@ fn excessive_gaps_and_inflexible_siblings_leave_zero_shares_and_clear_overflow_a
 #[test]
 fn wide_and_nested_flex_trees_complete_within_measurement_budget() {
     let mut wide = Row::new()
-        .cross_axis_alignment(Alignment::Stretch)
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
         .gap(0.125)
         .unwrap();
     for index in 0..2048 {
@@ -659,7 +659,7 @@ fn wide_and_nested_flex_trees_complete_within_measurement_budget() {
             Axis::Vertical
         };
         nested = Flex::new(axis)
-            .cross_axis_alignment(Alignment::Stretch)
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .push_child(SizedBox::new(size(axis, 1.0, 1.0)).unwrap())
             .push_child(Expanded::new().child(nested));
     }

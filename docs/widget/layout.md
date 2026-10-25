@@ -9,7 +9,7 @@ Layout is an ordinary component tree, not a style bag or a set of general `Compo
 Ordinary `view!` accepts either a component/existing View or a final `Result` containing one. No per-node question mark or unwrap is required, including nodes with child blocks, selected if/match branches and loop-produced children:
 
 ```rust
-use harbor_widget::{Align, Alignment, Alignment2D, Button, Column, Expanded,
+use harbor_widget::{Align, CrossAxisAlignment, Alignment2D, Button, Column, Expanded,
     FlexOptions, Insets, Padding, Row, SizedBox, TextEditingController, TextField, view};
 use harbor_widget::TextLabel;
 
@@ -23,7 +23,7 @@ fn main() {
                         TextLabel::new("Search");
                         Row::with_options(FlexOptions {
                             gap: 4.0,
-                            cross_axis_alignment: Alignment::Center,
+                            cross_axis_alignment: CrossAxisAlignment::Center,
                             ..Default::default()
                         }) => {
                             Expanded::new() => { TextField::new(controller); }

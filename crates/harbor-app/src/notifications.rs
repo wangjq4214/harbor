@@ -2,7 +2,7 @@
 
 use crate::appearance::{GlassAppearance, glass_icon_button_style};
 use harbor_widget::{
-    Alignment, BorderRadius, Notification, Portal,
+    BorderRadius, NotificationCard, Portal, PositionAlignment,
     scene::primitive::Color,
     view::{BuildCx, Component},
 };
@@ -17,10 +17,10 @@ pub(crate) fn configuration_notification(
     top_offset: f32,
     on_dismiss: impl Fn() + 'static,
 ) -> impl Component {
-    let notification = Notification::new(message, on_dismiss)
+    let notification = NotificationCard::new(message, on_dismiss)
         .title(title)
         .max_lines(4)
-        .close_alignment(Alignment::Start);
+        .close_alignment(PositionAlignment::Start);
     move |cx: &mut BuildCx| {
         let appearance = GlassAppearance {
             radius: BorderRadius::all(6.0).unwrap(),
@@ -28,16 +28,20 @@ pub(crate) fn configuration_notification(
         };
         let card = notification
             .clone()
-            .detail_color(Color {
+            .detail_foreground(Color {
                 a: cx.theme().button.normal.foreground.a * 0.82,
                 ..cx.theme().button.normal.foreground
             })
-            .style(harbor_widget::widgets::notification::NotificationStyle {
-                foreground: Some(cx.theme().button.normal.foreground),
-                // The shared material owns the fill; an opaque card would hide its filter.
-                background: Some(Color::TRANSPARENT),
-                ..Default::default()
-            })
+            .expect("valid detail foreground")
+            .style(
+                harbor_widget::widgets::notification_card::NotificationCardStyle {
+                    foreground: Some(cx.theme().button.normal.foreground),
+                    // The shared material owns the fill; an opaque card would hide its filter.
+                    background: Some(Color::TRANSPARENT),
+                    ..Default::default()
+                },
+            )
+            .expect("valid notification style")
             .close_button_style(glass_icon_button_style(cx))
             .expect("valid close style")
             .build(cx);

@@ -7,12 +7,12 @@ Components, invokes external draw callbacks, or publishes trial rectangles.
 ## Fixed rail and remaining content
 
 ```rust
-use harbor_widget::{Alignment, ConstrainedBox, Expanded, Row, Separator};
+use harbor_widget::{CrossAxisAlignment, ConstrainedBox, Expanded, Row, Separator};
 use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::widgets::text_label::TextLabel;
 
 let root = Row::new()
-    .cross_axis_alignment(Alignment::Stretch)
+    .cross_axis_alignment(CrossAxisAlignment::Stretch)
     .push_child(ConstrainedBox::new()
         .min_width(200.0).max_width(200.0)
         .child(TextLabel::new("Rail")))

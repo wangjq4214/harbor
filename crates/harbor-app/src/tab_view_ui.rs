@@ -3,9 +3,9 @@
 use super::{RailPresentation, TabCommand, TabUiController, TabUiState};
 use crate::{command::AppCommandRequest, tab_manager::TabSnapshot};
 use harbor_widget::{
-    Alignment, BoxDecoration, ClipBehavior, Column, ComponentExt as _, ConstrainedBox,
-    ControlColors, ControlStyle, DecoratedBox, Dispatcher, Expanded, FlexOptions, Icon, IconButton,
-    Insets, InteractionState, InteractiveRegion, LucideIcon, Row, ScrollView, SizedBox,
+    BoxDecoration, ClipBehavior, Column, ComponentExt as _, ConstrainedBox, ControlColors,
+    ControlStyle, CrossAxisAlignment, DecoratedBox, Dispatcher, Expanded, FlexOptions, Icon,
+    IconButton, Insets, InteractionState, InteractiveRegion, LucideIcon, Row, ScrollView, SizedBox,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
     widgets::{padding::Padding, text_label::TextLabel},
@@ -22,7 +22,7 @@ pub(crate) fn tab_rail(
     harbor_widget::view! { SizedBox::width(state.presentation.width()) => {
             ScrollView::new().controller(controller.scroll.clone()) => {
                 Padding::new(Insets { top: 0.0, right: 6.0, bottom: 4.0, left: 6.0 }) => {
-                    Column::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: Alignment::Stretch, ..Default::default() }) => {
+                    Column::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: CrossAxisAlignment::Stretch, ..Default::default() }) => {
                         for snapshot in state.snapshots.iter() {
                             tab_row(cx, snapshot, state.presentation, controller, dispatcher.clone());
                         }
@@ -61,7 +61,7 @@ fn tab_row(
         })
         .child_with(move |cx, state| {
             let color = rail_style(cx, compact).resolve_state(&state).foreground;
-            harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 2.0 } else { 8.0 }, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
+            harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 2.0 } else { 8.0 }, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
                     if !compact {
                         SizedBox::width(24.0) => {
                             Icon::new(icon).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
@@ -124,7 +124,7 @@ fn new_tab_button(
             })
             .child_with(move |cx, state| {
                 let color = rail_style(cx, compact).resolve_state(&state).foreground;
-                harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 0.0 } else { 8.0 }, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
+                harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 0.0 } else { 8.0 }, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
                         SizedBox::width(24.0) => {
                             Icon::new(LucideIcon::Plus).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
                         }

@@ -5,7 +5,9 @@ use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::Primitive;
 use harbor_widget::view::{Component, SizedBox};
-use harbor_widget::{Button, IconButton, InteractiveRegion, LucideIcon, MouseRegion, Notification};
+use harbor_widget::{
+    Button, IconButton, InteractiveRegion, LucideIcon, MouseRegion, NotificationCard,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -87,7 +89,7 @@ fn notification_close_keeps_the_arrow_and_still_dismisses_without_focus_theft() 
     let observed = dismissed.clone();
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(240, 120, 1.0));
-    runtime.set_root(Notification::new("Notice", move || {
+    runtime.set_root(NotificationCard::new("Notice", move || {
         observed.fetch_add(1, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());

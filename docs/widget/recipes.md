@@ -139,7 +139,7 @@ Portal children use root bounds and paint above ordinary content, escaping the d
 This headless composition constructs a top-right panel with real local blur, a translucent gradient fill and optional edge refraction. The values are illustrative consumer choices, **not Harbor's application search material preset**.
 
 ```rust
-use harbor_widget::{Alignment, BackdropFilter, BorderRadius, BoxDecoration,
+use harbor_widget::{BackdropFilter, BorderRadius, BoxDecoration,
     Column, DecoratedBox, EdgeRefraction, GradientStop, LinearGradient, Paint, Portal};
 use harbor_widget::layout::Point;
 use harbor_widget::scene::primitive::Color;
@@ -205,3 +205,54 @@ Keep filter shape and child decoration/clipping choices explicit: filter radius 
 
 For an interactive overlay, retain focus handles, request initial focus deliberately, and decide dismissal/restoration policy. `FocusScope::modal(true)` supplies an in-runtime routing mechanism, not a general dialog product or a cross-window input gate. Harbor's native paste confirmation remains a separate application-owned window decision.
 For an interactive overlay, retain focus handles, request initial focus deliberately, and decide dismissal/restoration policy. `FocusScope::modal(true)` supplies in-runtime routing, not a general dialog service or a cross-window input gate.
+
+## 4. Position a dismissible notification card
+
+The component is `NotificationCard`; detailed inputs live in
+`harbor_widget::widgets::notification_card`. It displays content, but does not
+decide eligibility, message meaning, deduplication, timeouts, dismissal history,
+or focus policy. Those remain application responsibilities.
+
+```rust
+use harbor_widget::{NotificationCard, Portal, PositionAlignment, view};
+use harbor_widget::widgets::notification_card::{
+    NotificationCardPlacement, NotificationCardStyle,
+};
+use harbor_widget::scene::primitive::Color;
+
+let card = NotificationCard::new("Saved locally", || { /* caller dismisses */ })
+    .title("Settings")
+    .close_alignment(PositionAlignment::Start)
+    .detail_foreground(Color::WHITE).expect("finite detail color")
+    .placement(NotificationCardPlacement {
+        horizontal: PositionAlignment::End,
+        vertical: PositionAlignment::Start,
+        inset: 12.0,
+    }).expect("finite nonnegative inset");
+let card = view! { card.style(NotificationCardStyle::default()); };
+let overlay = Portal::new().child(card);
+```
+
+Horizontal/vertical placement and close alignment accept only
+`PositionAlignment::{Start, Center, End}`. The default close alignment is Center.
+`Alignment2D` uses the same positioning-only axes; `CrossAxisAlignment::Stretch`
+is exclusively for real Flex/Row/Column cross-axis stretching. There is no
+conversion from the flex type to a position. Migrate any old positioning-only
+Stretch call to Start explicitly.
+
+Style, placement, detail foreground and explicit close-button style consumption
+return `Result`. A style or placement with public fields is validated again at
+consumption, even if its `validate()` previously succeeded. All style dimensions
+and inset must be finite and nonnegative; `max_width` must be finite and strictly
+positive. Optional foreground/background, detail foreground and every close
+style state color must have finite RGBA components, without a [0,1] restriction.
+Legal large values can still cause a layout error when combined; parent clamps
+do not hide derived overflow. The default dimensions remain 520dp maximum width,
+6dp radius, 12dp horizontal/bottom padding, 32dp header and 36dp close width.
+
+Only the final `view!` node expression handles a `Result` automatically, panicking
+with the field and source location on error. Intermediate fallible setters in
+the example are handled explicitly; handwritten callers may recover instead.
+Long details wrap and scroll unless `max_lines` selects a capped/ellipsized
+presentation. Placement does not create a Portal. These headless constructions
+are not native focus or GPU appearance acceptance.

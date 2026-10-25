@@ -42,11 +42,11 @@ note: required by a bound in `with_static_children`
   | pub fn with_static_children<const N: usize, C: WithChildren>(
   |                                                ^^^^^^^^^^^^ required by this bound in `with_static_children`
 
-error[E0277]: the trait bound `Notification: WithChildren` is not satisfied
+error[E0277]: the trait bound `NotificationCard: WithChildren` is not satisfied
  --> tests/ui/fail/remaining_leaf_blocks.rs:8:21
   |
-8 |     let _ = view! { Notification::new("message", || {}) => {} };
-  |                     ^^^^^^^^^^^^ the trait `WithChildren` is not implemented for `Notification`
+8 |     let _ = view! { NotificationCard::new("message", || {}) => {} };
+  |                     ^^^^^^^^^^^^^^^^ the trait `WithChildren` is not implemented for `NotificationCard`
   |
   = help: the following other types implement trait `WithChildren`:
             ActionHandler<A>

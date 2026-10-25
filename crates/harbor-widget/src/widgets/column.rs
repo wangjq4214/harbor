@@ -1,7 +1,7 @@
 use super::flex::{Axis, Flex, FlexOptions, MainAxisAlignment};
 use crate::layout::{
-    Alignment, BoxConstraints, ChildMeasurer, LayoutConfigError, LayoutError, ParentLayout, Point,
-    Rect, Size,
+    BoxConstraints, ChildMeasurer, CrossAxisAlignment, LayoutConfigError, LayoutError,
+    ParentLayout, Point, Rect, Size,
 };
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
@@ -36,7 +36,7 @@ impl Column {
         self.inner.get_options()
     }
 
-    pub fn cross_axis_alignment(mut self, alignment: Alignment) -> Self {
+    pub fn cross_axis_alignment(mut self, alignment: CrossAxisAlignment) -> Self {
         self.inner = self.inner.cross_axis_alignment(alignment);
         self
     }
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn column_cross_axis_center() {
         let column = Column::new()
-            .cross_axis_alignment(Alignment::Center)
+            .cross_axis_alignment(CrossAxisAlignment::Center)
             .push_child(SizedBox::new(Size::new(20.0, 50.0)).unwrap())
             .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn column_cross_axis_end() {
         let column = Column::new()
-            .cross_axis_alignment(Alignment::End)
+            .cross_axis_alignment(CrossAxisAlignment::End)
             .push_child(SizedBox::new(Size::new(20.0, 50.0)).unwrap())
             .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn column_cross_axis_stretch() {
         let column = Column::new()
-            .cross_axis_alignment(Alignment::Stretch)
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .push_child(SizedBox::new(Size::new(20.0, 50.0)).unwrap())
             .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(200.0, 200.0));

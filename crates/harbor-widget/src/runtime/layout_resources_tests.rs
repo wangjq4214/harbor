@@ -1,5 +1,5 @@
 //! GPU-backed evidence for layout-only resize: compare actual retained handles.
-use crate::layout::{Alignment, Rect};
+use crate::layout::{CrossAxisAlignment, Rect};
 use crate::renderer::Viewport;
 use crate::runtime::Runtime;
 use crate::scene::primitive::{Color, ExternalDrawFn, ExternalDrawGpu, Primitive};
@@ -166,7 +166,7 @@ fn should_retain_gpu_handles_and_external_allocations_across_flex_resize_and_dpi
     rt.set_viewport(Viewport::new(1000, 600, 1.0));
     rt.set_root(
         Row::new()
-            .cross_axis_alignment(Alignment::Stretch)
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .push_child(
                 ConstrainedBox::new()
                     .min_width(200.0)
@@ -421,8 +421,8 @@ fn default_label_ellipsis_fits_rendered_ui_text_and_restores_after_resize() {
 
 #[test]
 fn notification_wrapping_fills_real_ui_width_and_caps_details_across_dpi() {
-    use crate::widgets::notification::NotificationPlacement;
-    use crate::{LucideIcon, Notification};
+    use crate::widgets::notification_card::NotificationCardPlacement;
+    use crate::{LucideIcon, NotificationCard};
     use unicode_segmentation::UnicodeSegmentation;
 
     let (device, queue) =
@@ -432,19 +432,21 @@ fn notification_wrapping_fills_real_ui_width_and_caps_details_across_dpi() {
         .unwrap();
     let source = "Wi thin and wide glyphs 项目 e\u{0301} 👩\u{200d}💻 ".repeat(100);
     rt.set_root(
-        Notification::new(source.clone(), || {})
+        NotificationCard::new(source.clone(), || {})
             .title("Configuration reload")
-            .detail_color(Color {
+            .detail_foreground(Color {
                 a: 0.82,
                 ..Color::WHITE
             })
+            .unwrap()
             .max_lines(4)
-            .close_alignment(Alignment::Start)
-            .placement(NotificationPlacement {
-                horizontal: Alignment::End,
-                vertical: Alignment::Start,
+            .close_alignment(crate::PositionAlignment::Start)
+            .placement(NotificationCardPlacement {
+                horizontal: crate::PositionAlignment::End,
+                vertical: crate::PositionAlignment::Start,
                 inset: 12.0,
-            }),
+            })
+            .unwrap(),
     );
     for scale in [1.0, 1.5, 2.0, 1.0] {
         for width in [600.0, 300.0, 600.0] {

@@ -1161,7 +1161,7 @@ mod tests {
 
     #[test]
     fn consumed_resize_delta_only_modifies_content_and_preserves_registrations() {
-        use crate::layout::Alignment;
+        use crate::layout::CrossAxisAlignment;
         use crate::scene::primitive::{Color, Primitive};
         use crate::view::View;
         use crate::{ConstrainedBox, Expanded, Row, Separator};
@@ -1178,7 +1178,7 @@ mod tests {
                 let schedule: Arc<ExternalScheduleFn> =
                     Arc::new(|_, _| ExternalScheduleDemand::empty());
                 Row::new()
-                    .cross_axis_alignment(Alignment::Stretch)
+                    .cross_axis_alignment(CrossAxisAlignment::Stretch)
                     .push_child(
                         ConstrainedBox::new()
                             .min_width(200.0)

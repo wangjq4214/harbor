@@ -1,6 +1,6 @@
 use crate::layout::{
-    Alignment, BoxConstraints, ChildMeasurer, FlexFit, LayoutConfigError, LayoutDiagnostic,
-    LayoutError, ParentLayout, Point, Rect, Size,
+    BoxConstraints, ChildMeasurer, CrossAxisAlignment, FlexFit, LayoutConfigError,
+    LayoutDiagnostic, LayoutError, ParentLayout, Point, Rect, Size,
 };
 use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
@@ -58,7 +58,7 @@ pub enum MainAxisAlignment {
 pub struct FlexOptions {
     pub gap: f32,
     pub main_axis_alignment: MainAxisAlignment,
-    pub cross_axis_alignment: Alignment,
+    pub cross_axis_alignment: CrossAxisAlignment,
 }
 
 impl Default for FlexOptions {
@@ -66,7 +66,7 @@ impl Default for FlexOptions {
         Self {
             gap: 0.0,
             main_axis_alignment: MainAxisAlignment::Start,
-            cross_axis_alignment: Alignment::Start,
+            cross_axis_alignment: CrossAxisAlignment::Start,
         }
     }
 }
@@ -86,7 +86,7 @@ impl Default for FlexOptions {
 pub struct Flex {
     pub axis: Axis,
     pub main_axis_alignment: MainAxisAlignment,
-    pub cross_axis_alignment: Alignment,
+    pub cross_axis_alignment: CrossAxisAlignment,
     background: Option<Color>,
     pub(crate) gap: f32,
     pub(crate) children: Vec<View>,
@@ -97,7 +97,7 @@ impl Flex {
         Self {
             axis,
             main_axis_alignment: MainAxisAlignment::Start,
-            cross_axis_alignment: Alignment::Start,
+            cross_axis_alignment: CrossAxisAlignment::Start,
             background: None,
             gap: 0.0,
             children: Vec::new(),
@@ -131,7 +131,7 @@ impl Flex {
         self
     }
 
-    pub fn cross_axis_alignment(mut self, alignment: Alignment) -> Self {
+    pub fn cross_axis_alignment(mut self, alignment: CrossAxisAlignment) -> Self {
         self.cross_axis_alignment = alignment;
         self
     }
@@ -244,7 +244,7 @@ pub(crate) struct FlexLayout {
     pub axis: Axis,
     pub gap: f32,
     pub main_axis_alignment: MainAxisAlignment,
-    pub cross_axis_alignment: Alignment,
+    pub cross_axis_alignment: CrossAxisAlignment,
 }
 
 impl FlexLayout {
@@ -263,7 +263,7 @@ impl FlexLayout {
         let flex_count = data.iter().filter(|entry| entry.is_some()).count();
         let main_max = self.axis.main(constraints.max);
         let cross_max = self.axis.cross(constraints.max);
-        let stretch = self.cross_axis_alignment == Alignment::Stretch;
+        let stretch = self.cross_axis_alignment == CrossAxisAlignment::Stretch;
         let provisional_stretch = stretch && !cross_max.is_finite();
         let cross_min = if stretch && cross_max.is_finite() {
             cross_max
@@ -582,7 +582,7 @@ mod tests {
                             axis,
                             measurements: measurements.clone(),
                         }));
-                    let root = Flex::new(axis).cross_axis_alignment(Alignment::Stretch);
+                    let root = Flex::new(axis).cross_axis_alignment(CrossAxisAlignment::Stretch);
                     let root = if flexible {
                         root.push_child(Flexible::new().child(opposite))
                     } else {
@@ -654,7 +654,7 @@ mod tests {
                             }
                         };
                         tree = Flex::new(axis)
-                            .cross_axis_alignment(Alignment::Stretch)
+                            .cross_axis_alignment(CrossAxisAlignment::Stretch)
                             .push_child(Expanded::new().child(tree))
                             .push_child(SizedBox::new(axis.size(1.0, level as f32 + 2.0)).unwrap());
                     }
@@ -752,7 +752,7 @@ mod tests {
             axis,
             gap: 0.0,
             main_axis_alignment: MainAxisAlignment::Start,
-            cross_axis_alignment: Alignment::Start,
+            cross_axis_alignment: CrossAxisAlignment::Start,
         }
     }
 
@@ -857,7 +857,7 @@ mod tests {
             let mut children = Children::new(axis, &[(50.0, 10.0, None), (70.0, 20.0, None)]);
             children.grow_on_stretch = true;
             let mut engine = engine(axis);
-            engine.cross_axis_alignment = Alignment::Stretch;
+            engine.cross_axis_alignment = CrossAxisAlignment::Stretch;
             let result = engine
                 .layout(
                     BoxConstraints::loose(axis.size(100.0, f32::INFINITY)),
@@ -894,7 +894,7 @@ mod tests {
             );
             children.provisional = true;
             let mut engine = engine(axis);
-            engine.cross_axis_alignment = Alignment::Stretch;
+            engine.cross_axis_alignment = CrossAxisAlignment::Stretch;
             let result = engine
                 .layout(
                     BoxConstraints::loose(axis.size(100.0, f32::INFINITY)),
@@ -948,7 +948,7 @@ mod tests {
         for axis in [Axis::Horizontal, Axis::Vertical] {
             let mut children = Children::new(axis, &[(10.0, 1.0, None), (10.0, 3.0, None)]);
             let mut engine = engine(axis);
-            engine.cross_axis_alignment = Alignment::Stretch;
+            engine.cross_axis_alignment = CrossAxisAlignment::Stretch;
             let result = engine
                 .layout(BoxConstraints::loose(axis.size(100.0, 20.0)), &mut children)
                 .unwrap();
@@ -1014,7 +1014,7 @@ mod tests {
     fn overflowing_children_align_from_start_and_report_both_axes() {
         let mut engine = engine(Axis::Vertical);
         engine.main_axis_alignment = MainAxisAlignment::End;
-        engine.cross_axis_alignment = Alignment::Center;
+        engine.cross_axis_alignment = CrossAxisAlignment::Center;
         let result = engine
             .finish(
                 BoxConstraints::tight(Size::new(10.0, 20.0)),

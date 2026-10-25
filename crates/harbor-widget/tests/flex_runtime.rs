@@ -1,6 +1,6 @@
 use harbor_widget::fiber::FiberId;
 use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
-use harbor_widget::layout::{Alignment, Point, Rect, Size};
+use harbor_widget::layout::{CrossAxisAlignment, Point, Rect, Size};
 use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::{DEFAULT_TEXT_METRICS, Runtime};
 use harbor_widget::scene::primitive::{
@@ -94,7 +94,7 @@ fn bounded_external(width: f32, draw_id: u64) -> ConstrainedBox {
 
 fn rail_root(rail: f32, content: impl Component + 'static) -> Row {
     Row::new()
-        .cross_axis_alignment(Alignment::Stretch)
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
         .push_child(bounded_external(rail, 1))
         .push_child(
             Separator::vertical()
@@ -176,7 +176,7 @@ fn resize_metrics_and_scale_changes_preserve_deferred_components_and_ids() {
     runtime.set_viewport(Viewport::new(1000, 600, 1.0));
     runtime.set_root(Counted {
         inner: Row::new()
-            .cross_axis_alignment(Alignment::Stretch)
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .push_child(Counted {
                 inner: TextLabel::new("aa"),
                 builds: builds.clone(),
@@ -258,7 +258,7 @@ fn signal_factor_reallocates_siblings_before_the_next_pointer_event() {
     runtime.set_viewport(Viewport::new(400, 40, 1.0));
     runtime.set_root(
         Row::new()
-            .cross_axis_alignment(Alignment::Stretch)
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .push_child(SignalFactor {
                 exposed: exposed.clone(),
                 initializations: initializations.clone(),
@@ -363,7 +363,7 @@ fn external_build_invalidation_is_not_mistaken_for_layout_only_work() {
 
 fn overflowing_row() -> Row {
     Row::new()
-        .cross_axis_alignment(Alignment::Stretch)
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
         .push_child(bounded_external(80.0, 1))
         .push_child(bounded_external(80.0, 2))
         .push_child(Expanded::new().child(CustomPaint::new(3)))
@@ -416,7 +416,7 @@ fn loose_fit_does_not_make_unused_slot_hit_testable_or_redistribute_it() {
     runtime.set_viewport(Viewport::new(300, 40, 1.0));
     runtime.set_root(
         Flex::new(Axis::Horizontal)
-            .cross_axis_alignment(Alignment::Stretch)
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .push_child(
                 Flexible::new().child(
                     ConstrainedBox::new()

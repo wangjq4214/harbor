@@ -128,7 +128,8 @@ fn scalar_entries_reject_at_construction_and_accept_zero_and_large_finite_values
                 "finite and nonnegative",
             );
             error(
-                harbor_widget::Notification::new("notice", || {}).close_button_style(style.clone()),
+                harbor_widget::NotificationCard::new("notice", || {})
+                    .close_button_style(style.clone()),
                 field,
                 "finite and nonnegative",
             );
@@ -203,7 +204,7 @@ fn every_rgba_component_in_every_state_and_focus_ring_is_validated_by_consumers(
                         "finite RGBA",
                     );
                     error(
-                        harbor_widget::Notification::new("notice", || {})
+                        harbor_widget::NotificationCard::new("notice", || {})
                             .close_button_style(style.clone()),
                         &field,
                         "finite RGBA",
@@ -244,7 +245,7 @@ fn every_rgba_component_in_every_state_and_focus_ring_is_validated_by_consumers(
                 "finite RGBA",
             );
             error(
-                harbor_widget::Notification::new("notice", || {}).close_button_style(style),
+                harbor_widget::NotificationCard::new("notice", || {}).close_button_style(style),
                 "focus_ring",
                 "finite RGBA",
             );

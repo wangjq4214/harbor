@@ -9,10 +9,10 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionHandler, ActionOutcome, Align, Alignment, Alignment2D, BorderRadius, ComponentExt as _,
-    Expanded, FlexOptions, Focus, FocusHandle, FocusScope, Icon, Insets, InteractionState,
-    InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row, ShortcutMap, SizedBox, Store,
-    TextEditingController, TextField,
+    ActionHandler, ActionOutcome, Align, Alignment2D, BorderRadius, ComponentExt as _,
+    CrossAxisAlignment, Expanded, FlexOptions, Focus, FocusHandle, FocusScope, Icon, Insets,
+    InteractionState, InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row, ShortcutMap,
+    SizedBox, Store, TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -117,7 +117,7 @@ fn search_bar(
     let status = search.status.clone();
     let content = harbor_widget::view! {
         Padding::all(8.0) => {
-            Row::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: Alignment::Center, ..Default::default() }) => {
+            Row::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
                 Expanded::new() => { entry; }
                 // Status text changes frequently; reserve its slot instead of resizing the editor.
                 SizedBox::width(120.0) => {

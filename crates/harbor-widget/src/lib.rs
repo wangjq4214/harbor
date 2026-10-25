@@ -47,7 +47,9 @@ pub mod theme;
 pub mod view;
 pub use view::{BuildCx, Component, View};
 pub mod widgets;
-pub use layout::{Alignment, Alignment2D, FlexFit, Insets, LayoutConfigError, PositionAlignment};
+pub use layout::{
+    Alignment2D, CrossAxisAlignment, FlexFit, Insets, LayoutConfigError, PositionAlignment,
+};
 pub use theme::{
     AppearanceError, ColorConfigError, ControlColors, ControlStyle, ControlVisualState, Theme,
 };
@@ -59,9 +61,9 @@ pub use widgets::{
     ActionHandler, ActionOutcome, Axis, Button, CONTENT_SLOT_KEY, Column, ConstrainedBox,
     DEFAULT_SCROLL_LINE_STEP, Expanded, Flex, FlexOptions, Flexible, Focus, FocusHandle,
     FocusScope, Icon, IconButton, InteractionState, InteractiveRegion, KeyChord,
-    LayoutChangedCallback, LayoutObserver, MainAxisAlignment, MouseRegion, Notification, Portal,
-    Row, ScrollController, ScrollMetrics, ScrollView, Separator, ShortcutMap, Spacer, Stack,
-    TextLabel, ThemeProvider,
+    LayoutChangedCallback, LayoutObserver, MainAxisAlignment, MouseRegion, NotificationCard,
+    Portal, Row, ScrollController, ScrollMetrics, ScrollView, Separator, ShortcutMap, Spacer,
+    Stack, TextLabel, ThemeProvider,
 };
 pub use widgets::{EditableText, TextField, VerticalDirection};
 pub use widgets::{align::Align, padding::Padding, sized_box::SizedBox};

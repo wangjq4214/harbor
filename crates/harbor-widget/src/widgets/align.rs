@@ -6,7 +6,7 @@ use crate::scene::primitive::{Color, Primitive};
 use crate::text::TextMetrics;
 use crate::view::{AnyView, BuildCx, Component, View};
 
-/// Single-child positioner within parent bounds according to Alignment.
+/// Single-child positioner within parent bounds according to Alignment2D.
 #[derive(Clone)]
 pub struct Align {
     pub alignment: Alignment2D,

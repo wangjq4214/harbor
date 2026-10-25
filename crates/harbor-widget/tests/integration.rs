@@ -500,13 +500,13 @@ fn align_center_integration() {
 
 #[test]
 fn row_cross_axis_center_integration() {
-    use harbor_widget::layout::Alignment;
+    use harbor_widget::layout::CrossAxisAlignment;
     use harbor_widget::widgets::row::Row;
 
     let mut rt = Runtime::new();
     rt.set_root(
         Row::new()
-            .cross_axis_alignment(Alignment::Center)
+            .cross_axis_alignment(CrossAxisAlignment::Center)
             .push_child(SizedBox::new(Size::new(50.0, 20.0)).unwrap())
             .push_child(SizedBox::new(Size::new(50.0, 100.0)).unwrap()),
     );

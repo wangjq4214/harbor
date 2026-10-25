@@ -10,7 +10,7 @@ use harbor_widget::view::{BuildCx, Component};
 use harbor_widget::widgets::{sized_box::SizedBox, text_label::TextLabel};
 use harbor_widget::{
     Button, Column, FocusHandle, IconButton, InteractiveRegion, LucideIcon, MouseRegion,
-    Notification,
+    NotificationCard,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -319,7 +319,7 @@ fn replaced_and_removed_local_callbacks_release_captures_and_use_current_closure
                     .on_exit(move |_| callback())
                     .child(SizedBox::new(Size::new(80.0, 40.0)).unwrap())
                     .build(cx),
-                CallbackKind::Dismiss => Notification::new("Notice", callback).build(cx),
+                CallbackKind::Dismiss => NotificationCard::new("Notice", callback).build(cx),
             }
         });
         update(&mut runtime);

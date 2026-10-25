@@ -1499,7 +1499,7 @@ mod tests {
 
     #[test]
     fn built_in_unbounded_cross_stretch_chains_stay_within_shared_budget() {
-        use crate::layout::Alignment;
+        use crate::layout::CrossAxisAlignment;
         use crate::widgets::column::Column;
         use crate::widgets::row::Row;
         use crate::widgets::sized_box::SizedBox;
@@ -1538,13 +1538,13 @@ mod tests {
                     root = if horizontal {
                         insert(
                             &mut arena,
-                            Row::new().cross_axis_alignment(Alignment::Stretch),
+                            Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                             vec![root, sibling],
                         )
                     } else {
                         insert(
                             &mut arena,
-                            Column::new().cross_axis_alignment(Alignment::Stretch),
+                            Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                             vec![root, sibling],
                         )
                     };
@@ -1598,7 +1598,7 @@ mod tests {
 
     #[test]
     fn deep_staggered_builtin_stretch_chains_use_one_natural_and_one_final_traversal() {
-        use crate::layout::Alignment;
+        use crate::layout::CrossAxisAlignment;
         use crate::widgets::column::Column;
         use crate::widgets::row::Row;
         use crate::widgets::sized_box::SizedBox;
@@ -1628,13 +1628,13 @@ mod tests {
                     root = if horizontal {
                         insert(
                             &mut arena,
-                            Row::new().cross_axis_alignment(Alignment::Stretch),
+                            Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                             vec![root, sibling],
                         )
                     } else {
                         insert(
                             &mut arena,
-                            Column::new().cross_axis_alignment(Alignment::Stretch),
+                            Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                             vec![root, sibling],
                         )
                     };
@@ -1683,7 +1683,7 @@ mod tests {
 
     #[test]
     fn alternating_axis_stretch_chains_finalize_both_axes_within_budget() {
-        use crate::layout::Alignment;
+        use crate::layout::CrossAxisAlignment;
         use crate::widgets::column::Column;
         use crate::widgets::row::Row;
         use crate::widgets::sized_box::SizedBox;
@@ -1704,13 +1704,13 @@ mod tests {
                 root = if level % 2 == 0 {
                     insert(
                         &mut arena,
-                        Row::new().cross_axis_alignment(Alignment::Stretch),
+                        Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                         vec![root, sibling],
                     )
                 } else {
                     insert(
                         &mut arena,
-                        Column::new().cross_axis_alignment(Alignment::Stretch),
+                        Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                         vec![root, sibling],
                     )
                 };

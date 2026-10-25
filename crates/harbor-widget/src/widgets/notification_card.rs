@@ -3,16 +3,16 @@
 /// Caller-chosen alignment and symmetric inset within the offered bounds.
 /// Use directly in a layout, or place inside a caller-owned Portal to float.
 #[derive(Clone, Copy, Debug)]
-pub struct NotificationPlacement {
-    pub horizontal: Alignment,
-    pub vertical: Alignment,
+pub struct NotificationCardPlacement {
+    pub horizontal: PositionAlignment,
+    pub vertical: PositionAlignment,
     pub inset: f32,
 }
 
 /// Generic card dimensions in logical pixels and optional theme color overrides.
 /// Dimensions must be finite and nonnegative; `max_width` must be positive.
 #[derive(Clone, Debug)]
-pub struct NotificationStyle {
+pub struct NotificationCardStyle {
     pub foreground: Option<Color>,
     pub background: Option<Color>,
     pub max_width: f32,
@@ -23,7 +23,7 @@ pub struct NotificationStyle {
     pub close_width: f32,
 }
 
-impl Default for NotificationStyle {
+impl Default for NotificationCardStyle {
     fn default() -> Self {
         Self {
             foreground: None,
@@ -37,7 +37,67 @@ impl Default for NotificationStyle {
         }
     }
 }
-struct Position(NotificationPlacement);
+/// A raw notification style field violated its scalar or color domain.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NotificationCardStyleError {
+    Scalar(crate::LayoutConfigError),
+    MaxWidth(f32),
+    Color(crate::theme::ColorConfigError),
+}
+
+impl std::fmt::Display for NotificationCardStyleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scalar(error) => error.fmt(f),
+            Self::MaxWidth(value) => write!(
+                f,
+                "NotificationCardStyle.max_width must be finite and strictly positive; got {value}"
+            ),
+            Self::Color(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for NotificationCardStyleError {}
+
+impl NotificationCardStyle {
+    /// Validates raw fields, not sums that depend on actual layout.
+    pub fn validate(&self) -> Result<(), NotificationCardStyleError> {
+        use NotificationCardStyleError as Error;
+        for (field, value) in [
+            ("NotificationCardStyle.corner_radius", self.corner_radius),
+            (
+                "NotificationCardStyle.horizontal_padding",
+                self.horizontal_padding,
+            ),
+            ("NotificationCardStyle.header_height", self.header_height),
+            ("NotificationCardStyle.bottom_padding", self.bottom_padding),
+            ("NotificationCardStyle.close_width", self.close_width),
+        ] {
+            crate::layout::configuration::validate_scalar(field, value).map_err(Error::Scalar)?;
+        }
+        if !self.max_width.is_finite() || self.max_width <= 0.0 {
+            return Err(Error::MaxWidth(self.max_width));
+        }
+        for (field, color) in [
+            ("NotificationCardStyle.foreground", self.foreground),
+            ("NotificationCardStyle.background", self.background),
+        ] {
+            if let Some(color) = color {
+                crate::theme::validate_color(field, color).map_err(Error::Color)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl NotificationCardPlacement {
+    pub fn validate(&self) -> Result<(), crate::LayoutConfigError> {
+        crate::layout::configuration::validate_scalar("NotificationCardPlacement.inset", self.inset)
+    }
+}
+
+struct Position(NotificationCardPlacement);
 impl AnyView for Position {
     fn hit_test(&self, _: Point, _: Rect) -> bool {
         false
@@ -78,7 +138,7 @@ use crate::effects::CursorShape;
 use crate::input::event::{PointerBoundaryKind, PointerButton, PointerPhase, UiEvent};
 use crate::input::event_ctx::{EventCtx, EventHandled};
 use crate::layout::{
-    Alignment, BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size,
+    BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, PositionAlignment, Rect, Size,
 };
 use crate::scene::primitive::{Color, Primitive};
 use crate::signal::Signal;
@@ -91,29 +151,29 @@ use crate::widgets::{icon::Icon, interactive_region::InteractionState};
 /// Eligibility and dismissal state belong to the caller. No timeout or focus
 /// request is introduced. Long detail wraps and either scrolls or uses a caller-selected line cap.
 #[derive(Clone)]
-pub struct Notification {
+pub struct NotificationCard {
     message: String,
     title: Option<String>,
-    detail_color: Option<Color>,
+    detail_foreground: Option<Color>,
     max_lines: Option<usize>,
-    close_alignment: Alignment,
+    close_alignment: PositionAlignment,
     on_dismiss: Rc<dyn Fn()>,
-    style: NotificationStyle,
+    style: NotificationCardStyle,
     close_style: Option<ControlStyle>,
-    placement: Option<NotificationPlacement>,
+    placement: Option<NotificationCardPlacement>,
 }
 
-impl Notification {
+impl NotificationCard {
     /// Creates persistent content with a UI-thread-local dismissal callback.
     pub fn new(message: impl Into<String>, on_dismiss: impl Fn() + 'static) -> Self {
         Self {
             message: message.into(),
             title: None,
-            detail_color: None,
+            detail_foreground: None,
             max_lines: None,
-            close_alignment: Alignment::Center,
+            close_alignment: PositionAlignment::Center,
             on_dismiss: Rc::new(on_dismiss),
-            style: NotificationStyle::default(),
+            style: NotificationCardStyle::default(),
             close_style: None,
             placement: None,
         }
@@ -125,9 +185,14 @@ impl Notification {
         self
     }
 
-    pub fn detail_color(mut self, color: Color) -> Self {
-        self.detail_color = Some(color);
-        self
+    /// Overrides only the detail text foreground; every RGBA component must be finite.
+    pub fn detail_foreground(
+        mut self,
+        color: Color,
+    ) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("NotificationCard.detail_foreground", color)?;
+        self.detail_foreground = Some(color);
+        Ok(self)
     }
 
     /// Cap visible detail lines (at least one); overflow ends in an ellipsis instead of scrolling.
@@ -137,15 +202,19 @@ impl Notification {
     }
 
     /// Vertical alignment of the close control within the card.
-    pub fn close_alignment(mut self, alignment: Alignment) -> Self {
+    pub fn close_alignment(mut self, alignment: PositionAlignment) -> Self {
         self.close_alignment = alignment;
         self
     }
 
     /// Optional positioning within the offered bounds; does not create a Portal.
-    pub fn placement(mut self, placement: NotificationPlacement) -> Self {
+    pub fn placement(
+        mut self,
+        placement: NotificationCardPlacement,
+    ) -> Result<Self, crate::LayoutConfigError> {
+        placement.validate()?;
         self.placement = Some(placement);
-        self
+        Ok(self)
     }
 
     /// Appearance of the vector close control. It remains non-focus-stealing.
@@ -158,13 +227,17 @@ impl Notification {
         Ok(self)
     }
 
-    pub fn style(mut self, style: NotificationStyle) -> Self {
+    pub fn style(
+        mut self,
+        style: NotificationCardStyle,
+    ) -> Result<Self, NotificationCardStyleError> {
+        style.validate()?;
         self.style = style;
-        self
+        Ok(self)
     }
 }
 
-impl Component for Notification {
+impl Component for NotificationCard {
     fn build(&self, cx: &mut BuildCx) -> View {
         let pressed = cx.use_state(|| None::<u64>);
         let offset = cx.use_state(|| 0usize);
@@ -173,7 +246,7 @@ impl Component for Notification {
             Card {
                 message: self.message.clone(),
                 title: self.title.clone(),
-                detail_color: self.detail_color,
+                detail_foreground: self.detail_foreground,
                 max_lines: self.max_lines,
                 close_alignment: self.close_alignment,
                 geometry: RefCell::new(None),
@@ -210,15 +283,15 @@ impl Component for Notification {
 struct Card {
     message: String,
     title: Option<String>,
-    detail_color: Option<Color>,
+    detail_foreground: Option<Color>,
     max_lines: Option<usize>,
-    close_alignment: Alignment,
+    close_alignment: PositionAlignment,
     geometry: RefCell<Option<LabelGeometry>>,
     title_geometry: RefCell<Option<LabelGeometry>>,
     on_dismiss: Rc<dyn Fn()>,
     foreground: Color,
     background: Color,
-    style: NotificationStyle,
+    style: NotificationCardStyle,
     pressed: Signal<Option<u64>>,
     hovered: Signal<bool>,
     close_style: ControlStyle,
@@ -268,6 +341,44 @@ impl Card {
 }
 
 impl AnyView for Card {
+    fn layout(
+        &self,
+        constraints: BoxConstraints,
+        _: &mut dyn ChildMeasurer,
+        metrics: &TextMetrics,
+    ) -> Result<ParentLayout, LayoutError> {
+        constraints.validate()?;
+        // Legal raw scalars can overflow in combination. Check before subtraction
+        // or parent clamps conceal that failure, while preserving valid f32 arithmetic.
+        let text_reserve =
+            f64::from(self.style.horizontal_padding) * 2.0 + f64::from(self.style.close_width);
+        if text_reserve > f64::from(f32::MAX) {
+            return Err(LayoutError::InvalidGeometry);
+        }
+        let width = constraints.max.width.min(self.style.max_width);
+        let line_count = self.lines(width, metrics, self.max_lines).len();
+        let height = f64::from(self.style.header_height)
+            + f64::from(self.style.bottom_padding)
+            + line_count as f64 * f64::from(metrics.line_height);
+        if !height.is_finite() || height > f64::from(f32::MAX) {
+            return Err(LayoutError::InvalidGeometry);
+        }
+        let natural = Size::new(
+            width,
+            self.style.header_height
+                + self.style.bottom_padding
+                + line_count as f32 * metrics.line_height,
+        );
+        if !natural.is_valid() {
+            return Err(LayoutError::InvalidGeometry);
+        }
+        Ok(ParentLayout {
+            size: constraints.constrain(natural),
+            placements: vec![],
+            diagnostics: vec![],
+        })
+    }
+
     fn prepare_text_geometry(&self, _metrics: &TextMetrics, advance: &mut dyn FnMut(char) -> f32) {
         *self.geometry.borrow_mut() = Some(LabelGeometry::measure(&self.message, advance));
         *self.title_geometry.borrow_mut() = self
@@ -373,7 +484,7 @@ impl AnyView for Card {
                     rect.min.x + self.style.horizontal_padding,
                     rect.min.y + self.style.header_height + i as f32 * metrics.line_height,
                 ),
-                color: self.detail_color.unwrap_or(self.foreground),
+                color: self.detail_foreground.unwrap_or(self.foreground),
             });
         }
         items

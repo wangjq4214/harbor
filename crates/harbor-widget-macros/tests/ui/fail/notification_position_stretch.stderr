@@ -1,0 +1,39 @@
+error[E0308]: mismatched types
+ --> tests/ui/fail/notification_position_stretch.rs:5:21
+  |
+5 |         horizontal: CrossAxisAlignment::Stretch,
+  |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `PositionAlignment`, found `CrossAxisAlignment`
+
+error[E0308]: mismatched types
+  --> tests/ui/fail/notification_position_stretch.rs:11:19
+   |
+11 |         vertical: CrossAxisAlignment::Stretch,
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `PositionAlignment`, found `CrossAxisAlignment`
+
+error[E0308]: mismatched types
+  --> tests/ui/fail/notification_position_stretch.rs:14:62
+   |
+14 |     let _ = NotificationCard::new("", || {}).close_alignment(CrossAxisAlignment::Stretch);
+   |                                              --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `PositionAlignment`, found `CrossAxisAlignment`
+   |                                              |
+   |                                              arguments to this method are incorrect
+   |
+note: method defined here
+  --> $WORKSPACE/crates/harbor-widget/src/widgets/notification_card.rs
+   |
+   |     pub fn close_alignment(mut self, alignment: PositionAlignment) -> Self {
+   |            ^^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `PositionAlignment: From<CrossAxisAlignment>` is not satisfied
+  --> tests/ui/fail/notification_position_stretch.rs:15:90
+   |
+15 |     let _ = NotificationCard::new("", || {}).close_alignment(CrossAxisAlignment::Stretch.into());
+   |                                                                                          ^^^^ the trait `From<CrossAxisAlignment>` is not implemented for `PositionAlignment`
+   |
+   = note: required for `CrossAxisAlignment` to implement `Into<PositionAlignment>`
+
+error[E0599]: no variant, associated function, or constant named `Stretch` found for enum `PositionAlignment` in the current scope
+  --> tests/ui/fail/notification_position_stretch.rs:16:32
+   |
+16 |     let _ = PositionAlignment::Stretch;
+   |                                ^^^^^^^ variant, associated function, or constant not found in `PositionAlignment`

@@ -1,0 +1,5 @@
+error[E0599]: no method named `detail_color` found for struct `NotificationCard` in the current scope
+ --> tests/ui/fail/old_notification_detail_color.rs:3:52
+  |
+3 |     let _ = NotificationCard::new("detail", || {}).detail_color(Color::WHITE);
+  |                                                    ^^^^^^^^^^^^ method not found in `NotificationCard`

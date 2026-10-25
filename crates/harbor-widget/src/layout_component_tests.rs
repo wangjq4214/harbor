@@ -5,8 +5,8 @@ use crate::runtime::DEFAULT_TEXT_METRICS;
 use crate::text::TextMetrics;
 use crate::view::AnyView;
 use crate::{
-    Align, Alignment, Alignment2D, Axis, Column, Flex, FlexOptions, Insets, MainAxisAlignment,
-    Padding, Row, SizedBox,
+    Align, Alignment2D, Axis, Column, CrossAxisAlignment, Flex, FlexOptions, Insets,
+    MainAxisAlignment, Padding, Row, SizedBox,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -254,7 +254,7 @@ fn options_and_builders_share_mounted_geometry_and_diagnostics() {
     let options = FlexOptions {
         gap: 7.0,
         main_axis_alignment: MainAxisAlignment::SpaceBetween,
-        cross_axis_alignment: Alignment::Stretch,
+        cross_axis_alignment: CrossAxisAlignment::Stretch,
     };
     for axis in [Axis::Horizontal, Axis::Vertical] {
         for parent in [

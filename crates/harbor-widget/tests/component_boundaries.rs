@@ -1,8 +1,8 @@
 //! Non-terminal callers exercise the reusable presentation/extension surface.
 use harbor_widget::{
-    ActionHandler, Alignment, BuildCx, Button, Column, Component, ConstrainedBox, FocusScope, Icon,
-    KeyChord, LucideIcon, Notification, Portal, ScrollView, ShortcutMap, SizedBox, Stack, Store,
-    TextLabel, ThemeProvider, View,
+    ActionHandler, BuildCx, Button, Column, Component, ConstrainedBox, FocusScope, Icon, KeyChord,
+    LucideIcon, NotificationCard, Portal, PositionAlignment, ScrollView, ShortcutMap, SizedBox,
+    Stack, Store, TextLabel, ThemeProvider, View,
     input::{
         event::{
             Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
@@ -15,7 +15,7 @@ use harbor_widget::{
     scene::primitive::{Color, Primitive},
     text::TextMetrics,
     view::PrimitiveLeaf,
-    widgets::notification::{NotificationPlacement, NotificationStyle},
+    widgets::notification_card::{NotificationCardPlacement, NotificationCardStyle},
 };
 use std::{
     sync::{
@@ -75,8 +75,8 @@ fn pointer(runtime: &mut Runtime, position: Point, phase: PointerPhase) {
 #[test]
 fn notification_placement_style_scroll_and_dismissal_are_caller_composable() {
     for (horizontal, vertical) in [
-        (Alignment::Start, Alignment::End),
-        (Alignment::Center, Alignment::Start),
+        (PositionAlignment::Start, PositionAlignment::End),
+        (PositionAlignment::Center, PositionAlignment::Start),
     ] {
         let dismissed = Arc::new(AtomicUsize::new(0));
         let count = dismissed.clone();
@@ -88,21 +88,23 @@ fn notification_placement_style_scroll_and_dismissal_are_caller_composable() {
             .join("\n");
         runtime.set_root(
             Portal::new().child(
-                Notification::new(message, move || {
+                NotificationCard::new(message, move || {
                     count.fetch_add(1, Ordering::Relaxed);
                 })
-                .placement(NotificationPlacement {
+                .placement(NotificationCardPlacement {
                     horizontal,
                     vertical,
                     inset: 7.0,
                 })
-                .style(NotificationStyle {
+                .unwrap()
+                .style(NotificationCardStyle {
                     max_width: 180.0,
                     corner_radius: 11.0,
                     foreground: Some(Color::BLUE),
                     background: Some(Color::RED),
                     ..Default::default()
-                }),
+                })
+                .unwrap(),
             ),
         );
         runtime.update(Instant::now());
@@ -122,7 +124,7 @@ fn notification_placement_style_scroll_and_dismissal_are_caller_composable() {
         assert_eq!(rect.size().width, 180.0);
         assert_eq!(
             rect.min.x,
-            if horizontal == Alignment::Start {
+            if horizontal == PositionAlignment::Start {
                 7.0
             } else {
                 60.0
@@ -154,13 +156,15 @@ fn notification_can_be_inline_without_a_root_escape() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(400, 300, 1.0));
     runtime.set_root(
-        Column::new().push_child(Notification::new("Inline content", || {}).style(
-            NotificationStyle {
-                max_width: 140.0,
-                background: Some(Color::RED),
-                ..Default::default()
-            },
-        )),
+        Column::new().push_child(
+            NotificationCard::new("Inline content", || {})
+                .style(NotificationCardStyle {
+                    max_width: 140.0,
+                    background: Some(Color::RED),
+                    ..Default::default()
+                })
+                .unwrap(),
+        ),
     );
     runtime.update(Instant::now());
     let rect = runtime

@@ -8,7 +8,7 @@ Browse by the job you need to do. The tables describe available public APIs and 
 
 | Need | Available building blocks | Constraints |
 | --- | --- | --- |
-| Horizontal or vertical composition | `Row`, `Column`, `Flex`, `FlexOptions`, `MainAxisAlignment`, `Alignment` | Shared constrained flex engine; fallible options/gaps; [layout contract](../flex-layout.md) |
+| Horizontal or vertical composition | `Row`, `Column`, `Flex`, `FlexOptions`, `MainAxisAlignment`, `CrossAxisAlignment` | Shared constrained flex engine; fallible options/gaps; [layout contract](../flex-layout.md) |
 | Allocate flexible space | `Expanded`, `Flexible`, `FlexFit`, `Spacer` | Flex-parent relationships and bounded/unbounded constraints matter |
 | Impose size, insets or alignment | `SizedBox`, `ConstrainedBox`, `Padding`, `Align` | Logical pixels; `Align` can position overlay content without making its empty area hit-testable |
 | Layer ordinary children | `Stack` | Shared parent allocation, not a generic positioned/anchored popover engine |
@@ -32,9 +32,9 @@ Browse by the job you need to do. The tables describe available public APIs and 
 | Icon activation | `IconButton::new(icon, label)` | Icon-only; label is non-painted metadata, not proof of a native accessibility bridge |
 | Compose custom visuals with activation | `InteractiveRegion`, `InteractionState`, `ControlStyle` | Hover/press/focus/disabled/selected state and `.child_with(...)`/`.child(...)`; not a gesture-recognition suite |
 | Pointer-specific response | `MouseRegion` | Lower-level pointer hooks/cursor behavior; use an existing control when activation is the goal |
-| Transient dismissible message | `Notification` | A reusable message composition, not a global notification center, timer service or OS toast API |
+| Transient dismissible message | `NotificationCard` | A reusable message composition, not a global notification center, timer service or OS toast API |
 
-Button/IconButton `on_click`, IconButton `foreground_with`, MouseRegion `on_enter`/`on_exit` and Notification dismissal accept UI-local `Fn(...) + 'static` captures, stored with `Rc`. Use direct Signals for local UI state and Dispatcher for business intent; see [Learn](learn.md). Button and IconButton accept `.focus_handle(handle)` on their existing interactive region, without another focus wrapper.
+Button/IconButton `on_click`, IconButton `foreground_with`, MouseRegion `on_enter`/`on_exit` and NotificationCard dismissal accept UI-local `Fn(...) + 'static` captures, stored with `Rc`. Use direct Signals for local UI state and Dispatcher for business intent; see [Learn](learn.md). Button and IconButton accept `.focus_handle(handle)` on their existing interactive region, without another focus wrapper.
 
 ### Button content and appearance
 
