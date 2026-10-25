@@ -114,6 +114,7 @@ let themed = ThemeProvider::new(Theme::default())?.child(icon);
 
 // Final fallible nodes work without an intermediate unwrap:
 let box_view = view! { SizedBox::width(40.0).unwrap().background(Color::BLACK); };
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 A legal finite scalar is not a guarantee that its derived layout combinations

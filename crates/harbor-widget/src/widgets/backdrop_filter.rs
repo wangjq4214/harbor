@@ -48,12 +48,50 @@ impl EdgeRefraction {
     }
 }
 
+/// Raw tone inputs on straight RGB, validated by [`BackdropMaterial::new`].
+///
+/// The polynomial uses offset + slope * channel + quadratic * channel².
+/// Coefficients may be negative; saturation must be nonnegative.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackdropTone {
+    pub offset: f32,
+    pub slope: f32,
+    pub quadratic: f32,
+    pub saturation: f32,
+}
+
+/// Raw geometric rim intensities, validated by [`BackdropMaterial::new`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackdropRim {
+    pub highlight: f32,
+    pub shade: f32,
+}
+
 /// Opt-in background material, independent of product controls or layout.
 /// Frost mixes a wider Gaussian with the base blur: negative mix darkens,
-/// positive mix lightens. Tone is `[offset, slope, quadratic, saturation]` on
-/// straight RGB; rim is `[highlight, shade]`. All inputs must be finite.
+/// positive mix lightens. All inputs must be finite.
 /// Sigma is capped at 64dp, mix at `[-1,1]`, tone coefficients at `[-2,2]`,
 /// saturation at `[0,2]`, and rim intensities at `[0,1]`.
+///
+/// Named inputs are checked at consumption, including values changed through
+/// their public fields. Legal finite values above a cap are clamped, not errors.
+///
+/// ```
+/// use harbor_widget::{BackdropMaterial, BackdropTone, BackdropRim};
+/// let material = BackdropMaterial::new(
+///     4.0, -0.1,
+///     BackdropTone { offset: 0.0, slope: 1.0, quadratic: 0.0, saturation: 1.02 },
+///     BackdropRim { highlight: 0.30, shade: 0.22 },
+/// )?;
+/// # Ok::<(), harbor_widget::DecorationError>(())
+/// ```
+///
+/// Positional tone/rim configuration is no longer supported:
+///
+/// ```compile_fail
+/// use harbor_widget::BackdropMaterial;
+/// let _ = BackdropMaterial::new(4.0, -0.1, [0.0, 1.0, 0.0, 1.02], [0.30, 0.22]);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BackdropMaterial {
     frost: [f32; 2],
@@ -65,46 +103,47 @@ impl BackdropMaterial {
     pub fn new(
         fill_sigma: f32,
         fill_mix: f32,
-        tone: [f32; 4],
-        rim: [f32; 2],
+        tone: BackdropTone,
+        rim: BackdropRim,
     ) -> Result<Self, DecorationError> {
-        for (field, values) in [
-            ("material.frost", &[fill_sigma, fill_mix][..]),
-            ("material.tone", &tone[..]),
-            ("material.rim", &rim[..]),
+        for (field, value, nonnegative) in [
+            ("material.fill_sigma", fill_sigma, true),
+            ("material.fill_mix", fill_mix, false),
+            ("material.tone.offset", tone.offset, false),
+            ("material.tone.slope", tone.slope, false),
+            ("material.tone.quadratic", tone.quadratic, false),
+            ("material.tone.saturation", tone.saturation, true),
+            ("material.rim.highlight", rim.highlight, true),
+            ("material.rim.shade", rim.shade, true),
         ] {
-            if values.iter().any(|v| !v.is_finite()) {
+            if !value.is_finite() {
                 return Err(DecorationError::NonFinite { field });
             }
-        }
-        for (field, value) in [
-            ("material.sigma", fill_sigma),
-            ("material.saturation", tone[3]),
-            ("material.highlight", rim[0]),
-            ("material.shade", rim[1]),
-        ] {
-            if value < 0.0 {
+            if nonnegative && value < 0.0 {
                 return Err(DecorationError::Negative { field });
             }
         }
         Ok(Self {
             frost: [fill_sigma.min(64.0), fill_mix.clamp(-1.0, 1.0)],
             tone: [
-                tone[0].clamp(-2.0, 2.0),
-                tone[1].clamp(-2.0, 2.0),
-                tone[2].clamp(-2.0, 2.0),
-                tone[3].min(2.0),
+                tone.offset.clamp(-2.0, 2.0),
+                tone.slope.clamp(-2.0, 2.0),
+                tone.quadratic.clamp(-2.0, 2.0),
+                tone.saturation.min(2.0),
             ],
-            rim: [rim[0].min(1.0), rim[1].min(1.0)],
+            rim: [rim.highlight.min(1.0), rim.shade.min(1.0)],
         })
     }
 
+    /// Effective fill sigma and mix, in renderer packing order.
     pub fn frost(self) -> [f32; 2] {
         self.frost
     }
+    /// Effective offset, slope, quadratic and saturation, in renderer packing order.
     pub fn tone(self) -> [f32; 4] {
         self.tone
     }
+    /// Effective highlight and shade, in renderer packing order.
     pub fn rim(self) -> [f32; 2] {
         self.rim
     }
@@ -247,26 +286,19 @@ mod tests {
 
     #[test]
     fn material_is_validated_bounded_and_opt_in_without_layout_or_hit_changes() {
-        let identity = [0.0, 1.0, 0.0, 1.0];
-        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert!(BackdropMaterial::new(invalid, 0.0, identity, [0.0; 2]).is_err());
-            assert!(BackdropMaterial::new(1.0, invalid, identity, [0.0; 2]).is_err());
-            for index in 0..4 {
-                let mut tone = identity;
-                tone[index] = invalid;
-                assert!(BackdropMaterial::new(1.0, 0.0, tone, [0.0; 2]).is_err());
-            }
-            assert!(BackdropMaterial::new(1.0, 0.0, identity, [invalid, 0.0]).is_err());
-            assert!(BackdropMaterial::new(1.0, 0.0, identity, [0.0, invalid]).is_err());
-        }
-        assert!(BackdropMaterial::new(-1.0, 0.0, identity, [0.0; 2]).is_err());
-        assert!(BackdropMaterial::new(1.0, 0.0, identity, [-1.0, 0.0]).is_err());
-        assert!(BackdropMaterial::new(1.0, 0.0, [0.0, 1.0, 0.0, -1.0], [0.0; 2]).is_err());
         let bounded = BackdropMaterial::new(
             f32::MAX,
             -f32::MAX,
-            [f32::MAX, -f32::MAX, f32::MAX, f32::MAX],
-            [f32::MAX; 2],
+            BackdropTone {
+                offset: f32::MAX,
+                slope: -f32::MAX,
+                quadratic: f32::MAX,
+                saturation: f32::MAX,
+            },
+            BackdropRim {
+                highlight: f32::MAX,
+                shade: f32::MAX,
+            },
         )
         .unwrap();
         assert_eq!(bounded.frost(), [64.0, -1.0]);

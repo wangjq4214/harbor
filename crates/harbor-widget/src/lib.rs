@@ -50,7 +50,9 @@ pub use layout::{Alignment, Alignment2D, FlexFit, Insets, LayoutConfigError, Pos
 pub use theme::{
     AppearanceError, ColorConfigError, ControlColors, ControlStyle, ControlVisualState, Theme,
 };
-pub use widgets::backdrop_filter::{BackdropFilter, BackdropMaterial, EdgeRefraction};
+pub use widgets::backdrop_filter::{
+    BackdropFilter, BackdropMaterial, BackdropRim, BackdropTone, EdgeRefraction,
+};
 pub use widgets::decorated_box::DecoratedBox;
 pub use widgets::{
     ActionOutcome, Actions, Axis, Button, CONTENT_SLOT_KEY, Column, ConstrainedBox,

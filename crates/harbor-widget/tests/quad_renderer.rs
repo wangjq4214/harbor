@@ -17,7 +17,10 @@ use harbor_widget::widgets::custom_paint::CustomPaint;
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::stack::Stack;
-use harbor_widget::{Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecoratedBox};
+use harbor_widget::{
+    BackdropRim, BackdropTone, Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior,
+    DecoratedBox,
+};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -3670,7 +3673,21 @@ fn backdrop_material_tone_is_applied_in_srgb_for_both_attachment_formats() {
             b: 0.25,
             a: 1.0,
         };
-        let material = BackdropMaterial::new(0.0, 0.0, [0.1, 0.5, 0.0, 1.0], [0.0; 2]).unwrap();
+        let material = BackdropMaterial::new(
+            0.0,
+            0.0,
+            BackdropTone {
+                offset: 0.1,
+                slope: 0.5,
+                quadratic: 0.0,
+                saturation: 1.0,
+            },
+            BackdropRim {
+                highlight: 0.0,
+                shade: 0.0,
+            },
+        )
+        .unwrap();
         runtime.set_root(material_test_scene(
             gray,
             gray,
@@ -3762,8 +3779,21 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
         eprintln!("SKIP: no GPU adapter for backdrop pixel readback");
         return;
     };
-    let material =
-        harbor_widget::BackdropMaterial::new(5.0, 0.25, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+    let material = harbor_widget::BackdropMaterial::new(
+        5.0,
+        0.25,
+        BackdropTone {
+            offset: 0.0,
+            slope: 1.0,
+            quadratic: 0.0,
+            saturation: 1.0,
+        },
+        BackdropRim {
+            highlight: 0.0,
+            shade: 0.0,
+        },
+    )
+    .unwrap();
     for (displacement, material) in [(0.0, None), (1.0, None), (1.0, Some(material))] {
         let green = create_solid_pipeline_rgb(&device, 0.0, 1.0, 0.0);
         let blue = create_solid_pipeline_rgb(&device, 0.0, 0.0, 1.0);
@@ -3869,8 +3899,21 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
         eprintln!("SKIP: no GPU adapter for backdrop alpha/resize");
         return;
     };
-    let material =
-        harbor_widget::BackdropMaterial::new(5.0, 0.25, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+    let material = harbor_widget::BackdropMaterial::new(
+        5.0,
+        0.25,
+        BackdropTone {
+            offset: 0.0,
+            slope: 1.0,
+            quadratic: 0.0,
+            saturation: 1.0,
+        },
+        BackdropRim {
+            highlight: 0.0,
+            shade: 0.0,
+        },
+    )
+    .unwrap();
     for (displacement, material) in [(0.0, None), (1.0, None), (1.0, Some(material))] {
         let mut runtime = Runtime::new();
         runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
@@ -4139,7 +4182,21 @@ fn backdrop_material_nonlinear_profile_preserves_center_foreground_and_live_upda
         eprintln!("SKIP: no GPU adapter for native material profile");
         return;
     };
-    let material = BackdropMaterial::new(0.0, 0.0, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+    let material = BackdropMaterial::new(
+        0.0,
+        0.0,
+        BackdropTone {
+            offset: 0.0,
+            slope: 1.0,
+            quadratic: 0.0,
+            saturation: 1.0,
+        },
+        BackdropRim {
+            highlight: 0.0,
+            shade: 0.0,
+        },
+    )
+    .unwrap();
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     for scale in [1.0, 1.5, 2.0] {
@@ -4228,10 +4285,38 @@ fn backdrop_material_rim_responds_to_normals_and_tone_preserves_transparent_alph
                 runtime.update(Instant::now());
                 encode_filter_frame(&device, &queue, &mut runtime, viewport.clone())
             };
-            let identity = [0.0, 1.0, 0.0, 1.0];
-            let base = render(identity, [0.0; 2]);
-            let toned = render([0.1, 0.8, -0.1, 1.05], [0.0; 2]);
-            let rim = render(identity, [0.7, 0.6]);
+            let identity = BackdropTone {
+                offset: 0.0,
+                slope: 1.0,
+                quadratic: 0.0,
+                saturation: 1.0,
+            };
+            let base = render(
+                identity,
+                BackdropRim {
+                    highlight: 0.0,
+                    shade: 0.0,
+                },
+            );
+            let toned = render(
+                BackdropTone {
+                    offset: 0.1,
+                    slope: 0.8,
+                    quadratic: -0.1,
+                    saturation: 1.05,
+                },
+                BackdropRim {
+                    highlight: 0.0,
+                    shade: 0.0,
+                },
+            );
+            let rim = render(
+                identity,
+                BackdropRim {
+                    highlight: 0.7,
+                    shade: 0.6,
+                },
+            );
             let at =
                 |data: &[u8], x: f32, y: f32| bgra(data, (x * scale) as u32, (y * scale) as u32);
             assert_eq!(at(&toned, 16.0, 16.0)[3], at(&base, 16.0, 16.0)[3]);
@@ -4278,7 +4363,21 @@ fn backdrop_material_broad_frost_blurs_both_axes_and_releases_when_disabled() {
     let viewport = Viewport::new(32, 32, 1.0);
     runtime.set_viewport(viewport.clone());
     let mut render = |mix| {
-        let material = BackdropMaterial::new(5.0, mix, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+        let material = BackdropMaterial::new(
+            5.0,
+            mix,
+            BackdropTone {
+                offset: 0.0,
+                slope: 1.0,
+                quadratic: 0.0,
+                saturation: 1.0,
+            },
+            BackdropRim {
+                highlight: 0.0,
+                shade: 0.0,
+            },
+        )
+        .unwrap();
         let root = Stack::new()
             .push_child(
                 SizedBox::new(Size::new(32.0, 32.0))

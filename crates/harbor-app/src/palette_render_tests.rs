@@ -332,3 +332,107 @@ fn search_button_hover_pixels_are_visible_local_and_revert_at_multiple_dpi() {
         }
     }
 }
+
+#[test]
+#[ignore = "GPU pixel acceptance; run explicitly with --ignored --nocapture"]
+fn notification_material_pixels_are_local_rounded_and_retained_at_multiple_dpi() {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    if std::env::var("HARBOR_TEST_BACKEND").as_deref() == Ok("dx12") {
+        descriptor.backends = wgpu::Backends::DX12;
+    }
+    let instance = wgpu::Instance::new(descriptor);
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+        .expect("a GPU adapter is required for notification pixel acceptance");
+    eprintln!("notification pixel adapter: {:?}", adapter.get_info());
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    for scale in [1.0, 1.5, 2.0] {
+        for format in [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        ] {
+            let mut runtime = Runtime::new();
+            let viewport = Viewport::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale);
+            runtime.set_viewport(viewport.clone());
+            runtime.init_renderer(&device, format);
+            runtime.set_root(View::leaf(TestBackdrop));
+            runtime.update(Instant::now());
+            let background = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            runtime.set_root(|cx: &mut BuildCx| {
+                Stack::new()
+                    .push_child(View::leaf(TestBackdrop))
+                    .push_child(crate::notifications::configuration_notification(
+                        "Configuration reload",
+                        "Invalid settings remain visible".into(),
+                        0.0,
+                        || {},
+                    ))
+                    .build(cx)
+            });
+            runtime.update(Instant::now());
+            let panel = runtime
+                .pending_delta()
+                .unwrap()
+                .added
+                .iter()
+                .find_map(|item| match item.primitive {
+                    Primitive::BackdropMaterial { rect, material, .. } => {
+                        assert_eq!(
+                            Some(material),
+                            crate::appearance::GlassAppearance::default().material
+                        );
+                        Some(rect)
+                    }
+                    _ => None,
+                })
+                .expect("the actual notification must consume the shared material");
+            let actual = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            let mut changed_inside = 0;
+            for (index, (before, after)) in background
+                .chunks_exact(4)
+                .zip(actual.chunks_exact(4))
+                .enumerate()
+            {
+                let x = (index as u32 % viewport.physical_size.0) as f32 / scale;
+                let y = (index as u32 / viewport.physical_size.0) as f32 / scale;
+                let edge = 1.0 / scale;
+                if x < panel.min.x - edge
+                    || x > panel.max.x + edge
+                    || y < panel.min.y - edge
+                    || y > panel.max.y + edge
+                {
+                    assert_eq!(
+                        before, after,
+                        "notification must not filter outside its bounds"
+                    );
+                } else if before != after {
+                    changed_inside += 1;
+                }
+            }
+            assert!(
+                changed_inside > (1000.0 * scale * scale) as usize,
+                "the actual notification must visibly filter/fill the sampled background"
+            );
+            let pixel = |data: &[u8], x: f32, y: f32| {
+                let offset = (((y * scale) as u32 * viewport.physical_size.0 + (x * scale) as u32)
+                    * 4) as usize;
+                data[offset..offset + 4].to_vec()
+            };
+            assert_eq!(
+                pixel(&actual, panel.min.x, panel.min.y),
+                pixel(&background, panel.min.x, panel.min.y),
+                "rounded corner must expose the original background"
+            );
+            assert_ne!(
+                pixel(&actual, panel.min.x + 20.0, panel.min.y + 1.0),
+                pixel(&background, panel.min.x + 20.0, panel.min.y + 1.0),
+                "the geometric rim must remain visible"
+            );
+            assert_eq!(
+                actual,
+                render(&device, &queue, &mut runtime, viewport.clone(), format),
+                "unchanged retained notification must reproduce the same pixels"
+            );
+        }
+    }
+}

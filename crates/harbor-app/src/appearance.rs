@@ -1,7 +1,8 @@
 //! Product appearance recipes. Generic paint/filter mechanisms live in harbor-widget.
 use harbor_widget::{
-    BackdropFilter, BackdropMaterial, Border, BorderRadius, BoxDecoration, ClipBehavior,
-    DecoratedBox, EdgeRefraction, GradientStop, InteractionState, LinearGradient, Paint,
+    BackdropFilter, BackdropMaterial, BackdropRim, BackdropTone, Border, BorderRadius,
+    BoxDecoration, ClipBehavior, DecoratedBox, EdgeRefraction, GradientStop, InteractionState,
+    LinearGradient, Paint,
     layout::Point,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -91,13 +92,16 @@ impl Default for GlassAppearance {
                 BackdropMaterial::new(
                     21.8,
                     -0.25,
-                    [
-                        0.105 * 0.35,
-                        1.0 + (0.83 - 1.0) * 0.35,
-                        -0.2091 * 0.35,
-                        1.0648,
-                    ],
-                    [0.30, 0.22],
+                    BackdropTone {
+                        offset: 0.105 * 0.35,
+                        slope: 1.0 + (0.83 - 1.0) * 0.35,
+                        quadratic: -0.2091 * 0.35,
+                        saturation: 1.0648,
+                    },
+                    BackdropRim {
+                        highlight: 0.30,
+                        shade: 0.22,
+                    },
                 )
                 .unwrap(),
             ),
@@ -153,7 +157,21 @@ impl GlassAppearance {
             blur_sigma: 2.0,
             refraction: EdgeRefraction::new(6.0, 2.0).unwrap(),
             material: Some(
-                BackdropMaterial::new(4.0, -0.1, [0.0, 1.0, 0.0, 1.02], [0.30, 0.22]).unwrap(),
+                BackdropMaterial::new(
+                    4.0,
+                    -0.1,
+                    BackdropTone {
+                        offset: 0.0,
+                        slope: 1.0,
+                        quadratic: 0.0,
+                        saturation: 1.02,
+                    },
+                    BackdropRim {
+                        highlight: 0.30,
+                        shade: 0.22,
+                    },
+                )
+                .unwrap(),
             ),
             radius: BorderRadius::all(12.0).unwrap(),
             // Row content is inset and already scroll-clipped. Another rounded
@@ -207,6 +225,49 @@ mod tests {
         ConstrainedBox, renderer::Viewport, runtime::Runtime, scene::primitive::Primitive,
     };
     use std::time::Instant;
+
+    #[test]
+    fn named_material_migration_preserves_panel_and_row_recipes() {
+        let shared = GlassAppearance::default();
+        let material = shared.material.unwrap();
+        assert_eq!(shared.blur_sigma, 8.0);
+        assert_eq!(shared.refraction, EdgeRefraction::new(12.0, 10.0).unwrap());
+        assert_eq!(material.frost(), [21.8, -0.25]);
+        assert_eq!(
+            material.tone(),
+            [
+                0.105 * 0.35,
+                1.0 + (0.83 - 1.0) * 0.35,
+                -0.2091 * 0.35,
+                1.0648,
+            ]
+        );
+        assert_eq!(material.rim(), [0.30, 0.22]);
+        assert_eq!(GlassAppearance::command_palette().material, shared.material);
+        for state in [
+            InteractionState {
+                hovered: true,
+                ..Default::default()
+            },
+            InteractionState {
+                pressed: true,
+                ..Default::default()
+            },
+            InteractionState {
+                selected: true,
+                ..Default::default()
+            },
+        ] {
+            let row = GlassAppearance::command_palette_row(Color::WHITE, state).unwrap();
+            let material = row.material.unwrap();
+            assert_eq!(row.blur_sigma, 2.0);
+            assert_eq!(row.refraction, EdgeRefraction::new(6.0, 2.0).unwrap());
+            assert_eq!(material.frost(), [4.0, -0.1]);
+            assert_eq!(material.tone(), [0.0, 1.0, 0.0, 1.02]);
+            assert_eq!(material.rim(), [0.30, 0.22]);
+        }
+        assert!(GlassAppearance::command_palette_row(Color::WHITE, Default::default()).is_none());
+    }
 
     #[test]
     fn palette_overrides_only_the_editor_surface() {

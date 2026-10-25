@@ -174,6 +174,33 @@ fn main() {
 
 The sample constructs descriptions only; it does not render a screenshot. A real host must encode through `Runtime::encode_frame` (the winit host already does) to sample the actual previously painted background, including embedded terminal draws. Uniform backgrounds naturally show less blur/refraction detail. Foreground text stays sharp; the filter is not a snapshot texture and does not move hit-test geometry.
 
+### Optional named material inputs
+
+To opt into frost/tone and a geometric rim, attach a material to the filter:
+
+```rust
+use harbor_widget::{BackdropMaterial, BackdropRim, BackdropTone};
+
+let material = BackdropMaterial::new(
+    4.0, -0.1,
+    BackdropTone { offset: 0.0, slope: 1.0, quadratic: 0.0, saturation: 1.02 },
+    BackdropRim { highlight: 0.30, shade: 0.22 },
+).expect("finite material inputs");
+// filter.material(Some(material)); use None for the original blur/refraction path.
+```
+
+These are illustrative values, not a library product preset. Tone and rim take named
+structs, not positional arrays. Every field is checked by `BackdropMaterial::new`,
+returning a recoverable `Result` with the actual invalid field and rule.
+All inputs must be finite; sigma, saturation and rim must also be nonnegative.
+Negative mix and tone coefficients remain legal. Valid inputs keep their caps:
+fill/blur sigma 64dp, mix [-1,1], coefficients [-2,2], saturation 2, rim 1;
+refraction width/displacement retain 64dp/32dp caps. Above-cap finite values
+are clamped rather than rejected. No default material is implicitly enabled.
+The read-only `frost()/tone()/rim()` arrays report effective renderer packing;
+they are not positional configuration entry points. Application-owned recipes,
+background sampling, foreground, layout and hit bounds do not change.
+
 Keep filter shape and child decoration/clipping choices explicit: filter radius does not automatically clip all child content. For a different composition, `Border::with_paint` can use the same `Paint` abstraction for a gradient stroke. No new glass-specific component or whole-window Acrylic setting is needed.
 
 For an interactive overlay, retain focus handles, request initial focus deliberately, and decide dismissal/restoration policy. `FocusScope::modal(true)` supplies an in-runtime routing mechanism, not a general dialog product or a cross-window input gate. Harbor's native paste confirmation remains a separate application-owned window decision.

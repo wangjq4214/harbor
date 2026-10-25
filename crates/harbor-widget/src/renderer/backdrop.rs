@@ -618,8 +618,16 @@ mod tests {
                 material: crate::BackdropMaterial::new(
                     10.0,
                     -0.3,
-                    [0.0, 1.0, 0.0, 1.0],
-                    [0.3, 0.2],
+                    crate::BackdropTone {
+                        offset: 0.12,
+                        slope: -0.34,
+                        quadratic: 0.56,
+                        saturation: 0.78,
+                    },
+                    crate::BackdropRim {
+                        highlight: 0.3,
+                        shade: 0.2,
+                    },
                 )
                 .unwrap(),
             },
@@ -629,7 +637,45 @@ mod tests {
             assert_eq!(r.destination.x, (100.0 * scale) as u32);
             assert_eq!(r.crop.x, (66.0 * scale) as u32);
             assert_eq!(r.params.material, [10.0 * scale, -0.3, 0.3, 0.2]);
+            assert_eq!(r.params.tone, [0.12, -0.34, 0.56, 0.78]);
             assert_eq!(r.params.settings, [2.0 * scale, scale, 5.0, 4.0]);
+            assert_eq!(r.params.clip_meta[3], 1);
+        }
+    }
+
+    #[test]
+    fn capped_named_material_is_packed_at_the_renderer_boundary() {
+        let item = SceneItem {
+            id: 1,
+            paint_order: 0,
+            clips: vec![],
+            primitive: Primitive::BackdropMaterial {
+                rect: Rect::from_min_size(Point::new(200.0, 200.0), Size::new(200.0, 200.0)),
+                sigma: 64.0,
+                corner_radii: [12.0; 4],
+                refraction: crate::EdgeRefraction::new(f32::MAX, f32::MAX).unwrap(),
+                material: crate::BackdropMaterial::new(
+                    f32::MAX,
+                    -f32::MAX,
+                    crate::BackdropTone {
+                        offset: -f32::MAX,
+                        slope: f32::MAX,
+                        quadratic: -f32::MAX,
+                        saturation: f32::MAX,
+                    },
+                    crate::BackdropRim {
+                        highlight: f32::MAX,
+                        shade: f32::MAX,
+                    },
+                )
+                .unwrap(),
+            },
+        };
+        for scale in [1.0, 1.5, 2.0] {
+            let r = Region::new(&item, &Viewport::new(1000, 1000, scale)).unwrap();
+            assert_eq!(r.params.material, [64.0 * scale, -1.0, 1.0, 1.0]);
+            assert_eq!(r.params.tone, [-2.0, 2.0, -2.0, 2.0]);
+            assert_eq!(r.params.settings, [64.0 * scale, scale, 64.0, 32.0]);
             assert_eq!(r.params.clip_meta[3], 1);
         }
     }
