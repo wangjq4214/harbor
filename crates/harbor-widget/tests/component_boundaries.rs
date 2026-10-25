@@ -38,7 +38,7 @@ fn generic_controls_and_actions_need_no_application_models() {
         harbor_widget::view! { ThemeProvider::new(harbor_widget::Theme::default()) => {
                 FocusScope::new() => {
                     Actions::handler(move |value: u8| { action.dispatch(value); harbor_widget::ActionOutcome::Consumed }) => {
-                        Shortcuts::empty().bind(KeyChord { key: Key::F6, modifiers: Modifiers::default() }, 7u8) => {
+                        Shortcuts::empty().bind(KeyChord::new(Key::F6, Modifiers::default()), 7u8) => {
                             Column::new() => {
                                 Button::text("Test content");
                                 Icon::new(LucideIcon::Plus);

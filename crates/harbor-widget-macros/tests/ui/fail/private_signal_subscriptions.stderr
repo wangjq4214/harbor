@@ -1,0 +1,21 @@
+error[E0624]: method `subscribe` is private
+ --> tests/ui/fail/private_signal_subscriptions.rs:4:12
+  |
+4 |     signal.subscribe(fiber);
+  |            ^^^^^^^^^ private method
+  |
+ ::: $WORKSPACE/crates/harbor-widget/src/signal.rs
+  |
+  |     pub(crate) fn subscribe(&self, id: FiberId) {
+  |     ------------------------------------------- private method defined here
+
+error[E0624]: method `unsubscribe` is private
+ --> tests/ui/fail/private_signal_subscriptions.rs:5:12
+  |
+5 |     signal.unsubscribe(fiber);
+  |            ^^^^^^^^^^^ private method
+  |
+ ::: $WORKSPACE/crates/harbor-widget/src/signal.rs
+  |
+  |     pub(crate) fn unsubscribe(&self, id: FiberId) {
+  |     --------------------------------------------- private method defined here

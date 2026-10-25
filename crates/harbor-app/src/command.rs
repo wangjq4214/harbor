@@ -725,6 +725,11 @@ mod tests {
                 vec![binding(&["ctrl"], "n"), binding(&["ctrl"], "n")],
             )]),
             raw(vec![("app.new-tab", vec![binding(&["ctrl"], "w")])]),
+            raw(vec![(
+                "app.new-tab",
+                vec![binding(&["ctrl"], "n"), binding(&["ctrl"], "N")],
+            )]),
+            raw(vec![("app.new-tab", vec![binding(&["ctrl"], "W")])]),
         ];
 
         for overrides in cases {

@@ -1,0 +1,9 @@
+error[E0451]: fields `key` and `modifiers` of struct `KeyChord` are private
+ --> tests/ui/fail/key_chord_literal.rs:8:9
+  |
+7 |     let _ = KeyChord {
+  |             -------- in this type
+8 |         key: Key::Character('A'),
+  |         ^^^ private field
+9 |         modifiers: Modifiers::default(),
+  |         ^^^^^^^^^ private field

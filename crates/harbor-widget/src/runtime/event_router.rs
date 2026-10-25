@@ -80,7 +80,7 @@ impl EventRouter {
     /// dropped the previous release, so stale ownership must not capture this one.
     #[cfg(feature = "winit")]
     pub(crate) fn begin_key_press(&mut self, key: Key) {
-        let key = KeyChord::new(key, Default::default()).key;
+        let key = KeyChord::new(key, Default::default()).key();
         self.consumed_shortcuts
             .retain(|shortcut| shortcut.key != key);
     }
@@ -223,7 +223,7 @@ impl EventRouter {
             }
             UiEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
                 if let Some(index) = self.consumed_shortcuts.iter().position(|shortcut| {
-                    shortcut.key == KeyChord::new(*key, Default::default()).key
+                    shortcut.key == KeyChord::new(*key, Default::default()).key()
                 }) {
                     self.consumed_shortcuts.remove(index);
                     return true;
@@ -233,7 +233,7 @@ impl EventRouter {
                 if let Some(shortcut) = self
                     .consumed_shortcuts
                     .iter()
-                    .find(|shortcut| shortcut.key == KeyChord::new(*key, Default::default()).key)
+                    .find(|shortcut| shortcut.key == KeyChord::new(*key, Default::default()).key())
                 {
                     if let Some(editor) = shortcut.editor
                         && self.focused_event_target(arena) == Some(editor)
@@ -305,7 +305,7 @@ impl EventRouter {
                     let outcome = self.invoke_action(arena, source, action.as_ref());
                     if outcome == Some(crate::widgets::actions::ActionOutcome::Consumed) {
                         self.consumed_shortcuts.push(ConsumedShortcut {
-                            key: KeyChord::new(*key, Default::default()).key,
+                            key: KeyChord::new(*key, Default::default()).key(),
                             action: Some((source, action)),
                             editor: None,
                         });
@@ -412,7 +412,7 @@ impl EventRouter {
 
     pub(crate) fn finish_event(&mut self, arena: &FiberArena, mut ctx: EventCtx) -> bool {
         if let Some((key, editor)) = ctx.take_consumed_key() {
-            let key = KeyChord::new(key, Default::default()).key;
+            let key = KeyChord::new(key, Default::default()).key();
             if !self.consumed_shortcuts.iter().any(|press| press.key == key) {
                 self.consumed_shortcuts.push(ConsumedShortcut {
                     key,

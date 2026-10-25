@@ -105,6 +105,21 @@ This is single-line plain text, not multiline, password or rich-text editing. Se
 | Typed shortcut routing | `Shortcuts<A>`, `KeyChord`, `Actions<A>`, `ActionOutcome` | Nearest compatible ancestor action handler can consume or pass through; separate from Store queues |
 | Low-level event behavior | `input::event::UiEvent`, `input::event_ctx::EventCtx` | Capture/target/bubble routing, focus/capture/paint commands |
 
+Construct chords with `KeyChord::new(key, modifiers)` and inspect them with
+`key()` / `modifiers()`; fields are private. ASCII character keys normalize to
+lowercase without changing modifiers or merging ordinary/keypad keys. Non-ASCII
+characters are unchanged. Within one `Shortcuts` instance, the first matching
+binding wins, including duplicates that differ only in ASCII case. This does not
+relax Harbor's application-level duplicate/conflict validation.
+
+`View::new` and Signal `subscribe` / `unsubscribe` are internal, not public
+construction or tracking APIs. Compose with `Component` / `IntoChildView`, widget
+child setters or `view!`, and use `.keyed(...)` for explicit identity. Extend
+primitive leaves with `View::leaf`. Track external state in a mounted build with
+`BuildCx::track` or `Store::watch`; use `BuildCx::use_state` for hook state. Reads
+alone do not subscribe, and state publication does not automatically wake a host.
+Read-only inspection through `Runtime::arena` remains available.
+
 Focus and labels do not implement Windows UIA, a semantic accessibility tree or screen-reader support. Application shortcut precedence and cross-window policy remain application-owned.
 
 ## Style a surface

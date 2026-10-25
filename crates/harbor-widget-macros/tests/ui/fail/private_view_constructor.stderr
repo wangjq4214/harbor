@@ -1,0 +1,10 @@
+error[E0624]: associated function `new` is private
+ --> tests/ui/fail/private_view_constructor.rs:4:19
+  |
+4 |     let _ = View::new(SizedBox::new(Size::ZERO).unwrap(), vec![], None);
+  |                   ^^^ private associated function
+  |
+ ::: $WORKSPACE/crates/harbor-widget/src/view.rs
+  |
+  |     pub(crate) fn new(inner: impl AnyView, children: Vec<View>, key: Option<Key>) -> Self {
+  |     ------------------------------------------------------------------------------------- private associated function defined here

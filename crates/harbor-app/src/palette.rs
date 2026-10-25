@@ -76,21 +76,21 @@ fn availability(
 }
 
 fn chord_keys(chord: KeyChord) -> Vec<String> {
-    // KeyChord's fields are normalized by the binding resolver.
+    // KeyChord guarantees normalized keys independently of the binding resolver.
     let mut parts = Vec::new();
-    if chord.modifiers.ctrl {
+    if chord.modifiers().ctrl {
         parts.push("Ctrl".to_owned());
     }
-    if chord.modifiers.shift {
+    if chord.modifiers().shift {
         parts.push("Shift".to_owned());
     }
-    if chord.modifiers.alt {
+    if chord.modifiers().alt {
         parts.push("Alt".to_owned());
     }
-    if chord.modifiers.meta {
+    if chord.modifiers().meta {
         parts.push("Win".to_owned());
     }
-    parts.push(match chord.key {
+    parts.push(match chord.key() {
         harbor_widget::input::event::Key::Character(ch) => ch.to_uppercase().to_string(),
         key => format!("{key:?}"),
     });

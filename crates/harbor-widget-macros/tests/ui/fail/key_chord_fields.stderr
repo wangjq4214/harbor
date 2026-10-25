@@ -1,0 +1,33 @@
+error[E0616]: field `key` of struct `KeyChord` is private
+ --> tests/ui/fail/key_chord_fields.rs:8:19
+  |
+8 |     let _ = chord.key;
+  |                   ^^^ private field
+  |
+help: a method `key` also exists, call it with parentheses
+  |
+8 |     let _ = chord.key();
+  |                      ++
+
+error[E0616]: field `modifiers` of struct `KeyChord` is private
+ --> tests/ui/fail/key_chord_fields.rs:9:19
+  |
+9 |     let _ = chord.modifiers;
+  |                   ^^^^^^^^^ private field
+  |
+help: a method `modifiers` also exists, call it with parentheses
+  |
+9 |     let _ = chord.modifiers();
+  |                            ++
+
+error[E0616]: field `key` of struct `KeyChord` is private
+  --> tests/ui/fail/key_chord_fields.rs:10:11
+   |
+10 |     chord.key = Key::Character('B');
+   |           ^^^ private field
+
+error[E0616]: field `modifiers` of struct `KeyChord` is private
+  --> tests/ui/fail/key_chord_fields.rs:11:11
+   |
+11 |     chord.modifiers = Modifiers::default();
+   |           ^^^^^^^^^ private field

@@ -563,6 +563,8 @@ pub(crate) enum ViewContents {
 }
 
 /// Produced by `Component::build` and consumed by the reconciliation system.
+/// Compose with [`Component`], [`crate::IntoChildView`] and widget child APIs;
+/// extend primitive content with [`View::leaf`]. Raw concrete construction is internal.
 #[derive(Clone)]
 pub struct View {
     pub(crate) contents: ViewContents,
@@ -577,10 +579,7 @@ impl View {
     }
 
     /// Creates a new View wrapping the given already-built AnyView tree.
-    // AnyView is pub(crate); private_bounds is intentional — this is the
-    // public API surface for crate-internal widget types.
-    #[allow(private_bounds)]
-    pub fn new(inner: impl AnyView, children: Vec<View>, key: Option<Key>) -> Self {
+    pub(crate) fn new(inner: impl AnyView, children: Vec<View>, key: Option<Key>) -> Self {
         View {
             contents: ViewContents::Concrete(Arc::new(inner)),
             explicit_key: key,

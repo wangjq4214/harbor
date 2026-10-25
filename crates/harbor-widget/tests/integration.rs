@@ -21,12 +21,10 @@ impl Component for Wrapper {
     fn build(&self, cx: &mut BuildCx) -> View {
         // Build the inner SizedBox using the same BuildCx
         let inner = SizedBox::new(self.inner_size).unwrap().build(cx);
-        // Wrap in a container view (using SizedBox as the container)
-        View::new(
-            SizedBox::new(Size::new(200.0, 200.0)).unwrap(),
-            vec![inner],
-            None,
-        )
+        SizedBox::new(Size::new(200.0, 200.0))
+            .unwrap()
+            .child(inner)
+            .build(cx)
     }
 }
 
@@ -205,7 +203,7 @@ fn runtimes_consume_only_their_own_signal_dirty_notifications() {
 #[test]
 fn view_key_preserved() {
     let sb = SizedBox::new(Size::new(10.0, 10.0)).unwrap();
-    let view = View::new(sb, vec![], Some(Key::new("test_key")));
+    let view = harbor_widget::ComponentExt::keyed(sb, "test_key").build(&mut BuildCx::stub());
     assert_eq!(view.key(), Some(&Key::new("test_key")));
     assert_eq!(view.widget_type(), std::any::TypeId::of::<SizedBox>());
 }

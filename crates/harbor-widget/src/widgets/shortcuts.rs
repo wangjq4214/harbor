@@ -4,13 +4,18 @@ use crate::view::{ActionProviderView, AnyView, BuildCx, Component, View};
 use std::any::Any;
 
 /// A keyboard key plus its complete modifier set.
+///
+/// Construct with [`KeyChord::new`]: ASCII character keys are normalized to
+/// lowercase, without changing modifiers or merging ordinary and keypad keys.
+/// Non-ASCII characters are preserved (no Unicode case folding).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KeyChord {
-    pub key: Key,
-    pub modifiers: Modifiers,
+    key: Key,
+    modifiers: Modifiers,
 }
 
 impl KeyChord {
+    /// Creates a normalized chord with the complete modifier set.
     pub fn new(key: Key, modifiers: Modifiers) -> Self {
         let key = match key {
             Key::Character(character) => Key::Character(character.to_ascii_lowercase()),
@@ -18,6 +23,16 @@ impl KeyChord {
             key => key,
         };
         Self { key, modifiers }
+    }
+
+    /// Returns the normalized key, preserving its ordinary/keypad variant.
+    pub const fn key(&self) -> Key {
+        self.key
+    }
+
+    /// Returns the complete, unchanged modifier set used for exact matching.
+    pub const fn modifiers(&self) -> Modifiers {
+        self.modifiers
     }
 }
 
@@ -44,6 +59,8 @@ impl<A: Clone + 'static> Shortcuts<A> {
         }
     }
 
+    /// Adds a binding. If equal normalized chords are bound more than once,
+    /// the first matching binding in this instance wins; this does not replace it.
     pub fn bind(mut self, chord: KeyChord, action: A) -> Self {
         self.bindings.push((chord, action));
         self
