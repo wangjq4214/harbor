@@ -306,29 +306,48 @@ impl NormalBuf {
         )
     }
 
+    fn evict_oldest_history_row(&mut self) {
+        debug_assert!(self.scroll_count > 0);
+        let oldest = (self.visible_start + self.total_rows - self.scroll_count) % self.total_rows;
+        let next = (oldest + 1) % self.total_rows;
+        self.history_bytes -= self.ring_source_bytes(oldest);
+        if self.row_metadata[oldest].logical_line_id == self.row_metadata[next].logical_line_id
+            && self.row_metadata[next].soft_wrapped
+        {
+            self.row_metadata[next].head_truncated = true;
+            self.touch_ring_row(next);
+        }
+        // Release evicted suffix allocations as well as removing their identity.
+        let start = oldest * self.cols;
+        self.cells[start..start + self.cols].fill(Cell::default());
+        self.cell_state[start..start + self.cols].fill(CellState::default());
+        // Even deleting independent hard lines changes the retained read/search scope.
+        self.touch_ring_row(oldest);
+        self.scroll_count -= 1;
+        self.history_start += 1;
+    }
+
     fn enforce_history_limits(&mut self) {
         while self.scroll_count > 0
             && (self.scroll_count > self.max_scrollback
                 || self.history_bytes > self.max_history_bytes)
         {
-            let oldest =
-                (self.visible_start + self.total_rows - self.scroll_count) % self.total_rows;
-            let next = (oldest + 1) % self.total_rows;
-            self.history_bytes -= self.ring_source_bytes(oldest);
-            if self.row_metadata[oldest].logical_line_id == self.row_metadata[next].logical_line_id
-                && self.row_metadata[next].soft_wrapped
-            {
-                self.row_metadata[next].head_truncated = true;
-                self.touch_ring_row(next);
-            }
-            // Release evicted suffix allocations as well as removing their identity.
-            let start = oldest * self.cols;
-            self.cells[start..start + self.cols].fill(Cell::default());
-            self.cell_state[start..start + self.cols].fill(CellState::default());
-            self.scroll_count -= 1;
-            self.history_start += 1;
+            self.evict_oldest_history_row();
         }
         self.view_offset = self.view_offset.min(self.scroll_count);
+    }
+
+    /// Erases saved rows without moving or replacing the live grid or its identities.
+    pub(crate) fn clear_scrollback(&mut self) {
+        if self.scroll_count == 0 {
+            return;
+        }
+        while self.scroll_count > 0 {
+            self.evict_oldest_history_row();
+        }
+        debug_assert_eq!(self.history_bytes, 0);
+        self.view_offset = 0;
+        self.mark_all_dirty();
     }
 
     /// Detached retention-only rebuild. Geometry and source generations do not change.

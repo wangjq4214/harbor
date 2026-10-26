@@ -1783,6 +1783,13 @@ impl Screen {
     // ── erase ──────────────────────────────────────────────────────────
 
     pub fn erase_display(&mut self, mode: usize) {
+        if mode == 3 {
+            // Saved-lines erasure is buffer-local and independent of editing margins.
+            self.cursor.clear_pending_wrap();
+            self.normal.clear_scrollback();
+            self.review_anchor = None;
+            return;
+        }
         let Screen {
             normal,
             cursor,

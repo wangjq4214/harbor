@@ -65,6 +65,38 @@ fn offsets(results: &AcceptedSearch) -> Vec<(usize, usize)> {
 }
 
 #[test]
+fn csi_3j_refreshes_search_without_erased_history_or_stale_targets() {
+    let mut t = Terminal::new_headless(1, 12);
+    t.put_str("OLD hit\r\nhit LIVE");
+    let mut gate = LiteralSearch::default();
+    let before = search(&mut gate, &t, "hit", retained(usize::MAX));
+    assert_eq!(before.ranges().len(), 2);
+    let old_target = gate.target(&t, &before, 0).unwrap();
+    let live_target = gate.target(&t, &before, 1).unwrap();
+    let version = t.content_version();
+
+    t.put_str("\x1b[3J");
+
+    assert_ne!(t.content_version(), version);
+    assert!(!t.validate_action_target(&old_target));
+    assert!(t.validate_action_target(&live_target));
+    assert!(gate.target(&t, &before, 0).is_none());
+    assert!(gate.target(&t, &before, 1).is_some());
+    assert!(matches!(
+        gate.accept(&t, before.into_results()),
+        Err(Rejection::StaleText)
+    ));
+    let after = search(&mut gate, &t, "hit", retained(usize::MAX));
+    assert_eq!(after.ranges().len(), 1);
+    assert_eq!(after.results().observed_version(), t.content_version());
+    assert!(
+        search(&mut gate, &t, "OLD", retained(usize::MAX))
+            .ranges()
+            .is_empty()
+    );
+}
+
+#[test]
 fn paged_soft_wraps_overlap_but_never_join_hard_or_blank_lines() {
     let mut t = Terminal::new_headless(4, 4);
     t.put_str("ababaX\r\naba\r\n\r\nba");

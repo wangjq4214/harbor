@@ -307,3 +307,246 @@ fn history_lost_endpoint_clears_whole_active_or_saved_selection_and_read_targets
         assert!(!t.validate_content_range(&range));
     }
 }
+
+#[test]
+fn csi_3j_clears_wrapped_ring_history_without_changing_live_screen_or_limits() {
+    let mut t = terminal(2, 8, 4, 100);
+    for _ in 0..20 {
+        t.put_str("e\u{301}界\r\n");
+    }
+    t.put_str("LIVE\r\nTAIL\x1b[45m\x1b7\x1b[?69h\x1b[3;6s\x1b[1;1H");
+    assert!(t.screen.history_start() > 0);
+    assert!(t.screen.cursor.cursor.x < t.screen.cursor.margins.left);
+    let cells: Vec<_> = t
+        .screen
+        .normal
+        .retained_rows()
+        .skip(t.screen.scroll_count())
+        .flat_map(|row| row.cells.iter().cloned())
+        .collect();
+    let cursor = (t.screen.cursor.cursor.x, t.screen.cursor.cursor.y);
+    let saved = t.screen.cursor.cursor.saved.clone().unwrap();
+    let limits = t.screen.history_limits();
+    let old_start = t.screen.history_start();
+    let count = t.screen.scroll_count();
+    assert!(count > 0);
+    let version = t.content_version();
+
+    t.put_str("\x1b[3J");
+
+    assert_eq!(t.screen.scroll_count(), 0);
+    assert_eq!(t.screen.history_content_bytes(), 0);
+    assert_eq!(t.screen.view_offset(), 0);
+    assert_eq!(t.screen.history_start(), old_start + count as u64);
+    assert_eq!(t.screen.history_limits(), limits);
+    assert_eq!(
+        t.screen
+            .normal
+            .retained_rows()
+            .flat_map(|row| row.cells.iter().cloned())
+            .collect::<Vec<_>>(),
+        cells
+    );
+    assert_eq!((t.screen.cursor.cursor.x, t.screen.cursor.cursor.y), cursor);
+    let after_saved = t.screen.cursor.cursor.saved.as_ref().unwrap();
+    assert_eq!(
+        (after_saved.cursor_x, after_saved.cursor_y),
+        (saved.cursor_x, saved.cursor_y)
+    );
+    assert_eq!(t.content_version().generation, version.generation);
+    assert!(t.content_version().revision > version.revision);
+    assert!(t.screen.normal.cell_at_generation(old_start, 0).is_none());
+    accounting(&t.screen);
+    // Current pen attributes also survive; erase is not a terminal reset.
+    t.put_str("\x1b[?69lX");
+    assert_eq!(t.screen.cell(0, 0).bg, Color::Named(5));
+}
+
+#[test]
+fn csi_3j_streams_is_idempotent_and_does_not_disable_future_history() {
+    let sequence = b"\x1b[3J";
+    for split in 0..=sequence.len() {
+        let mut t = terminal(1, 8, 4, 100);
+        t.put_str("OLD\r\nLIVE");
+        t.put_bytes(&sequence[..split]);
+        t.put_bytes(&sequence[split..]);
+        assert_eq!(t.screen.scroll_count(), 0, "split={split}");
+        assert_eq!(&t.screen.row_text(0)[..4], "LIVE");
+        let version = t.content_version();
+        t.put_bytes(sequence);
+        assert_eq!(t.content_version(), version);
+        t.put_str("\r\nNEXT");
+        assert_eq!(t.screen.scroll_count(), 1);
+        accounting(&t.screen);
+        t.resize(3, 8);
+        let text: String = t
+            .screen
+            .normal
+            .retained_rows()
+            .flat_map(|row| row.cells.iter().map(|cell| cell.ch))
+            .collect();
+        assert!(!text.contains("OLD"));
+        assert!(text.contains("LIVE"));
+        assert!(text.contains("NEXT"));
+    }
+
+    let mut empty = terminal(1, 4, 0, 0);
+    empty.put_str("ABCD");
+    assert!(empty.screen.cursor.modes.pending_wrap);
+    empty.put_bytes(sequence);
+    assert!(!empty.screen.cursor.modes.pending_wrap);
+    assert_eq!(empty.screen.cursor.cursor.x, 3);
+    assert_eq!(empty.screen.row_text(0), "ABCD");
+}
+
+#[test]
+fn csi_3j_marks_truncated_soft_line_and_invalidates_only_lost_read_evidence() {
+    use crate::read_model::{ReadBudget, ReadError, ReadScope};
+
+    let mut t = terminal(2, 4, 20, 100);
+    t.put_str("abcdefghij\x1b7");
+    assert_eq!(t.screen.scroll_count(), 1);
+    let page = t
+        .read_content(
+            ReadScope::Retained {
+                start_row: 0,
+                row_count: 3,
+            },
+            ReadBudget {
+                rows: 1,
+                ..ReadBudget::default()
+            },
+        )
+        .unwrap();
+    let lost = page.fragments[0].range(0..4).unwrap();
+    let continuation = page.continuation.as_ref().unwrap();
+    let live = t
+        .read_content(
+            ReadScope::Visible {
+                start_row: 1,
+                row_count: 1,
+            },
+            ReadBudget::default(),
+        )
+        .unwrap()
+        .fragments[0]
+        .range(0..2)
+        .unwrap();
+    let first_live = t.screen.normal.live_row_metadata(0);
+    let saved = t.screen.cursor.cursor.saved.clone().unwrap();
+
+    t.put_str("\x1b[3J");
+
+    let after = t.screen.normal.live_row_metadata(0);
+    assert!(after.head_truncated);
+    assert_eq!(after.logical_line_id, first_live.logical_line_id);
+    assert_eq!(after.logical_start, first_live.logical_start);
+    assert_eq!(after.logical_atom_start, first_live.logical_atom_start);
+    assert!(!t.validate_content_range(&lost));
+    assert!(t.validate_content_range(&live));
+    assert!(matches!(
+        t.continue_content_read(continuation, ReadBudget::default()),
+        Err(ReadError::StaleContinuation)
+    ));
+    let after_saved = t.screen.cursor.cursor.saved.as_ref().unwrap();
+    assert_eq!(
+        (after_saved.cursor_x, after_saved.cursor_y),
+        (saved.cursor_x, saved.cursor_y)
+    );
+    let after_anchor = after_saved.anchor.unwrap();
+    let before_anchor = saved.anchor.unwrap();
+    assert_eq!(after_anchor.line_id, before_anchor.line_id);
+    assert_eq!(after_anchor.offset, before_anchor.offset);
+    assert_eq!(after_anchor.affinity, before_anchor.affinity);
+    assert_eq!(t.screen.row_text(0), "efgh");
+    assert_eq!(&t.screen.row_text(1)[..2], "ij");
+}
+
+#[test]
+fn csi_3j_returns_review_to_live_and_keeps_it_live_after_same_feed_output() {
+    let mut t = terminal(2, 8, 20, 100);
+    t.put_str("OLD\r\nMID\r\nLIVE");
+    t.screen.scroll_up(1);
+    assert!(t.screen.review_anchor.is_some());
+    t.screen.clear_dirty();
+
+    t.put_str("\x1b[3J\r\nNEW");
+
+    assert_eq!(t.screen.view_offset(), 0);
+    assert!(t.screen.review_anchor.is_none());
+    assert_eq!(t.screen.scroll_count(), 1);
+    assert_eq!(&t.screen.row_text(0)[..4], "LIVE");
+    assert_eq!(&t.screen.row_text(1)[..3], "NEW");
+    assert_eq!(t.screen.dirty_rows().len(), 2);
+}
+
+#[test]
+fn csi_3j_preserves_saved_primary_and_private_3j_does_not_erase_history() {
+    for mode in [47, 1047, 1049] {
+        let mut t = terminal(2, 8, 20, 100);
+        t.put_str("OLD\r\nMID\r\nLIVE");
+        t.screen.scroll_up(1);
+        let normal = t.screen.normal.clone();
+        t.put_str("\x1b[?3J");
+        assert_eq!(t.screen.normal, normal);
+        t.put_str(&format!("\x1b[?{mode}hALT\x1b[3J"));
+        assert!(t.screen.is_alt());
+        assert_eq!(&t.screen.row_text(0)[..3], "ALT");
+        assert_eq!(t.screen.saved_primary.as_ref().unwrap().normal, normal);
+        t.put_str(&format!("\x1b[?{mode}l"));
+        assert!(!t.screen.is_alt());
+        assert_eq!(t.screen.normal, normal);
+        accounting(&t.screen);
+    }
+}
+
+#[test]
+fn csi_3j_reconciles_history_and_live_selection_endpoints() {
+    use crate::{
+        RenderViewport, TerminalEvent, TerminalPointerButton, TerminalPointerEvent,
+        TerminalPointerPhase,
+    };
+
+    // Independent hard lines and one soft line spanning history/live must agree.
+    for (cols, text, output) in [
+        (8, "OLD-END\r\nLIVE-END", "\r\nNEXT"),
+        (4, "abcdefgh", "ij"),
+    ] {
+        for selected_row in [0, 1, 2] {
+            let mut t = terminal(2, cols, 20, 100);
+            t.pointer
+                .set_viewport(RenderViewport::with_padding(10.0, 20.0, 0.0));
+            t.put_str(text);
+            let (start_y, end_y) = match selected_row {
+                0 => (1.0, 1.0),
+                1 => (21.0, 21.0),
+                _ => (1.0, 21.0), // Only the first endpoint will be evicted.
+            };
+            let end_x = (cols - 2) as f32 * 10.0 + 1.0;
+            for (phase, x, y) in [
+                (TerminalPointerPhase::Down, 1.0, start_y),
+                (TerminalPointerPhase::Move, end_x, end_y),
+                (TerminalPointerPhase::Up, end_x, end_y),
+            ] {
+                t.handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+                    (x, y),
+                    phase,
+                    TerminalPointerButton::Left,
+                    70,
+                )))
+                .unwrap();
+            }
+            assert!(t.has_non_empty_selection());
+            t.put_str(output);
+            let selected = t.selection_text();
+            t.put_str("\x1b[3J");
+            if selected_row == 1 {
+                assert!(t.has_non_empty_selection());
+                assert_eq!(t.selection_text(), selected);
+            } else {
+                assert!(!t.has_non_empty_selection());
+                assert_eq!(t.selection_text(), "");
+            }
+        }
+    }
+}
