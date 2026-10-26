@@ -1,7 +1,7 @@
 # Widget Winit Native Host Consolidation
 
 **Spec ID:** 0012
-**Status:** Implementing
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-09-13
 
 ## Requirements
@@ -66,12 +66,12 @@ First static startup creates main Window, shared GPU, Surface, Runtime and root 
 - Release-mode dynamic loading or a cross-platform HMR guarantee.
 - Introducing a general message bus, reducer framework, serialization boundary, or backend-neutral window framework.
 
-## Outstanding Acceptance
+## Historical Acceptance Qualifications
 
-Historical 0011/T0001–T0004 contracts survive in Requirements, Solution and Test Plan. Adapter-owned HMR (T0005) and duplicate-host cleanup (T0006) are implemented in source; retirement of their execution notes does not establish integrated acceptance.
+Historical aliases: 0011/T0001–T0004 = Requirements, Solution and Test Plan; T0005 = adapter-owned HMR; T0006 = duplicate-host cleanup. Owner acceptance does not supply missing execution records.
 
-Required proofs remain: old Views/Fibers, external draw/schedule registrations, pointer/focus ownership and callbacks are unreachable before the old library unloads; each valid generation installs exactly one root and redraws without recreating Window, Surface, Instance, Adapter, Device, Queue, terminals or PTYs. Repeated real Windows DLL generations must pass TypeId, duplicate-dependency, tracing, callback-lifetime and generation feasibility checks. Exercise failed builds, rapid reloads, missing startup sessions, closed proxies and application exit without deadlock or invalid activation; static/non-HMR/unsupported builds must have no active observer.
+Regression proofs: old Views/Fibers, external draw/schedule registrations, pointer/focus ownership and callbacks are unreachable before the old library unloads; each valid generation installs exactly one root and redraws without recreating Window, Surface, Instance, Adapter, Device, Queue, terminals or PTYs. Repeated real Windows DLL generations must pass TypeId, duplicate-dependency, tracing, callback-lifetime and generation feasibility checks. Exercise failed builds, rapid reloads, missing startup sessions, closed proxies and application exit without deadlock or invalid activation; static/non-HMR/unsupported builds must have no active observer.
 
-The retired T0005 explicitly lacked repeated interactive Windows watcher evidence, while T0006 checked all acceptance boxes including repeated Windows reloads without an accompanying execution record. That discrepancy remains unresolved: do not infer a runtime pass from source, checkbox state or this cleanup.
+Historical evidence discrepancy: T0005 lacked repeated interactive Windows watcher evidence, while T0006 checked repeated Windows reload acceptance without an accompanying execution record. Owner acceptance does not resolve that discrepancy or establish a runtime pass.
 
-Verify both-window lifecycle/GPU isolation, business/input/paste behavior, restart-only shared-contract changes, default/backend/debug-HMR/release build parity, idle Wait and one-redraw/one-frame behavior under the Test Plan and validation policy. No duplicate binary Window/Surface/Runtime setup, surface configuration, WinitFrameTarget assembly, frame execution, scheduler/HMR state or compatibility path solely for the superseded ownership model may remain. WinitFrameTarget must be internal or absent from the application contract; required external-draw/platform seams remain. Failures block acceptance or require explicit follow-up, not competing host paths.
+Verify both-window lifecycle/GPU isolation, business/input/paste behavior, restart-only shared-contract changes, default/backend/debug-HMR/release build parity, idle Wait and one-redraw/one-frame behavior under the Test Plan and validation policy. No duplicate binary Window/Surface/Runtime setup, surface configuration, WinitFrameTarget assembly, frame execution, scheduler/HMR state or compatibility path solely for the superseded ownership model may remain. WinitFrameTarget must be internal or absent from the application contract; required external-draw/platform seams remain. Failures require explicit follow-up, not competing host paths.

@@ -1,11 +1,11 @@
 # UI-Thread Callbacks and Control API Consistency
 
 **Spec ID:** 0036
-**Status:** Draft
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-23
 **Sources:** `UI_API_REVIEW.md` F3/P0; refinement conversation accepting retained `on_click`, disabled-by-builder/default-enabled controls, TextField/EditableText alignment, UI-local callback coverage including color/dismissal callbacks, Button/IconButton focus handles, no old editor `enabled` aliases, and simpler upper-layer calls; [ADR 0081](../adr/0081-preserve-click-naming-and-standardize-disabled-builders.md); [ADR 0082](../adr/0082-ui-thread-local-widget-callbacks.md).
 
-Selected endpoint: one F3 spec, no ticket slicing, implementation plan or production changes. This contract deliberately revises the review's proposed `on_activate`/`enabled` renaming direction. It does not claim implementation or verification has occurred.
+This contract deliberately revises the review's proposed `on_activate`/`enabled` renaming direction.
 
 ## Requirements
 
@@ -120,15 +120,13 @@ Use the existing UI-local callback model and InteractiveRegion as the behavioral
 
 - Add public-API coverage proving each R1 callback accepts non-Send/non-Sync captures; exercise direct local-Signal updates via mounted controls, not just isolated closure assignment.
 - Extend widget interaction/focus tests and relevant application workspace/tab/confirmation/notification tests for R2–R5. Retain boundary-edge, nested-close, disable-during-capture, keyboard, focus restoration, theme and lifecycle regressions.
-- Check callback replacement/removal with observable local capture lifetimes. Run supported native/HMR acceptance where available; explicitly report any unrun native, IME or old-generation teardown checks rather than counting them as passing.
-- Verify the affected widget/application/macro test suites, workspace targets, examples and documentation signatures; review upper-layer diffs for removed workarounds and retained command/host responsibilities. Reject a signature-only migration that leaves proven thread-bound scaffolding or false documentation in place.
-- No build, test or native interaction has been run as part of this refinement. Future verification results belong to implementation evidence, not inferred acceptance of this Draft.
+- Check callback replacement/removal with observable local capture lifetimes; native, IME and actual old-generation teardown evidence is distinct from mounted/headless coverage.
+- Review public API/docs examples and upper-layer changes for removed workarounds and retained command/host responsibilities. A signature-only migration leaving proven thread-bound scaffolding or false documentation does not satisfy R5.
 
 ## Out of Scope and Limitations
 
 - F4 composable Button/content-measurement refactoring, F5 layout extension helpers, and F6–F8 constructor/import, validation and named-parameter redesigns.
 - Changing the macro DSL, F1/F2 construction contracts, business reducers, event buses, host scheduling or real cross-thread ownership.
 - Renaming InteractiveRegion activation or unrelated Focus enablement APIs; implicit clone, `FnMut` callbacks or non-static borrowed closures.
-- Ticket decomposition, implementation planning and code execution in this refinement.
 
 No blocking semantic decision remains for this spec. Implementation may choose private storage/forwarding details within the fixed `Rc`, naming, focus and lifecycle contracts. The exact amount of upper-layer deletion depends on demonstrated redundancy; this contract does not authorize inventing new abstractions or changing behavior to make calls shorter.

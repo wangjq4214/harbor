@@ -1,9 +1,11 @@
 # Exclusive, Extensible Application Popups
 
 **Spec ID:** 0033
-**Status:** Draft; approved requirements; implementation exists, full native acceptance pending.
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-22
-**Sources:** The user's request to make command-palette/search popups exclusive and centrally managed without enumerating concrete popup kinds; subsequent approval of replacement, cleanup, focus, exclusions, clearing displaced search, and the spec-only refinement route. Durable direction: [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md).
+**Sources:** The user's request to make command-palette/search popups exclusive and centrally managed without enumerating concrete popup kinds; subsequent approval of replacement, cleanup, focus, exclusions and clearing displaced search. Durable direction: [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md).
+
+**Known wording discrepancy:** R5/E6 retain disabled-reason wording; [ADR 0078](../adr/0078-command-palette-disabled-items-without-reasons.md) prohibits palette reason text/tooltips.
 
 ## Requirements
 
@@ -57,8 +59,6 @@ The central lifecycle owns the single active participating popup and coordinates
 | Rendering and editing | Application composition → generic Portal/editor/focus mechanisms | Only the live participating popup and its editor lifetime | One presented interactive panel, existing clipping/layout/input behavior, no PTY leakage |
 | Excluded surfaces | Notification and native confirmation owners ↔ workspace/Host | Existing notice policy and confirmation gates | Coexistence without consuming the popup slot; unchanged no-focus-theft/security rules |
 
-Inspected integration surfaces: [workspace.rs](../../crates/harbor-app/src/workspace.rs) currently owns independent search/palette UI state and composition; [palette.rs](../../crates/harbor-app/src/palette.rs) owns palette lifetime/source validation; [search.rs](../../crates/harbor-app/src/search.rs) owns search execution/cancellation; [tab_coordinator.rs](../../src/tab_coordinator.rs) connects Host search effects and workspace publication. These identify current boundaries, not mandated final filenames or a step-by-step implementation plan.
-
 ## End-to-End Verification
 
 | ID | Given / when | Required observation |
@@ -87,18 +87,7 @@ Use state/composition and Host-routing tests to observe lifecycle cleanup, actua
 
 Where native focus, IME, clipboard or separate-window gating is involved, implementation acceptance requires Windows runtime observations in addition to headless tests. Report tested revision/dirty paths, expected versus observed results, and explicit omissions; this spec and existing tests are not fresh runtime evidence. No new latency/performance threshold is selected.
 
-## Out of Scope and Handoff
+## Out of Scope
 
-- No implementation, QA run, ticket slicing or separate implementation-plan stage in this refinement. Selected endpoint: spec only, one bounded outcome; separate tickets add no agreed coordination value.
 - No waiting queue, popup stack, suspended-search restoration, production third popup, new popup commands or changed matching/search algorithms.
 - No notification redesign, conversion of confirmation windows, editor replacement, material/geometry redesign or new crate.
-- No blocking requirement gap remains. Exact extension API/storage/naming is deliberately unspecified, not an assumption about an approved concrete implementation. New semantic choices must return to refinement.
-- Durable approval is recorded in ADR 0077; existing CONTEXT definitions need no change because no new domain term is established. This document is a contract, not a claim of implementation or acceptance.
-
-## Implementation Evidence
-
-The subsequently invoked implementation loop delivered the popup lifecycle, Host lifetime admission and generic editor IME ownership fence. On the formatted working tree based on `61961c33fb6d74c875f852e8ba8444eea4fef200`, `cargo test --workspace`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt --check`, `git diff --check`, the docs checker and the debug application build passed. This includes 181 application unit tests, 143 Host unit tests, 581 widget unit tests and nine widget text-input integration tests; existing ignored cases remain unrun. Mounted third-popup, replacement/reopening, stale FIFO/clipboard/IME and delayed-search-completion regressions cover the new lifecycle.
-
-A bounded Windows build-26300/DX12 smoke with bundled ConPTY `1.24.260710001` and isolated synthetic PowerShell output observed search results/highlights, their removal on palette opening/focus-loss cancellation, and a fresh empty search on explicit reopening. Action-scoped foreground restoration prevented capturing a sustained palette handoff. Full native Chinese IME, late clipboard, palette-to-search focus, notification coexistence and multiline confirmation remain unverified; automated coverage is not a substitute. ADR 0077 is Testing, not Completed; the spec remains Draft rather than claiming full acceptance.
-
-The extended run report is local-only at `docs/verification/exclusive-application-popups.md`, excluded by the existing verification-artifact ignore rule; raw fixtures/captures are under ignored `target/popup-smoke/`. No ignore policy was changed or bypassed. This section preserves the concise evidence without depending on those local files. The earlier spec-only restriction describes the refinement endpoint, not the later explicit execution authorization.

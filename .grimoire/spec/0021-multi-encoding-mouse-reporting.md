@@ -1,9 +1,9 @@
 # Multi-Encoding Mouse Reporting
 
 **Spec ID:** 0021
-**Status:** Implemented; native Windows acceptance pending
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-11
-**Sources:** [Issue #192](https://github.com/wangjq4214/harbor/issues/192), the user's 2026-10-11 approval of the recommended contract and Spec-only endpoint, [ADR 0055](../adr/0055-multi-encoding-mouse-reporting.md), [Terminal Protocol Context](../CONTEXT-terminal-protocol.md#vt-mouse-reporting), Protocol Checklist, and Validation Policy.
+**Sources:** [Issue #192](https://github.com/wangjq4214/harbor/issues/192), the user's 2026-10-11 approval of the recommended contract, [ADR 0055](../adr/0055-multi-encoding-mouse-reporting.md), [Terminal Protocol Context](../CONTEXT-terminal-protocol.md#vt-mouse-reporting), Protocol Checklist, and Validation Policy.
 
 ## Scope and Settled Contract
 
@@ -12,7 +12,6 @@ Applications using legacy, UTF-8, urxvt, SGR cell or SGR pixel mouse encoding mu
 The approved scope includes `?1005`, `?1015` and `?1016`. Preserve independent tracking priority `?1003 > ?1002 > ?1000`; independently retain encoding enablement with priority `?1016 > ?1006 > ?1015 > ?1005 > legacy`. Legacy encoding preserves the effective tracking mode's event semantics. Press-only `?9` is not included.
 
 This resolves the issue's ambiguous “X10 … press-only” wording: `CSI M` is the legacy wire format, not a requirement to suppress releases/motion under `1000/1002/1003`. The issue's checklist reference to section 31.2 is not mouse coverage: that section currently concerns Home/End. Relevant acceptance surfaces are 17.6, 22 and 28.1-28.4; the `?9` and press-only X10 items remain unclaimed.
-
 
 ## Requirements
 
@@ -109,7 +108,7 @@ Existing integration-test anchors include `sgr_mouse_routes_cell_coordinates_but
 
 ## Verification and Definition of Done
 
-Implemented encoding policies and automated-test anchors are described above. Native Windows legacy application and byte-probe switching, horizontal/dual-axis and pixel/DPI/local-routing scenarios remain NOT RUN. Record actual application/probe, device, OS/ConPTY versions, classic Console API versus VT-input use, geometry, expected/observed bytes and PASS/FAIL/NOT RUN/BLOCKED per scenario; an unavailable device path stays unvalidated. Run the standard quality gates. Checklist 17.6/22/28.1–28.4 may claim only evidenced scope, never press-only `?9` or unrelated Home/End work.
+Owner acceptance supersedes the former pending native Windows status; those scenarios were historically recorded as NOT RUN, not passing executions. Runtime evidence records actual application/probe, device, OS/ConPTY versions, classic Console API versus VT-input use, geometry, expected/observed bytes and individual outcomes; unavailable device paths remain unvalidated. The end-to-end scenarios remain regression criteria. Checklist 17.6/22/28.1–28.4 may claim only evidenced scope, never press-only `?9` or unrelated Home/End work.
 
 ## Out of Scope
 

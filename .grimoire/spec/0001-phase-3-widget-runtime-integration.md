@@ -1,7 +1,7 @@
 # Phase 3 Widget Runtime Integration
 
 **Spec ID:** 0001
-**Status:** Implemented
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-07-24
 
 **Architecture evolution:** The paste-safety and confirmation behavior below remains the product contract. Rendering/provider and native-host ownership subsequently evolved through Specs 0002, 0016, and 0012 and ADRs 0011 and 0031; Spec 0016 preserves the retired Spec 0005 bridge-migration boundary.

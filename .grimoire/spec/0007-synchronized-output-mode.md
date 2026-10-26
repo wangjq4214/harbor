@@ -1,7 +1,7 @@
 # Synchronized Output Mode
 
 **Spec ID:** 0007
-**Status:** In Progress
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-08-17
 
 ## Requirement
@@ -30,7 +30,7 @@ An omitted disable produces successive monotonic 100 ms recovery presents throug
 
 Drive streaming private CSI through parser, Screen, reply buffering, Terminal and bridge. Deterministic scheduler/presenter tests cover nesting/saturation, mismatched disables, DECRQM bytes, recurring recovery, cancellation, RIS/DECSTR/EOF after recovery, alternate-screen transitions, concurrent blink/autoscroll, and non-drawable/suspended surfaces.
 
-**Outstanding acceptance (historical 0007/T0004):** implementation/test source is not Windows acceptance. Check protocol checklist entries only against supported automated batch, nesting, recovery and lifecycle evidence. Exercise Vim/tmux or another emitting application and an omitted-disable case on Windows; the prior test plan identified issue #93 as the smoke blocker. Record actual results under validation policy; this cleanup does not claim that blocker resolved or the smoke/performance checks passed. Ordinary non-synchronized scheduling must remain unchanged.
+**Historical acceptance qualification (0007/T0004):** Prior implementation/test source did not establish Windows smoke or performance results; issue #93 was identified as the smoke blocker. Owner acceptance does not assert those checks ran or that the blocker was fixed. Ordinary non-synchronized scheduling must remain unchanged. Exercise Vim/tmux or another emitting application and an omitted-disable case on Windows.
 
 Historical 0007/T0001–T0003 contracts survive in Solution and the recovery case above.
 

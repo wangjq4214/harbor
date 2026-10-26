@@ -1,7 +1,7 @@
 # Deferred View Root and Content Slot Boundary
 
 **Spec ID:** 0034
-**Status:** In Progress
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-23
 **Sources:** `UI_API_REVIEW.md` finding F1/P0; [ADR 0079](../adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md) (partial supersede of [ADR 0032](../adr/0032-view-macro-rust-expression-grammar.md)); this spec revises the root/signature clauses of [spec 0010](0010-desktop-terminal-tabs-and-view-macro.md) §"Macro contract".
 
@@ -138,8 +138,7 @@ boundary and the Component/View runtime (no second description model):
   identity, or change event routing outside the region's intended hit area.
 - Evaluation-order characterization: single evaluation, sibling order, children-before-parent
   construction — re-derived and re-fixed rather than assumed unchanged.
-- Migration wave verification: `cargo build`/test across macro, widget, and application crates
-  after one-wave migration; un-migrated call sites must fail at compile time, not run.
+- Unmigrated call sites must fail at compile time, not run.
 
 ## Out of Scope
 
@@ -149,5 +148,5 @@ boundary and the Component/View runtime (no second description model):
 - Deferred build returns inside component bodies; deep chained deferral.
 - Mobile navigation, touch-first gestures, stable third-party widget DSL (spec 0010 exclusions
   carry over).
-- Implementation sequencing across [spec 0010](0010-desktop-terminal-tabs-and-view-macro.md)'s
-  U1–U5 plan; this spec fixes the contract, not the ticket order.
+
+Historical discrepancy retained: the deferred-build-return exclusion and Solution's `decompose()` rejection conflict with R7's bounded deferred-build-return requirement (and ADR 0079 D3's revision). Owner acceptance does not resolve that wording conflict.

@@ -1,15 +1,13 @@
 # Modern SGR Decorations
 
 **Spec ID:** 0018
-**Status:** Implemented (scoped modern-SGR slice)
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-09
 **Sources:** [Issue #162](https://github.com/wangjq4214/harbor/issues/162), the user-approved modern SGR refinement contract below, [ADR 0051](../adr/0051-modern-sgr-decoration-and-blank-retention-policy.md), and the approved Windows ConPTY live-primary exception in [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md).
 
 ## Scope and Settled Contract
 
 Deliver the modern SGR slice of #162 with Neovim as the first named workload: styled/colored underlines, conceal/reveal and overline. [ADR 0052](../adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md) governs the approved live-primary resize exception; unrelated work is not included.
-
-For sequencing, the user directs that all existing #162 sub-issues, currently #173 and #174, are treated as fully implemented and verified. Do not reopen their implementation or historical acceptance as prerequisites. This is the supplied prerequisite premise, not a new execution result or permission to rewrite historical evidence.
 
 The remaining OSC 4/104, mouse, box-drawing, and broader SSH/tmux capability work stays in #162 outside this delivery. Necessary SGR state/status/discovery integration belongs here; it is not a separate terminal-identity project.
 

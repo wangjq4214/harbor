@@ -1,7 +1,7 @@
 # Reusable Single-Line Text Input
 
 **Spec ID:** 0028
-**Status:** Implemented with scoped automated/native smoke evidence; final native acceptance pending.
+**Status:** Accepted (owner-confirmed)
 **Sources:** Approved complete single-line editor and search migration; [ADR 0065](../adr/0065-layered-widget-text-input.md), [0064](../adr/0064-widget-and-application-component-ownership.md), [state/action boundary](../adr/0029-widget-store-state-action-boundary.md). Flutter informs separation, not dependency/API/Material compatibility.
 
 ## Requirements
@@ -56,9 +56,8 @@ Generic acceptance/callbacks may support policy, but widgets import no MAX_QUERY
 | E10 | Terminal selection then field copy/cut/paste/focus traversal/return, switch/close and late clipboard/IME, supported root reload → local routing/no PTY leakage, restored terminal commands, no revived old session, HMR safety/state retention. |
 
 ## Evidence and Remaining Acceptance
-[Input guide](../../docs/widget-input.md) owns delivered API/index/history policies. Historical deterministic controller/runtime/workspace/native-adapter coverage and a limited Latin/selection/native-clipboard smoke do not establish final integrated acceptance; the smoke preceded final refinements. Actual controller/editor/field and search migration exist; historical original append-only limitations are not current requirements.
-Use deterministic Unicode/history/atomic-rejection tests, focus/capture/clipboard eligibility/IME sequence integration, render-advance geometry/clipping tests and the real application command path. Under validation policy, run standard fmt/clippy/workspace/doc gates and record revision/dirty scope/environment/steps/expected-observed/artifacts/exclusions/PASS/FAIL/NOT RUN/BLOCKED without payload secrets.
-Still NOT RUN on final integrated binary: Chinese native candidate/cancel/commit ordering, mixed-Unicode visual/caret, real resize/DPI/drag, supported live DLL/HMR replacement and extended field/terminal coexistence/lifecycle. Headless geometry or HMR tests do not substitute. No new performance threshold/improvement claimed; ADR Testing is not Completed. Preserve separate terminal paste/OSC authorization and old-root teardown/Host state retention.
+[Input guide](../../docs/widget-input.md) owns delivered API/index/history policies; original append-only limitations are superseded.
+Retain deterministic Unicode/history/atomic-rejection tests, focus/capture/clipboard eligibility/IME integration, rendered-advance geometry/clipping tests and the real application command path. Preserve separate terminal paste/OSC authorization and old-root teardown/Host state retention.
 
 ## Out of Scope
-Multiline/password/rich text/form validation, Flutter compatibility, new crate/bus, terminal renderer replacement, native-platform expansion or search-engine/cross-session redesign. Initial spec-only refinement was later followed by implementation authorization; no ticket decomposition required.
+Multiline/password/rich text/form validation, Flutter compatibility, new crate/bus, terminal renderer replacement, native-platform expansion or search-engine/cross-session redesign.

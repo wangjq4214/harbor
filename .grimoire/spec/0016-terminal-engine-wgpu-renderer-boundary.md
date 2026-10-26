@@ -1,10 +1,10 @@
 # Terminal Engine and wgpu Renderer Boundary
 
 **Spec ID:** 0016
-**Status:** In Progress
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-09-27
 
-**Stable execution aliases:** 0014/T0001 = core/update boundary; T0002 = PTY ownership; T0003 = renderer consumption; T0004 = application/widget migration; T0005 = final dependency/Windows/performance acceptance below. Implementation is present, not final acceptance. Baseline/final dependency graphs and one-/multi-session before/after measurements must use reproducible commands and identify environment/revision/dirty scope, without inventing a performance threshold. The delivered ownership/teardown map must match code; core-only and rendered targets must both build.
+**Stable execution aliases:** 0014/T0001 = core/update boundary; T0002 = PTY ownership; T0003 = renderer consumption; T0004 = application/widget migration; T0005 = final dependency/Windows/performance acceptance below. Owner acceptance does not assert previously unrun checks ran. Baseline/final dependency graphs and one-/multi-session before/after measurements must use reproducible commands and identify environment/revision/dirty scope, without inventing a performance threshold. The delivered ownership/teardown map must match code; core-only and rendered targets must both build.
 
 ## Sources and scope
 
@@ -37,12 +37,12 @@ The engine/session supplies coherent read-only updates to one concrete renderer;
 
 ## Test and evidence plan
 
-- Historical T0001 (GPU-Free Engine and Update Boundary) recorded intermediate core-boundary verification, a pre-migration CPU-side performance baseline, and normal/all-edge dependency graphs. These results describe intermediate revisions and CPU-side proxies, not final integrated Windows/GPU/ConPTY or post-migration performance acceptance.
-- The [session ownership and teardown map](../../docs/developer/terminal-session.md) preserves construction, endpoint, resize, failure/retry and close responsibilities. Historical T0002 was marked Done with unchecked acceptance; that does not establish lifecycle acceptance. T0003/T0004 renderer/application migration is implemented; T0005 final integrated acceptance remains unverified.
+- Historical T0001 core-boundary dependency graphs and CPU-side performance proxies describe intermediate revisions, not integrated Windows/GPU/ConPTY or post-migration performance evidence. Owner acceptance does not supply missing executions.
+- The [session ownership and teardown map](../../docs/developer/terminal-session.md) preserves construction, endpoint, resize, failure/retry and close responsibilities. Historical T0002–T0005 checkbox or implementation states do not establish lifecycle or integrated execution evidence.
 - Cover full/incremental upload, resize, DPI, palette, selection, cursor, scrollbar, preedit, wake and frame demand with focused tests; validate caller behavior and failure/teardown with integration tests during and after migration, without requiring the facade to remain in the final API.
 - Record before/after dependency graphs and one-/multi-session performance results; keep conclusions in committed summaries and raw artifacts locally or in retrievable CI.
 - Collect Windows runtime evidence for create, resize, tab switch/hide, close, renderer-init failure where reproducible, and sustained output. Record revision, dirty-tree scope, OS/ConPTY/GPU versions, expected and observed outcomes, artifacts and known exclusions; label each check PASS / FAIL / NOT RUN / BLOCKED honestly.
-- Run applicable gates: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/docs/check_docs.py`. Record any gate not run and why, alongside focused core-only build/test commands. Follow validation policy.
+- Applicable quality gates are format, clippy across all targets/features with warnings denied, workspace tests, documentation, and focused core-only builds/tests; record unrun gates honestly under validation policy.
 
 ## Out of scope
 

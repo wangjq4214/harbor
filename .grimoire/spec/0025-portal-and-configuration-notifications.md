@@ -1,7 +1,7 @@
 # Portal and Quiet Configuration Notifications
 
 **Spec ID:** 0025
-**Status:** Implementation exists; native interaction acceptance is not established by source review.
+**Status:** Accepted (owner-confirmed)
 **Sources:** [ADR 0063](../adr/0063-root-composable-escape-and-quiet-configuration-notices.md), [0023](./0023-atomic-manual-configuration-reload.md), [0024](./0024-watched-reload-and-launch-settings.md). Supersedes only their routine-success/absent-file user notices; strict acceptance, OSC, session identity, restart clipboard policy, confidentiality and compensation-failure reporting remain.
 **Notification refinement (2026-10-19):** The user selected the existing shared liquid-glass appearance, a larger top-right close control with search-button hover/press feedback, and a three-second timeout for every notice, explicitly including errors. [ADR 0071](../adr/0071-three-second-notifications-including-errors.md) overrides the former persistent-error rule.
 

@@ -1,11 +1,11 @@
 # Return-Driven Event Consumption and Commit
 
 **Spec ID:** 0039
-**Status:** Draft
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-25
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U2, F11 and F12; refinement conversation selecting return-value-controlled propagation, removal of public `stop_propagation()`, and a spec-only endpoint; [ADR 0085](../adr/0085-return-driven-event-consumption-and-unconditional-commit.md).
+**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U2, F11 and F12; refinement conversation selecting return-value-controlled propagation, removal of public `stop_propagation()`; [ADR 0085](../adr/0085-return-driven-event-consumption-and-unconditional-commit.md).
 
-This contract describes required behavior, not completed implementation or acceptance. It covers U2 only; no ticket set or implementation plan is produced.
+This contract covers U2 only.
 
 ## Requirements
 
@@ -74,12 +74,12 @@ Use the existing EventHandled return channel as the sole public consumption deci
 
 ### Source inventory
 
-These are current surfaces to preserve or migrate, not claims that they already satisfy this contract:
+This inventory records the review-time surfaces and defects, not current defect or verification claims:
 
 | Surface | Relevant current responsibility |
 | --- | --- |
 | [`input/event_ctx.rs`](../../crates/harbor-widget/src/input/event_ctx.rs), [`view.rs`](../../crates/harbor-widget/src/view.rs) | EventHandled and EventCtx public contract; PrimitiveLeaf input extension |
-| [`runtime/event_router.rs`](../../crates/harbor-widget/src/runtime/event_router.rs) | Routed phases, direct hover/focus notifications, ownership, command submission; currently discards handler returns and contains F12's short circuit |
+| [`runtime/event_router.rs`](../../crates/harbor-widget/src/runtime/event_router.rs) | Routed phases, direct hover/focus notifications, ownership, command submission; at review time discarded handler returns and contained F12's short circuit |
 | [`runtime/mod.rs`](../../crates/harbor-widget/src/runtime/mod.rs) | Public dispatch, RuntimeEffects publication and external-input drain |
 | [`widgets/interactive_region.rs`](../../crates/harbor-widget/src/widgets/interactive_region.rs), [`widgets/scroll_view.rs`](../../crates/harbor-widget/src/widgets/scroll_view.rs) | Nested activation priority versus intentional scrollbar capture interception |
 | [`widgets/editable_text.rs`](../../crates/harbor-widget/src/widgets/editable_text.rs), [`widgets/focus_scope.rs`](../../crates/harbor-widget/src/widgets/focus_scope.rs) | Editing, input lifecycle and focus navigation |
@@ -97,7 +97,7 @@ These are current surfaces to preserve or migrate, not claims that they already 
 
 ## End-to-End Tests
 
-The scenarios below require mounted Runtime dispatch, not only direct calls to a leaf method. They describe required evidence; none was executed during spec creation.
+The scenarios below require mounted Runtime dispatch, not only direct calls to a leaf method.
 
 ### E1 — External leaf consumes a nested click (R1, R2, R4)
 
@@ -162,14 +162,13 @@ The scenarios below require mounted Runtime dispatch, not only direct calls to a
 | Notification callbacks remain observations/activation reports | Confirmed refinement distinction; ADR 0085 decision 3. Void callbacks are not a reason to retain a duplicate propagation API. |
 | Consumption is local and never rolls back accumulated commands | ADR 0085 decisions 4–5; U2/F12. Keep event ownership and submission independent of the redraw boolean. |
 | Reuse the current router, not Web default-action cancellation or Flutter gesture arbitration | ADR 0085 decision 6. U2 fixes the existing model rather than replacing the input architecture. |
-| One spec, no ticket slicing or implementation in this refinement | User selected the recommended spec-only endpoint. Both outcomes share the routing/submission contract. |
 
 ## Test Plan
 
-- Characterize the relevant current routing, boundary and ownership cases before implementation changes; explicitly distinguish the F11/F12 bugs from behavior to preserve. The review's temporary probes are prior evidence, not permanent regression tests or results from this task.
+- Distinguish the review-time F11/F12 defects from behavior to preserve. The review's temporary probes are prior evidence, not permanent regression tests or results from this cleanup.
 - Require the public mounted regressions E1 and E4 in addition to internal phase traces. Direct handler-return unit tests alone cannot prove routing consumption or command submission.
 - Use the existing input_routing, component_boundaries, composable_button, interaction_focus_actions_theme, external_input, runtime_effects, scroll_view, desktop_pointer_cursors and text_input suites as relevant regression surfaces, plus runtime-local phase/ownership tests and affected application tests. This is guidance for coverage, not a claim that all currently cover the new requirements.
-- Verify affected public API/docs examples and repository application consumers compile after migration. Do not close the work by merely deleting stop calls or changing EventHandled documentation.
+- Public API/docs examples and repository consumers retain the single protocol; deleting stop calls or changing documentation alone does not establish routing correctness.
 - Preserve applicable native focus/IME and actual HMR teardown verification obligations when changed input ownership/lifecycle paths affect them; mounted/headless tests do not establish native or DLL-unload acceptance. No performance threshold or new native capability is introduced by this contract.
 
 ## Out of Scope
@@ -177,4 +176,3 @@ The scenarios below require mounted Runtime dispatch, not only direct calls to a
 - Flutter-style gesture recognition/arena arbitration or a Web-style browser default-action/preventDefault subsystem.
 - Broad widget/module renaming, callback renaming, child-protocol redesign, host/GPU error reporting or renderer API work belonging to other review units.
 - Changing application command meaning, cross-window paste policy, Store/Dispatcher reduction ownership, or established IME and key-sequence policy.
-- Implementation, test execution, ticket creation or an implementation-plan stage during this spec-only task.

@@ -1,6 +1,6 @@
 # Terminal Protocol Domain
 
-Protocol concepts belonging to Terminal. Linked ADRs define detailed validation/security policy; support and runtime acceptance require separate evidence.
+Protocol concepts belonging to Terminal. Linked ADRs define detailed validation/security policy.
 
 ### harbor-parser
 - **Definition:** Zero-dependency streaming VT/ANSI state machine consumed by harbor-terminal. Its public boundary is Parser, Params and VtHandler; accumulators and UTF-8 decoder remain private.
@@ -217,7 +217,7 @@ Protocol concepts belonging to Terminal. Linked ADRs define detailed validation/
   - depends on Terminal Widget Bridge
 
 ### VT Mouse Reporting
-- **Definition:** Independent tracking (`?1003 > ?1002 > ?1000`) and encoding (`?1016 > ?1006 > ?1015 > ?1005 > legacy`) flags: disable reveals lower priority, queries report each flag, and encoding alone enables no tracking. Legacy CSI M is not press-only ?9 (unsupported); coordinates above its 223 limit are suppressed. SGR pixels are 1-based content-relative physical coordinates preserving sub-cell precision; WheelPixel instead describes delta units. Tracked input outranks local selection/scrollback even without emitted bytes; RIS clears flags. The multi-encoding/horizontal-wheel contract is [ADR 0055](./adr/0055-multi-encoding-mouse-reporting.md); [ADR 0038](./adr/0038-prioritized-sgr-only-mouse-reporting.md) records the earlier SGR-only boundary, not the extension's acceptance.
+- **Definition:** Independent tracking (`?1003 > ?1002 > ?1000`) and encoding (`?1016 > ?1006 > ?1015 > ?1005 > legacy`) flags: disable reveals lower priority, queries report each flag, and encoding alone enables no tracking. Legacy CSI M is not press-only ?9 (unsupported); coordinates above its 223 limit are suppressed. SGR pixels are 1-based content-relative physical coordinates preserving sub-cell precision; WheelPixel instead describes delta units. Tracked input outranks local selection/scrollback even without emitted bytes; RIS clears flags. The multi-encoding/horizontal-wheel contract is [ADR 0055](./adr/0055-multi-encoding-mouse-reporting.md); [ADR 0038](./adr/0038-prioritized-sgr-only-mouse-reporting.md) records the earlier SGR-only boundary.
 - **Synonyms:** SGR Mouse Reporting, SGR mouse tracking, DECSET mouse reporting
 - **Relationships:**
   - communicates with Runtime Host
@@ -244,7 +244,7 @@ Protocol concepts belonging to Terminal. Linked ADRs define detailed validation/
   - communicates with Application Business Host
 
 ### Modern SGR Decoration Policy
-- **Definition:** Independent underline style/color; explicit underlines/overlines paint spaces, OSC 8 fallback remains non-space single underline. Conceal hides foreground/decorations, not source text, background, width or copy: presentation, never redaction/disposable capacity. SGR status reflects authoritative state; verified styled support is discoverable via Su without identity changes ([ADR 0051](./adr/0051-modern-sgr-decoration-and-blank-retention-policy.md)). Meaningful Blank/Reflow define full history/non-ConPTY retention and the scoped ConPTY live-tail exception ([ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md)). Implementation does not certify unexercised runtime/transport paths.
+- **Definition:** Independent underline style/color; explicit underlines/overlines paint spaces, OSC 8 fallback remains non-space single underline. Conceal hides foreground/decorations, not source text, background, width or copy: presentation, never redaction/disposable capacity. SGR status reflects authoritative state; verified styled support is discoverable via Su without identity changes ([ADR 0051](./adr/0051-modern-sgr-decoration-and-blank-retention-policy.md)). Meaningful Blank/Reflow define full history/non-ConPTY retention and the scoped ConPTY live-tail exception ([ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md)).
 - **Relationships:**
   - references OSC 8 Hyperlink
   - references DECRQSS

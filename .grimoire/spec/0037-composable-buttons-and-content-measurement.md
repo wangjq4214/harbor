@@ -1,11 +1,11 @@
 # Composable Buttons and Content Measurement
 
 **Spec ID:** 0037
-**Status:** Draft
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-23
 **Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) F4/P1 and its verification requirements; refinement conversation accepting the recommended target contract and the three explicit choices (breaking constructor migration, single-line ellipsis, retained InteractiveRegion style facade); [ADR 0083](../adr/0083-composable-buttons-and-shared-control-surfaces.md).
 
-Selected endpoint: one F4 spec, without ticket slicing, implementation planning or code changes. This contract records settled requirements, not implementation or acceptance. F1–F3 contracts remain applicable; their outstanding native/HMR acceptance is not closed by this specification.
+F1–F3 construction, callback and lifecycle contracts remain applicable.
 
 ## Requirements
 
@@ -135,16 +135,13 @@ Relevant baseline surfaces are `crates/harbor-widget/src/widgets/{button,icon_bu
 | Single-line built-in text with TextLabel ellipsis; custom content controls its own policy | Explicit narrow-space recommendation accepted by the user |
 | Retain InteractiveRegion style facade; no mandatory new public surface hierarchy | Explicit recommendation accepted by the user; ADR 0083 |
 | Preserve distinct theme roles, IconButton metadata/configuration and custom color ownership | Accepted target plus inspected current theme/IconButton surfaces |
-| One spec; no tickets or implementation in this refinement | User's approval of the recommended spec-only route |
 
 ## Verification and Limitations
 
 - Cover E1–E5 through public API fixtures, mounted widget/runtime interaction and layout tests, content-slot lifecycle tests, and affected application regressions. Test both ordinary custom children and state-driven content; closure compilation alone does not prove state, geometry or routing correctness.
-- Run affected widget, macro and application suites, workspace/all-target checks, examples/documentation checks and formatting/diff checks during implementation. Check that production/docs no longer use the removed constructor and that no region-specific label measurement/paint path survives.
-- Record real layout and rendered visual evidence for text-only, icon-plus-text and custom buttons across normal, hovered, pressed, selected, disabled and keyboard-focus-visible states. Include long/multilingual/narrow samples; expected measurement changes must be explained rather than hidden by old snapshot expectations.
-- Record native/IME/application focus regressions and actual supported HMR generation teardown where available. Unrun checks are explicit acceptance limitations, not passing evidence. F4 does not retroactively complete the outstanding F1/F3 native acceptance.
-- No builds, tests, native sessions or runtime acceptance have been executed as part of this specification work. Inspection, document/source comparison and Markdown/diff validation do not establish implementation correctness.
-- No unconfirmed semantic assumptions or blocking requirements decisions remain. Private composition details and numeric choices already governed by existing styles/layout are not prescribed here; a needed new behavioral, architectural or product-policy decision must return to refinement before being added to this contract.
+- Public callers and documentation must not use the removed constructor; no region-specific label measurement/paint path may survive.
+- Real layout and rendered visual evidence covers text-only, icon-plus-text and custom buttons across normal, hovered, pressed, selected, disabled and keyboard-focus-visible states, including long/multilingual/narrow samples. Explain expected measurement changes rather than hiding them in snapshots.
+- Native/IME/application focus and supported actual HMR teardown evidence remains distinct from headless coverage. Private composition details and numeric choices already governed by existing styles/layout are not new product-policy choices.
 
 ## Out of Scope
 
@@ -152,4 +149,3 @@ Relevant baseline surfaces are `crates/harbor-widget/src/widgets/{button,icon_bu
 - New universal style/foreground systems, new global event buses, copied interaction state machines, forced public surface wrappers or a Fiber per responsibility.
 - Replacing the text renderer/shaping engine, arbitrary SVG loading, terminal-font/icon-font coupling, or redesigning custom content's wrapping/color behavior.
 - Macro DSL/reconciler redesign, activation timing changes, callback thread-model changes, business reducers/effects migration or application visual-preset redesign.
-- Ticket decomposition, implementation planning, code changes and test execution in this refinement.

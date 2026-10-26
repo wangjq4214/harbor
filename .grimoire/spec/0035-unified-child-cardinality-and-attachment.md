@@ -1,11 +1,11 @@
 # Unified Child Cardinality and Attachment
 
 **Spec ID:** 0035
-**Status:** Draft
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-23
-**Sources:** `UI_API_REVIEW.md` F2/P0; refinement conversation accepting replacement/clearing semantics, construction-time dynamic errors and the single-spec endpoint; [ADR 0080](../adr/0080-unify-child-cardinality-and-replacement-semantics.md); [ADR 0032](../adr/0032-view-macro-rust-expression-grammar.md); [ADR 0079](../adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md).
+**Sources:** `UI_API_REVIEW.md` F2/P0; refinement conversation accepting replacement/clearing semantics, construction-time dynamic errors; [ADR 0080](../adr/0080-unify-child-cardinality-and-replacement-semantics.md); [ADR 0032](../adr/0032-view-macro-rust-expression-grammar.md); [ADR 0079](../adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md).
 
-This contract revises the child-attachment clauses of [spec 0010](0010-desktop-terminal-tabs-and-view-macro.md): empty blocks are valid only for child-capable parents, leaf child blocks are rejected, and attachment is replacement rather than accumulation. [Spec 0034](0034-deferred-view-root-and-content-slot-boundary.md)'s deferred root/content-slot boundaries remain applicable. This document defines accepted requirements, not completed implementation.
+This contract revises the child-attachment clauses of [spec 0010](0010-desktop-terminal-tabs-and-view-macro.md): empty blocks are valid only for child-capable parents, leaf child blocks are rejected, and attachment is replacement rather than accumulation. [Spec 0034](0034-deferred-view-root-and-content-slot-boundary.md)'s deferred root/content-slot boundaries remain applicable.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ Leaves remain valid ordinary Component/View expressions. They must not implement
 - A macro child block is one replacement operation through the same semantic protocol, not an implicit append. Existing staged content is not included in the incoming count.
 - An empty block on SingleChild or MultiChild clears existing content. An ordinary value expression with no child block does not clear or reset staged content.
 
-The following are target contract examples, not claims about the current implementation:
+The following illustrate the replacement and cardinality contract:
 
 ```rust
 // Final content is b, just like .child(a).child(b).
@@ -147,15 +147,13 @@ Both root and nested parent expressions use the same replacement semantics. Sing
 - Extend macro parser/expansion and trybuild fixtures for leaf-block rejection, static over-count, bounded conditional alternatives, public external capabilities and renamed dependencies. Check diagnostics, not merely failed compilation.
 - Exercise dynamic 0/1/2 counts via runtime-selected data, including staged slots, so static checking cannot substitute for dynamic validation tests.
 - Retain existing keyed insertion/removal/reorder, focus, theme, content-hook isolation, subscription/unmount and external-registration regression coverage; add replacement/clearing lifecycle cases.
-- Verify migrated consumers with relevant macro/widget/application tests and workspace checks. No implementation tests have been executed as part of this refinement; future unrun checks must remain explicitly reported as unrun.
 
 ## Out of Scope
 
 - Findings F3–F8: callback threading/naming, composable Button, layout extension helpers, general constructor/import cleanup, numeric validation policy and named parameter types.
 - Reworking F1's deferred descriptions, Fiber identity/materialization or content-slot lifecycle.
 - A new DSL, widget-name whitelist, `try_view!`, or Result-returning runtime construction model.
-- Ticket decomposition, an implementation plan or production-code changes in this refinement.
 
 ## Limitations
 
-Ordinary `view!` can panic for an invalid runtime-dependent child count. Compile-time checks do not require evaluating arbitrary Rust expressions or iterator lengths. Trait signatures and static-cardinality encoding remain implementation details constrained by the observable contract above, not unconfirmed behavioral assumptions. No blocking requirement decision remains open at this endpoint.
+Ordinary `view!` can panic for an invalid runtime-dependent child count. Compile-time checks do not require evaluating arbitrary Rust expressions or iterator lengths. Trait signatures and static-cardinality encoding remain implementation details constrained by the observable contract above, not unconfirmed behavioral assumptions.

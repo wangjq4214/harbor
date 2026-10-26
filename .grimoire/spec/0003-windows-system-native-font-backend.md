@@ -1,7 +1,7 @@
 # Windows System-Native Font Backend
 
 **Spec ID:** 0003
-**Status:** Implemented
+**Status:** Accepted (owner-confirmed)
 **Superseded in part:** the `HARBOR_FONT` path override is superseded by TOML `[font]` configuration in `harbor-config` (CONTEXT.md, “System Default Font Selection”); override requirements below are historical.
 **Date:** 2026-07-30
 

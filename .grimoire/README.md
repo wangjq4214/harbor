@@ -9,6 +9,10 @@ Current project knowledge and durable architectural records live here. Execution
 - [Architecture decisions](./adr/)
 - [Requirements specifications](./spec/)
 
+## Acceptance Baseline
+
+The owner confirms that all existing specifications are implemented and accepted. Specs remain regression contracts, not an active backlog. Earlier pending-verification statements in retained execution evidence are historical; owner acceptance does not assert that previously unrun tests were executed or that recorded discrepancies were independently resolved.
+
 ## Lifecycle
 
 - `CONTEXT*.md` records current project terminology.

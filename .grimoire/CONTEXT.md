@@ -1,6 +1,6 @@
 # Context
 
-Project domain concepts and terminology. Linked ADRs/specs retain detailed policy and evidence; definitions do not establish implementation or runtime acceptance.
+Project domain concepts and terminology. Linked ADRs/specs retain detailed policy and evidence.
 
 ## Domain Index
 
@@ -60,7 +60,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - implements Reusable Widget Component
 
 ### View
-- **Definition:** An immutable UI description produced by component build methods, discardable after each build pass. The selected public boundary is composition through Component/IntoChildView and application leaf extension through View::leaf; raw AnyView-plus-children construction remains internal. See [ADR 0086](./adr/0086-normalized-key-chords-and-private-runtime-control.md).
+- **Definition:** An immutable UI description produced by component build methods, discardable after each build pass. The public boundary is composition through Component/IntoChildView and application leaf extension through View::leaf; raw AnyView-plus-children construction remains internal. See [ADR 0086](./adr/0086-normalized-key-chords-and-private-runtime-control.md).
 - **Synonyms:** Widget
 
 ### Fiber
@@ -71,14 +71,14 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Retained layout, transform, clip, paint-order and hit-test geometry associated with a Fiber and consumed by the Scene Graph.
 
 ### Signal
-- **Definition:** UI-thread pull-based reactive state: writes dirty subscribed fibers rather than pushing values through the tree. Under the selected boundary, BuildCx::track/Store::watch establish external dependencies and use_state manages hook state; raw subscribe/unsubscribe are internal Runtime-owned bookkeeping, not public manual subscription capabilities. See [ADR 0086](./adr/0086-normalized-key-chords-and-private-runtime-control.md).
+- **Definition:** UI-thread pull-based reactive state: writes dirty subscribed fibers rather than pushing values through the tree. Under this boundary, BuildCx::track/Store::watch establish external dependencies and use_state manages hook state; raw subscribe/unsubscribe are internal Runtime-owned bookkeeping, not public manual subscription capabilities. See [ADR 0086](./adr/0086-normalized-key-chords-and-private-runtime-control.md).
 - **Synonyms:** State Cell
 
 ### Key
 - **Definition:** A stable identity marker used during reconciliation to match views between build passes and preserve fiber state.
 
 ### KeyChord
-- **Definition:** A shortcut value combining an input key with its complete modifier set, distinct from the reconciliation Key. The selected invariant normalizes ASCII character keys to lowercase while preserving ordinary/keypad distinction and exact modifiers, with private fields and read-only accessors. Within one `ShortcutMap` instance the first matching binding wins; application configuration still rejects duplicate chords. See [ADR 0086](./adr/0086-normalized-key-chords-and-private-runtime-control.md).
+- **Definition:** A shortcut value combining an input key with its complete modifier set, distinct from the reconciliation Key. The invariant normalizes ASCII character keys to lowercase while preserving ordinary/keypad distinction and exact modifiers, with private fields and read-only accessors. Within one `ShortcutMap` instance the first matching binding wins; application configuration still rejects duplicate chords. See [ADR 0086](./adr/0086-normalized-key-chords-and-private-runtime-control.md).
 - **Relationships:**
   - belongs to Harbor Widget Runtime
 
@@ -144,7 +144,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Synonyms:** Padding
 
 ### Widget Child Contract
-- **Definition:** The agreed construction capability classification: Leaf has no attachable slot, SingleChild has zero or one child, and MultiChild has an ordered zero-or-more child list. Setters and macro child blocks replace existing content; an empty block clears it, while explicitly named append operations preserve existing content then append in input order. Static violations fail compilation where provable; dynamic violations return ChildConstructionError in recoverable handwritten construction and panic at construction in ordinary view!. See [ADR 0080](./adr/0080-unify-child-cardinality-and-replacement-semantics.md); this is a selected contract, not completed implementation.
+- **Definition:** The agreed construction capability classification: Leaf has no attachable slot, SingleChild has zero or one child, and MultiChild has an ordered zero-or-more child list. Setters and macro child blocks replace existing content; an empty block clears it, while explicitly named append operations preserve existing content then append in input order. Static violations fail compilation where provable; dynamic violations return ChildConstructionError in recoverable handwritten construction and panic at construction in ordinary view!. See [ADR 0080](./adr/0080-unify-child-cardinality-and-replacement-semantics.md).
 - **Relationships:**
   - belongs to Harbor Widget Runtime
   - references Widget View Macro
@@ -163,7 +163,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Optional widget-owned local background displacement concentrated near edges and rounded corners, fading to zero in the center while leaving foreground and hit testing unchanged. Application-owned glass recipes choose its parameters; blur-only consumers keep existing behavior. See [ADR 0068](./adr/0068-local-backdrop-edge-refraction.md).
 
 ### Native Glass Material
-- **Definition:** Selected native Rust/wgpu adaptation of Glass-HQ/liquid-glass material algorithms over in-window content, extending widget-owned backdrop rendering while retaining application-owned presets. Edge displacement, outline-normal highlights/side shading and blur/tone processing are the material scope, not the upstream web control or motion system. [ADR 0076](./adr/0076-native-liquid-glass-material-port.md) records the direction; initial native implementation exists, while full visual acceptance remains separate.
+- **Definition:** Native Rust/wgpu adaptation of Glass-HQ/liquid-glass material algorithms over in-window content, extending widget-owned backdrop rendering while retaining application-owned presets. Edge displacement, outline-normal highlights/side shading and blur/tone processing are the material scope, not the upstream web control or motion system. [ADR 0076](./adr/0076-native-liquid-glass-material-port.md) records the direction.
 - **Relationships:**
   - extends Widget Backdrop Edge Refraction
   - depends on Widget Local Backdrop Blur
@@ -205,7 +205,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - belongs to Harbor Widget Runtime
 
 ### Notification Presentation
-- **Definition:** Reusable widget card/content and close/scroll interaction (selected U4 API names: NotificationCard, NotificationCardStyle and NotificationCardPlacement; currently Notification and related types in code, see [ADR 0087](./adr/0087-widget-api-naming-and-validation-boundaries.md)), with local pressed/scroll state; application-owned placement, appearance, eligibility, message meaning, deduplication, recovery and dismissal history. Harbor notices remain top-right, non-modal, manually dismissible, without focus theft; all Harbor floating notices, including actionable errors, automatically close after three seconds rather than remaining permanent. See [ADR 0064](./adr/0064-widget-and-application-component-ownership.md) and the lifetime override in [ADR 0071](./adr/0071-three-second-notifications-including-errors.md).
+- **Definition:** Reusable widget card/content and close/scroll interaction (NotificationCard, NotificationCardStyle and NotificationCardPlacement; formerly Notification and related types, see [ADR 0087](./adr/0087-widget-api-naming-and-validation-boundaries.md)), with local pressed/scroll state; application-owned placement, appearance, eligibility, message meaning, deduplication, recovery and dismissal history. Harbor notices remain top-right, non-modal, manually dismissible, without focus theft; all Harbor floating notices, including actionable errors, automatically close after three seconds rather than remaining permanent. See [ADR 0064](./adr/0064-widget-and-application-component-ownership.md) and the lifetime override in [ADR 0071](./adr/0071-three-second-notifications-including-errors.md).
 - **Relationships:**
   - depends on Portal
   - references Reusable Widget Component
@@ -235,7 +235,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - references Terminal Widget Bridge
 
 ### Desktop Pointer Cursor Policy
-- **Definition:** Harbor's selected desktop interaction convention chooses mouse cursor shapes by interaction meaning, not clickability: ordinary buttons (including close/new controls), tabs and menu items keep the default arrow; hyperlinks use the hand pointer; text-editing regions use the I-beam; resize and drag regions use their corresponding specialized cursors. Hover highlighting and pressed feedback communicate ordinary controls' clickability instead of a hand cursor. This records the agreed convention, not completed implementation or runtime acceptance.
+- **Definition:** Harbor's desktop interaction convention chooses mouse cursor shapes by interaction meaning, not clickability: ordinary buttons (including close/new controls), tabs and menu items keep the default arrow; hyperlinks use the hand pointer; text-editing regions use the I-beam; resize and drag regions use their corresponding specialized cursors. Hover highlighting and pressed feedback communicate ordinary controls' clickability instead of a hand cursor.
 
 ### Application-Layer Widget Hot Reload
 - **Definition:** An optional Windows debug-development capability in the `harbor-widget::winit` integration that observes reloads, tears down the active root safely, and installs a replacement application root while retaining native host infrastructure and Host-owned business state.
@@ -336,10 +336,10 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Synonyms:** Event
 
 ### EventCtx
-- **Definition:** Per-handler context accumulating deferred side-effect requests such as focus, pointer capture/release, paint invalidation and clipboard operations for submission after routing. Propagation is controlled by the handler's EventHandled result, not a public context stop operation. See [ADR 0085](./adr/0085-return-driven-event-consumption-and-unconditional-commit.md); native/lifecycle acceptance is separate from this definition.
+- **Definition:** Per-handler context accumulating deferred side-effect requests such as focus, pointer capture/release, paint invalidation and clipboard operations for submission after routing. Propagation is controlled by the handler's EventHandled result, not a public context stop operation. See [ADR 0085](./adr/0085-return-driven-event-consumption-and-unconditional-commit.md).
 
 ### EventHandled
-- **Definition:** The single public propagation-control result: Handled stops further delivery in the current event walk after the handler finishes; Ignored permits continued propagation without asserting that no side effects occurred. Consumption neither rolls back accumulated commands nor cancels separately delivered notifications or later input events. See [ADR 0085](./adr/0085-return-driven-event-consumption-and-unconditional-commit.md); this definition does not establish native/IME/HMR acceptance.
+- **Definition:** The single public propagation-control result: Handled stops further delivery in the current event walk after the handler finishes; Ignored permits continued propagation without asserting that no side effects occurred. Consumption neither rolls back accumulated commands nor cancels separately delivered notifications or later input events. See [ADR 0085](./adr/0085-return-driven-event-consumption-and-unconditional-commit.md).
 
 ### FocusScope
 - **Definition:** A widget that wraps a subtree and manages Tab/Shift+Tab focus traversal within it; supports a modal flag that blocks events from reaching widgets outside the scope.
@@ -356,11 +356,11 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Per-Runtime focused/hovered FiberId and pointer captures, separate from scheduling state.
 
 ### Event Routing
-- **Definition:** Capture → target → bubble through Fiber, using Hit Testing and InputState, plus separately delivered direct notifications. EventHandled controls propagation; accumulated side effects submit even when propagation stops or hover already requires redraw. See [ADR 0085](./adr/0085-return-driven-event-consumption-and-unconditional-commit.md); native/lifecycle acceptance remains separately tracked.
+- **Definition:** Capture → target → bubble through Fiber, using Hit Testing and InputState, plus separately delivered direct notifications. EventHandled controls propagation; accumulated side effects submit even when propagation stops or hover already requires redraw. See [ADR 0085](./adr/0085-return-driven-event-consumption-and-unconditional-commit.md).
 - **Synonyms:** Event Walk
 
 ### Button
-- **Definition:** Focusable logical-activation control with hover/pressed/focused states, also used by paste confirmation. The selected composable design provides one replaceable custom or state-driven content slot, with text and icon-plus-text conveniences; shared interaction and control-surface behavior remain distinct from TextLabel/Icon measurement and painting. InteractiveRegion retains its style composition entry point. See [ADR 0083](./adr/0083-composable-buttons-and-shared-control-surfaces.md); this records the agreed direction, not completed implementation or acceptance.
+- **Definition:** Focusable logical-activation control with hover/pressed/focused states, also used by paste confirmation. The composable design provides one replaceable custom or state-driven content slot, with text and icon-plus-text conveniences; shared interaction and control-surface behavior remain distinct from TextLabel/Icon measurement and painting. InteractiveRegion retains its style composition entry point. See [ADR 0083](./adr/0083-composable-buttons-and-shared-control-surfaces.md).
 - **Relationships:**
   - belongs to Harbor Widget Runtime
   - references Widget Child Contract
@@ -399,11 +399,11 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** A screen-row consistency rule requiring every continuation cell to have its corresponding wide-glyph base and every wide-glyph base to have an adjacent continuation cell within the row boundary.
 
 ### ExternalSurface
-- **Definition:** The selected name for the external-draw/input/IME/scheduling escape currently exposed as CustomPaint. It emits Primitive::External plus ExternalDrawId and registers a handler through BuildCx. Direct pointer focus forwards keyboard input including Tab; it is not a Tab/Shift+Tab traversal destination and Tab does not leave it. The U4 rename has no compatibility alias; it does not establish implementation. See [ADR 0087](./adr/0087-widget-api-naming-and-validation-boundaries.md).
+- **Definition:** An external-draw/input/IME/scheduling escape. It emits Primitive::External plus ExternalDrawId and registers a handler through BuildCx. Direct pointer focus forwards keyboard input including Tab; it is not a Tab/Shift+Tab traversal destination and Tab does not leave it. The U4 rename has no compatibility alias. See [ADR 0087](./adr/0087-widget-api-naming-and-validation-boundaries.md).
 - **Synonyms:** External Draw Widget, CustomPaint (historical API name)
 
 ### Terminal Widget Bridge
-- **Definition:** A Component that adapts harbor-widget rendering and input types to terminal-owned boundary types while embedding a Terminal through ExternalSurface (currently named CustomPaint in code; the U4 rename is selected in ADR 0087).
+- **Definition:** A Component that adapts harbor-widget rendering and input types to terminal-owned boundary types while embedding a Terminal through ExternalSurface.
 - **Relationships:**
   - references ExternalDrawId
   - communicates with UiEvent
@@ -412,7 +412,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** A per-ExternalDrawId callback invoked by Runtime during scene encoding, borrowing draw context, frame-scoped GPU access and the active render pass rather than owning host resources.
 
 ### ExternalDrawId
-- **Definition:** A `u64` identifier linking an ExternalSurface widget (currently named `CustomPaint` in code) to its `ExternalDrawFn` handler in the Runtime.
+- **Definition:** A `u64` identifier linking an ExternalSurface widget to its `ExternalDrawFn` handler in the Runtime.
 - **Synonyms:** Draw ID
 
 ### Autowrap (DECAWM)
@@ -440,7 +440,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Synonyms:** wrapped line
 
 ### Screen Resize
-- **Definition:** Buffer-specific grid change: primary logical reflow versus alternate rectangular resize, with a Windows ConPTY producer-owned live-primary exception defined under Reflow. Approval and runtime acceptance are separate; see [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md).
+- **Definition:** Buffer-specific grid change: primary logical reflow versus alternate rectangular resize, with a Windows ConPTY producer-owned live-primary exception defined under Reflow. See [ADR 0052](./adr/0052-conpty-live-primary-producer-geometry-and-styled-tail-clipping.md).
 - **Synonyms:** resize
 - **Relationships:**
   - references Soft-Wrap Marker
@@ -472,7 +472,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - references Content Anchor
 
 ### Reflow Capacity Eviction
-- **Definition:** After reflow, enforce physical-row capacity oldest-first; mark partial retained lines head-truncated, invalidate evicted anchors and move evicted review to oldest retained content. The selected extension adds an independent retained-history-content byte limit with the same oldest-first direction, distinct from measured process/GPU memory; [ADR 0072](./adr/0072-dual-bounded-terminal-history.md) records that direction and [ADR 0073](./adr/0073-session-history-accounting-and-text-unit-overflow.md) defines per-session UTF-8 history accounting, live reload and the exceptional oversized-unit safety policy. These records do not establish implementation.
+- **Definition:** After reflow, enforce physical-row capacity oldest-first; mark partial retained lines head-truncated, invalidate evicted anchors and move evicted review to oldest retained content. An independent retained-history-content byte limit enforces the same oldest-first direction, distinct from measured process/GPU memory; [ADR 0072](./adr/0072-dual-bounded-terminal-history.md) records that direction and [ADR 0073](./adr/0073-session-history-accounting-and-text-unit-overflow.md) defines per-session UTF-8 history accounting, live reload and the exceptional oversized-unit safety policy.
 - **Synonyms:** reflow eviction
 - **Relationships:**
   - references Content Anchor
@@ -667,12 +667,12 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - belongs to Application Business Host
 
 ### Application Command Registry
-- **Definition:** Application catalog of implemented command IDs, display metadata, default bindings and availability, shared by shortcuts and future palette.
+- **Definition:** Application catalog of implemented command IDs, display metadata, default bindings and availability, shared by shortcuts and palette.
 - **Relationships:**
   - belongs to Application Business Host
 
 ### Application Command Dispatcher
-- **Definition:** Single command path for shortcuts/buttons/menus/future palette. Shortcuts synchronously return Command Outcome; only consumed commands enter scoped FIFO for later Host-owned execution. Not a pub/sub bus.
+- **Definition:** Single command path for shortcuts/buttons/menus/palette. Shortcuts synchronously return Command Outcome; only consumed commands enter scoped FIFO for later Host-owned execution. Not a pub/sub bus.
 
 ### Command Palette
 - **Definition:** Application-owned searchable presentation of implemented, palette-visible Application Commands through the existing registry and dispatcher. Current unavailability visibly disables an action without displaying a reason rather than forwarding palette input to the PTY; execution revalidates availability and respects the resulting action's focus destination. See [ADR 0069](./adr/0069-command-palette-source-aware-availability-and-focus.md) and its reason-display override in [ADR 0078](./adr/0078-command-palette-disabled-items-without-reasons.md).

@@ -1,7 +1,7 @@
 # Windows MSI and Portable Release
 
 **Spec ID:** 0023 (distribution; distinct from manual reload 0023)
-**Status:** Implemented with partial local verification; full package/publication acceptance pending.
+**Status:** Accepted (owner-confirmed)
 **Sources:** User-selected x64/selectable-scope MSI/full portable ZIP/local and tag publishing; [ADR 0057](../adr/0057-windows-installation-and-portable-isolation.md), [0058](../adr/0058-release-only-static-crt.md), [ConPTY runtime contract](../../third_party/conpty/README.md).
 
 ## Requirements
@@ -54,10 +54,8 @@ Follow validation policy, preserving PR gates. Record revision/tag/version/profi
 | A11 | Mismatch/prerelease/MSI overflow or required payload/runtime/package check failure → actionable rejection, no accepted publication or inbox runtime substitution. |
 
 ## Execution Addendum: Final Local Evidence and External Gates
-This heading preserves existing reference targets; detailed execution diaries are retired, not promoted to current acceptance.
-Historical `eed3494` plus implementation/test diff used Harbor/MSI 0.1.0, locked static-CRT x64 release, ConPTY 1.24.260710001, Windows 22621 (cmd 22621.4317), PowerShell 5.1.22621.4249 and WiX 5.0.2. Local common payload/import/failure checks, both scoped GUI/quiet installer lifecycles, portable isolation/read-only/missing/malformed/ACL-denied/moved-directory checks and shell round trips were recorded. The token was elevated: genuine ordinary-user/UAC acceptance was NOT RUN. The 0.0.9 → 0.1.0 MSI upgrade used the same application binary, proving only installer-version mechanics. Artifact availability has not been reverified.
-Later `2870b8a`-based checks did not resolve the intermittent font-replacement GPU comparison; later-tree ordinary-user lifecycle and live/download checks remain NOT RUN. Neither historical pass nor successful rerun certifies this tree or fixes that intermittency. See [development progress](../../docs/developer/progress.md) for current remaining work, not historical run results.
-Remaining: genuine non-elevated user install/launch; authorized UAC machine install followed by ordinary-user launch; fresh applicable same-scope upgrades/uninstalls/custom-directory/cross-scope checks; authorized stable-tag publication/failure behavior and downloaded MSI/ZIP smoke. No tag, push, public Release or broad clean-machine matrix is established here.
+Historical evidence limitations: elevated-token runs did not establish ordinary-user/UAC behavior; the 0.0.9 → 0.1.0 upgrade reused one application binary and proved installer-version mechanics only. Live publication/download smoke and a broad clean-machine matrix were not established; old artifacts have not been reverified.
+The intermittent font-replacement GPU comparison remains unexplained, not repaired by reruns.
 
 ### Stable Execution Aliases
 `0017-windows-msi-and-portable-release`:
@@ -66,7 +64,7 @@ Remaining: genuine non-elevated user install/launch; authorized UAC machine inst
 | T0001 — portable configuration/ZIP | R1/R3/R5 | A1/A7–A9/A11 |
 | T0002 — selectable-scope MSI | R1/R2/R5 | A1–A6/A11 |
 | T0003 — stable-tag publication | R1/R4/R5 | A1/A10/A11 plus downloaded A2/A3/A7/A8 |
-All remain unaccepted/Todo overall. T0001/T0002 are independent producers sharing one payload owner; T0003 requires both real formats/acceptance, though automation may be drafted earlier. Coordinate shared runtime/version/marker/package documentation; ZIP includes marker, MSI excludes it, local/CI lists cannot diverge.
+ZIP includes the portable marker; MSI excludes it. Both formats share one runtime/version/payload contract, and local/CI file lists cannot diverge.
 
 ## Exclusions
 No native ARM64/x86 application assets, prerelease mapping, automatic scope migration, global private-install enumeration, signing, shell no-trace sandbox or new OS matrix.

@@ -1,10 +1,9 @@
 # Explicit Layout Components and Fallible View Nodes
 
 **Spec ID:** 0038
-**Status:** Draft
-**Readiness:** Requirements settled; implementation and acceptance pending.
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-24
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) F5, including its related F7/F8 layout concerns; refinement conversation selecting targeted breaking migration, plain input configurations with fallible component construction (option A), automatic final-node Result handling in ordinary `view!`, construction-site panic on Err, and a spec-only endpoint.
+**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) F5, including its related F7/F8 layout concerns; refinement conversation selecting targeted breaking migration, plain input configurations with fallible component construction (option A), automatic final-node Result handling in ordinary `view!`, construction-site panic on Err.
 **Decision record:** [ADR 0084](../adr/0084-explicit-layout-trees-and-local-configuration.md).
 
 ## Requirements
@@ -100,7 +99,7 @@ Sources: F5.3/F5.5/F5.7/F5.8; ADR 0084 D5/D6; inspected application declarations
 - Keep parent-local key/type reconciliation, independent state-driven content-slot hooks/subscriptions, inherited themes and standard unmount behavior under ADRs 0079/0080. No GlobalKey or cross-parent state-preservation promise is introduced.
 - Verify stable keyed insertion/reorder, state/focus retention, slot replacement/clearing and external draw/IME registration cleanup. Identify remounts caused by a deliberate wrapper/type change rather than claiming keys make all tree rewrites equivalent.
 - Preserve declared decoration/paint/clip order and hit-test ranges. Do not optimize explicit wrappers into a canonical order that erases their differences. No new logical Tab stop is introduced by a pure sizing/layout wrapper.
-- Existing native focus/IME and actual HMR generation teardown obligations remain separate from headless evidence. This spec does not mark outstanding F1/F3/F4 native acceptance as complete.
+- Existing native focus/IME and actual HMR generation teardown obligations remain separate from headless evidence.
 
 Sources: F5.6/F5.8; ADR 0084 D6; ADRs 0079/0080 and the existing layout/runtime contracts.
 
@@ -122,7 +121,7 @@ Relevant surfaces: `crates/harbor-widget/src/{construction,lib,view}.rs`, `layou
 
 ### Target declaration
 
-The following is the selected public API direction, not currently implemented/compilable code. It intentionally has no `?` at node boundaries; imports and complete application state are omitted.
+The following illustrates the selected public API direction. It intentionally has no `?` at node boundaries; imports and complete application state are omitted.
 
 ```rust
 view! {
@@ -213,21 +212,17 @@ view! {
 | Final-node-only automatic Result handling; ordinary macro Err panic with error/location; recover outside macro | Explicit user request and subsequent approval; ADR 0084 D7 |
 | No intermediate-chain rewriting; preserve evaluation and deferred construction | Explicit accepted handling boundary; ADRs 0032/0079/0080/0084 |
 | Preserve direct flex parent data, application command/focus/material boundaries and lifecycle | F5.4 E/F5.5/F5.6/F5.8; existing layout/runtime contracts; ADR 0084 D6 |
-| One spec, targeted F7/F8 coordination, no general F6 work or tickets | User approval of the recommended scope and spec-only route |
 
 ## Verification and Limitations
 
-- During implementation, cover E1–E9 with public compile fixtures, real mounted parent-directed layout, scene/hit testing, keyed/slot lifecycle and application regression tests. A helper returning a desired Size is not sufficient evidence of child-constraint correctness.
-- Exercise the R5 numeric matrix through E9: distinguish scalar boundary errors, valid unbounded parent maxima and later derived-geometry overflow. Verify identical options/builder validation and clear source-located macro panic.
-- Compile passing/failing fixtures for ordinary and final-Result roots/children, parent/value forms, SingleChild replacement/clearing, genuine leaves, external types and dependency renaming. Keep existing evaluation-order and macro-hygiene obligations.
-- Implementation verification includes affected widget/macro/application suites, workspace all-target/all-feature checks, documentation/example checks, formatting and diff checks as described in F5.8. Record GPU evidence for actual layout/clip differences, and separate native focus/IME and supported real HMR acceptance. Do not count omitted checks as passes.
-- This refinement performs document/source comparison only; no production code, runtime tests, GPU samples, native sessions or HMR acceptance are delivered. The macro convenience does not promise host recovery, rollback or continued execution after its construction-site panic.
-- No additional timing/performance budgets, product dimensions or runtime ownership policies are invented. Error type/accessor/helper spellings and Rust implementation mechanisms are left to implementation within this contract, not alternative behavior choices.
-- No unconfirmed behavioral assumptions or blocking requirements decisions remain. A newly needed behavior or architecture choice must return to refinement rather than be invented during implementation. The spec's Draft status and ADR's Proposed status do not claim implementation or test acceptance.
+- E1–E9 retain public compile fixtures, real mounted parent-directed layout, scene/hit testing, keyed/slot lifecycle and application regression coverage. A helper returning a desired Size is not sufficient evidence of child-constraint correctness.
+- The R5/E9 matrix distinguishes scalar boundary errors, valid unbounded parent maxima and later derived-geometry overflow; equivalent options/builders share validation and macro panics carry the source location.
+- Passing/failing fixtures retain ordinary/final-Result roots/children, parent/value forms, SingleChild replacement/clearing, genuine leaves, external types, dependency renaming, evaluation order and macro hygiene.
+- Actual GPU layout/clip, native focus/IME and supported real HMR evidence remains distinct from headless coverage. The macro convenience does not promise host recovery, rollback or continued execution after its construction-site panic.
+- No additional timing/performance budgets, product dimensions or runtime ownership policies are established. Error type/accessor/helper spellings and Rust implementation mechanisms remain implementation choices within this contract.
 
 ## Out of Scope
 
-- Implementation, execution planning, ticket slicing and test execution in this refinement.
 - Repository-wide F6 constructor/export/prelude cleanup, unrelated F7 numeric APIs, or non-layout F8 navigation/material type redesign.
 - Generic layout extension methods, a universal Style/Container, a new property DSL, arbitrary method-chain Result rewriting, a new fallible macro variant or a Result-returning Component/runtime redesign.
 - GlobalKey/cross-parent state migration, parent-data tunneling, a new layout engine, implicit wrapper reordering, input/focus policy changes or business-command ownership changes.

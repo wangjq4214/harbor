@@ -1,11 +1,10 @@
 # U5 — Native Host Roots, Deadlines, and GPU Outcomes
 
 **Spec ID:** 0042
-**Status:** Draft
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-26
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U5/F9/F13/F15 and preserved boundaries in §§5–6; the 2026-10-26 refinement conversation approving IntoChildView root factories, non-rendering Host deadlines, persistent shared-GPU fatal reporting with application-owned exit, no automatic device reconstruction, and the spec → tickets endpoint.
+**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U5/F9/F13/F15 and preserved boundaries in §§5–6; the 2026-10-26 refinement conversation approving IntoChildView root factories, non-rendering Host deadlines, persistent shared-GPU fatal reporting with application-owned exit, no automatic device reconstruction.
 **Decision record:** [ADR 0088](../adr/0088-native-host-root-deadline-and-shared-gpu-fault-contracts.md).
-**Execution set:** [0020-native-host-contracts](../ticket/0020-native-host-contracts/README.md).
 
 ## Requirements
 
@@ -127,10 +126,8 @@ No blocking product or architecture choice remains. Low-level API/helper spellin
 - Use deterministic scheduler/adapter tests for future/absent/expired Host deadlines, suspended rendering/recovery, redraw coalescing, drawable restoration and cross-window arbitration. Add native event-loop evidence that WaitUntil actually wakes while rendering is suspended.
 - Cover all fatal categories, normal destruction, callback-to-state-to-wake-to-report delivery, shared observation, frame-independent delivery, closed transport, initialization and teardown races. Policy-only FrameError injection does not establish production notification wiring. An intentionally generated real wgpu validation error can test that production seam, but is not proof of real OOM/device loss.
 - Exercise main/paste/OSC52 fatal consumers and verify that pending clipboard/PTY actions are not accepted through a fatal path. Check local surface recovery separately from shared-device failure.
-- Check affected widget/native/macro/application targets and the relevant default/backend/debug-HMR/release feature combinations under the repository's verification policy. Bind evidence to revision/dirty scope, environment and backend; skipped/ignored/native-unavailable cases remain explicitly unverified.
-- Record deterministic/injected results, actual production callback-path results, native multi-window/minimized behavior, and real device-failure results separately. Hardware/driver faults may not be safely reproducible: do not claim full F13 acceptance from injected results, and do not deliberately exhaust GPU resources or reset a user's driver without separate authorization.
-- Preserve and report relevant real HMR generation-release evidence separately. This unit does not require repetition of previously user-reported interaction smoke merely because an internal lifecycle trace is absent, nor does it retire the existing missing trace obligation.
-- This refinement performs documentation only. No U5 code, test execution or acceptance is claimed by creation of this spec or its tickets.
+- Deterministic/injected results, actual production callback-path results, native multi-window/minimized behavior and real device-failure results are separate evidence classes. Hardware/driver faults may not be safely reproducible: injected results do not prove real OOM/device loss, and GPU exhaustion or driver reset requires separate authorization.
+- Real HMR generation-release evidence remains distinct from interaction smoke, static lifetime analysis and headless tests; successful reload alone does not prove release-before-unload.
 
 ## Out of Scope
 
@@ -138,3 +135,25 @@ No blocking product or architecture choice remains. Low-level API/helper spellin
 - Moving EventLoop, business timers, multi-window or fatal/exit ownership into harbor-widget; a new business event bus or automatic Store wakeup.
 - Changing root identity/HMR ABI, preserving Fiber state across arbitrary root/type changes, or weakening release-before-unload/native destruction barriers.
 - Redoing U1–U4, U6 renderer ordering, or unrelated widget styling/layout migrations.
+
+## Retired Execution Evidence
+
+Stable retired execution aliases retain these contracts and historical evidence boundaries:
+
+### T0001 — Root-factory parity
+
+`0020-native-host-contracts/T0001` = R1/R6, E1/E5. [Root compilation contracts](../../crates/harbor-widget/tests/winit_contracts.rs) and [Native Host smoke](../../crates/harbor-widget/tests/native_host_smoke.rs) retain regression coverage. Historical Windows/DX12 native evidence used synthetic routed IME; it did not establish physical typing/IME, fractional-DPI interaction, native Vulkan presentation or real DLL release/unload order. Deadline/GPU delivery was outside that slice.
+
+### T0002 — Non-rendering Host deadlines
+
+`0020-native-host-contracts/T0002` = R2/R6, E2. [Scheduler regressions](../../crates/harbor-widget/src/winit/scheduler.rs), [adapter QA](../../crates/harbor-widget/tests/winit_qa.rs) and [Native deadline smoke](../../crates/harbor-widget/tests/native_host_deadlines.rs) retain regression coverage. Historical native evidence established winit timer delivery for hidden shared-Device Hosts with injected zero-size geometry and restored presentation, not physical minimize/restore or GPU completion. That slice did not claim full workspace, native Vulkan, real GPU-fault or DLL-release execution.
+
+### T0003 — Shared GPU fatal delivery
+
+`0020-native-host-contracts/T0003` = R3–R6, E3–E5. [Retained historical evidence](../ticket/0020-native-host-contracts/T0003-shared-gpu-fatal-delivery-evidence.md) distinguishes deterministic categories/policy, actual wgpu validation, independent progress and native two-Host wake/observation on DX12/Vulkan from unavailable hardware-failure and DLL traces.
+
+### Shared limitations and remaining owners
+
+Historical broad strict lint failed on unchanged `clippy::chunks_exact_to_as_chunks` findings in `crates/harbor-text/src/backend/dwrite/sequence/tests.rs:172,175` and `crates/harbor-widget/tests/quad_renderer.rs:4362`; scoped changed-target lint passed. Those findings are not claimed fixed or classified as root/deadline regressions.
+
+Real device failure, full physical interaction, non-Windows/full release behavior and actual HMR release-before-unload were not established by the scoped T0001–T0003 results; these are historical evidence limits, not active acceptance followups.

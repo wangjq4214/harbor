@@ -1,7 +1,7 @@
 # Terminal Render Consolidation
 
 **Spec ID:** 0002
-**Status:** Implemented
+**Status:** Accepted (owner-confirmed)
 **Date:** 2025-07-28
 
 **Architecture evolution:** The consolidation remains current; later boundary changes are defined by Specs 0016 and 0012 and ADR 0031. Spec 0016 preserves the retired Spec 0005 bridge-migration boundary.
