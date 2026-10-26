@@ -31,7 +31,7 @@ impl Icon {
         Ok(self)
     }
 
-    /// Sets a tint including opacity; finite components outside [0,1] are legal.
+    /// Sets a tint including opacity; finite components outside `[0,1]` are legal.
     pub fn foreground(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
         crate::theme::validate_color("Icon.foreground", color)?;
         self.color = Some(color);

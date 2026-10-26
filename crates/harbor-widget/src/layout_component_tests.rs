@@ -215,6 +215,10 @@ fn valid_scalar_combinations_overflow_in_layout_and_keep_committed_geometry() {
         right: f32::MAX,
         ..Default::default()
     };
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "retained Fiber views require Arc even for UI-local widgets"
+    )]
     let candidates: Vec<Arc<dyn AnyView>> = vec![
         Arc::new(Padding::new(huge).unwrap()),
         Arc::new(Align::new(Alignment2D::CENTER).insets(huge).unwrap()),
@@ -262,6 +266,10 @@ fn options_and_builders_share_mounted_geometry_and_diagnostics() {
             BoxConstraints::tight(Size::new(50.0, 30.0)),
             BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY)),
         ] {
+            #[expect(
+                clippy::arc_with_non_send_sync,
+                reason = "retained Fiber views require Arc even for UI-local widgets"
+            )]
             let alternatives: Vec<Arc<dyn AnyView>> = if axis == Axis::Horizontal {
                 vec![
                     Arc::new(Flex::with_options(axis, options).unwrap()),

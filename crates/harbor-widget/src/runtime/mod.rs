@@ -255,7 +255,6 @@ impl Runtime {
     }
     #[cfg(test)]
     pub(crate) fn external_schedule_ids(&self) -> Vec<ExternalDrawId> {
-        use crate::scene::primitive::ExternalDrawId;
         self.external_schedules.keys().copied().collect()
     }
 

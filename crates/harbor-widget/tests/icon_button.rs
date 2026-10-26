@@ -228,7 +228,7 @@ fn icon_button_tint_follows_theme_updates() {
 fn icon_button_is_a_public_macro_leaf() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(40, 40, 1.0));
-    runtime.set_root(|cx: &mut harbor_widget::view::BuildCx| {
+    runtime.set_root(|_cx: &mut harbor_widget::view::BuildCx| {
         harbor_widget::view! { IconButton::new(LucideIcon::X, "Close"); }
     });
     runtime.update(Instant::now());

@@ -2085,7 +2085,7 @@ mod decoration_tests {
     }
 
     impl<C: Component + Clone + 'static> Component for TestMainTerminalRoot<C> {
-        fn build(&self, cx: &mut BuildCx) -> View {
+        fn build(&self, _cx: &mut BuildCx) -> View {
             harbor_widget::view! { self.root.clone() => {
                 TerminalDecorationPreset::container() => {
                     self.child.clone();

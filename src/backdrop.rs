@@ -6,7 +6,7 @@
 //! stays inside this module and its `wasdk` submodule.
 //!
 //! Two window responsibilities remain host-level by design (ADR 0024/0027):
-//! caption suppression ([`super::suppress_caption_title_and_icon`]) and the
+//! caption suppression ([`crate::chrome::suppress_caption_title_and_icon`]) and the
 //! pre-surface GDI fallback paint, both of which are window chrome rather
 //! than backdrop composition.
 

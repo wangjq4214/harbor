@@ -255,7 +255,7 @@ impl AtlasStore {
 /// CPU-side glyph resolution cache and rasterization orchestration.
 ///
 /// Shelf packing, placements, pixels, and rebuild layout are delegated to
-/// [`AtlasStore`]. Character collection and space filtering remain the caller's
+/// the private `AtlasStore`. Character collection and space filtering remain the caller's
 /// responsibility.
 pub struct GlyphAtlas {
     resolution: HashMap<ResolutionKey, GlyphResolution>,

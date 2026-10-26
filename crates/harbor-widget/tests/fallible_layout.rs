@@ -415,6 +415,10 @@ fn explicit_wrapper_order_preserves_scene_clips_and_hit_ranges() {
 }
 
 #[test]
+#[expect(
+    clippy::arc_with_non_send_sync,
+    reason = "the public unmount callback intentionally owns a UI-local counter"
+)]
 fn clearing_sized_slot_releases_external_draw_schedule_ime_and_unmount_ownership() {
     use harbor_widget::scene::primitive::{
         ExternalDrawFn, ExternalImeFn, ExternalScheduleDemand, ExternalScheduleFn,

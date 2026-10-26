@@ -83,7 +83,7 @@ These are current surfaces to preserve or migrate, not claims that they already 
 | [`runtime/mod.rs`](../../crates/harbor-widget/src/runtime/mod.rs) | Public dispatch, RuntimeEffects publication and external-input drain |
 | [`widgets/interactive_region.rs`](../../crates/harbor-widget/src/widgets/interactive_region.rs), [`widgets/scroll_view.rs`](../../crates/harbor-widget/src/widgets/scroll_view.rs) | Nested activation priority versus intentional scrollbar capture interception |
 | [`widgets/editable_text.rs`](../../crates/harbor-widget/src/widgets/editable_text.rs), [`widgets/focus_scope.rs`](../../crates/harbor-widget/src/widgets/focus_scope.rs) | Editing, input lifecycle and focus navigation |
-| [`widgets/custom_paint.rs`](../../crates/harbor-widget/src/widgets/custom_paint.rs), [`widgets/mouse_region.rs`](../../crates/harbor-widget/src/widgets/mouse_region.rs), [`widgets/notification.rs`](../../crates/harbor-widget/src/widgets/notification.rs) | External input adapters, boundary observations and notification-card input isolation |
+| [`widgets/custom_paint.rs`](../../crates/harbor-widget/src/widgets/external_surface.rs), [`widgets/mouse_region.rs`](../../crates/harbor-widget/src/widgets/mouse_region.rs), [`widgets/notification.rs`](../../crates/harbor-widget/src/widgets/notification_card.rs) | External input adapters, boundary observations and notification-card input isolation |
 | [`terminal_view.rs`](../../crates/harbor-app/src/terminal_view.rs), [`confirmation/preview.rs`](../../crates/harbor-app/src/confirmation/preview.rs) | Application PrimitiveLeaf/on_input consumers whose Handled returns acquire the selected propagation meaning |
 
 ### Seams

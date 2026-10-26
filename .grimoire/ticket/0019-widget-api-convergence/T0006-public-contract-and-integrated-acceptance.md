@@ -40,3 +40,7 @@ Review evidence against the spec's requirement/scenario mapping, fill in combine
 ## Out of Scope
 
 New product behavior, unselected APIs, unplanned architecture refactors, U5/U6 acceptance, global Color/gradient/HDR design, or weakening acceptance criteria to close evidence gaps.
+
+## Acceptance Evidence
+
+See [the integrated acceptance record](./T0006-acceptance-evidence.md) for the tested snapshot, R1–R8/E1–E7 mapping, actual command results, and resolved documentation/lint findings and remaining native evidence gaps. U4 acceptance is not complete; status and checkboxes remain unchanged.

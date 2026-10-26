@@ -31,7 +31,7 @@ fn generic_controls_and_actions_need_no_application_models() {
     let dispatcher = store.dispatcher();
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(320, 200, 1.0));
-    runtime.set_root(move |cx: &mut BuildCx| {
+    runtime.set_root(move |_cx: &mut BuildCx| {
         let action = dispatcher.clone();
         harbor_widget::view! { ThemeProvider::new(harbor_widget::Theme::default()).expect("valid theme") => {
                 FocusScope::new() => {

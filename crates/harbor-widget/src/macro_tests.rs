@@ -23,7 +23,7 @@ struct MacroTree {
 }
 
 impl Component for MacroTree {
-    fn build(&self, cx: &mut BuildCx) -> View {
+    fn build(&self, _cx: &mut BuildCx) -> View {
         crate::view! { Column::new() => {
             SizedBox::new(Size::new(10.0, 10.0)).unwrap().background(Color::RED).expect("valid color");
             SizedBox::new(Size::new(20.0, 10.0)).unwrap().background(Color::GREEN).expect("valid color");
@@ -133,7 +133,7 @@ struct MacroButtonTree {
 }
 
 impl Component for MacroButtonTree {
-    fn build(&self, cx: &mut BuildCx) -> View {
+    fn build(&self, _cx: &mut BuildCx) -> View {
         let clicked = self.clicked.clone();
         crate::view! { Column::new() => {
             Button::text("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst));
@@ -259,7 +259,7 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     struct MacroLeaf;
 
     impl Component for MacroLeaf {
-        fn build(&self, cx: &mut BuildCx) -> View {
+        fn build(&self, _cx: &mut BuildCx) -> View {
             crate::view! { SizedBox::new(Size::new(10.0, 10.0)); }
         }
     }
@@ -277,7 +277,7 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     struct MacroSingle;
 
     impl Component for MacroSingle {
-        fn build(&self, cx: &mut BuildCx) -> View {
+        fn build(&self, _cx: &mut BuildCx) -> View {
             crate::view! { Padding::all(2.0) => {
                 SizedBox::new(Size::new(10.0, 10.0));
             } }
@@ -644,6 +644,10 @@ fn dynamic_macro_validates_zero_one_many_at_construction_and_not_layout() {
 }
 
 #[test]
+#[expect(
+    clippy::blocks_in_conditions,
+    reason = "side-effectful macro scrutinees must be tested in place to prove lazy evaluation"
+)]
 fn bounded_alternatives_are_lazy_single_assignments_and_builds_stay_deferred() {
     for choice in 0..3 {
         let log = Rc::new(RefCell::new(Vec::new()));

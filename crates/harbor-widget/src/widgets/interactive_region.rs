@@ -447,7 +447,6 @@ mod content_slot_tests {
     //! slot's external registrations with the slot fiber.
 
     use super::*;
-    use crate::construction::IntoChildView;
     use crate::layout::Size;
     use crate::runtime::Runtime;
     use crate::scene::primitive::{ExternalDrawId, ExternalScheduleDemand};
@@ -479,7 +478,7 @@ mod content_slot_tests {
         fn build(&self, cx: &mut BuildCx) -> View {
             let show_slot = cx.use_state(|| self.slot_installed);
             *self.show_slot.borrow_mut() = Some(show_slot.clone());
-            let region = if show_slot.read().clone() {
+            let region = if *show_slot.read() {
                 let content_state = self.content_state.clone();
                 InteractiveRegion::new().child_with(move |cx, _state| {
                     let value = cx.use_state(|| "slot-initial");

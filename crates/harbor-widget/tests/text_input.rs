@@ -286,7 +286,7 @@ fn editor_chords_bypass_terminal_like_actions_but_other_shortcuts_still_work() {
         observed.fetch_add(1, Ordering::SeqCst);
         ActionOutcome::Consumed
     });
-    let mut runtime = mount(move |cx: &mut BuildCx| {
+    let mut runtime = mount(move |_cx: &mut BuildCx| {
         harbor_widget::view! { actions.clone() => {
             shortcuts.clone() => { TextField::new(c.clone()); }
         } }

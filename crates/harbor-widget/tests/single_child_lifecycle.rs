@@ -24,6 +24,10 @@ struct Resources {
 }
 
 impl Resources {
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "exercise UI-local provider ownership and release through the public Arc API"
+    )]
     fn surface(&self, draw_id: u64) -> ExternalSurface {
         // No strong token lives in the test/host. Only the actual callbacks own it.
         let draw = Rc::new(());

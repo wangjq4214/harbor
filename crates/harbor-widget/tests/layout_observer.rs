@@ -201,6 +201,10 @@ fn shared_callback_retains_the_original_handle_and_runs_only_after_layout() {
 
     let calls = Rc::new(RefCell::new(Vec::new()));
     let observed = calls.clone();
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the shared callback API intentionally permits UI-local captures"
+    )]
     let callback: LayoutChangedCallback = Arc::new(move |rect| observed.borrow_mut().push(rect));
     let weak = Arc::downgrade(&callback);
     let observer = LayoutObserver::from_shared_callback(callback.clone())
