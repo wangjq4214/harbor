@@ -46,7 +46,10 @@ error[E0277]: the trait bound `harbor_widget::Icon: WithChildren` is not satisfi
  --> tests/ui/fail/leaf_blocks.rs:9:21
   |
 9 |     let _ = view! { Icon::new(LucideIcon::X) => { for _ in 0..2 { leaf(); } } };
-  |                     ^^^^ the trait `WithChildren` is not implemented for `harbor_widget::Icon`
+  |             --------^^^^-------------------------------------------------------
+  |             |       |
+  |             |       the trait `WithChildren` is not implemented for `harbor_widget::Icon`
+  |             `harbor_widget::Icon` doesn't satisfy the trait bound
   |
   = help: the following other types implement trait `WithChildren`:
             ActionHandler<A>

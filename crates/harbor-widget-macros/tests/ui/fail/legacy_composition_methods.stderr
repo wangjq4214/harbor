@@ -96,7 +96,7 @@ note: if you're trying to build a new `ActionHandler<_>`, consider using `Action
    |     pub fn new(handler: impl Fn(A) -> ActionOutcome + 'static) -> Self {
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-error[E0277]: expected a `Fn(_)` closure, found `TextLabel`
+error[E0277]: expected an `Fn(_)` closure, found `TextLabel`
   --> tests/ui/fail/legacy_composition_methods.rs:14:32
    |
 14 |     let _ = ActionHandler::new(TextLabel::new("old"), |_: u8| ActionOutcome::Consumed);

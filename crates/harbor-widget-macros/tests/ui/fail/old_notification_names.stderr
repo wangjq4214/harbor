@@ -27,7 +27,9 @@ error[E0432]: unresolved import `harbor_widget::layout::Alignment`
  --> tests/ui/fail/old_notification_names.rs:4:5
   |
 4 | use harbor_widget::layout::Alignment;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `Alignment` in `layout`
+  |     ^^^^^^^^^^^^^^^^^^^^^^^---------
+  |                            |
+  |                            no `Alignment` in `layout`
   |
 help: a similar name exists in the module
   |
