@@ -62,6 +62,6 @@ Terminal fonts are independent of UI fonts. An unavailable family can fall back 
 - Native Unix shell sessions are not implemented. This is separate from running WSL or SSH inside a Windows-hosted session; compatibility with every remote/application combination is not guaranteed.
 - Kitty keyboard/graphics protocols and OSC 52 clipboard reads are not implemented.
 - Split panes and named launch profiles are not available.
-- The existing-command palette is integrated, but its [Windows acceptance remains incomplete](../../.grimoire/ticket/0001-command-palette/T0003-windows-acceptance-and-docs.md). Text behind the palette and overlapping notices reduced readability in the tested setup.
+- The existing-command palette is integrated, but its [Windows acceptance remains incomplete](../../.grimoire/spec/0030-command-palette.md#delivery-and-outstanding-acceptance). Text behind the palette and overlapping notices reduced readability in the tested setup.
 
 For terminal protocol details, see [compatibility](../terminal/compatibility.md).

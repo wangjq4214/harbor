@@ -18,9 +18,9 @@
 
 Earlier findings F1/F3/F4/F5 are also no longer pending implementation: the macro and Runtime support deferred construction and existing View roots; content slots own independent Fibers; ordinary UI callbacks support UI-local captures; composable Button, shared ControlSurface, explicit layout components and fallible final-node macros already exist. The remaining native Host root-factory difference is tracked separately as F9.
 
-Related contracts: ADR 0079–0084 / spec 0034–0038; for U2, see [ADR 0085](.grimoire/adr/0085-return-driven-event-consumption-and-unconditional-commit.md) / [spec 0039](.grimoire/spec/0039-return-driven-event-consumption-and-commit.md); for U3, see [ADR 0086](.grimoire/adr/0086-normalized-key-chords-and-private-runtime-control.md) / [spec 0040](.grimoire/spec/0040-normalized-key-chords-and-private-runtime-control.md).
+Related contracts: ADR 0079–0084 / spec 0034–0038; for U2, see [ADR 0085](.grimoire/adr/0085-return-driven-event-consumption-and-unconditional-commit.md) / [spec 0039](.grimoire/spec/0039-return-driven-event-consumption-and-commit.md); for U3, see [ADR 0086](.grimoire/adr/0086-normalized-key-chords-and-private-runtime-control.md) and the [public compile/mounted regression entry points](#2-work-already-landed), which retain the retired spec 0040 contract.
 
-**Acceptance boundary:** U2's ADR remains Testing and its spec remains Draft; U3's ADR/spec are Completed/Implemented. This synchronization does not change those statuses or deny existing implementation because older documents say spec-only. The tests above are regression evidence entry points, not results executed in this review; existing native focus, IME and real HMR generation-teardown verification obligations are listed in section 6.
+**Acceptance boundary:** U2's ADR remains Testing and its spec remains Draft; U3's ADR remains Completed, with the former spec 0040 contract retained at the linked destinations. This synchronization does not change those statuses or deny existing implementation because older documents say spec-only. The tests above are regression evidence entry points, not results executed in this review; existing native focus, IME and real HMR generation-teardown verification obligations are listed in section 6.
 
 ## 3. Remaining Findings
 

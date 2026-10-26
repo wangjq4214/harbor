@@ -1,11 +1,12 @@
 # Command Palette: Existing-Command Delivery
 
 **Spec ID:** 0030
-**Status:** Draft; approved direction, not implemented or runtime-accepted.
+**Status:** Draft; existing-command implementation integrated, Windows acceptance incomplete.
 **Date:** 2026-10-18
 **Sources:** [Issue #156](https://github.com/wangjq4214/harbor/issues/156); the user's 2026-10-18 approval of the proposed defaults and Spec → Slice route.
 **Material extension:** [ADR 0070](../adr/0070-shared-application-glass-presets-with-local-overrides.md) defines shared panel presets and a distinguishable editor; [spec 0032](./0032-native-liquid-glass-material.md) selects the native liquid-glass upgrade without changing this spec's command, editing or focus contracts. These links do not establish runtime acceptance.
 **Lifecycle extension:** [Spec 0033](./0033-exclusive-extensible-application-popups.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md) select exclusive, extensible popup management: opening the palette closes and clears search; search-close/next/previous availability follows that closed state, while search-open creates a fresh focused panel. No hidden-search retention or automatic restoration is required. Other command, editing and operation-destination contracts remain unchanged; this is not implementation evidence.
+**Presentation override:** [ADR 0078](../adr/0078-command-palette-disabled-items-without-reasons.md) explicitly supersedes the reason-display clauses in R4/E4 below: unavailable entries are visibly disabled without a reason or reason tooltip. The original clauses remain historical; revalidation, failure feedback, focus and input isolation are unchanged.
 
 ## Requirements
 
@@ -113,6 +114,12 @@ At implementation acceptance run `cargo fmt --check`, `cargo clippy --all-target
 - Fuzzy matching, shell-command execution, a second command bus/editor, or changes to underlying search/clipboard/terminal semantics.
 - New promises about mouse dismissal, ranking beyond substring filtering, MRU/history, localization, persistence, pixel styling or performance thresholds. These were not selected; existing ownership and usable keyboard behavior still apply.
 
-## Handoff and Limitations
+## Delivery and outstanding acceptance
 
-Selected endpoint: Spec → Slice only. Local CONTEXT/ADR/spec/ticket writes are authorized; no production changes, implementation/QA execution, GitHub issue mutation, staging or commit is included. New qualifying knowledge has been recorded in ADR 0069 and the Command Palette context entry; existing registry/ownership decisions were reused rather than duplicated. No blocking requirement decision remains for this bounded scope. Incidental API/layout choices remain with implementation; a new domain or scope decision must return to refinement rather than be silently invented by a ticket.
+Stable execution aliases: `0001-command-palette/T0001` = tabs/reload increment; T0002 = terminal/search actions and destination focus; T0003 = integrated Windows acceptance/documentation. Their requirements survive in R1–R8, E1–E9 and Verification Obligations; retiring the tickets does not establish acceptance. These aliases also preserve the T0001/T0003 references in palette test comments.
+
+The [user guide](../../docs/app/commands.md#command-palette) and [progress summary](../../docs/developer/progress.md) document existing visible commands integrated through the shared registry/Host path at revision `2efb762`. The [troubleshooting guide](../../docs/app/troubleshooting.md#current-limitations) retains incomplete Windows acceptance and observed palette/notification readability limitations. Those historical scope statements are not a fresh test run or proof that later material changes resolved every observation.
+
+**Remaining execution contract:** run the integrated Windows E1–E9 matrix and the gates above against the actual delivered binary, including Chinese candidate confirm/cancel, consumed-input PTY capture and resumed pass-through, clipboard/late editor delivery, focus destinations, accepted/rejected binding reload, final-tab/window close, supported root replacement and multiline confirmation. Preserve separate NOT RUN/BLOCKED outcomes instead of substituting headless or predecessor editor smoke evidence. Record revision/dirty scope, configuration, versions, steps, expected/observed results, artifacts and exclusions; rerun affected scenarios after fixes.
+
+Update the affected user/configuration/workflow/troubleshooting and developer status documents only for evidenced delivery. The disabled-reason presentation follows ADR 0078, not the superseded ticket wording. Keep profile/pane/appearance deferrals and authorized implementation-sub-issue/remaining-scope links under #156; do not close the issue or claim full package acceptance from ticket retirement. New domain or scope decisions still require refinement rather than invention during execution.

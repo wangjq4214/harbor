@@ -2,7 +2,7 @@
 
 **Spec ID:** 0041
 **Status:** Draft
-**Readiness:** Requirements confirmed; pending implementation and acceptance.
+**Readiness:** Implementation integrated; automated checks and user-reported native smoke recorded; real HMR release-before-unload evidence remains open.
 **Date:** 2026-10-25
 **Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U4/F6/F7/F8, the §7 full mapping and the §5–6 preserved boundaries; this round of conversation successively confirmed the full breaking migration, explicit rejection of invalid configuration, the spec → tickets route, and the additional contracts R4–R7 of this document.
 **Decision record:** [ADR 0087](../adr/0087-widget-api-naming-and-validation-boundaries.md).
@@ -211,7 +211,7 @@ Affected surface: `crates/harbor-widget/src/{theme,lib,construction,view}.rs` an
 - Cover E1–E7 during implementation; every R must have public API, real consumption, or scenario evidence, and completion cannot be declared from rename searches, helper return values, or test counts alone.
 - The validation matrix covers every affected scalar and color state, optional colors, dynamic initial/update consumption, finite values outside the caps, legal extremes, and combination overflow; it covers default configuration and equivalent entries without changing existing business defaults.
 - Run the affected widget/macro/application/terminal bridge tests and compile fixtures, and check docs/examples, the relevant workspace targets/features, formatting, and the diff. Report native focus, IME, GPU glass, and real HMR generation teardown evidence separately as passed/not run/blocked; do not substitute headless results.
-- This round produces only requirement/decision/ticket documents; it does not execute the code tests above and does not deliver implementation or acceptance results. ADRs stay Proposed and the spec stays Draft.
+- The original refinement produced requirements/decision/ticket documents only. Subsequent implementation evidence is summarized below; it does not discharge the remaining native generation-teardown obligation or change this spec's Draft status.
 - There are no unconfirmed behavioral assumptions or blocking requirement choices. The concrete spelling of named input types and of the error type/helpers, and the internal storage approach, may be chosen within the contracts fixed above; if a new behavioral or architectural decision is needed, return to refine rather than hiding undecided semantics inside the implementation.
 
 ## Out of Scope
@@ -221,3 +221,31 @@ Affected surface: `crates/harbor-widget/src/{theme,lib,construction,view}.rs` an
 - Global Color/gradient model redesign, HDR policy, removing material performance caps, product appearance tuning, or new TOML configuration.
 - Generic Props/Style/Container, a prelude, root-exporting all internal types, a macro attribute DSL, intermediate chained Result rewriting, Result-returning Component/runtime.
 - UIA, virtual lists, full shaping, horizontal navigation, cross-parent state migration, or promises of old/new HMR type-identity compatibility.
+
+## Delivery evidence and remaining acceptance
+
+The retired execution set `0019-widget-api-convergence/T0001–T0006` covered appearance/text validation, named materials, composition/imports, notification/alignment, external providers, and integrated acceptance respectively. R1–R8 and E1–E7 remain the contract; this section replaces the tickets' evidence and remaining-work handoff, not their obsolete execution sequence.
+
+### Recorded evidence
+
+The 2026-10-25 acceptance and subsequent repair targeted `d29120f78c081dfcea2276ca8b080bab33a90abf` plus its acceptance/test/documentation/lint-repair working tree, on Windows MSVC x86-64 with rustc/cargo 1.97.1. These are historical results, not a rerun on the current tree.
+
+| Scope | Recorded result and boundary |
+| --- | --- |
+| R1–R3 / E1 | New public entries, old-entry rejection, root imports, external components, final-Result nodes, renamed-dependency hygiene and combined handwritten/macro mounting passed. Slots, hooks, subscriptions, keys and external unmount were exercised through public APIs. |
+| R4–R5 / E2–E4 | Complete static scalar/color validation, initial/later dynamic consumption, recoverable Result versus field-specific panic, and valid-scalar derived-overflow/atomic-layout paths passed. No intermediate-chain unwrap or post-panic Runtime recovery is implied. |
+| R6 / E5 | Named material domains/caps/packing and actual widget/application glass pixels passed on AMD Radeon RX 7900 XT with Vulkan and DX12, including 1×/1.5×/2× DPI and BGRA unorm/sRGB. This is not all-hardware, subjective before/after visual or native acceptance. |
+| R7 / E6 | PositionAlignment placement/resize/close paths and Stretch compile rejection passed alongside genuine Flex stretching and private-boundary/root-import fixtures. |
+| R8 / E7 | Mounted/adapter/GPU application editing, command/generation, nested routing, scroll request-to-commit and stable external-provider rebuild/unmount paths passed; native evidence is separate below. |
+
+Final repair checks recorded `cargo test --offline --workspace --all-features -- --nocapture`: **2,839 passed, 0 failed, 18 ignored** (excluding a nested subprocess's duplicate summary); all 51 macro UI cases passed. Strict workspace/all-target/all-feature Clippy, all-target checks, terminal no-renderer checks, HMR release compilation, warning-free rustdoc, documentation checking, formatting and diff checks passed. Nine independent learn/recipes snippets compiled; native recipes were not launched by that check. Earlier documentation/lint/rustdoc findings were repaired, not left as open failures. Ignored tests are not counted as executed; the three ignored application glass pixel cases were separately run on both backends. Local raw logs under `target/u4-acceptance/` are not retained repository evidence.
+
+Surviving evidence entry points include [public_contract](../../crates/harbor-widget/tests/public_contract.rs), [appearance_validation](../../crates/harbor-widget/tests/appearance_validation.rs), [backdrop_material](../../crates/harbor-widget/tests/backdrop_material.rs), [notification_card](../../crates/harbor-widget/tests/notification_card.rs), [text_input](../../crates/harbor-widget/tests/text_input.rs), [scroll_view](../../crates/harbor-widget/tests/scroll_view.rs), [macro compile fixtures](../../crates/harbor-widget-macros/tests/ui/) and [renamed-dependency fixture](../../crates/harbor-widget-macros/tests/fixtures/view-macro-renamed/). Test source locates coverage; it does not constitute a fresh execution result.
+
+### Remaining execution contract
+
+After the repair snapshot, the user reported native focus/IME, input ownership/switching and real Windows debug HMR reload/recovery smoke checks passed. These are **user-reported**, not independently observed by the agent. No separate executable/DLL build identity, exact reload count or lifecycle trace was supplied.
+
+**Still needs verification:** obtain a real-generation lifecycle trace/probe bound to the actual executable/DLL versions, establishing that old-generation callbacks, captures and registrations are released **before DLL unload**. Successful reload, no visible faults, compilation and mounted tests do not establish that ordering. Do not require repetition of the already user-reported interaction smoke solely because internal tracing is missing. Refresh affected checks after subsequent changes and bind new results to their actual revision/dirty scope.
+
+This is a missing-evidence obligation, not a proven defect or full U4 acceptance. U5/U6 and other specs' independent native/GPU/HMR obligations remain open.
