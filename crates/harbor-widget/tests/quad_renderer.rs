@@ -1,7 +1,6 @@
-//! Integration tests for QuadRenderer — slot_of, encode_range, and encode.
+//! Public ordered QuadRenderer and Runtime GPU integration tests.
 //!
-//! These tests require a wgpu Device; they are skipped silently if no GPU
-//! adapter is available.
+//! GPU tests report adapter availability; a skipped test is not GPU acceptance.
 
 use harbor_widget::layout::{Point, Rect, Size};
 use harbor_widget::renderer::Viewport;
@@ -219,10 +218,6 @@ fn read_texture_sized(
     bytes
 }
 
-fn make_viewport() -> Viewport {
-    Viewport::new(800, 600, 1.0)
-}
-
 fn make_quad_item(id: u64, order: u32, x: f32, y: f32, w: f32, h: f32) -> SceneItem {
     SceneItem {
         id,
@@ -287,6 +282,9 @@ fn render_quad_items(
     encode_ids: Option<&[u64]>,
 ) -> Vec<u8> {
     let mut renderer = QuadRenderer::new(device, wgpu::TextureFormat::Bgra8Unorm);
+    let mut ordered = items.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|item| item.paint_order);
+    let scene_ids: Vec<_> = ordered.iter().map(|item| item.id).collect();
     renderer.update(
         queue,
         &SceneDelta {
@@ -296,7 +294,13 @@ fn render_quad_items(
         },
         &viewport,
     );
-    render_retained_quads(device, queue, &renderer, target_size, encode_ids)
+    render_retained_quads(
+        device,
+        queue,
+        &renderer,
+        target_size,
+        encode_ids.unwrap_or(&scene_ids),
+    )
 }
 
 fn render_retained_quads(
@@ -304,7 +308,7 @@ fn render_retained_quads(
     queue: &wgpu::Queue,
     renderer: &QuadRenderer,
     target_size: u32,
-    encode_ids: Option<&[u64]>,
+    paint_order: &[u64],
 ) -> Vec<u8> {
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("quad primitive render target"),
@@ -339,16 +343,93 @@ fn render_retained_quads(
             timestamp_writes: None,
             multiview_mask: None,
         });
-        if let Some(ids) = encode_ids {
-            for id in ids {
-                renderer.encode_range(&mut pass, renderer.slot_of(*id).unwrap(), 1);
-            }
-        } else {
-            renderer.encode(&mut pass);
-        }
+        renderer.encode_ordered(&mut pass, paint_order.iter().copied());
     }
     queue.submit(Some(encoder.finish()));
     read_texture_sized(device, queue, &target, target_size)
+}
+
+#[test]
+fn independent_ordered_output_tracks_scene_edits_and_translucent_compositing() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for independent paint-order acceptance");
+        return;
+    };
+    // Both opaque occlusion and premultiplied alpha composition must follow
+    // paint order. IDs deliberately do not sort into that order.
+    for alpha in [1.0, 0.5] {
+        let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
+        let mut scene = harbor_widget::scene::SceneGraph::new();
+        let viewport = Viewport::new(32, 32, 1.0);
+        let frames: &[&[u64]] = &[
+            &[50, 10],     // Reverse allocation order on the initial upload.
+            &[10, 50],     // Same IDs, order-only edit.
+            &[10, 99, 50], // New slot between storage-adjacent retained items.
+            &[10, 50],     // Remove the inserted layer.
+            &[50],         // Free the other original slot.
+            &[50, 7],      // Reuse it at the top, not its old paint position.
+            &[50, 99, 7],  // Reinsert removed content in the middle.
+            &[99, 7, 50],  // Reorder all retained layers.
+            &[],           // No removed content may remain visible.
+        ];
+        let color = |id| {
+            let mut c = match id {
+                50 => Color::RED,
+                10 => Color::BLUE,
+                99 => Color::GREEN,
+                7 => Color::WHITE,
+                _ => unreachable!(),
+            };
+            c.a = alpha;
+            c
+        };
+        for (frame, ids) in frames.iter().enumerate() {
+            let items = ids
+                .iter()
+                .enumerate()
+                .map(|(order, &id)| {
+                    let mut item = make_rounded_item(
+                        id,
+                        Primitive::Quad {
+                            rect: Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)),
+                            color: color(id),
+                            corner_radius: 0.0,
+                        },
+                    );
+                    item.paint_order = order as u32;
+                    item
+                })
+                .collect();
+            let mut delta = scene.diff(items);
+            if frame == 0 {
+                delta.added.reverse();
+            }
+            renderer.update(&queue, &delta, &viewport);
+            let paint_order: Vec<_> = scene.items().iter().map(|item| item.id).collect();
+            let pixels = render_retained_quads(&device, &queue, &renderer, 32, &paint_order);
+            let actual = bgra(&pixels, 16, 16);
+            let mut expected = [0.0_f32; 4];
+            for &id in ids.iter() {
+                let c = color(id);
+                for (dst, src) in expected
+                    .iter_mut()
+                    .zip([c.b * c.a, c.g * c.a, c.r * c.a, c.a])
+                {
+                    *dst = src + *dst * (1.0 - c.a);
+                }
+            }
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!(
+                    (actual as f32 - expected * 255.0).abs() <= 2.0,
+                    "alpha={alpha}, frame={frame}, order={ids:?}: actual={actual}, expected={expected}"
+                );
+            }
+        }
+        eprintln!(
+            "Independent ordered GPU readback: alpha={alpha}, {} frames executed",
+            frames.len()
+        );
+    }
 }
 
 fn test_gradient(start: Point, end: Point, stops: &[(f32, Color)]) -> harbor_widget::Paint {
@@ -613,7 +694,7 @@ fn gradient_table_survives_growth_retained_edits_slot_reuse_and_viewport_refresh
     );
     assert_eq!(
         bgra(
-            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[1])),
+            &render_retained_quads(&device, &queue, &renderer, 32, &[1]),
             16,
             2
         ),
@@ -621,14 +702,12 @@ fn gradient_table_survives_growth_retained_edits_slot_reuse_and_viewport_refresh
     );
     assert_eq!(
         bgra(
-            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[300])),
+            &render_retained_quads(&device, &queue, &renderer, 32, &[300]),
             16,
             2
         ),
         [255, 0, 0, 255]
     );
-    let first_slot = renderer.slot_of(1);
-    let reused_slot = renderer.slot_of(300);
     items[0] = make(1, [Color::BLACK, Color::WHITE]);
     renderer.update(
         &queue,
@@ -656,11 +735,9 @@ fn gradient_table_survives_growth_retained_edits_slot_reuse_and_viewport_refresh
         },
         &viewport,
     );
-    assert_eq!(renderer.slot_of(400), reused_slot);
-    assert_eq!(renderer.slot_of(1), first_slot);
     assert_eq!(
         bgra(
-            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[400])),
+            &render_retained_quads(&device, &queue, &renderer, 32, &[400]),
             16,
             16
         ),
@@ -668,14 +745,14 @@ fn gradient_table_survives_growth_retained_edits_slot_reuse_and_viewport_refresh
     );
     assert_eq!(
         bgra(
-            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[1])),
+            &render_retained_quads(&device, &queue, &renderer, 32, &[1]),
             16,
             2
         ),
         [0, 0, 0, 255]
     );
     renderer.refresh_viewport(&queue, &items[..299], &Viewport::new(64, 64, 2.0));
-    let pixels = render_retained_quads(&device, &queue, &renderer, 64, Some(&[1]));
+    let pixels = render_retained_quads(&device, &queue, &renderer, 64, &[1]);
     assert_eq!(bgra(&pixels, 32, 60), [255; 4]);
     assert_eq!(bgra(&pixels, 32, 4), [0, 0, 0, 255]);
 }
@@ -1312,7 +1389,7 @@ fn should_render_rounded_fill_inside_shape_and_leave_corner_outside_shape_empty(
             timestamp_writes: None,
             multiview_mask: None,
         });
-        renderer.encode(&mut pass);
+        renderer.encode_ordered(&mut pass, [1]);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1388,7 +1465,7 @@ fn should_render_rounded_border_only_on_outer_ring() {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        renderer.encode(&mut pass);
+        renderer.encode_ordered(&mut pass, [1]);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1466,7 +1543,7 @@ fn should_render_collapsed_inner_border_as_a_bounded_outer_shape() {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        renderer.encode(&mut pass);
+        renderer.encode_ordered(&mut pass, [1]);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1543,7 +1620,7 @@ fn rounded_fill_keeps_straight_edges_and_selects_asymmetric_corner_radii() {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        renderer.encode(&mut pass);
+        renderer.encode_ordered(&mut pass, [1]);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1555,324 +1632,6 @@ fn rounded_fill_keeps_straight_edges_and_selects_asymmetric_corner_radii() {
     assert_eq!(pixel(0, 0), &[0, 0, 0, 0]);
     assert!(pixel(31, 0)[2] > 180 && pixel(31, 0)[3] > 180);
     assert!(pixel(0, 16)[2] > 180 && pixel(0, 16)[3] > 180);
-}
-
-#[test]
-fn should_return_none_for_unknown_id() {
-    let Some((device, _queue)) = try_create_device() else {
-        return;
-    };
-    let renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    assert_eq!(renderer.slot_of(999), None);
-    assert_eq!(renderer.slot_of(0), None);
-    assert_eq!(renderer.slot_of(1), None);
-}
-
-#[test]
-fn should_return_correct_slot_after_update() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    let item = make_quad_item(0, 0, 10.0, 20.0, 100.0, 50.0);
-    let delta = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    // First allocated slot is 0
-    let slot = renderer.slot_of(delta.added[0].id);
-    assert!(
-        slot.is_some(),
-        "slot_of should return Some for just-added item"
-    );
-    assert_eq!(slot.unwrap(), 0);
-}
-
-#[test]
-fn should_return_none_after_item_removed() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add item
-    let item = make_quad_item(0, 0, 10.0, 10.0, 50.0, 50.0);
-    let delta1 = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta1, &viewport);
-    let assigned_id = delta1.added[0].id;
-    assert!(renderer.slot_of(assigned_id).is_some());
-
-    // Remove it
-    let delta2 = SceneDelta {
-        added: vec![],
-        removed: vec![assigned_id],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta2, &viewport);
-    assert_eq!(renderer.slot_of(assigned_id), None);
-}
-
-#[test]
-fn should_recycle_free_slots() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add item A (slot 0), then item B (slot 1) — use distinct IDs
-    let item_a = make_quad_item(100, 0, 0.0, 0.0, 10.0, 10.0);
-    let item_b = make_quad_item(200, 1, 20.0, 0.0, 10.0, 10.0);
-    let delta1 = SceneDelta {
-        added: vec![item_a, item_b],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta1, &viewport);
-    let id_a = delta1.added[0].id;
-    let id_b = delta1.added[1].id;
-    assert_eq!(renderer.slot_of(id_a), Some(0));
-    assert_eq!(renderer.slot_of(id_b), Some(1));
-
-    // Remove A (slot 0 freed), add C — should reuse slot 0
-    let item_c = make_quad_item(300, 0, 30.0, 0.0, 10.0, 10.0);
-    let delta2 = SceneDelta {
-        added: vec![item_c],
-        removed: vec![id_a],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta2, &viewport);
-    let id_c = delta2.added[0].id;
-    assert_eq!(renderer.slot_of(id_b), Some(1), "B stays in slot 1");
-    assert_eq!(renderer.slot_of(id_c), Some(0), "C reuses freed slot 0");
-    assert_eq!(renderer.slot_of(id_a), None, "A is removed");
-}
-
-#[test]
-fn should_track_multiple_items_at_distinct_slots() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    let items: Vec<SceneItem> = (0..5)
-        .map(|i| make_quad_item((i + 10) as u64, i, i as f32 * 50.0, 0.0, 40.0, 30.0))
-        .collect();
-
-    let delta = SceneDelta {
-        added: items,
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    for (i, item) in delta.added.iter().enumerate() {
-        assert_eq!(
-            renderer.slot_of(item.id),
-            Some(i as u32),
-            "item {i} should be at slot {i}"
-        );
-    }
-}
-
-#[test]
-fn should_return_none_for_id_zero_by_default() {
-    let Some((device, _queue)) = try_create_device() else {
-        return;
-    };
-    let renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    // id 0 is the default/unset value; it won't be in the map unless added
-    assert_eq!(renderer.slot_of(0), None);
-}
-
-#[test]
-fn grows_instance_buffer_without_losing_live_slots() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-    let items = (0..257)
-        .map(|index| make_quad_item(index + 1, index as u32, 0.0, 0.0, 10.0, 10.0))
-        .collect();
-    let delta = SceneDelta {
-        added: items,
-        removed: vec![],
-        modified: vec![],
-    };
-
-    renderer.update(&queue, &delta, &viewport);
-
-    assert_eq!(renderer.slot_of(1), Some(0));
-    assert_eq!(renderer.slot_of(257), Some(256));
-}
-
-#[test]
-fn should_not_panic_on_encode_range_with_no_instances() {
-    let Some((device, _queue)) = try_create_device() else {
-        return;
-    };
-    let renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-        // No instances — should be a no-op, not panic
-        renderer.encode_range(&mut pass, 0, 1);
-        renderer.encode_range(&mut pass, 0, 0);
-        renderer.encode_range(&mut pass, 999, 1);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_not_panic_on_encode_range_with_instances() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add 3 instances
-    let items: Vec<SceneItem> = (0..3)
-        .map(|i| make_quad_item(0, i, i as f32 * 100.0, 0.0, 80.0, 40.0))
-        .collect();
-    let delta = SceneDelta {
-        added: items,
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-
-        // Encode all instances via range
-        renderer.encode_range(&mut pass, 0, 3);
-        // Encode a subset
-        renderer.encode_range(&mut pass, 0, 1);
-        renderer.encode_range(&mut pass, 1, 2);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_clamp_count_to_available_instances() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add 1 instance
-    let item = make_quad_item(0, 0, 0.0, 0.0, 100.0, 50.0);
-    let delta = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-
-        // count=100 but only 1 instance — should clamp to 1 and not panic
-        renderer.encode_range(&mut pass, 0, 100);
-        // start=5 >= 1 instances — should early-return and not panic
-        renderer.encode_range(&mut pass, 5, 10);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_encode_full_range_via_encode() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add 2 instances
-    let items = vec![
-        make_quad_item(0, 0, 0.0, 0.0, 100.0, 50.0),
-        make_quad_item(0, 1, 200.0, 0.0, 100.0, 50.0),
-    ];
-    let delta = SceneDelta {
-        added: items,
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-        // Full encode — should not panic
-        renderer.encode(&mut pass);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_encode_single_instance_with_range() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    let item = make_quad_item(0, 0, 0.0, 0.0, 100.0, 50.0);
-    let delta = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-        renderer.encode_range(&mut pass, 0, 1);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_handle_zero_count_gracefully() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    let item = make_quad_item(0, 0, 0.0, 0.0, 100.0, 50.0);
-    let delta = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-        // count=0 should be a no-op
-        renderer.encode_range(&mut pass, 0, 0);
-        renderer.encode_range(&mut pass, 1, 0);
-    }
-    encoder.finish();
 }
 
 // ── Runtime::encode with External primitives ────────────────────────────────
@@ -3358,74 +3117,6 @@ fn lucide_icon_uses_runtime_frame_encoding_and_ancestor_clip() {
     let pixels = render_quad_item(&device, &queue, item, Viewport::new(32, 32, 1.0), 32);
     assert_eq!(bgra(&pixels, 8, 12), [0; 4]);
     assert!(bgra(&pixels, 16, 12)[1] > 200);
-}
-
-#[test]
-fn lucide_icon_updates_reuse_slots_and_switch_safely_between_primitive_types() {
-    let Some((device, queue)) = try_create_device() else {
-        eprintln!("SKIP: no GPU adapter available for Lucide retention test");
-        return;
-    };
-    let viewport = Viewport::new(32, 32, 1.0);
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let mut item = make_rounded_item(
-        7,
-        Primitive::Icon {
-            icon: harbor_widget::LucideIcon::Plus,
-            rect: Rect::from_min_size(Point::ZERO, Size::new(24.0, 24.0)),
-            color: Color::WHITE,
-        },
-    );
-    renderer.update(
-        &queue,
-        &SceneDelta {
-            added: vec![item.clone()],
-            modified: vec![],
-            removed: vec![],
-        },
-        &viewport,
-    );
-    let slot = renderer.slot_of(7).unwrap();
-    item.primitive = Primitive::Icon {
-        icon: harbor_widget::LucideIcon::X,
-        rect: Rect::from_min_size(Point::ZERO, Size::new(16.0, 16.0)),
-        color: Color::RED,
-    };
-    renderer.update(
-        &queue,
-        &SceneDelta {
-            modified: vec![item.clone()],
-            added: vec![],
-            removed: vec![],
-        },
-        &viewport,
-    );
-    assert_eq!(renderer.slot_of(7), Some(slot));
-    renderer.refresh_viewport(&queue, &[item.clone()], &Viewport::new(64, 64, 2.0));
-    item.primitive = Primitive::Text {
-        text: Arc::from("label"),
-        origin: Point::ZERO,
-        color: Color::WHITE,
-    };
-    renderer.update(
-        &queue,
-        &SceneDelta {
-            modified: vec![item],
-            added: vec![],
-            removed: vec![],
-        },
-        &viewport,
-    );
-    assert_eq!(renderer.slot_of(7), None);
-    renderer.update(
-        &queue,
-        &SceneDelta {
-            removed: vec![7],
-            added: vec![],
-            modified: vec![],
-        },
-        &viewport,
-    );
 }
 
 #[test]

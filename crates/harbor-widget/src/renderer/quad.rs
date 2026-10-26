@@ -349,7 +349,31 @@ const CLIP_MASK_BLEND: wgpu::BlendState = wgpu::BlendState {
     },
 };
 
-/// Instanced GPU renderer for legacy scalar and independently rounded quads.
+/// Retained instanced renderer for quads, borders, shadows, paints and icons.
+///
+/// Prefer [crate::runtime::Runtime] for ordinary scenes: it coordinates text,
+/// external draws and backdrop filters as well as quad paint order.
+/// Independent consumers use [Self::update] and [Self::encode_ordered].
+/// A stable internal GPU slot is not a paint-order index.
+///
+/// Storage lookup and range drawing are deliberately not public:
+/// ```compile_fail
+/// use harbor_widget::renderer::quad::QuadRenderer;
+/// fn lookup(renderer: &QuadRenderer) { renderer.slot_of(1); }
+/// ```
+/// ```compile_fail
+/// use harbor_widget::renderer::quad::QuadRenderer;
+/// fn range<'a>(renderer: &'a QuadRenderer, pass: &mut wgpu::RenderPass<'a>) {
+///     renderer.encode_range(pass, 0, 1);
+/// }
+/// ```
+/// The old unordered entry is unavailable:
+/// ```compile_fail
+/// use harbor_widget::renderer::quad::QuadRenderer;
+/// fn unordered<'a>(renderer: &'a QuadRenderer, pass: &mut wgpu::RenderPass<'a>) {
+///     renderer.encode(pass);
+/// }
+/// ```
 pub struct QuadRenderer {
     pipeline: wgpu::RenderPipeline,
     clip_mask_pipeline: wgpu::RenderPipeline,
@@ -679,14 +703,39 @@ impl QuadRenderer {
         }
     }
 
-    pub fn encode<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
-        let count = self.instance_count.min(self.instance_capacity);
-        if count != 0 {
-            self.encode_impl(pass, 0, count);
+    /// Draws retained items in the supplied back-to-front scene paint order.
+    ///
+    /// Apply every scene delta with [Self::update] first. Supply each live ID
+    /// once, in paint order (for example, `scene.items().iter().map(|i| i.id)`).
+    /// The sequence, not numeric IDs or allocation history, defines drawing order;
+    /// it must be supplied again each frame, including order-only changes.
+    /// IDs without supported retained instances are skipped and break batches.
+    /// Text, external draws and backdrop filters require Runtime orchestration.
+    ///
+    /// Refresh the viewport with [Self::refresh_viewport] when it changes without
+    /// a scene edit. The caller owns the pass, submission and presentation.
+    pub fn encode_ordered<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        paint_order: impl IntoIterator<Item = u64>,
+    ) {
+        let mut run = QuadRun::new();
+        for id in paint_order {
+            if let Some(slot) = self.slot_of(id) {
+                run.extend(self, pass, slot);
+            } else {
+                run.flush(self, pass);
+            }
         }
+        run.flush(self, pass);
     }
 
-    pub fn encode_range<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, start: u32, count: u32) {
+    pub(crate) fn encode_range<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        start: u32,
+        count: u32,
+    ) {
         let capacity = self.instance_count.min(self.instance_capacity);
         if count != 0 && start < capacity {
             self.encode_impl(pass, start, count.min(capacity - start));
@@ -995,7 +1044,7 @@ impl QuadRenderer {
         );
     }
 
-    pub fn slot_of(&self, id: u64) -> Option<u32> {
+    pub(crate) fn slot_of(&self, id: u64) -> Option<u32> {
         self.id_to_slot.get(&id).copied()
     }
 
@@ -1055,3 +1104,51 @@ impl QuadRenderer {
         self.instance_capacity = new_capacity;
     }
 }
+
+/// Tracks the contiguous run of quad-renderer slots being batched into one
+/// draw call. A slot extends the run only while numerically adjacent to the
+/// previous one; anything else flushes the open run first.
+pub(crate) struct QuadRun {
+    start: Option<u32>,
+    count: u32,
+    previous: Option<u32>,
+}
+
+impl QuadRun {
+    pub(crate) fn new() -> Self {
+        Self {
+            start: None,
+            count: 0,
+            previous: None,
+        }
+    }
+
+    pub(crate) fn flush<'a>(
+        &mut self,
+        renderer: &'a QuadRenderer,
+        pass: &mut wgpu::RenderPass<'a>,
+    ) {
+        if let Some(start_slot) = self.start.take() {
+            renderer.encode_range(pass, start_slot, self.count);
+        }
+        self.count = 0;
+        self.previous = None;
+    }
+
+    pub(crate) fn extend<'a>(
+        &mut self,
+        renderer: &'a QuadRenderer,
+        pass: &mut wgpu::RenderPass<'a>,
+        slot: u32,
+    ) {
+        if self.previous != Some(slot.saturating_sub(1)) {
+            self.flush(renderer, pass);
+            self.start = Some(slot);
+        }
+        self.count += 1;
+        self.previous = Some(slot);
+    }
+}
+
+#[cfg(test)]
+mod tests;
