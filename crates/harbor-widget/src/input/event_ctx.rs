@@ -4,10 +4,14 @@ use crate::scene::primitive::ExternalDrawId;
 
 // ── EventHandled ────────────────────────────────────────────────────────────
 
-/// Whether a widget consumed an event.
+/// Whether to continue the current event walk. Independent hover/focus
+/// notifications and later input events have their own delivery/ownership rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventHandled {
+    /// Continue propagation, retaining any side effects already requested.
     Ignored,
+    /// Stop remaining handlers/phases after this handler; still commit its work.
+    /// Consumption alone does not request a repaint.
     Handled,
 }
 
@@ -35,11 +39,17 @@ pub(crate) enum EventCommand {
 
 // ── EventCtx ────────────────────────────────────────────────────────────────
 
-/// Per-event context for handler methods. Commands are accumulated during
-/// the event walk and applied atomically by `InputState::apply` afterward.
+/// Deferred side-effect requests for the current handler walk. Work is submitted
+/// after routing, even when a handler consumes the event. Propagation is controlled
+/// solely by the handler's [`EventHandled`] return, not by mutating this context.
+///
+/// The former explicit stopping method is not part of the public API:
+/// ```compile_fail
+/// use harbor_widget::input::event_ctx::EventCtx;
+/// EventCtx::new().stop_propagation();
+/// ```
 pub struct EventCtx {
     commands: Vec<EventCommand>,
-    propagation_stopped: bool,
     needs_paint: bool,
     clipboard_write: Option<String>,
     editor_clipboard: Option<crate::effects::EditorClipboardRequest>,
@@ -59,7 +69,6 @@ impl EventCtx {
         let clipboard_request_id = NEXT.fetch_add(1, Ordering::Relaxed);
         EventCtx {
             commands: Vec::new(),
-            propagation_stopped: false,
             needs_paint: false,
             clipboard_write: None,
             editor_clipboard: None,
@@ -173,19 +182,13 @@ impl EventCtx {
         self.commands.push(EventCommand::InvalidatePaint);
     }
 
-    /// Stop event propagation. No further handlers in the current phase
-    /// or subsequent phases will receive this event.
-    pub fn stop_propagation(&mut self) {
-        self.propagation_stopped = true;
-    }
-
     pub(crate) fn suppress_focus_navigation(&mut self) {
         self.focus_navigation_enabled = false;
     }
 
-    /// Request focus navigation within a FocusScope.
-    /// Called by FocusScope when it intercepts Tab/Shift+Tab.
-    pub(crate) fn navigate_focus(&mut self, forward: bool) {
+    /// Request focus navigation within a FocusScope. Returns whether a command
+    /// was queued; a suppressed Tab must remain available to the terminal.
+    pub(crate) fn navigate_focus(&mut self, forward: bool) -> bool {
         if self.focus_navigation_enabled
             && let Some(fid) = self.current_fiber
         {
@@ -193,17 +196,15 @@ impl EventCtx {
                 scope: fid,
                 forward,
             });
+            true
+        } else {
+            false
         }
     }
 
     /// Drain accumulated commands for post-walk application.
     pub(crate) fn take_commands(&mut self) -> Vec<EventCommand> {
         std::mem::take(&mut self.commands)
-    }
-
-    /// Whether stop_propagation was called during this walk.
-    pub(crate) fn is_propagation_stopped(&self) -> bool {
-        self.propagation_stopped
     }
 
     /// Whether any handler requested a paint invalidation.
@@ -241,7 +242,6 @@ mod tests {
     fn empty_ctx_no_commands() {
         let mut ctx = EventCtx::new();
         assert!(ctx.take_commands().is_empty());
-        assert!(!ctx.is_propagation_stopped());
         assert!(!ctx.needs_paint());
     }
 
@@ -280,15 +280,6 @@ mod tests {
         ctx.capture_pointer(1);
         let cmds = ctx.take_commands();
         assert!(cmds.is_empty());
-    }
-
-    #[test]
-    fn stop_propagation_sets_flag() {
-        let mut ctx = EventCtx::new();
-        assert!(!ctx.is_propagation_stopped());
-        ctx.stop_propagation();
-        assert!(ctx.is_propagation_stopped());
-        assert!(ctx.take_commands().is_empty());
     }
 
     #[test]

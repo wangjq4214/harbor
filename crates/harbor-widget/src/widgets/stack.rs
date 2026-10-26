@@ -6,7 +6,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 /// Overlay container. Positions all children at the same origin (0,0).
 #[derive(Clone)]
 pub struct Stack {
-    pub background: Option<Color>,
+    background: Option<Color>,
     children: Vec<View>,
 }
 
@@ -24,12 +24,39 @@ impl Stack {
         }
     }
 
-    pub fn background(mut self, color: Color) -> Self {
+    pub fn background(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("Stack.background", color)?;
         self.background = Some(color);
+        Ok(self)
+    }
+
+    /// Replaces the ordered child list, clearing it for empty input.
+    pub fn children<T: crate::IntoChildView>(
+        mut self,
+        children: impl IntoIterator<Item = T>,
+    ) -> Self {
+        self.children = children
+            .into_iter()
+            .map(crate::IntoChildView::into_child_view)
+            .collect();
         self
     }
 
-    pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
+    /// Appends children in iteration order.
+    pub fn extend_children<T: crate::IntoChildView>(
+        mut self,
+        children: impl IntoIterator<Item = T>,
+    ) -> Self {
+        self.children.extend(
+            children
+                .into_iter()
+                .map(crate::IntoChildView::into_child_view),
+        );
+        self
+    }
+
+    /// Appends one child after all existing children.
+    pub fn push_child(mut self, child: impl crate::IntoChildView) -> Self {
         self.children.push(child.into_child_view());
         self
     }
@@ -42,11 +69,12 @@ impl Component for Stack {
 }
 
 impl crate::WithChildren for Stack {
+    type Capability = crate::MultiChild;
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        self.children.extend(children.into_views());
+        self.children = children.into_views();
         Ok(self)
     }
 }
@@ -85,8 +113,8 @@ mod tests {
     #[test]
     fn stack_two_children() {
         let stack = Stack::new()
-            .child(SizedBox::new(Size::new(100.0, 50.0)))
-            .child(SizedBox::new(Size::new(80.0, 40.0)));
+            .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(80.0, 40.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![Size::new(100.0, 50.0), Size::new(80.0, 40.0)];
         let (own, positions) = stack.layout_children(
@@ -112,7 +140,9 @@ mod tests {
 
     #[test]
     fn stack_background_paint() {
-        let stack = Stack::new().background(Color::GREEN);
+        let stack = Stack::new()
+            .background(Color::GREEN)
+            .expect("finite background");
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 100.0));
         let prims = stack.paint_primitives(rect, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(prims.len(), 1);
@@ -132,7 +162,7 @@ mod tests {
 
     #[test]
     fn stack_child_larger_than_constraints() {
-        let stack = Stack::new().child(SizedBox::new(Size::new(1000.0, 1000.0)));
+        let stack = Stack::new().push_child(SizedBox::new(Size::new(1000.0, 1000.0)).unwrap());
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
         let child_sizes = vec![Size::new(1000.0, 1000.0)];
         let (own, positions) = stack.layout_children(
@@ -147,9 +177,9 @@ mod tests {
     #[test]
     fn stack_three_children_all_at_origin() {
         let stack = Stack::new()
-            .child(SizedBox::new(Size::new(100.0, 100.0)))
-            .child(SizedBox::new(Size::new(80.0, 80.0)))
-            .child(SizedBox::new(Size::new(60.0, 60.0)));
+            .push_child(SizedBox::new(Size::new(100.0, 100.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(80.0, 80.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(60.0, 60.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let child_sizes = vec![
             Size::new(100.0, 100.0),

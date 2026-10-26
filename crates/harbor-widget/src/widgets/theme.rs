@@ -18,15 +18,18 @@ pub struct ThemeProvider {
 }
 
 impl ThemeProvider {
-    pub fn new(theme: Theme) -> Self {
-        Self {
+    /// Validates both control roles and spacing before accepting a static theme.
+    pub fn new(theme: Theme) -> Result<Self, crate::theme::AppearanceError> {
+        theme.validate()?;
+        Ok(Self {
             source: ThemeSource::Static(Box::new(theme)),
             child: None,
-        }
+        })
     }
 
     /// Uses a signal as the provider value. Writes rebuild the provider subtree.
     /// Use [`Signal::new_distinct`] to avoid rebuilding for equal theme values.
+    /// Every consumed value is validated; invalid fields panic without fallback.
     pub fn from_signal(theme: Signal<Theme>) -> Self {
         Self {
             source: ThemeSource::Signal(theme),
@@ -46,7 +49,11 @@ impl Component for ThemeProvider {
             ThemeSource::Static(theme) => (**theme).clone(),
             ThemeSource::Signal(signal) => {
                 cx.track(signal);
-                signal.read().clone()
+                let theme = signal.read().clone();
+                theme
+                    .validate()
+                    .unwrap_or_else(|error| panic!("ThemeProvider::from_signal: {error}"));
+                theme
             }
         };
         View::new(
@@ -60,6 +67,7 @@ impl Component for ThemeProvider {
 }
 
 impl crate::WithChildren for ThemeProvider {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,

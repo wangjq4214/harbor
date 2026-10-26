@@ -1,5 +1,5 @@
 //! Integration tests for external input deferral through the public
-//! Runtime API (dispatch → drain_external_input) and CustomPaint widget.
+//! Runtime API (dispatch → drain_external_input) and ExternalSurface widget.
 
 use harbor_widget::input::event::{
     Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
@@ -7,7 +7,7 @@ use harbor_widget::input::event::{
 use harbor_widget::input::event_ctx::EventHandled;
 use harbor_widget::layout::{Point, Size};
 use harbor_widget::runtime::Runtime;
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::focus::Focus;
 use harbor_widget::widgets::focus_scope::FocusScope;
 use std::sync::Arc;
@@ -40,10 +40,10 @@ fn key_down(key: Key) -> UiEvent {
 
 #[test]
 fn should_queue_and_drain_external_input_round_trip() {
-    // Arrange: CustomPaint queues only while its owning Runtime is dispatching.
+    // Arrange: ExternalSurface queues only while its owning Runtime is dispatching.
     let event = key_down(Key::Enter);
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(42));
+    rt.set_root(ExternalSurface::new(42));
     rt.update(now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
@@ -62,7 +62,7 @@ fn should_queue_and_drain_external_input_round_trip() {
 fn should_drain_clears_queue() {
     // Arrange: queue two events during one Runtime dispatch sequence.
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(1));
+    rt.set_root(ExternalSurface::new(1));
     rt.update(now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
@@ -82,7 +82,7 @@ fn should_drain_clears_queue() {
 fn should_support_multiple_draw_ids() {
     // Arrange: two Runtime instances queue independently on the same thread.
     let mut first = Runtime::new();
-    first.set_root(CustomPaint::new(10));
+    first.set_root(ExternalSurface::new(10));
     first.update(now());
     assert!(first.focus_first_focusable());
     first.drain_external_input();
@@ -90,7 +90,7 @@ fn should_support_multiple_draw_ids() {
     first.dispatch(key_down(Key::Enter));
 
     let mut second = Runtime::new();
-    second.set_root(CustomPaint::new(20));
+    second.set_root(ExternalSurface::new(20));
     second.update(now());
     assert!(second.focus_first_focusable());
     second.drain_external_input();
@@ -122,7 +122,7 @@ fn should_support_pointer_events() {
         7,
     );
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(99));
+    rt.set_root(ExternalSurface::new(99));
     rt.update(now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
@@ -133,19 +133,19 @@ fn should_support_pointer_events() {
     assert_eq!(drained[0].1, pe);
 }
 
-// ── CustomPaint → external input integration (via Runtime::dispatch) ─────────
+// ── ExternalSurface → external input integration (via Runtime::dispatch) ─────────
 
 #[test]
-fn should_queue_event_when_custom_paint_dispatches_through_runtime() {
-    // Arrange: Runtime with CustomPaint root, focused to receive keyboard events
+fn should_queue_event_when_external_surface_dispatches_through_runtime() {
+    // Arrange: Runtime with ExternalSurface root, focused to receive keyboard events
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(77));
+    rt.set_root(ExternalSurface::new(77));
     rt.update(now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
     rt.drain_external_input();
 
-    // Act: dispatch a keyboard event through runtime (CustomPaint handles it,
+    // Act: dispatch a keyboard event through runtime (ExternalSurface handles it,
     // queues to external input trampoline)
     let event = key_down(Key::Escape);
     rt.dispatch(event.clone());
@@ -157,16 +157,16 @@ fn should_queue_event_when_custom_paint_dispatches_through_runtime() {
     assert_eq!(
         drained.len(),
         1,
-        "CustomPaint should queue its event via dispatch"
+        "ExternalSurface should queue its event via dispatch"
     );
     assert_eq!(drained[0].0, 77);
     assert_eq!(drained[0].1, event);
 }
 
 #[test]
-fn should_focus_custom_paint_at_startup_and_after_pointer_down() {
+fn should_focus_external_surface_at_startup_and_after_pointer_down() {
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(12));
+    rt.set_root(ExternalSurface::new(12));
     rt.update(now());
     let root_id = rt.root_id().unwrap();
 
@@ -193,9 +193,9 @@ fn should_focus_custom_paint_at_startup_and_after_pointer_down() {
 }
 
 #[test]
-fn should_forward_tab_and_shift_tab_from_pointer_focused_custom_paint() {
+fn should_forward_tab_and_shift_tab_from_pointer_focused_external_surface() {
     let mut rt = Runtime::new();
-    rt.set_root(FocusScope::new().child(Focus::new(CustomPaint::new(21))));
+    rt.set_root(FocusScope::new().child(Focus::new().child(ExternalSurface::new(21))));
     rt.update(now());
     rt.clear_focus();
 
@@ -208,7 +208,7 @@ fn should_forward_tab_and_shift_tab_from_pointer_focused_custom_paint() {
     let focused = rt
         .input()
         .focused()
-        .expect("pointer-down focuses the nested CustomPaint");
+        .expect("pointer-down focuses the nested ExternalSurface");
     rt.drain_external_input();
     rt.update(now());
 
@@ -234,15 +234,15 @@ fn should_forward_tab_and_shift_tab_from_pointer_focused_custom_paint() {
 }
 
 #[test]
-fn should_queue_multiple_custom_paint_events_across_dispatch() {
+fn should_queue_multiple_external_surface_events_across_dispatch() {
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(5));
+    rt.set_root(ExternalSurface::new(5));
     rt.update(now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
     rt.drain_external_input();
 
-    // Act: dispatch events via Runtime (CustomPaint queues them)
+    // Act: dispatch events via Runtime (ExternalSurface queues them)
     rt.dispatch(key_down(Key::Enter));
     rt.dispatch(key_down(Key::ArrowDown));
     rt.dispatch(key_down(Key::ArrowUp));
@@ -262,9 +262,9 @@ fn should_queue_multiple_custom_paint_events_across_dispatch() {
 }
 
 #[test]
-fn should_queue_pointer_events_from_custom_paint() {
+fn should_queue_pointer_events_from_external_surface() {
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(3));
+    rt.set_root(ExternalSurface::new(3));
     rt.update(now());
 
     // Dispatch pointer down + up
@@ -290,11 +290,11 @@ fn should_queue_pointer_events_from_custom_paint() {
 }
 
 #[test]
-fn should_not_queue_when_no_custom_paint_in_tree() {
-    // Arrange: Runtime with SizedBox (no CustomPaint, no external input handlers)
+fn should_not_queue_when_no_external_surface_in_tree() {
+    // Arrange: Runtime with SizedBox (no ExternalSurface, no external input handlers)
     use harbor_widget::widgets::sized_box::SizedBox;
     let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
     rt.update(now());
 
     // Act: dispatch events
@@ -310,14 +310,14 @@ fn should_not_queue_when_no_custom_paint_in_tree() {
     let drained = rt.drain_external_input();
     assert!(
         drained.is_empty(),
-        "no external input should be queued without CustomPaint"
+        "no external input should be queued without ExternalSurface"
     );
 }
 
 #[test]
 fn should_drain_empty_between_dispatches_when_already_drained() {
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(1));
+    rt.set_root(ExternalSurface::new(1));
     rt.update(now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
@@ -337,9 +337,9 @@ fn should_drain_empty_between_dispatches_when_already_drained() {
 }
 
 #[test]
-fn should_queue_wheel_events_from_custom_paint() {
+fn should_queue_wheel_events_from_external_surface() {
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(8));
+    rt.set_root(ExternalSurface::new(8));
     rt.update(now());
 
     let wheel = UiEvent::Pointer(PointerEvent::new(
@@ -357,9 +357,9 @@ fn should_queue_wheel_events_from_custom_paint() {
 }
 
 #[test]
-fn should_queue_focus_events_from_custom_paint() {
+fn should_queue_focus_events_from_external_surface() {
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(2));
+    rt.set_root(ExternalSurface::new(2));
     rt.update(now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
@@ -375,9 +375,9 @@ fn should_queue_focus_events_from_custom_paint() {
 }
 
 #[test]
-fn should_queue_move_events_from_custom_paint() {
+fn should_queue_move_events_from_external_surface() {
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(9));
+    rt.set_root(ExternalSurface::new(9));
     rt.update(now());
 
     let move_evt = pointer_event(
@@ -393,11 +393,11 @@ fn should_queue_move_events_from_custom_paint() {
     assert_eq!(drained[0].0, 9);
 }
 
-// ── CustomPaint public API tests ────────────────────────────────────────────
+// ── ExternalSurface public API tests ────────────────────────────────────────────
 
 #[test]
 fn should_clone_and_maintain_draw_id() {
-    let cp1 = CustomPaint::new(99);
+    let cp1 = ExternalSurface::new(99);
     let cp2 = cp1.clone();
     assert_eq!(cp2.draw_id(), 99);
     assert_eq!(cp2.draw_id(), cp1.draw_id());
@@ -407,7 +407,7 @@ fn should_clone_and_maintain_draw_id() {
 fn should_support_child_widgets_in_runtime() {
     use harbor_widget::widgets::sized_box::SizedBox;
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(7).child(SizedBox::new(Size::new(50.0, 30.0))));
+    rt.set_root(ExternalSurface::new(7).child(SizedBox::new(Size::new(50.0, 30.0)).unwrap()));
     rt.update(now());
 
     // Verify the tree built without panicking and has expected structure
@@ -415,11 +415,11 @@ fn should_support_child_widgets_in_runtime() {
     let arena = rt.arena();
     let root_fiber = arena.get(root_id).unwrap();
 
-    // CustomPaint with one child
+    // ExternalSurface with one child
     assert_eq!(
         root_fiber.children().len(),
         1,
-        "CustomPaint should have one child fiber"
+        "ExternalSurface should have one child fiber"
     );
 
     // Child should have layout_rect
@@ -431,9 +431,9 @@ fn should_support_child_widgets_in_runtime() {
 }
 
 #[test]
-fn should_handle_custom_paint_without_children() {
+fn should_handle_external_surface_without_children() {
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(1));
+    rt.set_root(ExternalSurface::new(1));
     let req = rt.update(now());
 
     assert!(req.request_redraw, "first update should request redraw");
@@ -443,23 +443,23 @@ fn should_handle_custom_paint_without_children() {
     let fiber = arena.get(root_id).unwrap();
     assert!(
         fiber.layout_rect().is_some(),
-        "CustomPaint should have a layout rect"
+        "ExternalSurface should have a layout rect"
     );
 }
 
 #[test]
-fn should_only_queue_for_focused_custom_paint() {
-    // When a CustomPaint is focused, keyboard events target it directly
+fn should_only_queue_for_focused_external_surface() {
+    // When a ExternalSurface is focused, keyboard events target it directly
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(11));
+    rt.set_root(ExternalSurface::new(11));
     rt.update(now());
 
-    // Set focus on the root (which is CustomPaint)
+    // Set focus on the root (which is ExternalSurface)
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
     rt.drain_external_input();
 
-    // Keyboard event: should route to focused CustomPaint, which queues
+    // Keyboard event: should route to focused ExternalSurface, which queues
     rt.dispatch(key_down(Key::Space));
 
     let drained = rt.drain_external_input();
@@ -473,10 +473,12 @@ fn should_leave_external_queue_empty_when_on_input_is_set() {
     let called = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&called);
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(55).on_input(Arc::new(move |_event, _ctx| {
-        flag.store(true, Ordering::Relaxed);
-        EventHandled::Handled
-    })));
+    rt.set_root(
+        ExternalSurface::new(55).on_input(Arc::new(move |_event, _ctx| {
+            flag.store(true, Ordering::Relaxed);
+            EventHandled::Handled
+        })),
+    );
     rt.update(now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
@@ -497,7 +499,7 @@ fn should_leave_external_queue_empty_when_on_input_is_set() {
 fn should_request_focus_on_pointer_down_when_on_input_is_set() {
     // Arrange
     let mut rt = Runtime::new();
-    rt.set_root(CustomPaint::new(12).on_input(Arc::new(|_event, _ctx| EventHandled::Handled)));
+    rt.set_root(ExternalSurface::new(12).on_input(Arc::new(|_event, _ctx| EventHandled::Handled)));
     rt.update(now());
     let root_id = rt.root_id().unwrap();
     rt.clear_focus();

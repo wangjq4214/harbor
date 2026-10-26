@@ -23,21 +23,21 @@ struct MacroTree {
 }
 
 impl Component for MacroTree {
-    fn build(&self, cx: &mut BuildCx) -> View {
-        crate::view! { cx; Column::new() => {
-            SizedBox::new(Size::new(10.0, 10.0)).color(Color::RED);
-            SizedBox::new(Size::new(20.0, 10.0)).color(Color::GREEN);
+    fn build(&self, _cx: &mut BuildCx) -> View {
+        crate::view! { Column::new() => {
+            SizedBox::new(Size::new(10.0, 10.0)).unwrap().background(Color::RED).expect("valid color");
+            SizedBox::new(Size::new(20.0, 10.0)).unwrap().background(Color::GREEN).expect("valid color");
             for (index, size) in self.values.iter().copied().enumerate() {
-                SizedBox::new(size).color(Color::BLUE).keyed(index.to_string());
+                SizedBox::new(size).unwrap().background(Color::BLUE).expect("valid color").keyed(index.to_string());
             }
             if self.show_extra {
-                SizedBox::new(Size::new(30.0, 10.0)).color(Color::WHITE);
+                SizedBox::new(Size::new(30.0, 10.0)).unwrap().background(Color::WHITE).expect("valid color");
             } else {
-                SizedBox::new(Size::new(40.0, 10.0)).color(Color::BLACK);
+                SizedBox::new(Size::new(40.0, 10.0)).unwrap().background(Color::BLACK).expect("valid color");
             }
             match self.values.first().copied() {
                 Some(size) if size.width > 0.0 => {
-                    SizedBox::new(size).color(Color::TRANSPARENT);
+                    SizedBox::new(size).unwrap().background(Color::TRANSPARENT).expect("valid color");
                 },
                 Some(_) => {},
                 None => {},
@@ -55,23 +55,50 @@ struct HandwrittenTree {
 impl Component for HandwrittenTree {
     fn build(&self, cx: &mut BuildCx) -> View {
         let mut children = Children::new();
-        children.push(SizedBox::new(Size::new(10.0, 10.0)).color(Color::RED));
-        children.push(SizedBox::new(Size::new(20.0, 10.0)).color(Color::GREEN));
+        children.push(
+            SizedBox::new(Size::new(10.0, 10.0))
+                .unwrap()
+                .background(Color::RED)
+                .expect("valid color"),
+        );
+        children.push(
+            SizedBox::new(Size::new(20.0, 10.0))
+                .unwrap()
+                .background(Color::GREEN)
+                .expect("valid color"),
+        );
         for (index, size) in self.values.iter().copied().enumerate() {
             children.push(
                 SizedBox::new(size)
-                    .color(Color::BLUE)
+                    .unwrap()
+                    .background(Color::BLUE)
+                    .expect("valid color")
                     .keyed(index.to_string()),
             );
         }
         if self.show_extra {
-            children.push(SizedBox::new(Size::new(30.0, 10.0)).color(Color::WHITE));
+            children.push(
+                SizedBox::new(Size::new(30.0, 10.0))
+                    .unwrap()
+                    .background(Color::WHITE)
+                    .expect("valid color"),
+            );
         } else {
-            children.push(SizedBox::new(Size::new(40.0, 10.0)).color(Color::BLACK));
+            children.push(
+                SizedBox::new(Size::new(40.0, 10.0))
+                    .unwrap()
+                    .background(Color::BLACK)
+                    .expect("valid color"),
+            );
         }
         match self.values.first().copied() {
             Some(size) if size.width > 0.0 => {
-                children.push(SizedBox::new(size).color(Color::TRANSPARENT));
+                children.push(
+                    SizedBox::new(size)
+                        .unwrap()
+                        .background(Color::TRANSPARENT)
+                        .expect("valid color"),
+                );
             }
             Some(_) | None => {}
         }
@@ -92,9 +119,9 @@ impl Component for KeyedMacroList {
         *self.items.borrow_mut() = Some(state.clone());
         let current_items = state.read();
 
-        crate::view! { cx; Column::new() => {
+        crate::view! { Column::new() => {
             for item in current_items.iter() {
-                SizedBox::new(Size::new(10.0, 10.0)).keyed(*item);
+                SizedBox::new(Size::new(10.0, 10.0)).unwrap().keyed(*item);
             }
         } }
     }
@@ -106,10 +133,10 @@ struct MacroButtonTree {
 }
 
 impl Component for MacroButtonTree {
-    fn build(&self, cx: &mut BuildCx) -> View {
+    fn build(&self, _cx: &mut BuildCx) -> View {
         let clicked = self.clicked.clone();
-        crate::view! { cx; Column::new() => {
-            Button::new("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst));
+        crate::view! { Column::new() => {
+            Button::text("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst));
         } }
     }
 }
@@ -123,7 +150,7 @@ impl Component for HandwrittenButtonTree {
     fn build(&self, cx: &mut BuildCx) -> View {
         let clicked = self.clicked.clone();
         let children = Children::one(
-            Button::new("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst)),
+            Button::text("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst)),
         );
         Column::new().with_children(children).unwrap().build(cx)
     }
@@ -150,6 +177,20 @@ fn fiber_signature(runtime: &Runtime, id: crate::fiber::FiberId) -> FiberSignatu
     }
 }
 
+/// Compares fiber trees from the root's first child, ignoring root identity:
+/// the mounted description's component type differs by design from the
+/// handwritten build's returned concrete root type (ADR 0079: the root Fiber
+/// identity belongs to the deferred description, not the flattened result).
+fn child_tree_signature(sig: &FiberSignature) -> Vec<(Option<Rect>, TypeId)> {
+    fn walk(sig: &FiberSignature) -> Vec<(Option<Rect>, TypeId)> {
+        let mut out = vec![(sig.rect, sig.widget_type)];
+        for child in &sig.children {
+            out.extend(walk(child));
+        }
+        out
+    }
+    sig.children.iter().flat_map(walk).collect()
+}
 fn scene_signature(runtime: &Runtime) -> Vec<(Primitive, u32)> {
     runtime
         .pending_delta()
@@ -189,8 +230,22 @@ fn declarative_tree_matches_handwritten_layout_and_scene_output() {
     handwritten_runtime.update(Instant::now());
 
     assert_eq!(
-        fiber_signature(&macro_runtime, macro_runtime.root_id().unwrap()),
-        fiber_signature(&handwritten_runtime, handwritten_runtime.root_id().unwrap()),
+        child_tree_signature(&fiber_signature(
+            &macro_runtime,
+            macro_runtime.root_id().unwrap()
+        )),
+        child_tree_signature(&fiber_signature(
+            &handwritten_runtime,
+            handwritten_runtime.root_id().unwrap(),
+        )),
+    );
+    assert_eq!(
+        macro_runtime
+            .arena()
+            .get(macro_runtime.root_id().unwrap())
+            .unwrap()
+            .widget_type(),
+        TypeId::of::<MacroTree>(),
     );
     assert_eq!(
         scene_signature(&macro_runtime),
@@ -204,8 +259,8 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     struct MacroLeaf;
 
     impl Component for MacroLeaf {
-        fn build(&self, cx: &mut BuildCx) -> View {
-            crate::view! { cx; SizedBox::new(Size::new(10.0, 10.0)); }
+        fn build(&self, _cx: &mut BuildCx) -> View {
+            crate::view! { SizedBox::new(Size::new(10.0, 10.0)); }
         }
     }
 
@@ -214,7 +269,7 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
 
     impl Component for HandwrittenLeaf {
         fn build(&self, cx: &mut BuildCx) -> View {
-            SizedBox::new(Size::new(10.0, 10.0)).build(cx)
+            SizedBox::new(Size::new(10.0, 10.0)).unwrap().build(cx)
         }
     }
 
@@ -222,8 +277,8 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     struct MacroSingle;
 
     impl Component for MacroSingle {
-        fn build(&self, cx: &mut BuildCx) -> View {
-            crate::view! { cx; Padding::all(2.0) => {
+        fn build(&self, _cx: &mut BuildCx) -> View {
+            crate::view! { Padding::all(2.0) => {
                 SizedBox::new(Size::new(10.0, 10.0));
             } }
         }
@@ -235,7 +290,8 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     impl Component for HandwrittenSingle {
         fn build(&self, cx: &mut BuildCx) -> View {
             Padding::all(2.0)
-                .child(SizedBox::new(Size::new(10.0, 10.0)))
+                .unwrap()
+                .child(SizedBox::new(Size::new(10.0, 10.0)).unwrap())
                 .build(cx)
         }
     }
@@ -247,8 +303,21 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     handwritten_leaf.set_root(HandwrittenLeaf);
     handwritten_leaf.update(Instant::now());
     assert_eq!(
-        fiber_signature(&macro_leaf, macro_leaf.root_id().unwrap()),
-        fiber_signature(&handwritten_leaf, handwritten_leaf.root_id().unwrap()),
+        child_tree_signature(&fiber_signature(&macro_leaf, macro_leaf.root_id().unwrap())),
+        child_tree_signature(&fiber_signature(
+            &handwritten_leaf,
+            handwritten_leaf.root_id().unwrap()
+        )),
+    );
+    // The macro root fiber keeps the mounted description's component identity
+    // instead of the flattened concrete root type.
+    assert_eq!(
+        macro_leaf
+            .arena()
+            .get(macro_leaf.root_id().unwrap())
+            .unwrap()
+            .widget_type(),
+        TypeId::of::<MacroLeaf>(),
     );
 
     let mut macro_single = Runtime::new();
@@ -258,8 +327,14 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
     handwritten_single.set_root(HandwrittenSingle);
     handwritten_single.update(Instant::now());
     assert_eq!(
-        fiber_signature(&macro_single, macro_single.root_id().unwrap()),
-        fiber_signature(&handwritten_single, handwritten_single.root_id().unwrap()),
+        child_tree_signature(&fiber_signature(
+            &macro_single,
+            macro_single.root_id().unwrap()
+        )),
+        child_tree_signature(&fiber_signature(
+            &handwritten_single,
+            handwritten_single.root_id().unwrap()
+        )),
     );
 }
 
@@ -329,7 +404,7 @@ fn macro_preserves_expression_evaluation_order_and_reachability() {
 
     fn logged_leaf(log: &RefCell<Vec<&'static str>>, label: &'static str) -> SizedBox {
         log.borrow_mut().push(label);
-        SizedBox::new(Size::new(1.0, 1.0))
+        SizedBox::new(Size::new(1.0, 1.0)).unwrap()
     }
 
     fn logged_bool(log: &RefCell<Vec<&'static str>>, label: &'static str, value: bool) -> bool {
@@ -337,15 +412,8 @@ fn macro_preserves_expression_evaluation_order_and_reachability() {
         value
     }
 
-    fn logged_cx<'a>(cx: &'a mut BuildCx, log: &RefCell<Vec<&'static str>>) -> &'a mut BuildCx {
-        log.borrow_mut().push("context");
-        cx
-    }
-
     let log = RefCell::new(Vec::new());
-    let mut cx = BuildCx::stub();
     let _ = crate::view! {
-        logged_cx(&mut cx, &log);
         logged_column(&log, "root") => {
             logged_leaf(&log, "first");
             logged_column(&log, "parent") => {
@@ -385,22 +453,21 @@ fn macro_preserves_expression_evaluation_order_and_reachability() {
             "guard",
             "match",
             "root",
-            "context",
         ]
     );
 }
 
 #[test]
-fn leaf_root_evaluates_component_then_context_then_build() {
+fn leaf_root_defers_build_until_reconciliation() {
     #[derive(Clone)]
     struct LoggedRoot {
         log: Rc<RefCell<Vec<&'static str>>>,
     }
 
     impl Component for LoggedRoot {
-        fn build(&self, cx: &mut BuildCx) -> View {
+        fn build(&self, _cx: &mut BuildCx) -> View {
             self.log.borrow_mut().push("build");
-            SizedBox::new(Size::new(1.0, 1.0)).build(cx)
+            SizedBox::new(Size::new(1.0, 1.0)).unwrap().build(_cx)
         }
     }
 
@@ -409,14 +476,243 @@ fn leaf_root_evaluates_component_then_context_then_build() {
         LoggedRoot { log: log.clone() }
     }
 
-    fn context<'a>(cx: &'a mut BuildCx, log: &Rc<RefCell<Vec<&'static str>>>) -> &'a mut BuildCx {
-        log.borrow_mut().push("context");
-        cx
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let description = crate::view! { root(&log); };
+    drop(description);
+
+    // The macro evaluates the root expression once and converts it through
+    // `IntoChildView`; the component must not be built yet. Building happens
+    // when a Runtime mounts the component against its own Fiber.
+    assert_eq!(*log.borrow(), ["component"]);
+
+    let mut runtime = Runtime::new();
+    runtime.set_root(root(&log));
+    runtime.update(Instant::now());
+    runtime.update(Instant::now());
+    assert_eq!(*log.borrow(), ["component", "component", "build"]);
+
+    // A subsequent update with no dirty state must not rebuild the root
+    // description again.
+    runtime.update(Instant::now());
+    assert_eq!(*log.borrow(), ["component", "component", "build"]);
+}
+
+#[test]
+fn self_deferring_build_chain_fails_loudly() {
+    #[derive(Clone)]
+    struct SelfDefer;
+
+    impl Component for SelfDefer {
+        fn build(&self, _cx: &mut BuildCx) -> View {
+            View::deferred(SelfDefer)
+        }
     }
 
-    let log = Rc::new(RefCell::new(Vec::new()));
-    let mut cx = BuildCx::stub();
-    let _ = crate::view! { context(&mut cx, &log); root(&log); };
+    let mut runtime = Runtime::new();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.set_root(SelfDefer);
+        runtime.update(Instant::now());
+    }));
+    assert!(
+        outcome.is_err(),
+        "a build chain that only defers itself must be rejected, not spin"
+    );
+}
 
-    assert_eq!(*log.borrow(), ["component", "context", "build"]);
+#[test]
+fn block_replacement_matches_builders_including_keys_scene_and_routing() {
+    for nested in [false, true] {
+        let mut runtimes = Vec::new();
+        for use_macro in [false, true] {
+            let clicked = Arc::new(AtomicBool::new(false));
+            let callback = clicked.clone();
+            let incoming = Button::text("replacement")
+                .on_click(move |_| callback.store(true, Ordering::SeqCst))
+                .keyed("b");
+            let parent = Padding::all(4.0)
+                .unwrap()
+                .child(Button::text("old").keyed("a"));
+            let description = if use_macro {
+                crate::view! { parent => { incoming; } }
+            } else {
+                crate::construction::IntoChildView::into_child_view(parent.child(incoming))
+            };
+            let mut runtime = Runtime::new();
+            if nested {
+                runtime.set_root(crate::view! { Column::new() => { description; } });
+            } else {
+                runtime.set_root(description);
+            }
+            runtime.update(Instant::now());
+            let parent_id = if nested {
+                runtime
+                    .arena()
+                    .get(runtime.root_id().unwrap())
+                    .unwrap()
+                    .children()[0]
+            } else {
+                runtime.root_id().unwrap()
+            };
+            let children = runtime.arena().get(parent_id).unwrap().children();
+            assert_eq!(children.len(), 1);
+            assert_eq!(
+                runtime.arena().get(children[0]).unwrap().key(),
+                Some(&crate::view::Key::new("b"))
+            );
+            click(&mut runtime, Point::new(10.0, 16.0));
+            assert!(clicked.load(Ordering::SeqCst));
+            runtimes.push(runtime);
+        }
+        assert_eq!(
+            fiber_signature(&runtimes[0], runtimes[0].root_id().unwrap()),
+            fiber_signature(&runtimes[1], runtimes[1].root_id().unwrap())
+        );
+        assert_eq!(scene_signature(&runtimes[0]), scene_signature(&runtimes[1]));
+    }
+}
+
+#[test]
+fn empty_block_clears_but_value_expression_preserves_staged_content() {
+    for clear in [false, true] {
+        let staged = Padding::all(2.0)
+            .unwrap()
+            .child(SizedBox::new(Size::new(3.0, 4.0)).unwrap());
+        let tree = if clear {
+            crate::view! { staged => {} }
+        } else {
+            crate::view! { staged; }
+        };
+        let mut runtime = Runtime::new();
+        runtime.set_root(tree);
+        runtime.update(Instant::now());
+        assert_eq!(
+            runtime
+                .arena()
+                .get(runtime.root_id().unwrap())
+                .unwrap()
+                .children()
+                .len(),
+            usize::from(!clear)
+        );
+    }
+}
+
+#[test]
+fn dynamic_macro_validates_zero_one_many_at_construction_and_not_layout() {
+    for staged in [false, true] {
+        for count in 0..=2 {
+            let evaluated = RefCell::new(Vec::new());
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::view! {
+                    {
+                        evaluated.borrow_mut().push("parent");
+                        let parent = Padding::all(1.0).unwrap();
+                        if staged { parent.child(SizedBox::new(Size::ZERO).unwrap()) } else { parent }
+                    } => {
+                        for _ in 0..count {
+                            { evaluated.borrow_mut().push("child"); SizedBox::new(Size::new(2.0, 3.0)) };
+                        }
+                    }
+                }
+            }));
+            assert_eq!(&evaluated.borrow()[..count], vec!["child"; count]);
+            assert_eq!(evaluated.borrow().last(), Some(&"parent"));
+            match outcome {
+                Ok(tree) => {
+                    assert!(count <= 1);
+                    let mut runtime = Runtime::new();
+                    runtime.set_root(tree);
+                    runtime.update(Instant::now());
+                    assert_eq!(
+                        runtime
+                            .arena()
+                            .get(runtime.root_id().unwrap())
+                            .unwrap()
+                            .children()
+                            .len(),
+                        count
+                    );
+                }
+                Err(payload) => {
+                    assert_eq!(count, 2);
+                    let message = payload.downcast_ref::<String>().unwrap();
+                    assert!(message.contains("view! child construction failed: Padding accepts at most one child; received 2 children"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[expect(
+    clippy::blocks_in_conditions,
+    reason = "side-effectful macro scrutinees must be tested in place to prove lazy evaluation"
+)]
+fn bounded_alternatives_are_lazy_single_assignments_and_builds_stay_deferred() {
+    for choice in 0..3 {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let child = |name| {
+            log.borrow_mut().push(name);
+            let log = log.clone();
+            move |cx: &mut BuildCx| {
+                log.borrow_mut().push("build");
+                SizedBox::new(Size::new(2.0, 3.0)).unwrap().build(cx)
+            }
+        };
+        let tree = crate::view! {
+            { log.borrow_mut().push("parent"); Padding::all(0.0).unwrap().child(SizedBox::new(Size::ZERO).unwrap()) } => {
+                if { log.borrow_mut().push("condition"); choice == 0 } {
+                    child("if-child");
+                } else if choice == 1 {
+                    match { log.borrow_mut().push("match"); choice } {
+                        1 if { log.borrow_mut().push("guard"); true } => { child("match-child"); },
+                        _ => { child("unselected"); },
+                    }
+                } else {}
+            }
+        };
+        let expected = match choice {
+            0 => vec!["condition", "if-child", "parent"],
+            1 => vec!["condition", "match", "guard", "match-child", "parent"],
+            _ => vec!["condition", "parent"],
+        };
+        assert_eq!(*log.borrow(), expected);
+        let mut runtime = Runtime::new();
+        runtime.set_root(tree);
+        runtime.update(Instant::now());
+        assert_eq!(
+            runtime
+                .arena()
+                .get(runtime.root_id().unwrap())
+                .unwrap()
+                .children()
+                .len(),
+            usize::from(choice < 2)
+        );
+        assert_eq!(
+            log.borrow().iter().filter(|&&s| s == "build").count(),
+            usize::from(choice < 2)
+        );
+    }
+}
+
+#[test]
+fn overwritten_staged_expression_still_runs_once_after_block_children() {
+    let log = RefCell::new(Vec::new());
+    let tree = crate::view! {
+        {
+            log.borrow_mut().push("parent");
+            Padding::all(1.0).unwrap().child({
+                log.borrow_mut().push("staged");
+                SizedBox::new(Size::ZERO).unwrap()
+            })
+        } => {
+            { log.borrow_mut().push("incoming"); SizedBox::new(Size::new(1.0, 2.0)) };
+        }
+    };
+    assert_eq!(*log.borrow(), vec!["incoming", "parent", "staged"]);
+    let mut runtime = Runtime::new();
+    runtime.set_root(tree);
+    runtime.update(Instant::now());
+    assert_eq!(*log.borrow(), vec!["incoming", "parent", "staged"]);
 }

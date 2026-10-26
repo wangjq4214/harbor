@@ -16,9 +16,17 @@ pub(crate) enum AppEvent {
     OpenHyperlink(String),
     /// Default-on configuration observation; never carries a parsed candidate.
     ConfigurationWatch,
+    /// Device-level work; not terminal invalidation or a redraw.
+    GpuWake,
     /// Opaque adapter work transported to the owning main-window Host.
     #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
     WidgetHostWork(harbor_widget::winit::WidgetHmrWork),
+}
+
+impl From<harbor_widget::winit::GpuWakeEvent> for AppEvent {
+    fn from(_: harbor_widget::winit::GpuWakeEvent) -> Self {
+        Self::GpuWake
+    }
 }
 
 /// Maps host wake events to source-agnostic runtime invalidation.
@@ -27,7 +35,7 @@ pub(crate) fn external_invalidation_for_app_event(
 ) -> Option<ExternalInvalidation> {
     match event {
         AppEvent::TerminalOutputReady(_) => Some(ExternalInvalidation::new()),
-        AppEvent::OpenHyperlink(_) | AppEvent::ConfigurationWatch => None,
+        AppEvent::OpenHyperlink(_) | AppEvent::ConfigurationWatch | AppEvent::GpuWake => None,
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         AppEvent::WidgetHostWork(_) => None,
     }
@@ -36,6 +44,18 @@ pub(crate) fn external_invalidation_for_app_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_wake_does_not_request_render_invalidation() {
+        assert!(matches!(
+            AppEvent::from(harbor_widget::winit::GpuWakeEvent),
+            AppEvent::GpuWake
+        ));
+        assert_eq!(
+            external_invalidation_for_app_event(&AppEvent::GpuWake),
+            None
+        );
+    }
 
     #[test]
     fn terminal_output_event_maps_only_to_generic_external_invalidation() {

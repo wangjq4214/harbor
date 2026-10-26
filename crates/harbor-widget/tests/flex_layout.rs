@@ -13,8 +13,8 @@ use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{
-    Alignment, Axis, BoxDecoration, Column, ConstrainedBox, DecoratedBox, Expanded, Flex, FlexFit,
-    Flexible, MainAxisAlignment, Row, Separator, Spacer,
+    Axis, BoxDecoration, Column, ConstrainedBox, CrossAxisAlignment, DecoratedBox, Expanded, Flex,
+    FlexFit, Flexible, MainAxisAlignment, Row, Separator, Spacer,
 };
 
 fn size(axis: Axis, main: f32, cross: f32) -> Size {
@@ -122,10 +122,24 @@ fn rail(axis: Axis, extent: f32) -> Flex {
         Axis::Vertical => Separator::horizontal(),
     };
     Flex::new(axis)
-        .cross_axis_alignment(Alignment::Stretch)
-        .child(bounds(axis, extent, extent).child(SizedBox::new(Size::ZERO).color(Color::RED)))
-        .child(separator.color(Color::BLACK))
-        .child(Expanded::new().child(SizedBox::new(Size::ZERO).color(Color::BLUE)))
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .push_child(
+            bounds(axis, extent, extent).child(
+                SizedBox::new(Size::ZERO)
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color"),
+            ),
+        )
+        .push_child(separator.color(Color::BLACK).expect("valid color"))
+        .push_child(
+            Expanded::new().child(
+                SizedBox::new(Size::ZERO)
+                    .unwrap()
+                    .background(Color::BLUE)
+                    .expect("valid color"),
+            ),
+        )
 }
 
 #[test]
@@ -175,8 +189,11 @@ fn real_runtime_rail_matrix_has_exact_bounded_rail_separator_and_residual() {
 #[test]
 fn decorated_padded_root_deflates_before_flex_allocation() {
     let runtime = mount(
-        DecoratedBox::new(BoxDecoration::default())
-            .child(Padding::all(8.0).child(rail(Axis::Horizontal, 200.0))),
+        DecoratedBox::new(BoxDecoration::default()).child(
+            Padding::all(8.0)
+                .unwrap()
+                .child(rail(Axis::Horizontal, 200.0)),
+        ),
         Size::new(1016.0, 616.0),
     );
     assert_finite_tree(&runtime);
@@ -213,19 +230,20 @@ fn main_and_cross_alignment_matrix_uses_actual_occupied_extent_plus_minimum_gaps
     for axis in [Axis::Horizontal, Axis::Vertical] {
         for (alignment, offsets) in alignments {
             for cross in [
-                Alignment::Start,
-                Alignment::Center,
-                Alignment::End,
-                Alignment::Stretch,
+                CrossAxisAlignment::Start,
+                CrossAxisAlignment::Center,
+                CrossAxisAlignment::End,
+                CrossAxisAlignment::Stretch,
             ] {
                 let runtime = mount(
                     tight(size(axis, 100.0, 40.0)).child(
                         Flex::new(axis)
                             .gap(5.0)
+                            .unwrap()
                             .main_axis_alignment(alignment)
                             .cross_axis_alignment(cross)
-                            .child(SizedBox::new(size(axis, 10.0, 10.0)))
-                            .child(SizedBox::new(size(axis, 20.0, 20.0))),
+                            .push_child(SizedBox::new(size(axis, 10.0, 10.0)).unwrap())
+                            .push_child(SizedBox::new(size(axis, 20.0, 20.0)).unwrap()),
                     ),
                     size(axis, 100.0, 40.0),
                 );
@@ -233,10 +251,10 @@ fn main_and_cross_alignment_matrix_uses_actual_occupied_extent_plus_minimum_gaps
                 for (index, &offset) in offsets.iter().enumerate() {
                     let natural = (index + 1) as f32 * 10.0;
                     let (cross_offset, extent) = match cross {
-                        Alignment::Start => (0.0, natural),
-                        Alignment::Center => ((40.0 - natural) / 2.0, natural),
-                        Alignment::End => (40.0 - natural, natural),
-                        Alignment::Stretch => (0.0, 40.0),
+                        CrossAxisAlignment::Start => (0.0, natural),
+                        CrossAxisAlignment::Center => ((40.0 - natural) / 2.0, natural),
+                        CrossAxisAlignment::End => (40.0 - natural, natural),
+                        CrossAxisAlignment::Stretch => (0.0, 40.0),
                     };
                     assert_rect(
                         rect(&runtime, &[0, index]),
@@ -255,9 +273,9 @@ fn loose_fit_keeps_unused_share_and_spacer_consumes_its_tight_share() {
         let runtime = mount(
             Flex::new(axis)
                 .main_axis_alignment(MainAxisAlignment::End)
-                .child(Flexible::new().child(SizedBox::new(size(axis, 10.0, 5.0))))
-                .child(Spacer::new())
-                .child(Expanded::new().child(SizedBox::new(size(axis, 2.0, 5.0)))),
+                .push_child(Flexible::new().child(SizedBox::new(size(axis, 10.0, 5.0)).unwrap()))
+                .push_child(Spacer::new())
+                .push_child(Expanded::new().child(SizedBox::new(size(axis, 2.0, 5.0)).unwrap())),
             size(axis, 90.0, 20.0),
         );
         assert_finite_tree(&runtime);
@@ -284,11 +302,11 @@ fn factor_rounding_keeps_exact_committed_edge_without_phantom_overflow() {
     for axis in [Axis::Horizontal, Axis::Vertical] {
         let runtime = mount(
             Flex::new(axis)
-                .child(Expanded::new().child(SizedBox::new(Size::ZERO)))
-                .child(
+                .push_child(Expanded::new().child(SizedBox::new(Size::ZERO).unwrap()))
+                .push_child(
                     Expanded::new()
                         .factor(NonZeroU32::new(2).unwrap())
-                        .child(SizedBox::new(Size::ZERO)),
+                        .child(SizedBox::new(Size::ZERO).unwrap()),
                 ),
             size(axis, 100.0, 20.0),
         );
@@ -304,11 +322,11 @@ fn factors_and_fit_builders_allocate_proportional_sizes() {
     for axis in [Axis::Horizontal, Axis::Vertical] {
         let mut flex = Flex::new(axis);
         for factor in [1, 2, 3] {
-            flex = flex.child(
+            flex = flex.push_child(
                 Flexible::new()
                     .factor(NonZeroU32::new(factor).unwrap())
                     .fit(FlexFit::Tight)
-                    .child(SizedBox::new(Size::ZERO)),
+                    .child(SizedBox::new(Size::ZERO).unwrap()),
             );
         }
         let runtime = mount(flex, size(axis, 120.0, 20.0));
@@ -335,7 +353,10 @@ fn empty_single_child_and_no_flex_preserve_shrink_wrap_and_parent_minimum() {
             MainAxisAlignment::SpaceEvenly,
         ] {
             let runtime = mount(
-                Flex::new(axis).gap(20.0).main_axis_alignment(alignment),
+                Flex::new(axis)
+                    .gap(20.0)
+                    .unwrap()
+                    .main_axis_alignment(alignment),
                 size(axis, 100.0, 40.0),
             );
             assert_eq!(rect(&runtime, &[]).size(), Size::ZERO);
@@ -343,8 +364,9 @@ fn empty_single_child_and_no_flex_preserve_shrink_wrap_and_parent_minimum() {
                 bounds(axis, 50.0, 100.0).child(
                     Flex::new(axis)
                         .gap(20.0)
+                        .unwrap()
                         .main_axis_alignment(alignment)
-                        .child(SizedBox::new(size(axis, 10.0, 5.0))),
+                        .push_child(SizedBox::new(size(axis, 10.0, 5.0)).unwrap()),
                 ),
                 size(axis, 100.0, 40.0),
             );
@@ -365,7 +387,7 @@ fn constrained_box_caps_without_preferring_max_and_parent_minimum_wins() {
     let runtime = mount(
         ConstrainedBox::new()
             .max_width(200.0)
-            .child(SizedBox::new(Size::new(40.0, 10.0))),
+            .child(SizedBox::new(Size::new(40.0, 10.0)).unwrap()),
         Size::new(1000.0, 100.0),
     );
     assert_eq!(rect(&runtime, &[]).size(), Size::new(40.0, 10.0));
@@ -374,7 +396,7 @@ fn constrained_box_caps_without_preferring_max_and_parent_minimum_wins() {
             ConstrainedBox::new()
                 .max_width(20.0)
                 .max_height(10.0)
-                .child(SizedBox::new(Size::ZERO)),
+                .child(SizedBox::new(Size::ZERO).unwrap()),
         ),
         Size::new(1000.0, 100.0),
     );
@@ -387,10 +409,12 @@ fn facades_preserve_type_identity_existing_backgrounds_and_shared_flex_behavior(
     let runtime = mount(
         Row::new()
             .background(Color::RED)
+            .expect("finite background")
             .gap(1.0)
+            .unwrap()
             .main_axis_alignment(MainAxisAlignment::End)
-            .child(SizedBox::new(Size::new(10.0, 5.0)))
-            .child(Expanded::new().child(SizedBox::new(Size::ZERO))),
+            .push_child(SizedBox::new(Size::new(10.0, 5.0)).unwrap())
+            .push_child(Expanded::new().child(SizedBox::new(Size::ZERO).unwrap())),
         Size::new(100.0, 40.0),
     );
     assert_eq!(fiber(&runtime, &[]).widget_type(), TypeId::of::<Row>());
@@ -412,10 +436,12 @@ fn facades_preserve_type_identity_existing_backgrounds_and_shared_flex_behavior(
     let runtime = mount(
         Column::new()
             .background(Color::BLUE)
+            .expect("finite background")
             .gap(1.0)
+            .unwrap()
             .main_axis_alignment(MainAxisAlignment::Start)
-            .child(SizedBox::new(Size::new(5.0, 10.0)))
-            .child(Expanded::new().child(SizedBox::new(Size::ZERO))),
+            .push_child(SizedBox::new(Size::new(5.0, 10.0)).unwrap())
+            .push_child(Expanded::new().child(SizedBox::new(Size::ZERO).unwrap())),
         Size::new(40.0, 100.0),
     );
     assert_eq!(fiber(&runtime, &[]).widget_type(), TypeId::of::<Column>());
@@ -428,15 +454,20 @@ struct CountedLeaf(Rc<Cell<usize>>);
 impl Component for CountedLeaf {
     fn build(&self, cx: &mut BuildCx) -> View {
         self.0.set(self.0.get() + 1);
-        SizedBox::new(Size::new(10.0, 5.0)).build(cx)
+        SizedBox::new(Size::new(10.0, 5.0)).unwrap().build(cx)
     }
 }
 
 #[test]
 fn wrappers_defer_build_and_resizing_does_not_rebuild_components() {
     let builds = Rc::new(Cell::new(0));
-    let component = Row::new()
-        .child(Expanded::new().child(Padding::all(2.0).child(CountedLeaf(builds.clone()))));
+    let component = Row::new().push_child(
+        Expanded::new().child(
+            Padding::all(2.0)
+                .unwrap()
+                .child(CountedLeaf(builds.clone())),
+        ),
+    );
     assert_eq!(builds.get(), 0);
     let mut runtime = mount(component, Size::new(100.0, 50.0));
     assert_eq!(builds.get(), 1);
@@ -452,8 +483,10 @@ fn wrappers_defer_build_and_resizing_does_not_rebuild_components() {
 #[test]
 fn metadata_does_not_tunnel_and_conflicting_immediate_wrappers_are_diagnosed() {
     let runtime = mount(
-        Row::new().child(
-            Padding::all(0.0).child(Expanded::new().child(SizedBox::new(Size::new(10.0, 5.0)))),
+        Row::new().push_child(
+            Padding::all(0.0)
+                .unwrap()
+                .child(Expanded::new().child(SizedBox::new(Size::new(10.0, 5.0)).unwrap())),
         ),
         Size::new(100.0, 50.0),
     );
@@ -465,8 +498,9 @@ fn metadata_does_not_tunnel_and_conflicting_immediate_wrappers_are_diagnosed() {
             .contains(&LayoutDiagnostic::InvalidFlexParent)
     );
     let runtime = mount(
-        Row::new().child(
-            Expanded::new().child(Flexible::new().child(SizedBox::new(Size::new(10.0, 5.0)))),
+        Row::new().push_child(
+            Expanded::new()
+                .child(Flexible::new().child(SizedBox::new(Size::new(10.0, 5.0)).unwrap())),
         ),
         Size::new(100.0, 50.0),
     );
@@ -484,24 +518,8 @@ fn metadata_does_not_tunnel_and_conflicting_immediate_wrappers_are_diagnosed() {
 #[test]
 fn invalid_widget_numeric_values_abort_without_invalid_geometry_or_retry_loop() {
     for value in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        let mut runtime = mount(
-            Row::new().gap(value).child(SizedBox::new(Size::ZERO)),
-            Size::new(100.0, 50.0),
-        );
-        assert_eq!(
-            fiber(&runtime, &[]).layout_error(),
-            Some(LayoutError::InvalidConstraints)
-        );
-        assert_eq!(rect(&runtime, &[]).size(), Size::ZERO);
-        assert!(!runtime.update(Instant::now()).request_redraw);
-        let runtime = mount(
-            Separator::vertical().thickness(value),
-            Size::new(100.0, 50.0),
-        );
-        assert_eq!(
-            fiber(&runtime, &[]).layout_error(),
-            Some(LayoutError::InvalidConstraints)
-        );
+        assert!(Row::new().gap(value).is_err());
+        assert!(Separator::vertical().thickness(value).is_err());
     }
     let runtime = mount(
         ConstrainedBox::new().min_width(200.0).max_width(100.0),
@@ -539,17 +557,18 @@ fn deterministic_finite_inputs_keep_all_allocations_and_diagnostics_finite() {
             let fixed = (seed % 256) as f32;
             let flex = Flex::new(axis)
                 .gap(gap)
-                .cross_axis_alignment(Alignment::Stretch)
-                .child(bounds(axis, fixed, fixed))
-                .child(
+                .unwrap()
+                .cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .push_child(bounds(axis, fixed, fixed))
+                .push_child(
                     Flexible::new()
                         .factor(NonZeroU32::new(seed.max(1)).unwrap())
-                        .child(SizedBox::new(size(axis, 17.25, 1.0))),
+                        .child(SizedBox::new(size(axis, 17.25, 1.0)).unwrap()),
                 )
-                .child(
+                .push_child(
                     Expanded::new()
                         .factor(NonZeroU32::new(u32::MAX).unwrap())
-                        .child(SizedBox::new(Size::ZERO)),
+                        .child(SizedBox::new(Size::ZERO).unwrap()),
                 );
             let runtime = mount(flex, size(axis, width, 31.0));
             assert_finite_tree(&runtime);
@@ -564,10 +583,11 @@ fn excessive_gaps_and_inflexible_siblings_leave_zero_shares_and_clear_overflow_a
     for axis in [Axis::Horizontal, Axis::Vertical] {
         let flex = Flex::new(axis)
             .gap(8.0)
+            .unwrap()
             .main_axis_alignment(MainAxisAlignment::End)
-            .child(SizedBox::new(size(axis, 40.0, 5.0)))
-            .child(SizedBox::new(size(axis, 40.0, 5.0)))
-            .child(Expanded::new());
+            .push_child(SizedBox::new(size(axis, 40.0, 5.0)).unwrap())
+            .push_child(SizedBox::new(size(axis, 40.0, 5.0)).unwrap())
+            .push_child(Expanded::new());
         let mut runtime = mount(flex, size(axis, 10.0, 20.0));
         assert_finite_tree(&runtime);
         assert_eq!(
@@ -595,9 +615,9 @@ fn excessive_gaps_and_inflexible_siblings_leave_zero_shares_and_clear_overflow_a
         let runtime = mount(
             Flex::new(axis)
                 .main_axis_alignment(MainAxisAlignment::Center)
-                .child(SizedBox::new(size(axis, 80.0, 5.0)))
-                .child(SizedBox::new(size(axis, 80.0, 5.0)))
-                .child(Expanded::new()),
+                .push_child(SizedBox::new(size(axis, 80.0, 5.0)).unwrap())
+                .push_child(SizedBox::new(size(axis, 80.0, 5.0)).unwrap())
+                .push_child(Expanded::new()),
             size(axis, 100.0, 20.0),
         );
         assert_finite_tree(&runtime);
@@ -617,19 +637,21 @@ fn excessive_gaps_and_inflexible_siblings_leave_zero_shares_and_clear_overflow_a
 #[test]
 fn wide_and_nested_flex_trees_complete_within_measurement_budget() {
     let mut wide = Row::new()
-        .cross_axis_alignment(Alignment::Stretch)
-        .gap(0.125);
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .gap(0.125)
+        .unwrap();
     for index in 0..2048 {
-        wide = wide.child(
+        wide = wide.push_child(
             Expanded::new()
                 .factor(NonZeroU32::new(index + 1).unwrap())
-                .child(SizedBox::new(Size::ZERO)),
+                .child(SizedBox::new(Size::ZERO).unwrap()),
         );
     }
     let runtime = mount(wide, Size::new(4096.0, 100.0));
     assert!(assert_finite_tree(&runtime) > 4096);
 
-    let mut nested = Flex::new(Axis::Horizontal).child(SizedBox::new(Size::new(1.0, 1.0)));
+    let mut nested =
+        Flex::new(Axis::Horizontal).push_child(SizedBox::new(Size::new(1.0, 1.0)).unwrap());
     for level in 0..24 {
         let axis = if level % 2 == 0 {
             Axis::Horizontal
@@ -637,9 +659,9 @@ fn wide_and_nested_flex_trees_complete_within_measurement_budget() {
             Axis::Vertical
         };
         nested = Flex::new(axis)
-            .cross_axis_alignment(Alignment::Stretch)
-            .child(SizedBox::new(size(axis, 1.0, 1.0)))
-            .child(Expanded::new().child(nested));
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .push_child(SizedBox::new(size(axis, 1.0, 1.0)).unwrap())
+            .push_child(Expanded::new().child(nested));
     }
     let runtime = mount(nested, Size::new(512.0, 512.0));
     assert!(assert_finite_tree(&runtime) > 70);

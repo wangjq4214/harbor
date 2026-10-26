@@ -1,7 +1,7 @@
 # Widget Decoration and Terminal Chrome
 
 **Spec ID:** 0009
-**Status:** Implemented
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-08-26
 
 **Superseded in part:** the earlier 16dp inset and 12dp/25%/4dp/12dp preset in the acceptance text below are superseded by the current Terminal Window Inset (4dp) and Terminal Decoration Preset (8dp radius, 10%-opaque shadow, 1dp offset and blur) recorded in CONTEXT.md. The earlier values are retained as historical design intent.

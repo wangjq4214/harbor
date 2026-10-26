@@ -1,0 +1,109 @@
+error[E0277]: the trait bound `EditableText: WithChildren` is not satisfied
+ --> tests/ui/fail/remaining_leaf_blocks.rs:6:21
+  |
+6 |     let _ = view! { EditableText::new(TextEditingController::new("")) => {} };
+  |                     ^^^^^^^^^^^^ the trait `WithChildren` is not implemented for `EditableText`
+  |
+  = help: the following other types implement trait `WithChildren`:
+            ActionHandler<A>
+            Align
+            BackdropFilter
+            Button
+            Column
+            ConstrainedBox
+            DecoratedBox
+            Expanded
+          and $N others
+note: required by a bound in `with_static_children`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | pub fn with_static_children<const N: usize, C: WithChildren>(
+  |                                                ^^^^^^^^^^^^ required by this bound in `with_static_children`
+
+error[E0277]: the trait bound `TextField: WithChildren` is not satisfied
+ --> tests/ui/fail/remaining_leaf_blocks.rs:7:21
+  |
+7 |     let _ = view! { TextField::new(TextEditingController::new("")) => {} };
+  |                     ^^^^^^^^^ the trait `WithChildren` is not implemented for `TextField`
+  |
+  = help: the following other types implement trait `WithChildren`:
+            ActionHandler<A>
+            Align
+            BackdropFilter
+            Button
+            Column
+            ConstrainedBox
+            DecoratedBox
+            Expanded
+          and $N others
+note: required by a bound in `with_static_children`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | pub fn with_static_children<const N: usize, C: WithChildren>(
+  |                                                ^^^^^^^^^^^^ required by this bound in `with_static_children`
+
+error[E0277]: the trait bound `NotificationCard: WithChildren` is not satisfied
+ --> tests/ui/fail/remaining_leaf_blocks.rs:8:21
+  |
+8 |     let _ = view! { NotificationCard::new("message", || {}) => {} };
+  |                     ^^^^^^^^^^^^^^^^ the trait `WithChildren` is not implemented for `NotificationCard`
+  |
+  = help: the following other types implement trait `WithChildren`:
+            ActionHandler<A>
+            Align
+            BackdropFilter
+            Button
+            Column
+            ConstrainedBox
+            DecoratedBox
+            Expanded
+          and $N others
+note: required by a bound in `with_static_children`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | pub fn with_static_children<const N: usize, C: WithChildren>(
+  |                                                ^^^^^^^^^^^^ required by this bound in `with_static_children`
+
+error[E0277]: the trait bound `Separator: WithChildren` is not satisfied
+ --> tests/ui/fail/remaining_leaf_blocks.rs:9:21
+  |
+9 |     let _ = view! { Separator::horizontal() => {} };
+  |                     ^^^^^^^^^ the trait `WithChildren` is not implemented for `Separator`
+  |
+  = help: the following other types implement trait `WithChildren`:
+            ActionHandler<A>
+            Align
+            BackdropFilter
+            Button
+            Column
+            ConstrainedBox
+            DecoratedBox
+            Expanded
+          and $N others
+note: required by a bound in `with_static_children`
+ --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+  |
+  | pub fn with_static_children<const N: usize, C: WithChildren>(
+  |                                                ^^^^^^^^^^^^ required by this bound in `with_static_children`
+
+error[E0277]: the trait bound `Spacer: WithChildren` is not satisfied
+  --> tests/ui/fail/remaining_leaf_blocks.rs:10:21
+   |
+10 |     let _ = view! { Spacer::new() => {} };
+   |                     ^^^^^^ the trait `WithChildren` is not implemented for `Spacer`
+   |
+   = help: the following other types implement trait `WithChildren`:
+             ActionHandler<A>
+             Align
+             BackdropFilter
+             Button
+             Column
+             ConstrainedBox
+             DecoratedBox
+             Expanded
+           and $N others
+note: required by a bound in `with_static_children`
+  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
+   |
+   | pub fn with_static_children<const N: usize, C: WithChildren>(
+   |                                                ^^^^^^^^^^^^ required by this bound in `with_static_children`

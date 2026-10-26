@@ -141,7 +141,7 @@ The crates meet at an application-owned bridge rather than depending on each oth
 
 ```text
 native host / application policy
-  -> harbor-widget CustomPaint allocation, input, IME, and scheduling
+  -> harbor-widget ExternalSurface allocation, input, IME, and scheduling
     -> application terminal bridge
       -> harbor-terminal PTY, screen, parser, and renderer
 ```

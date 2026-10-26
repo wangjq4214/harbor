@@ -1,0 +1,70 @@
+error[E0432]: unresolved import `harbor_widget::widgets::notification`
+ --> tests/ui/fail/old_notification_names.rs:1:29
+  |
+1 | use harbor_widget::widgets::notification::{NotificationPlacement, NotificationStyle};
+  |                             ^^^^^^^^^^^^ could not find `notification` in `widgets`
+
+error[E0432]: unresolved imports `harbor_widget::Alignment`, `harbor_widget::Notification`
+ --> tests/ui/fail/old_notification_names.rs:2:21
+  |
+2 | use harbor_widget::{Alignment, Notification};
+  |                     ^^^^^^^^^  ^^^^^^^^^^^^ no `Notification` in the root
+  |                     |
+  |                     no `Alignment` in the root
+  |
+  = help: consider importing this enum instead:
+          std::fmt::Alignment
+help: a similar name exists in the module
+  |
+2 | use harbor_widget::{Alignment2D, Notification};
+  |                              ++
+help: a similar name exists in the module
+  |
+2 | use harbor_widget::{Alignment, NotificationCard};
+  |                                            ++++
+
+error[E0432]: unresolved import `harbor_widget::layout::Alignment`
+ --> tests/ui/fail/old_notification_names.rs:4:5
+  |
+4 | use harbor_widget::layout::Alignment;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^---------
+  |                            |
+  |                            no `Alignment` in `layout`
+  |
+help: a similar name exists in the module
+  |
+4 | use harbor_widget::layout::Alignment2D;
+  |                                     ++
+help: consider importing this enum instead
+  |
+4 - use harbor_widget::layout::Alignment;
+4 + use std::fmt::Alignment;
+  |
+
+error[E0432]: unresolved import `harbor_widget::layout::align`
+ --> tests/ui/fail/old_notification_names.rs:5:28
+  |
+5 | use harbor_widget::layout::align::Alignment as OldModuleAlignment;
+  |                            ^^^^^ could not find `align` in `layout`
+
+error[E0432]: unresolved imports `harbor_widget::widgets::notification_card::Notification`, `harbor_widget::widgets::notification_card::NotificationPlacement`, `harbor_widget::widgets::notification_card::NotificationStyle`
+ --> tests/ui/fail/old_notification_names.rs:7:5
+  |
+7 |     Notification, NotificationPlacement, NotificationStyle,
+  |     ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^ no `NotificationStyle` in `widgets::notification_card`
+  |     |             |
+  |     |             no `NotificationPlacement` in `widgets::notification_card`
+  |     no `Notification` in `widgets::notification_card`
+  |
+help: a similar name exists in the module
+  |
+7 |     NotificationCard, NotificationPlacement, NotificationStyle,
+  |                 ++++
+help: a similar name exists in the module
+  |
+7 |     Notification, NotificationCardPlacement, NotificationStyle,
+  |                               ++++
+help: a similar name exists in the module
+  |
+7 |     Notification, NotificationPlacement, NotificationCardStyle,
+  |                                                      ++++

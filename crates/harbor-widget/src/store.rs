@@ -193,7 +193,7 @@ mod tests {
         fn build(&self, cx: &mut BuildCx) -> View {
             self.builds.set(self.builds.get() + 1);
             self.observed.set(*self.store.watch(cx));
-            SizedBox::new(Size::new(1.0, 1.0)).build(cx)
+            SizedBox::new(Size::new(1.0, 1.0)).unwrap().build(cx)
         }
     }
 

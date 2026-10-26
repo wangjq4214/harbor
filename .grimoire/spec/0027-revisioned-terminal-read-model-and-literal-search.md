@@ -1,9 +1,9 @@
 # Revisioned Terminal Read Model and Literal Search
 
 **Spec ID:** 0027
-**Status:** Read model, literal consumer and current-session integration implemented; integrated Windows/performance acceptance pending.
+**Status:** Accepted (owner-confirmed)
 **Sources:** [#175](https://github.com/wangjq4214/harbor/issues/175), initial literal slice of [#159](https://github.com/wangjq4214/harbor/issues/159), approved current-session entry/highlights/navigation. [#160](https://github.com/wangjq4214/harbor/issues/160) supplies future shell compatibility, not full workflow delivery.
-**Lifecycle extension:** [Spec 0033](./0033-exclusive-extensible-application-popups.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md) require search to close and clear its query, results, highlights and pending work when another participating popup replaces it. Reopening starts empty; existing provenance, bounded cancellation and no-stale-publication requirements remain unchanged. This selects behavior, not implementation acceptance.
+**Lifecycle extension:** [Spec 0033](./0033-exclusive-extensible-application-popups.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md) require search to close and clear its query, results, highlights and pending work when another participating popup replaces it. Reopening starts empty; existing provenance, bounded cancellation and no-stale-publication requirements remain unchanged.
 
 ## Requirements
 ### R1 — Bounded read-only content
@@ -49,7 +49,7 @@ Painting/hover consumes prepared results, never scans/copies complete history ea
 ### R9 — Verification and honest completion
 Cover all R4 events, output during work, overwrite at still-resolvable anchors, late-query rejection, long paged soft lines and Unicode cell projection through real application acceptance/activation. Windows search/navigation under output and repeated width/height resize needs runtime evidence, not source/model tests.
 Use validation policy and [profiling guide](../../docs/developer/profiling.md): exact revision/dirty paths, environment/Windows/app/ConPTY, profile/features, commands/steps, expected/observed outcomes, artifacts/exclusions and PASS/FAIL/NOT RUN/BLOCKED. Self-contained summaries or retrievable CI artifacts; raw recordings local, no secrets.
-Run fmt, all-target/all-feature clippy with warnings denied, workspace tests and check_docs (locked policy variants allowed), plus focused/core-only gates. Inventory is not readiness; code/spec/closed predecessor issues are not runtime acceptance.
+Repository validation and focused/core-only gates remain applicable. Inventory is not readiness; code/spec/closed predecessor issues are not runtime evidence.
 
 ## End-to-End Verification
 | Scenario | Required observation |
@@ -64,20 +64,19 @@ Run fmt, all-target/all-feature clippy with warnings denied, workspace tests and
 | Large history | Populate, scan, repeated unchanged frames/hover, cancel/replace and repeat under output: documented batch/retention bounds, no per-frame full scan, bounded cancellation, useful progress. |
 
 ## Stable Slice Contracts and Evidence
-Aliases `0018-revisioned-terminal-read-model-and-literal-search`: T0001 → T0002 → T0003 → T0004. Producers have focused regressions immediately, not deferred to integrated QA; shared files alone create no extra dependency.
-| Slice | Contract and preserved acceptance aliases | Evidence/state |
-| --- | --- | --- |
-| T0001 | R1–R5/R8/R9; A1 bounded/lifetime/limits, A2 continuity/retention, A3 independent headless readers/no damage or event consumption, A4 identity/revisions, A5 full mutation matrix, A6 Unicode/metadata/neutral targets, A7 GPU-independent core/future OSC anchors/API docs | Done, scoped automation; read-model contract |
-| T0002 | R2–R6/R8/R9; A1 literal semantics, A2 provenance/publication/activation contract, A3 bounded cancellation/late lifecycle, A4 paged Unicode/retention, A5 mutation/output progress, A6 bounded work/resources/honest coverage | Done, headless automation; literal contract |
-| T0003 | R2–R9; A1 usable current-session slice, A2 real publication/activation gates, A3 host session/query lifecycle, A4 neutral current-geometry render/no rescans, A5 commands/ownership/no PTY bytes, A6 integrated progress/invalidation | Done, scoped app/core/GPU automation; current-session integration contract. Its original editor limitations are superseded by 0028, not current constraints. |
-| T0004 | A1 full scenario matrix/real gates, A2 Windows runtime, A3 work/memory measurements, A4 evidence identity/honesty, A5 gates/scoped conclusion | Todo; acceptance below remains open. |
+Stable aliases `0018-revisioned-terminal-read-model-and-literal-search`:
+| Slice | Contract and preserved acceptance aliases |
+| --- | --- |
+| T0001 | R1–R5/R8/R9; A1 bounded/lifetime/limits, A2 continuity/retention, A3 independent headless readers/no damage or event consumption, A4 identity/revisions, A5 full mutation matrix, A6 Unicode/metadata/neutral targets, A7 GPU-independent core/future OSC anchors/API docs |
+| T0002 | R2–R6/R8/R9; A1 literal semantics, A2 provenance/publication/activation contract, A3 bounded cancellation/late lifecycle, A4 paged Unicode/retention, A5 mutation/output progress, A6 bounded work/resources/honest coverage |
+| T0003 | R2–R9; A1 usable current-session slice, A2 real publication/activation gates, A3 host session/query lifecycle, A4 neutral current-geometry render/no rescans, A5 commands/ownership/no PTY bytes, A6 integrated progress/invalidation. Original editor limitations are superseded by 0028. |
+| T0004 | A1 full scenario matrix/real gates, A2 Windows runtime, A3 work/memory measurements, A4 evidence identity/honesty, A5 gates/scoped conclusion |
 Delivered concrete API/limits/invalidation are documented in the linked guides and tracked source/tests. Current generation strategy deterministically invalidates resize/reflow; this is a delivered choice, not a new mandatory algorithm. Original API/thread/cache/layout/shortcut choices were not fixed by the spec.
 
 ### Outstanding Integrated Acceptance
-T0004 must run every matrix row on the actual application, including stored activation after presentation, preserve/run earlier focused suites and report exact applications/transports/exclusions. Windows must show entry/highlights/previous-next during continuing output and repeated narrowing/widening/height changes, Unicode/long lines, useful results and no stale/wrong-session action or live input corruption. Respect history/non-ConPTY versus producer-live/rectangular retention; discarded tails stay lost.
+Regression scope: the matrix above, including stored activation after presentation and useful search/navigation under continuing output and repeated width/height changes. Discarded tails remain lost.
 For large-history A3 record workload/history size, sessions/dwell, machine/OS/fonts/viewport/scale, executable profile/instrumentation and captures. Measure read/copy/scan and query/result retention separately from unchanged frames/hover, cancellation/replacement and output refresh; compare like scenarios, separate timing from DHAT allocations. Do not invent thresholds.
-A4/A5 require self-contained/retrievable evidence and all applicable gates, explicit failures/NOT RUN and delivered interaction/limit/invalidation summary. Historical GPU font-replacement comparison intermittently failed then passed without changes; cause remains unproven, not fixed by rerun.
-#169/#170/#176 closure at source inspection does not prove fresh acceptance or change ADR history. Completing this slice alone does not close #159/#160; explicitly retain/link their remaining accepted scope. No new material matching/product/architecture decision may be inferred.
+Historical GPU font-replacement comparison intermittently failed then passed without changes; cause remains unproven, not fixed by rerun. This slice does not complete the remaining #159/#160 scope.
 
 ## Out of Scope
 Regex/advanced case options, global cross-session search, automatic URL/file detection/opening, plugins, mutable Screen, ring/storage replacement/unlimited history, full shell command/directory workflows/new OSC parsing, pane delivery or universal renderer hosting. Preserve [GPU-independent core](../adr/0045-gpu-independent-terminal-core-boundary.md), existing OSC 8 activation and transactional PTY/model resize.

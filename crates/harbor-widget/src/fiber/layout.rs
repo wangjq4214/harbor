@@ -682,7 +682,7 @@ mod tests {
             }),
             vec![],
         );
-        let adapter = insert(&mut arena, Padding::all(0.0), vec![leaf]);
+        let adapter = insert(&mut arena, Padding::all(0.0).unwrap(), vec![leaf]);
         let root = insert(
             &mut arena,
             view(|constraints, children| {
@@ -1499,7 +1499,7 @@ mod tests {
 
     #[test]
     fn built_in_unbounded_cross_stretch_chains_stay_within_shared_budget() {
-        use crate::layout::Alignment;
+        use crate::layout::CrossAxisAlignment;
         use crate::widgets::column::Column;
         use crate::widgets::row::Row;
         use crate::widgets::sized_box::SizedBox;
@@ -1522,21 +1522,29 @@ mod tests {
                         Size::new(cross, main)
                     }
                 };
-                let leaf = insert(&mut arena, SizedBox::new(axis_size(3.0, 7.0)), vec![]);
+                let leaf = insert(
+                    &mut arena,
+                    SizedBox::new(axis_size(3.0, 7.0)).unwrap(),
+                    vec![],
+                );
                 let mut root = leaf;
                 for level in 0..depth {
                     let cross = 20.0 + if growing_cross { level as f32 } else { 0.0 };
-                    let sibling = insert(&mut arena, SizedBox::new(axis_size(2.0, cross)), vec![]);
+                    let sibling = insert(
+                        &mut arena,
+                        SizedBox::new(axis_size(2.0, cross)).unwrap(),
+                        vec![],
+                    );
                     root = if horizontal {
                         insert(
                             &mut arena,
-                            Row::new().cross_axis_alignment(Alignment::Stretch),
+                            Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                             vec![root, sibling],
                         )
                     } else {
                         insert(
                             &mut arena,
-                            Column::new().cross_axis_alignment(Alignment::Stretch),
+                            Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                             vec![root, sibling],
                         )
                     };
@@ -1590,7 +1598,7 @@ mod tests {
 
     #[test]
     fn deep_staggered_builtin_stretch_chains_use_one_natural_and_one_final_traversal() {
-        use crate::layout::Alignment;
+        use crate::layout::CrossAxisAlignment;
         use crate::widgets::column::Column;
         use crate::widgets::row::Row;
         use crate::widgets::sized_box::SizedBox;
@@ -1605,24 +1613,28 @@ mod tests {
                         Size::new(cross, main)
                     }
                 };
-                let leaf = insert(&mut arena, SizedBox::new(axis_size(1.0, 0.0)), vec![]);
+                let leaf = insert(
+                    &mut arena,
+                    SizedBox::new(axis_size(1.0, 0.0)).unwrap(),
+                    vec![],
+                );
                 let mut root = leaf;
                 for level in 1..=depth {
                     let sibling = insert(
                         &mut arena,
-                        SizedBox::new(axis_size(1.0, level as f32)),
+                        SizedBox::new(axis_size(1.0, level as f32)).unwrap(),
                         vec![],
                     );
                     root = if horizontal {
                         insert(
                             &mut arena,
-                            Row::new().cross_axis_alignment(Alignment::Stretch),
+                            Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                             vec![root, sibling],
                         )
                     } else {
                         insert(
                             &mut arena,
-                            Column::new().cross_axis_alignment(Alignment::Stretch),
+                            Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                             vec![root, sibling],
                         )
                     };
@@ -1671,30 +1683,34 @@ mod tests {
 
     #[test]
     fn alternating_axis_stretch_chains_finalize_both_axes_within_budget() {
-        use crate::layout::Alignment;
+        use crate::layout::CrossAxisAlignment;
         use crate::widgets::column::Column;
         use crate::widgets::row::Row;
         use crate::widgets::sized_box::SizedBox;
 
         for depth in [16, 64] {
             let mut arena = FiberArena::new();
-            let mut root = insert(&mut arena, SizedBox::new(Size::new(1.0, 1.0)), vec![]);
+            let mut root = insert(
+                &mut arena,
+                SizedBox::new(Size::new(1.0, 1.0)).unwrap(),
+                vec![],
+            );
             for level in 1..=depth {
                 let sibling = insert(
                     &mut arena,
-                    SizedBox::new(Size::new(level as f32, level as f32)),
+                    SizedBox::new(Size::new(level as f32, level as f32)).unwrap(),
                     vec![],
                 );
                 root = if level % 2 == 0 {
                     insert(
                         &mut arena,
-                        Row::new().cross_axis_alignment(Alignment::Stretch),
+                        Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                         vec![root, sibling],
                     )
                 } else {
                     insert(
                         &mut arena,
-                        Column::new().cross_axis_alignment(Alignment::Stretch),
+                        Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
                         vec![root, sibling],
                     )
                 };
@@ -1731,7 +1747,11 @@ mod tests {
 
         for tight in [false, true] {
             let mut arena = FiberArena::new();
-            let child = insert(&mut arena, SizedBox::new(Size::new(20.0, 10.0)), vec![]);
+            let child = insert(
+                &mut arena,
+                SizedBox::new(Size::new(20.0, 10.0)).unwrap(),
+                vec![],
+            );
             let root = if tight {
                 insert(&mut arena, Expanded::new(), vec![child])
             } else {

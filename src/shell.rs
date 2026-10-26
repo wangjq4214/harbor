@@ -277,8 +277,47 @@ impl ApplicationHandler<AppEvent> for Shell {
     }
 }
 
+/// Application-owned device-fatal policy shared by frame, wake and idle consumers.
+/// The exit hook keeps policy testable without constructing an EventLoop or PTY.
+fn apply_gpu_fatal_policy(
+    fault: &harbor_widget::winit::GpuFault,
+    paste: &mut PasteController,
+    clipboard: &mut crate::clipboard::ClipboardPolicy,
+    clipboard_window: &mut Option<crate::dialog::ConfirmationWindow>,
+    exit: impl FnOnce(),
+) {
+    paste.cancel();
+    clipboard.cancel();
+    *clipboard_window = None;
+    tracing::error!(%fault, "fatal shared GPU error");
+    exit();
+}
+
 // ── ActiveSession (active window lifecycle) ───────────────────────────────
 impl ActiveSession {
+    fn exit_gpu_fault(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        fault: harbor_widget::winit::GpuFault,
+    ) {
+        // Cancel before exit: later queued input must never commit a pending approval.
+        apply_gpu_fatal_policy(
+            &fault,
+            &mut self.paste,
+            &mut self.clipboard,
+            &mut self.clipboard_window,
+            || event_loop.exit(),
+        );
+    }
+
+    fn stop_for_gpu_fault(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        if let Some(fault) = self.main_host.gpu_fault() {
+            self.exit_gpu_fault(event_loop, fault);
+            return true;
+        }
+        event_loop.exiting()
+    }
+
     fn clipboard_eligible(
         &self,
         source: harbor_app::tab_manager::TabId,
@@ -359,7 +398,8 @@ impl ActiveSession {
         request: harbor_app::tab_manager::SessionClipboardWrite,
         continuation: bool,
     ) {
-        let eligible = self.clipboard_eligible(request.source, continuation);
+        let eligible = self.main_host.gpu_fault().is_none()
+            && self.clipboard_eligible(request.source, continuation);
         if crate::clipboard::execute(request, eligible, |text| {
             self.main_host.write_clipboard_checked(text).map(|_| ())
         })
@@ -695,9 +735,13 @@ impl ActiveSession {
     }
 
     fn handle_user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        if self.stop_for_gpu_fault(event_loop) {
+            return;
+        }
         let mut wait = None;
         self.reconcile_clipboard();
         match event {
+            AppEvent::GpuWake => {} // Persistent Host observation above; no redraw needed.
             AppEvent::TerminalOutputReady(tab_id) => {
                 let outcome = self.tabs.process_output(tab_id);
                 if let Some(request) = outcome.clipboard_write {
@@ -774,13 +818,17 @@ impl ActiveSession {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, host_deadline: Option<Instant>) {
+        if self.stop_for_gpu_fault(event_loop) {
+            return;
+        }
         self.reconcile_clipboard();
         let now = Instant::now();
-        let mut combined_flow = self
-            .main_host
-            .about_to_wait(now, host_deadline)
-            .wait
-            .unwrap_or(ControlFlowEffect::Wait);
+        let idle = self.main_host.about_to_wait(now, host_deadline);
+        if let Some(fault) = idle.fatal {
+            self.exit_gpu_fault(event_loop, fault);
+            return;
+        }
+        let mut combined_flow = idle.wait.unwrap_or(ControlFlowEffect::Wait);
         if let Some(wait) = self.sync_terminal_allocation() {
             combined_flow = combined_flow.arbitrate(wait);
         }
@@ -801,12 +849,17 @@ impl ActiveSession {
             combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
         }
 
-        if let Some(confirmation_flow) = self.paste.about_to_wait(now) {
-            combined_flow = combined_flow.arbitrate(confirmation_flow);
+        let paste_idle = self.paste.about_to_wait(now);
+        let clipboard_idle = self
+            .clipboard_window
+            .as_mut()
+            .map(|window| window.about_to_wait(now))
+            .unwrap_or_default();
+        if let Some(fault) = paste_idle.fatal.or(clipboard_idle.fatal) {
+            self.exit_gpu_fault(event_loop, fault);
+            return;
         }
-        if let Some(window) = self.clipboard_window.as_mut()
-            && let Some(wait) = window.about_to_wait(now)
-        {
+        for wait in [paste_idle.wait, clipboard_idle.wait].into_iter().flatten() {
             combined_flow = combined_flow.arbitrate(wait);
         }
 
@@ -831,6 +884,9 @@ impl ActiveSession {
         event: WindowEvent,
         frame: &mut FrameState,
     ) {
+        if self.stop_for_gpu_fault(event_loop) {
+            return;
+        }
         self.reconcile_clipboard();
         if self
             .clipboard_window
@@ -844,9 +900,18 @@ impl ActiveSession {
                 .as_mut()
                 .expect("matched confirmation")
                 .handle_event(&event);
+            if self.stop_for_gpu_fault(event_loop) {
+                return;
+            }
             let mut wait = outcome.wait;
             match outcome.result {
                 crate::dialog::ConfirmationResult::None => {}
+                crate::dialog::ConfirmationResult::Fatal(
+                    harbor_widget::winit::FrameError::SharedGpu(fault),
+                ) => {
+                    self.exit_gpu_fault(event_loop, fault);
+                    return;
+                }
                 crate::dialog::ConfirmationResult::Fatal(_) => {
                     self.clipboard.cancel();
                     self.clipboard_window = None;
@@ -892,6 +957,10 @@ impl ActiveSession {
                     }
                 }
                 PasteEventOutcome::Fatal { error, wait } => {
+                    if let harbor_widget::winit::FrameError::SharedGpu(fault) = error {
+                        self.exit_gpu_fault(event_loop, fault);
+                        return;
+                    }
                     if let Some(wait) = wait {
                         apply_control_flow(event_loop, wait);
                     }
@@ -939,6 +1008,13 @@ impl ActiveSession {
         }
 
         let outcome = self.main_host.handle_window_event(&event);
+        if let Some(fault) = outcome.fatal {
+            self.exit_gpu_fault(event_loop, fault);
+            return;
+        }
+        if self.stop_for_gpu_fault(event_loop) {
+            return;
+        }
         if matches!(&event, WindowEvent::Focused(false)) && self.workspace_ui.cancel_palette() {
             // Native focus loss expires a queued selection, not just preedit/clipboard delivery.
             merge_wait(
@@ -980,6 +1056,14 @@ impl ActiveSession {
         frame: &mut FrameState,
         outcome: &HostFrameOutcome,
     ) {
+        if let HostFrameOutcome::Fatal {
+            error: harbor_widget::winit::FrameError::SharedGpu(fault),
+            ..
+        } = outcome
+        {
+            self.exit_gpu_fault(event_loop, fault.clone());
+            return;
+        }
         let policy = main_frame_policy(outcome, self.show_pending);
         if policy.presented {
             frame.mark_first_present();
@@ -1157,6 +1241,7 @@ impl Shell {
                 Ok((root, (tabs, paste, workspace_ui)))
             },
         )
+        .with_gpu_wake(harbor_widget::winit::GpuWake::new(self.event_proxy.clone()))
         .with_platform_hooks(platform);
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let builder = builder.with_hmr(hmr);
@@ -1215,6 +1300,47 @@ mod configuration_notice_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_gpu_exit_cancels_pending_actions_before_exit() {
+        use harbor_widget::winit::{GpuFault, GpuFaultKind};
+        for kind in [
+            GpuFaultKind::OutOfMemory,
+            GpuFaultKind::DeviceLost,
+            GpuFaultKind::Validation,
+            GpuFaultKind::Internal,
+        ] {
+            let gate = Arc::new(AtomicBool::new(true));
+            let mut paste = PasteController::new(gate.clone());
+            let mut clipboard =
+                crate::clipboard::ClipboardPolicy::new(harbor_config::Osc52WritePolicy::Confirm);
+            clipboard.retain(harbor_app::tab_manager::SessionClipboardWrite {
+                source: harbor_app::tab_manager::TabId(7),
+                contents: harbor_terminal::ClipboardWrite::new("never approve".into()).unwrap(),
+            });
+            let mut window = None;
+            let mut exits = 0;
+            apply_gpu_fatal_policy(
+                &GpuFault {
+                    kind,
+                    message: "policy sentinel".into(),
+                },
+                &mut paste,
+                &mut clipboard,
+                &mut window,
+                || {
+                    assert!(!gate.load(std::sync::atomic::Ordering::Acquire));
+                    exits += 1;
+                },
+            );
+            assert_eq!(exits, 1);
+            assert!(!paste.is_active());
+            assert!(
+                clipboard.resolve(true, true).is_none(),
+                "late approval cannot write clipboard"
+            );
+        }
+    }
 
     #[test]
     fn presented_frame_shows_only_a_pending_window() {

@@ -43,16 +43,17 @@ impl Separator {
         }
     }
 
-    /// Sets finite, nonnegative logical-pixel thickness; invalid values cause a
-    /// layout error.
-    pub fn thickness(mut self, thickness: f32) -> Self {
+    /// Sets finite, nonnegative logical-pixel thickness.
+    pub fn thickness(mut self, thickness: f32) -> Result<Self, crate::LayoutConfigError> {
+        crate::layout::configuration::validate_scalar("Separator.thickness", thickness)?;
         self.thickness = thickness;
-        self
+        Ok(self)
     }
 
-    pub fn color(mut self, color: Color) -> Self {
+    pub fn color(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("Separator.color", color)?;
         self.color = color;
-        self
+        Ok(self)
     }
 
     fn size(&self, constraints: BoxConstraints) -> Size {
@@ -68,16 +69,6 @@ impl Component for Separator {
     }
 }
 
-impl crate::WithChildren for Separator {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("Separator")?;
-        Ok(self)
-    }
-}
-
 impl AnyView for Separator {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
         self.size(constraints)
@@ -90,9 +81,6 @@ impl AnyView for Separator {
         _metrics: &TextMetrics,
     ) -> Result<ParentLayout, LayoutError> {
         constraints.validate()?;
-        if !self.thickness.is_finite() || self.thickness < 0.0 {
-            return Err(LayoutError::InvalidConstraints);
-        }
         Ok(ParentLayout {
             size: self.size(constraints),
             placements: Vec::new(),
@@ -102,7 +90,9 @@ impl AnyView for Separator {
 
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
         SizedBox::new(rect.size())
-            .color(self.color)
+            .unwrap()
+            .background(self.color)
+            .expect("validated separator color")
             .paint_primitives(rect, metrics)
     }
 }
@@ -135,7 +125,11 @@ mod tests {
 
     #[test]
     fn fractional_thickness_uses_existing_box_paint_without_rounding() {
-        let separator = Separator::vertical().thickness(1.25).color(Color::RED);
+        let separator = Separator::vertical()
+            .thickness(1.25)
+            .expect("valid size")
+            .color(Color::RED)
+            .expect("valid color");
         let size = separator.intrinsic_size(
             BoxConstraints::loose(Size::new(100.0, 80.5)),
             &DEFAULT_TEXT_METRICS,
@@ -145,7 +139,9 @@ mod tests {
         assert_eq!(
             separator.paint_primitives(rect, &DEFAULT_TEXT_METRICS),
             SizedBox::new(size)
-                .color(Color::RED)
+                .unwrap()
+                .background(Color::RED)
+                .expect("valid color")
                 .paint_primitives(rect, &DEFAULT_TEXT_METRICS)
         );
     }

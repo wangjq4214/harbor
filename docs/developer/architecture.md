@@ -9,7 +9,7 @@ harbor binary        event loop, platform authorization, configuration transacti
   harbor-app         workspace/tabs, commands, search, notices, product appearance
     harbor-widget    view/state, identity, layout, input, retained GPU scene
       optional winit native windows, surfaces, scheduling, presentation
-    terminal bridge  CustomPaint draw/input/IME/schedule providers
+    terminal bridge  ExternalSurface draw/input/IME/schedule providers
       harbor-terminal  logical engine, PTY session adapter, optional renderer
         harbor-parser  streaming VT framing
         harbor-pty     endpoint/control ownership (Windows ConPTY)

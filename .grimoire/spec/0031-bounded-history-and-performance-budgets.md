@@ -1,23 +1,16 @@
 # Bounded history and performance budgets (N15 / #166)
 
 **Spec ID:** 0031
-**Status:** Implemented — owner-approved closure; remaining measurements/acceptance waived
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-20
-**Sources:** [Issue #166 — History capacity and performance budgets](https://github.com/wangjq4214/harbor/issues/166); approved refinement handoff, including staged measurement and active/hidden-tab scope; [ADR 0072](../adr/0072-dual-bounded-terminal-history.md) as refined by [ADR 0073](../adr/0073-session-history-accounting-and-text-unit-overflow.md).
-**Execution history:** Former ticket set 0019 is retired. Stable aliases: 0019/T0001 = calibration, T0002 = text-unit protection, T0003 = dual-bounded history/reload, T0004 = combined Windows acceptance, T0005 = deferred pane measurements. Their surviving contract, results and owner-approved waivers are recorded below; pane implementation remains separate under #158.
-
-This spec records the implemented bounded-history/text-unit semantics and the owner-approved #166 closure scope. The delivery summary distinguishes measured/model results from waived native acceptance; the original measurement requirements below do not imply those measurements passed.
+**Sources:** [Issue #166 — History capacity and performance budgets](https://github.com/wangjq4214/harbor/issues/166); approved measurement and active/hidden-tab scope; [ADR 0072](../adr/0072-dual-bounded-terminal-history.md) as refined by [ADR 0073](../adr/0073-session-history-accounting-and-text-unit-overflow.md).
+**Stable aliases:** 0019/T0001 = calibration; T0002 = text-unit protection; T0003 = dual-bounded history/reload; T0004 = Windows matrix; T0005 = pane measurements (waived).
 
 ## Delivery and closure summary
 
-**Closed by owner decision on 2026-10-21.** The former T0001–T0005 execution set is complete and its redundant tickets have been retired. T0002/T0003 delivered the functional behavior; the owner explicitly waived the remaining native/performance measurements and acceptance matrix, including the deferred pane-measurement ticket. This is scope disposition for #166, not a claim that unexecuted scenarios passed. Pane implementation remains separate under [#158](https://github.com/wangjq4214/harbor/issues/158); no pane capability is delivered here.
+**Owner closure decision (2026-10-21):** remaining native/performance measurements and acceptance matrix, including deferred pane measurements, were waived. Pane implementation remains separate under [#158](https://github.com/wangjq4214/harbor/issues/158).
 
-### Implemented behavior
-
-- Independent per-session primary-history row and retained UTF-8 source-byte limits; oldest whole physical rows are evicted until both hold. Live viewport and alternate content are excluded from history bytes; saved primary remains bounded.
-- Complete-candidate manual/watched reload covers existing, hidden, saved-primary and future sessions. Shrink is immediate and irreversible; growth cannot resurrect evicted text. Rejected settings do not evict under proposed limits, including native compensation-failure recovery under accepted budgets.
-- Fixed oversized-unit protection preserves the scalar-aligned admitted prefix, discards further extensions without orphan/synthetic source, and resumes at the next independent unit. Fragmentation, edits, history/reflow, copy/read/search/render and normal within-limit Unicode are covered deterministically.
-- Shipping commits: text admission `63a34a3`; dual history bounds `326cc75`. On Windows x64, `Cell` remained 56 bytes; that is layout information, not a process-memory ceiling.
+Windows x64 `Cell` layout remained 56 bytes, not a process-memory ceiling.
 
 ### Calibration and bounded optimization results
 
@@ -37,8 +30,6 @@ Ordinary combining/VS/ZWJ controls survived the candidate limits; 64/256-byte ca
 
 ### Verification and Windows observations
 
-On combined revision `326cc75e949e83ab0cda1bb3bedf2dfd339f1544`, `cargo fmt --check`, Clippy all-targets/all-features with warnings denied, workspace tests and docs validation passed. Workspace counts included host 142, app 178, config 21 and terminal 1088 passing tests, plus other integration/unit/doc suites. Ignored/manual cases were not counted as passes. Eight profiling-fixture checks, the process-sampler self-test and three temporary smoke-input checks also passed.
-
 The isolated release/ConPTY smoke used Windows build 26300, bundled ConPTY 1.24.2607.10001, Python 3.12.10, requested Consolas 16, DPI 144 and observed grid 161×45. Three sequential cycles emitted 20000 Latin, 20000 colored and 2000 Unicode rows each; exceptional combining/ZWJ units were emitted on primary and alternate buffers. Primary restoration, independent recovery markers and final completion were observed. Four retained tabs/independent children were created; a watched font 16→20→16 and history shrink/growth smoke preserved child identities and visible tails. This did not audit exact desktop source retention, all hidden output, clipboard/search, failure paths or controlled fragmentation.
 
 Limited process samples showed approximately 351–384 MiB private committed bytes for one session over 30 s and 749–750 MiB for four sessions over 35 s, with mean whole-machine CPU about 0.010% and 0.011% on 20 logical processors. The latter window mixed alternate restoration and idle; neither is a repeated/calibrated idle or output-peak scenario. Private bytes are not live heap, physical RAM, GPU residency or a per-tab budget. Earlier captures showed process-memory reduction after tab close, but did not establish leak freedom or comparable performance. Producer timings and automation durations were not input/output-to-present latency.
@@ -49,7 +40,7 @@ Native output/input/resize-to-correct-present budgets and complete repeated dist
 
 The known Spec 0015 no-wrap selector-width discrepancy remains. A native font-replacement GPU pixel comparison failed once during T0002 and passed on reruns; its cause was not established and it is not claimed repaired. Initial outdated search/history test fixtures were corrected before final passing suites; native timing/source coverage remains distinct from model assertions.
 
-At the owner's request, this summary replaces the issue-specific evidence package: raw logs, screenshots, CSV/JSON captures, manifests and copied smoke fixtures were deleted rather than merged into main. They are not claimed retrievable from this tree. The original R4–R6 measurement/retention gates and unfinished verification scenarios below are historical requirements superseded by this explicit closure disposition; R1–R3 functional semantics remain in force. No new performance measurements or GitHub issue mutation were performed for this cleanup.
+At the owner's request, raw logs, screenshots, CSV/JSON captures, manifests and copied smoke fixtures were deleted rather than merged. R4–R6 measurement/retention gates and unexecuted measurement scenarios below are historical requirements superseded by the closure waiver; R1–R3 functional semantics remain in force.
 
 ## Requirements
 
@@ -120,16 +111,6 @@ Extend existing bounded history and shared retained-text semantics; reuse the ex
 | Retained-content consumers | Screen/history → render, copy, search and reflow | Shared admitted text and existing anchors/projections | Agreement on surviving content; no reconstruction of discarded text or stale-target aliasing |
 | Resource observation | Session/render/font lifecycle → performance evidence | Declared workload, phases and tool coverage | Comparable latency, work and residency observations through retirement, without substituting one metric for another |
 
-### Pre-implementation surfaces and evidence limits (historical)
-
-Source inspection baseline: `439fcf0dd00a71a2b4b99d8321a75906337d8d72`, with the linked refinement records supplying approved future policy, not runtime evidence.
-
-- [NormalBuf](../../crates/harbor-terminal/src/normal_buf.rs) currently hardcodes 1000 scrollback rows and preallocates the full ring's cells/parallel state. [Primary reflow](../../crates/harbor-terminal/src/primary_reflow.rs), [screen](../../crates/harbor-terminal/src/screen.rs) and [content anchors](../../crates/harbor-terminal/src/content_anchor.rs) supply existing retention/resize semantics. Larger row settings cannot be assumed cheap.
-- The [cell writer](../../crates/harbor-terminal/src/screen/edit/cell_writer.rs) currently extends retained suffix text; [read model](../../crates/harbor-terminal/src/read_model.rs) and [literal search](../../crates/harbor-terminal/src/literal_search.rs) are existing consumers, not a requirement to invent a new search representation.
-- [Configuration parsing](../../crates/harbor-config/src/lib.rs) and [terminal configuration transactions](../../crates/harbor-terminal/src/configuration.rs) are existing integration surfaces; the [configuration guide](../../docs/app/configuration.md) does not yet advertise these history controls.
-- [`monospace_prepare`](../../crates/harbor-terminal/examples/monospace_prepare.rs) is a release prepare-only benchmark excluding draw/PTY/readback. [`osc_benchmark`](../../crates/harbor-terminal/src/parser/osc_benchmark.rs) is a parser microbenchmark. Neither proves the R5 end-to-end outcomes.
-- [Profiling procedures](../../docs/developer/profiling.md), [DHAT analysis](../../scripts/profiling/dhat_analyze.py), [drill-down](../../scripts/profiling/dhat_drill.py), [font lifecycle markers](../../crates/harbor-text/src/lifecycle.rs) and [host telemetry](../../src/telemetry.rs) provide tools/procedures, not current results. The [roadmap](../../docs/developer/roadmap.md) and [progress](../../docs/developer/progress.md) preserve outstanding measured acceptance and pane scope.
-
 ## End-to-end verification
 
 This is the original verification matrix. Deterministic/model coverage and limited Windows observations are summarized above; the remaining native executions were waived by the owner, not marked PASS.
@@ -144,19 +125,6 @@ This is the original verification matrix. Deterministic/model coverage and limit
 | Stream a base with exceptional combining/selector/ZWJ extensions past the protective limit in live primary, alternate and later history; repeat with different PTY fragment boundaries; then send an independent unit | Retained size stops at the admitted prefix before unbounded growth; discarded extensions are neither orphaned nor synthetic source text; all consumers agree; fragmentation does not bypass protection; normal admission resumes at the independent unit. |
 | Send ordinary combining/VS/ZWJ and wide-edge content within the limit; copy/search, resize, reload fonts and inspect presentation | Ordinary text/width/fallback semantics remain unchanged; display fallback is not source loss. Explicitly retain Spec 0015's known no-wrap width discrepancy as unresolved, not as this exception. |
 | Execute the R5 workload/metric matrix on the baseline and changed build, with repeated session lifecycle/retirement and effects comparisons | Comparable distributions and residency/work observations meet calibrated budgets or explicitly report failures/unavailable cases; no DHAT or microbenchmark substitution for end-to-end latency. |
-
-## Verification and acceptance record
-
-The delivery and closure summary above records the executed gates, observations and owner-approved waiver. Passing model/standard gates does not establish resource or broad Windows acceptance, and this closure does not resolve the independent gaps in Specs 0014/0015.
-
-For execution, run or explicitly account for the current gates:
-
-- `cargo fmt --check`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo test --workspace`
-- `python scripts/docs/check_docs.py`
-
-Passing these gates is not performance or native acceptance. The remaining measurements and raw-artifact retention requirement were waived at owner-approved closure; no additional runtime QA was performed for the summary-only evidence cleanup. Removed checklist-summary automation and stale historical paths are not gates.
 
 ## Decisions and exclusions
 

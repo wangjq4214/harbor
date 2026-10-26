@@ -1,13 +1,13 @@
-error: view! uses `;` after the context expression; replace this `,` with `;`
- --> tests/ui/fail/old_separator.rs:7:26
+error: view! no longer takes a context expression; remove this `cx,` context — roots defer exactly like children
+ --> tests/ui/fail/old_separator.rs:5:26
   |
-7 |     let _ = view!(&mut cx, Column::new(););
+5 |     let _ = view!(&mut cx, Column::new(););
   |                          ^
 
 warning: unused import: `harbor_widget::widgets::column::Column`
- --> tests/ui/fail/old_separator.rs:2:5
+ --> tests/ui/fail/old_separator.rs:1:5
   |
-2 | use harbor_widget::widgets::column::Column;
+1 | use harbor_widget::widgets::column::Column;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

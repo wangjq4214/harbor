@@ -1,16 +1,17 @@
+use super::control_surface::ControlSurface;
+use crate::IntoChildView;
 use crate::effects::CursorShape;
 use crate::input::event::{
     FocusEvent, Key, KeyboardEvent, PointerBoundaryKind, PointerButton, PointerPhase, UiEvent,
 };
 use crate::input::event_ctx::{EventCtx, EventHandled};
-use crate::layout::{BoxConstraints, Point, Rect, Size};
+use crate::layout::{BoxConstraints, Rect};
 use crate::scene::primitive::Primitive;
 use crate::signal::Signal;
 use crate::theme::ControlStyle;
 use crate::view::{AnyView, BuildCx, Component, FocusMetadata, View};
 use crate::widgets::focus::FocusHandle;
 use std::rc::Rc;
-use std::sync::Arc;
 
 /// Orthogonal state exposed by interactive desktop controls.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,6 +34,37 @@ struct InteractionRuntimeState {
 type ActivateCallback = Rc<dyn Fn(&mut EventCtx)>;
 type ContentBuilder = Rc<dyn Fn(&mut BuildCx, InteractionState) -> View>;
 
+/// Reconciliation key carried by every content-slot fiber
+/// ([`InteractiveRegion::child_with`]), letting consumers recognize the slot's
+/// wrapper fiber without depending on its internal type.
+pub const CONTENT_SLOT_KEY: &str = "harbor-content-slot";
+
+/// A state-driven content slot.
+///
+/// The slot is a Component so its content builds inside the slot's own child
+/// Fiber with its own hook sequence and subscriptions assigned by
+/// reconciliation, instead of consuming the owning region's hook serials
+/// (ADR 0079 D4). It re-reads the retained interaction state at build time,
+/// so continuing state changes keep driving content without extra wiring.
+#[derive(Clone)]
+struct ContentSlot {
+    builder: ContentBuilder,
+    state: Signal<InteractionRuntimeState>,
+}
+
+impl Component for ContentSlot {
+    /// Stable key so traversal consumers (focused traversal, tests, docs) can
+    /// recognize the slot fiber without decoding widget types beneath it.
+    fn key(&self) -> Option<crate::view::Key> {
+        Some(crate::view::Key::new(CONTENT_SLOT_KEY))
+    }
+
+    fn build(&self, cx: &mut BuildCx) -> View {
+        let visual = self.state.read().visual;
+        (self.builder)(cx, visual)
+    }
+}
+
 /// Reusable focusable mouse/keyboard activation state machine.
 #[derive(Clone)]
 pub struct InteractiveRegion {
@@ -40,7 +72,7 @@ pub struct InteractiveRegion {
     selected: bool,
     focusable: bool,
     cursor: Option<CursorShape>,
-    label: Option<String>,
+    centered: bool,
     on_activate: Option<ActivateCallback>,
     child: Option<View>,
     content: Option<ContentBuilder>,
@@ -55,7 +87,7 @@ impl InteractiveRegion {
             selected: false,
             focusable: true,
             cursor: Some(CursorShape::Default),
-            label: None,
+            centered: false,
             on_activate: None,
             child: None,
             content: None,
@@ -72,7 +104,7 @@ impl InteractiveRegion {
 
     /// Builds visual content from this region's retained interaction state.
     /// Like `child`, this replaces any previously supplied content.
-    pub fn content(
+    pub fn child_with(
         mut self,
         builder: impl Fn(&mut BuildCx, InteractionState) -> View + 'static,
     ) -> Self {
@@ -82,9 +114,10 @@ impl InteractiveRegion {
     }
 
     /// Overrides control appearance without replacing the inherited theme.
-    pub fn style(mut self, style: ControlStyle) -> Self {
+    pub fn style(mut self, style: ControlStyle) -> Result<Self, crate::theme::AppearanceError> {
+        style.validate()?;
         self.style = Some(style);
-        self
+        Ok(self)
     }
 
     /// Assigns a stable focus identity while retaining nested control tab stops.
@@ -121,8 +154,15 @@ impl InteractiveRegion {
         self
     }
 
-    pub(crate) fn label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
+    pub(super) fn resolved_style(&self, cx: &BuildCx) -> ControlStyle {
+        self.style
+            .clone()
+            .unwrap_or_else(|| cx.theme().button.clone())
+    }
+
+    /// Center built-in content without changing application region composition.
+    pub(super) fn centered(mut self) -> Self {
+        self.centered = true;
         self
     }
 }
@@ -155,20 +195,24 @@ impl Component for InteractiveRegion {
             }
             runtime.set(next);
         }
-        let style = self
-            .style
-            .clone()
-            .unwrap_or_else(|| cx.theme().button.clone());
-        let visual = runtime.read().visual;
+        let style = self.resolved_style(cx);
         let children = match &self.content {
-            Some(builder) => vec![builder(cx, visual)],
+            Some(builder) => vec![
+                ContentSlot {
+                    builder: builder.clone(),
+                    state: runtime.clone(),
+                }
+                .into_child_view(),
+            ],
             None => self.child.iter().cloned().collect(),
         };
         View::new(
             InteractiveRegionView {
                 runtime,
-                style,
-                label: self.label.clone(),
+                surface: ControlSurface {
+                    style,
+                    centered: self.centered,
+                },
                 cursor: self.cursor,
                 on_activate: self.on_activate.clone(),
                 focus_handle: self.focus_handle,
@@ -181,14 +225,13 @@ impl Component for InteractiveRegion {
 }
 
 impl crate::WithChildren for InteractiveRegion {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
         children.into_single("InteractiveRegion", &mut self.child)?;
-        if self.child.is_some() {
-            self.content = None;
-        }
+        self.content = None;
         Ok(self)
     }
 }
@@ -196,8 +239,7 @@ impl crate::WithChildren for InteractiveRegion {
 #[derive(Clone)]
 struct InteractiveRegionView {
     runtime: Signal<InteractionRuntimeState>,
-    style: ControlStyle,
-    label: Option<String>,
+    surface: ControlSurface,
     cursor: Option<CursorShape>,
     on_activate: Option<ActivateCallback>,
     focus_handle: Option<FocusHandle>,
@@ -225,111 +267,43 @@ impl InteractiveRegionView {
 }
 
 impl AnyView for InteractiveRegionView {
-    fn intrinsic_size(
-        &self,
-        constraints: BoxConstraints,
-        metrics: &crate::text::TextMetrics,
-    ) -> Size {
-        let width = self
-            .label
-            .as_ref()
-            .map(|label| {
-                label.chars().count() as f32 * metrics.cell_width
-                    + self.style.horizontal_padding * 2.0
-            })
-            .unwrap_or(0.0);
-        let height = if self.label.is_some() {
-            metrics.line_height.max(self.style.min_height)
-        } else {
-            self.style.min_height
-        };
-        constraints.constrain(Size::new(width, height))
-    }
-
     fn child_constraints(&self, constraints: BoxConstraints) -> BoxConstraints {
-        constraints.deflate(Size::new(self.style.horizontal_padding * 2.0, 0.0))
+        self.surface.child_constraints(constraints)
     }
 
-    fn layout_children(
+    fn layout(
         &self,
         constraints: BoxConstraints,
-        child_sizes: &[Size],
-        metrics: &crate::text::TextMetrics,
-    ) -> (Size, Vec<Point>) {
-        let child = child_sizes.first().copied().unwrap_or(Size::ZERO);
-        let label_size = self.label.as_ref().map_or(Size::ZERO, |label| {
-            Size::new(
-                label.chars().count() as f32 * metrics.cell_width,
-                metrics.line_height,
-            )
-        });
-        let content = Size::new(
-            child.width.max(label_size.width),
-            child.height.max(label_size.height),
-        );
-        let size = constraints.constrain(Size::new(
-            content.width + self.style.horizontal_padding * 2.0,
-            content.height.max(self.style.min_height),
-        ));
-        let origin = Point::new(
-            self.style.horizontal_padding.min(size.width),
-            ((size.height - child.height) / 2.0).max(0.0),
-        );
-        (size, vec![origin; child_sizes.len()])
+        children: &mut dyn crate::layout::ChildMeasurer,
+        _metrics: &crate::text::TextMetrics,
+    ) -> Result<crate::layout::ParentLayout, crate::layout::LayoutError> {
+        let child_constraints = self.surface.child_constraints(constraints);
+        let child_sizes = (0..children.len())
+            .map(|index| children.measure(index, child_constraints))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (size, origins) = self.surface.layout(constraints, &child_sizes)?;
+        Ok(crate::layout::ParentLayout {
+            size,
+            placements: origins.into_iter().enumerate().collect(),
+            diagnostics: Vec::new(),
+        })
     }
 
     fn paint_primitives(&self, rect: Rect, _metrics: &crate::text::TextMetrics) -> Vec<Primitive> {
-        let state = self.runtime.read().visual;
-        let colors = self.style.resolve_state(&state);
-        let mut primitives = vec![Primitive::Quad {
+        self.surface.paint(
+            crate::view::PaintPhase::BeforeChildren,
             rect,
-            color: colors.background,
-            corner_radius: self.style.radius,
-        }];
-        // A zero-width border means no outline, not the renderer's fill mode.
-        if self.style.border_width > 0.0 && colors.border.a > 0.0 {
-            primitives.push(Primitive::Border {
-                rect,
-                width: self.style.border_width,
-                color: colors.border,
-                corner_radius: self.style.radius,
-            });
-        }
-        primitives
+            self.runtime.read().visual,
+        )
     }
 
     fn paint_primitives_for_phase(
         &self,
         phase: crate::view::PaintPhase,
         rect: Rect,
-        metrics: &crate::text::TextMetrics,
+        _metrics: &crate::text::TextMetrics,
     ) -> Vec<Primitive> {
-        if phase == crate::view::PaintPhase::AfterChildren {
-            let state = self.runtime.read().visual;
-            let colors = self.style.resolve_state(&state);
-            let mut primitives = Vec::new();
-            if let Some(label) = &self.label {
-                let text_width = label.chars().count() as f32 * metrics.cell_width;
-                primitives.push(Primitive::Text {
-                    text: Arc::from(label.as_str()),
-                    origin: Point::new(
-                        rect.min.x + (rect.size().width - text_width).max(0.0) / 2.0,
-                        rect.min.y + (rect.size().height - metrics.line_height).max(0.0) / 2.0,
-                    ),
-                    color: colors.foreground,
-                });
-            }
-            if state.focused && state.focus_visible {
-                primitives.push(Primitive::Border {
-                    rect,
-                    width: self.style.border_width + 1.0,
-                    color: self.style.focus_ring,
-                    corner_radius: self.style.radius,
-                });
-            }
-            return primitives;
-        }
-        self.paint_primitives(rect, metrics)
+        self.surface.paint(phase, rect, self.runtime.read().visual)
     }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {
@@ -338,7 +312,7 @@ impl AnyView for InteractiveRegionView {
         if ctx.is_capture_phase() {
             return EventHandled::Ignored;
         }
-        let handled = match event {
+        match event {
             UiEvent::PointerBoundary(boundary) => {
                 self.update(ctx, |state| {
                     state.visual.hovered = boundary.kind == PointerBoundaryKind::Enter;
@@ -436,11 +410,7 @@ impl AnyView for InteractiveRegionView {
                 EventHandled::Handled
             }
             _ => EventHandled::Ignored,
-        };
-        if handled == EventHandled::Handled {
-            ctx.stop_propagation();
         }
-        handled
     }
 
     fn focus_metadata(&self) -> Option<FocusMetadata> {
@@ -466,5 +436,266 @@ impl AnyView for InteractiveRegionView {
 
     fn accepts_pointer_boundaries(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod content_slot_tests {
+    //! Characterization for the state-driven content slot owning its Fiber
+    //! boundary (spec 0034 R4): slot hooks never consume the region's serial
+    //! space, slot state survives region passes, and teardown releases the
+    //! slot's external registrations with the slot fiber.
+
+    use super::*;
+    use crate::layout::Size;
+    use crate::runtime::Runtime;
+    use crate::scene::primitive::{ExternalDrawId, ExternalScheduleDemand};
+    use crate::widgets::column::Column;
+    use crate::widgets::sized_box::SizedBox;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    #[derive(Clone)]
+    struct SlotHost {
+        show_slot: Rc<RefCell<Option<Signal<bool>>>>,
+        content_state: Rc<RefCell<Option<Signal<&'static str>>>>,
+        slot_installed: bool,
+    }
+
+    impl SlotHost {
+        fn new(slot_installed: bool) -> Self {
+            Self {
+                show_slot: Rc::new(RefCell::new(None)),
+                content_state: Rc::new(RefCell::new(None)),
+                slot_installed,
+            }
+        }
+    }
+
+    impl Component for SlotHost {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            let show_slot = cx.use_state(|| self.slot_installed);
+            *self.show_slot.borrow_mut() = Some(show_slot.clone());
+            let region = if *show_slot.read() {
+                let content_state = self.content_state.clone();
+                InteractiveRegion::new().child_with(move |cx, _state| {
+                    let value = cx.use_state(|| "slot-initial");
+                    *content_state.borrow_mut() = Some(value.clone());
+                    let _ = value.read().clone();
+                    cx.register_external_schedule(
+                        ExternalDrawId::new(7_034),
+                        Arc::new(|_id, _now| ExternalScheduleDemand::empty()),
+                    );
+                    SizedBox::new(Size::new(4.0, 4.0)).unwrap().build(cx)
+                })
+            } else {
+                InteractiveRegion::new()
+            };
+
+            crate::view! {
+                Column::new() => { region; }
+            }
+        }
+    }
+
+    fn region_fiber_id(runtime: &Runtime) -> crate::fiber::FiberId {
+        // root (host + collapsed outer composition) -> region fiber -> slot fiber
+        runtime
+            .arena()
+            .get(runtime.root_id().unwrap())
+            .unwrap()
+            .children()[0]
+    }
+
+    fn slot_fiber_id(runtime: &Runtime) -> Option<crate::fiber::FiberId> {
+        runtime
+            .arena()
+            .get(region_fiber_id(runtime))
+            .unwrap()
+            .children()
+            .first()
+            .copied()
+    }
+
+    #[test]
+    fn slot_hooks_live_on_their_own_fiber() {
+        let host = SlotHost::new(true);
+        let mut runtime = Runtime::new();
+        runtime.set_root(host.clone());
+        runtime.update(Instant::now());
+
+        // The slot's external schedule registration installs with the parent
+        // rebuild that materializes the slot.
+        assert!(
+            runtime
+                .external_schedule_ids()
+                .contains(&ExternalDrawId::new(7_034))
+        );
+        let region_id = region_fiber_id(&runtime);
+        let slot_id = slot_fiber_id(&runtime).expect("slot content became a child fiber");
+
+        // The region's hook sequence holds exactly its own interaction state;
+        // the content hook belongs to the slot fiber instead.
+        assert_eq!(runtime.arena().get(region_id).unwrap().hooks.len(), 1);
+        assert_eq!(runtime.arena().get(slot_id).unwrap().hooks.len(), 1);
+
+        // Slot state mutated between passes survives the next region pass.
+        let content_signal = host.content_state.borrow().clone().unwrap();
+        content_signal.set("revised");
+        runtime.update(Instant::now());
+        let content_signal = host.content_state.borrow().clone().unwrap();
+        assert_eq!(content_signal.read().clone(), "revised");
+    }
+
+    #[test]
+    fn removed_slot_fiber_releases_hooks_and_registrations() {
+        let host = SlotHost::new(true);
+        let mut runtime = Runtime::new();
+        runtime.set_root(host.clone());
+        runtime.update(Instant::now());
+        assert!(slot_fiber_id(&runtime).is_some());
+        assert!(
+            runtime
+                .external_schedule_ids()
+                .contains(&ExternalDrawId::new(7_034))
+        );
+
+        // Dismount the slot and confirm its fiber disappeared with its hooks.
+        host.show_slot.borrow().as_ref().unwrap().set(false);
+        runtime.update(Instant::now());
+        assert!(slot_fiber_id(&runtime).is_none());
+        assert!(
+            !runtime
+                .external_schedule_ids()
+                .contains(&ExternalDrawId::new(7_034)),
+            "the slot's external registration leaves with its fiber"
+        );
+
+        let region_id = region_fiber_id(&runtime);
+        let region = runtime.arena().get(region_id).unwrap();
+        assert!(
+            region.children.is_empty(),
+            "the region keeps only its own fiber state after the slot is removed",
+        );
+    }
+
+    #[derive(Clone)]
+    struct ReplacementHost {
+        mode: Signal<u8>,
+        source: Signal<u32>,
+        slot_state: Rc<RefCell<Option<Signal<u32>>>>,
+        observations: Rc<RefCell<Vec<(u32, crate::scene::primitive::Color)>>>,
+    }
+
+    impl Component for ReplacementHost {
+        fn build(&self, cx: &mut BuildCx) -> View {
+            cx.track(&self.mode);
+            let source = self.source.clone();
+            let slot_state = self.slot_state.clone();
+            let observations = self.observations.clone();
+            let builder = move |cx: &mut BuildCx, _state| {
+                cx.track(&source);
+                let retained = cx.use_state(|| 10u32);
+                *slot_state.borrow_mut() = Some(retained.clone());
+                let value = *source.read() + *retained.read();
+                observations
+                    .borrow_mut()
+                    .push((value, cx.theme().button.normal.foreground));
+                cx.register_external_schedule(
+                    ExternalDrawId::new(7_035),
+                    Arc::new(|_, _| ExternalScheduleDemand::empty()),
+                );
+                SizedBox::new(Size::new(4.0, 4.0)).unwrap().build(cx)
+            };
+            let region = InteractiveRegion::new().child_with(builder.clone());
+            let mode = *self.mode.read();
+            let description = match mode {
+                0 => crate::view! { region; },
+                1 => crate::view! { region => { SizedBox::new(Size::new(8.0, 8.0)); } },
+                2 => crate::view! { region => {} },
+                4 => crate::view! { region.child(SizedBox::new(Size::ZERO).unwrap()) => {} },
+                // content must replace an explicit child, in either setting order.
+                _ => {
+                    crate::view! { region.child(SizedBox::new(Size::ZERO).unwrap()).child_with(builder); }
+                }
+            };
+            crate::view! { Column::new() => { description; } }
+        }
+    }
+
+    #[test]
+    fn block_replacement_and_clearing_teardown_content_and_reselection_restores_own_fiber() {
+        use crate::scene::primitive::Color;
+        use crate::widgets::ThemeProvider;
+        for replacement_mode in [1, 2, 4] {
+            let host = ReplacementHost {
+                mode: Signal::new(0),
+                source: Signal::new(1),
+                slot_state: Rc::new(RefCell::new(None)),
+                observations: Rc::new(RefCell::new(Vec::new())),
+            };
+            let mut theme = crate::Theme::default();
+            theme.button.normal.foreground = Color::GREEN;
+            let mut runtime = Runtime::new();
+            runtime.set_root(
+                ThemeProvider::new(theme)
+                    .expect("valid theme")
+                    .child(host.clone()),
+            );
+            runtime.update(Instant::now());
+            let provider_id = runtime.root_id().unwrap();
+            let host_id = runtime.arena().get(provider_id).unwrap().children()[0];
+            let region_id = runtime.arena().get(host_id).unwrap().children()[0];
+            let old_slot = runtime.arena().get(region_id).unwrap().children()[0];
+            assert_eq!(runtime.arena().get(region_id).unwrap().hooks.len(), 1);
+            assert_eq!(runtime.arena().get(old_slot).unwrap().hooks.len(), 1);
+            assert!(
+                runtime
+                    .external_schedule_ids()
+                    .contains(&ExternalDrawId::new(7_035))
+            );
+            assert_eq!(*host.observations.borrow(), vec![(11, Color::GREEN)]);
+            let old_state = host.slot_state.borrow().clone().unwrap();
+            old_state.set(20);
+            runtime.update(Instant::now());
+            assert_eq!(host.observations.borrow().last(), Some(&(21, Color::GREEN)));
+
+            host.mode.set(replacement_mode);
+            runtime.update(Instant::now());
+            assert!(!runtime.arena().contains(old_slot));
+            assert!(
+                !runtime
+                    .external_schedule_ids()
+                    .contains(&ExternalDrawId::new(7_035))
+            );
+            assert_eq!(
+                runtime.arena().get(region_id).unwrap().children().len(),
+                usize::from(replacement_mode == 1)
+            );
+            let observed = host.observations.borrow().len();
+            old_state.set(99);
+            host.source.set(5);
+            runtime.update(Instant::now());
+            assert_eq!(
+                host.observations.borrow().len(),
+                observed,
+                "removed content must not rebuild"
+            );
+
+            host.mode.set(3);
+            runtime.update(Instant::now());
+            let new_slot = runtime.arena().get(region_id).unwrap().children()[0];
+            assert_ne!(new_slot, old_slot);
+            assert_eq!(runtime.arena().get(region_id).unwrap().hooks.len(), 1);
+            assert_eq!(runtime.arena().get(new_slot).unwrap().hooks.len(), 1);
+            assert_eq!(host.observations.borrow().last(), Some(&(15, Color::GREEN)));
+            assert!(
+                runtime
+                    .external_schedule_ids()
+                    .contains(&ExternalDrawId::new(7_035))
+            );
+        }
     }
 }

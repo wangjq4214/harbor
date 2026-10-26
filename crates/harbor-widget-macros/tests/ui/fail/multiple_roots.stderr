@@ -1,13 +1,13 @@
-error: view! accepts exactly one root
- --> tests/ui/fail/multiple_roots.rs:7:45
+error: view! no longer takes a context expression; remove this `cx;` context — roots defer exactly like children
+ --> tests/ui/fail/multiple_roots.rs:5:22
   |
-7 |     let _ = view! { &mut cx; Column::new(); Column::new(); };
-  |                                             ^^^^^^
+5 |     let _ = view! {  Column::new(); Column::new(); };
+  |                      ^^^^^^
 
 warning: unused import: `harbor_widget::widgets::column::Column`
- --> tests/ui/fail/multiple_roots.rs:2:5
+ --> tests/ui/fail/multiple_roots.rs:1:5
   |
-2 | use harbor_widget::widgets::column::Column;
+1 | use harbor_widget::widgets::column::Column;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

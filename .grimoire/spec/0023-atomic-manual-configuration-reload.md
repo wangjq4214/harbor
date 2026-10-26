@@ -1,7 +1,7 @@
 # Atomic Manual Configuration Reload
 
 **Spec ID:** 0023 (manual reload; distinct from Windows distribution 0023)
-**Status:** Implementation exists; full integrated acceptance pending.
+**Status:** Accepted (owner-confirmed)
 **Sources:** [#172](https://github.com/wangjq4214/harbor/issues/172), [ADR 0059](../adr/0059-atomic-manual-reload-and-terminal-only-fonts.md), [0060](../adr/0060-font-reload-uses-normal-bounded-resize.md), [0061](../adr/0061-manual-reload-compensation-failure.md).
 **Extensions:** [0024](./0024-watched-reload-and-launch-settings.md) adds watching/environment/directory. [0025](./0025-portal-and-configuration-notifications.md) supersedes only routine-success/absent-file notice obligations, including E1/E2 below; strict rejection remains.
 
@@ -71,8 +71,8 @@ Each row is required; notification eligibility is qualified above.
 
 ## Test Plan and Delivery Evidence
 Use validation policy: focused complete-validation/registry/factory/palette/retention/cache/failure tests plus actual Windows cmd and PowerShell prompt/pending-input typing/Backspace/Enter, inactive/new tabs, persistent nvim redraw/alternate exit/primary restoration, retained-text selection/copy, IME, backdrop/opaque fallback and consumed-chord bytes on the actual PTY transport. Exercise repeated font/size cycles, unavailable-family fallback and failed-preparation retry; requested settings alone do not prove effective resource generations.
-Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/docs/check_docs.py`. Record exact revision/dirty scope, Windows/ConPTY/app versions, steps, expected/observed outcomes, artifacts/exclusions and PASS/FAIL/NOT RUN/BLOCKED. Keep secrets/unrelated terminal text out; durable summaries must be self-contained or retrievable CI artifacts, subject only to the specific package waiver in spec 0024.
-Reconcile #172's published font exclusion before claiming expanded delivery; local contract approval does not edit the issue. Historical 0017-configuration-hot-reload/T0001 manual/font acceptance and remaining integrated work are preserved in [spec 0024](./0024-watched-reload-and-launch-settings.md#delivery-and-outstanding-acceptance).
+Record exact revision/dirty scope, Windows/ConPTY/app versions, expected/observed outcomes, artifacts/exclusions and PASS/FAIL/NOT RUN/BLOCKED. Keep secrets/unrelated terminal text out; durable summaries must be self-contained or retrievable CI artifacts, subject only to the specific package waiver in spec 0024.
+Historical #172 wording excludes fonts, unlike this owner-accepted font-inclusive contract; no remote scope edit is claimed. Historical manual/font evidence and its qualification survive in [spec 0024](./0024-watched-reload-and-launch-settings.md#delivery-and-outstanding-acceptance).
 
 ## Out of Scope
 Watching/environment/directory belong to 0024, not this original slice. No palette UI, HMR change, app appearance/UI font configuration, font-file/profile schema, live clipboard policy, child restart, unlimited/lossless retention or broader OSC protocol.

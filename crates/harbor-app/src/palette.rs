@@ -6,8 +6,8 @@ use crate::command::{
 };
 use crate::tab_manager::{TabId, TabManager, TabSnapshot};
 use harbor_widget::{
-    Alignment, Column, ConstrainedBox, ControlColors, DecoratedBox, InteractiveRegion, KeyChord,
-    ScrollController, ScrollView,
+    Column, ConstrainedBox, ControlColors, CrossAxisAlignment, DecoratedBox, InteractiveRegion,
+    KeyChord, ScrollController, ScrollView,
     decoration::{Border, BorderRadius, BoxDecoration},
     layout::{BoxConstraints, Size},
     scene::primitive::Primitive,
@@ -76,21 +76,21 @@ fn availability(
 }
 
 fn chord_keys(chord: KeyChord) -> Vec<String> {
-    // KeyChord's fields are normalized by the binding resolver.
+    // KeyChord guarantees normalized keys independently of the binding resolver.
     let mut parts = Vec::new();
-    if chord.modifiers.ctrl {
+    if chord.modifiers().ctrl {
         parts.push("Ctrl".to_owned());
     }
-    if chord.modifiers.shift {
+    if chord.modifiers().shift {
         parts.push("Shift".to_owned());
     }
-    if chord.modifiers.alt {
+    if chord.modifiers().alt {
         parts.push("Alt".to_owned());
     }
-    if chord.modifiers.meta {
+    if chord.modifiers().meta {
         parts.push("Win".to_owned());
     }
-    parts.push(match chord.key {
+    parts.push(match chord.key() {
         harbor_widget::input::event::Key::Character(ch) => ch.to_uppercase().to_string(),
         key => format!("{key:?}"),
     });
@@ -143,23 +143,44 @@ fn shortcut_badges(
             .unwrap(),
         )
         .border_radius(BorderRadius::all(4.0).unwrap());
-    let mut shortcuts = Column::new().cross_axis_alignment(Alignment::End).gap(2.0);
+    let mut shortcuts = Column::new()
+        .cross_axis_alignment(CrossAxisAlignment::End)
+        .gap(2.0)
+        .unwrap();
     let mut bound = false;
     for (chord, _) in bindings.bindings().filter(|(_, bound)| *bound == command) {
         bound = true;
-        let mut keys = Row::new().gap(4.0);
+        let mut keys = Row::new().gap(4.0).unwrap();
         for key in chord_keys(chord) {
-            let label = TextLabel::new(key).color(foreground).build(cx);
-            keys = keys.child(
+            let label = TextLabel::new(key)
+                .foreground(foreground)
+                .expect("valid color")
+                .build(cx);
+            keys = keys.push_child(
                 DecoratedBox::new(keycap.clone())
-                    .child(Padding::new(1.0, 2.0, 1.0, 2.0).child(label).build(cx))
+                    .child(
+                        Padding::new(harbor_widget::Insets {
+                            top: 1.0,
+                            right: 2.0,
+                            bottom: 1.0,
+                            left: 2.0,
+                        })
+                        .unwrap()
+                        .child(label)
+                        .build(cx),
+                    )
                     .build(cx),
             );
         }
-        shortcuts = shortcuts.child(keys.build(cx));
+        shortcuts = shortcuts.push_child(keys.build(cx));
     }
     if !bound {
-        shortcuts = shortcuts.child(TextLabel::new("Unbound").color(foreground).build(cx));
+        shortcuts = shortcuts.push_child(
+            TextLabel::new("Unbound")
+                .foreground(foreground)
+                .expect("valid color")
+                .build(cx),
+        );
     }
     shortcuts.build(cx)
 }
@@ -336,7 +357,7 @@ impl WorkspaceUiController {
         }
     }
 
-    fn palette_navigate(&self, generation: u64, down: bool) {
+    fn palette_navigate(&self, generation: u64, direction: harbor_widget::VerticalDirection) {
         let mut state = self.store.state().read().clone();
         if state
             .popups
@@ -347,7 +368,7 @@ impl WorkspaceUiController {
                 let count = candidates(&palette.input.text()).len();
                 palette.selected = if count == 0 {
                     0
-                } else if down {
+                } else if direction == harbor_widget::VerticalDirection::Down {
                     (palette.selected.min(count - 1) + 1) % count
                 } else {
                     (palette.selected.min(count - 1) + count - 1) % count
@@ -452,11 +473,12 @@ fn palette_panel(
     let input = TextField::new(palette.input.clone())
         .decoration(appearance.input())
         .padding(6.0)
+        .expect("valid field padding")
         .placeholder("Type a command label or ID…")
         .focus_handle(controller.palette_focus)
-        .on_changed(move |_| changed.palette_changed(generation))
-        .on_vertical_navigation(move |down| navigate.palette_navigate(generation, down))
-        .on_submitted(move |_| submit.palette_submit(generation))
+        .on_change(move |_| changed.palette_changed(generation))
+        .on_vertical_navigation(move |direction| navigate.palette_navigate(generation, direction))
+        .on_submit(move |_| submit.palette_submit(generation))
         .on_escape(move || {
             close.dispatch(AppCommandRequest::shortcut(
                 AppCommand::CloseCommandPalette(generation),
@@ -488,18 +510,21 @@ fn palette_panel(
         .max(1);
     let entries_count = entries.len();
     let mut rows = Column::new()
-        .cross_axis_alignment(Alignment::Stretch)
-        .gap(4.0);
-    let mut content = Column::new()
-        .cross_axis_alignment(Alignment::Stretch)
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
         .gap(4.0)
-        .child(View::deferred(
+        .unwrap();
+    let mut content = Column::new()
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .gap(4.0)
+        .unwrap()
+        .push_child(View::deferred(
             input.keyed(format!("palette-editor-{generation}")),
         ));
     if entries.is_empty() {
-        rows = rows.child(
+        rows = rows.push_child(
             TextLabel::new("No matching commands")
-                .color(foreground)
+                .foreground(foreground)
+                .expect("valid color")
                 .build(cx),
         );
     } else {
@@ -513,15 +538,26 @@ fn palette_panel(
                 foreground
             };
             let label = TextLabel::new(entry.label)
-                .color(foreground)
+                .foreground(foreground)
+                .expect("valid color")
                 .ellipsis()
                 .build(cx);
             let shortcuts = shortcut_badges(cx, bindings, entry.command, foreground);
             let row = Row::new()
-                .cross_axis_alignment(Alignment::Center)
-                .child(View::leaf(PaletteRowHeight { shortcut_rows }))
-                .child(Expanded::new().child(label).build(cx))
-                .child(Padding::new(0.0, 0.0, 0.0, 12.0).child(shortcuts).build(cx))
+                .cross_axis_alignment(CrossAxisAlignment::Center)
+                .push_child(View::leaf(PaletteRowHeight { shortcut_rows }))
+                .push_child(Expanded::new().child(label).build(cx))
+                .push_child(
+                    Padding::new(harbor_widget::Insets {
+                        top: 0.0,
+                        right: 0.0,
+                        bottom: 0.0,
+                        left: 12.0,
+                    })
+                    .unwrap()
+                    .child(shortcuts)
+                    .build(cx),
+                )
                 .build(cx);
             let activate = controller.clone();
             let command = entry.command;
@@ -541,20 +577,27 @@ fn palette_panel(
             style.disabled = transparent;
             let region = InteractiveRegion::new()
                 .style(style)
+                .expect("valid control style")
                 .focusable(false)
                 .selected(index == palette.selected)
                 .disabled(disabled)
                 .on_activate(move |_| activate.palette_submit_command(generation, command))
-                .content(move |cx, state| {
-                    let content = Padding::new(6.0, 8.0, 6.0, 8.0)
-                        .child(row.clone())
-                        .build(cx);
+                .child_with(move |cx, state| {
+                    let content = Padding::new(harbor_widget::Insets {
+                        top: 6.0,
+                        right: 8.0,
+                        bottom: 6.0,
+                        left: 8.0,
+                    })
+                    .unwrap()
+                    .child(row.clone())
+                    .build(cx);
                     match GlassAppearance::command_palette_row(foreground, state) {
                         Some(glass) => glass.panel(cx, content),
                         None => content,
                     }
                 });
-            rows = rows.child(View::deferred(
+            rows = rows.push_child(View::deferred(
                 region.keyed(format!("palette-row-{generation}-{}", entry.id)),
             ));
         }
@@ -567,8 +610,16 @@ fn palette_panel(
         .build(cx);
         // Reserve the 10dp overlay hit target plus a 4dp gap outside row glass.
         // Keep ScrollView's geometry and scrolling behavior unchanged.
-        let rows = Padding::new(0.0, 14.0, 0.0, 0.0).child(rows).build(cx);
-        content = content.child(
+        let rows = Padding::new(harbor_widget::Insets {
+            top: 0.0,
+            right: 14.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
+        .unwrap()
+        .child(rows)
+        .build(cx);
+        content = content.push_child(
             Expanded::new()
                 .child(
                     ScrollView::new()
@@ -578,18 +629,19 @@ fn palette_panel(
                 )
                 .build(cx),
         );
-        content = content.child(
+        content = content.push_child(
             TextLabel::new(format!(
                 "{} / {} · ↑↓ select · Enter / click run · Esc close",
                 palette.selected + 1,
                 entries.len()
             ))
-            .color(foreground)
+            .foreground(foreground)
+            .expect("valid color")
             .build(cx),
         );
     }
     if entries.is_empty() {
-        content = content.child(
+        content = content.push_child(
             Expanded::new()
                 .child(
                     ScrollView::new()
@@ -616,21 +668,28 @@ fn palette_panel(
         })
         .child(content.build(cx))
         .build(cx);
-    let content = Padding::all(8.0).child(content).build(cx);
+    let content = Padding::all(8.0).unwrap().child(content).build(cx);
     let card = appearance.panel(cx, content);
     Portal::new()
         .child(
-            Align::new(Alignment::Center)
-                .vertical_alignment(Alignment::Start)
-                .insets(12.0, 12.0, 12.0, 12.0)
-                .child(
-                    ConstrainedBox::new()
-                        .min_width(620.0)
-                        .max_width(620.0)
-                        .child(FocusScope::new().modal(true).child(card).build(cx))
-                        .build(cx),
-                )
-                .build(cx),
+            Align::new(harbor_widget::Alignment2D::new(
+                harbor_widget::PositionAlignment::Center,
+                harbor_widget::PositionAlignment::Start,
+            ))
+            .insets(harbor_widget::Insets {
+                top: 12.0,
+                right: 12.0,
+                bottom: 12.0,
+                left: 12.0,
+            })
+            .unwrap()
+            .child(
+                harbor_widget::SizedBox::width(620.0)
+                    .unwrap()
+                    .child(FocusScope::new().modal(true).child(card).build(cx))
+                    .build(cx),
+            )
+            .build(cx),
         )
         .keyed("command-palette")
         .build(cx)

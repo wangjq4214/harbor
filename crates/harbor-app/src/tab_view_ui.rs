@@ -3,9 +3,9 @@
 use super::{RailPresentation, TabCommand, TabUiController, TabUiState};
 use crate::{command::AppCommandRequest, tab_manager::TabSnapshot};
 use harbor_widget::{
-    Alignment, BoxDecoration, ClipBehavior, Column, ComponentExt as _, ConstrainedBox,
-    ControlColors, ControlStyle, DecoratedBox, Dispatcher, Expanded, Icon, IconButton,
-    InteractionState, InteractiveRegion, LucideIcon, Row, ScrollView,
+    BoxDecoration, ClipBehavior, Column, ComponentExt as _, ConstrainedBox, ControlColors,
+    ControlStyle, CrossAxisAlignment, DecoratedBox, Dispatcher, Expanded, FlexOptions, Icon,
+    IconButton, Insets, InteractionState, InteractiveRegion, LucideIcon, Row, ScrollView, SizedBox,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
     widgets::{padding::Padding, text_label::TextLabel},
@@ -19,13 +19,10 @@ pub(crate) fn tab_rail(
     controller: &TabUiController,
     dispatcher: Dispatcher<AppCommandRequest>,
 ) -> View {
-    harbor_widget::view! { cx;
-        ConstrainedBox::new()
-            .min_width(state.presentation.width())
-            .max_width(state.presentation.width()) => {
+    harbor_widget::view! { SizedBox::width(state.presentation.width()) => {
             ScrollView::new().controller(controller.scroll.clone()) => {
-                Padding::new(0.0, 6.0, 4.0, 6.0) => {
-                    Column::new().cross_axis_alignment(Alignment::Stretch).gap(4.0) => {
+                Padding::new(Insets { top: 0.0, right: 6.0, bottom: 4.0, left: 6.0 }) => {
+                    Column::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: CrossAxisAlignment::Stretch, ..Default::default() }) => {
                         for snapshot in state.snapshots.iter() {
                             tab_row(cx, snapshot, state.presentation, controller, dispatcher.clone());
                         }
@@ -43,7 +40,7 @@ fn tab_row(
     presentation: RailPresentation,
     controller: &TabUiController,
     dispatcher: Dispatcher<AppCommandRequest>,
-) -> View {
+) -> impl Component + use<> {
     let id = snapshot.id;
     let title = snapshot.title.clone();
     let compact = presentation == RailPresentation::Compact;
@@ -56,28 +53,27 @@ fn tab_row(
     let short = abbreviation(snapshot);
     let select_dispatcher = dispatcher.clone();
     let region = InteractiveRegion::new()
-        .style(rail_style(cx, compact))
+        .style(rail_style(cx, compact)).expect("valid control style")
         .selected(snapshot.active)
         .focus_handle(controller.tab_focus(id).expect("live tab has a focus handle"))
         .on_activate(move |_| {
             select_dispatcher.dispatch(AppCommandRequest::rail(TabCommand::Activate(id)));
         })
-        .content(move |cx, state| {
+        .child_with(move |cx, state| {
             let color = rail_style(cx, compact).resolve_state(&state).foreground;
-            harbor_widget::view! { cx;
-                Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 2.0 } else { 8.0 }) => {
+            harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 2.0 } else { 8.0 }, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
                     if !compact {
-                        ConstrainedBox::new().min_width(24.0).max_width(24.0) => {
-                            Icon::new(icon).size(20.0).color(color);
+                        SizedBox::width(24.0) => {
+                            Icon::new(icon).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
                         }
                     }
                     if compact && unread {
-                        Icon::new(LucideIcon::Dot).size(12.0).color(color);
+                        Icon::new(LucideIcon::Dot).size(12.0).expect("valid icon size").foreground(color).expect("valid color");
                     }
                     Expanded::new() => {
                         DecoratedBox::new(BoxDecoration::new()).clip_behavior(ClipBehavior::HardEdge) => {
                             TextLabel::new(if compact { short.clone() } else { title.clone() })
-                                .color(color).ellipsis();
+                                .foreground(color).expect("valid color").ellipsis();
                         }
                     }
                     if !compact {
@@ -86,13 +82,10 @@ fn tab_row(
                 }
             }
         });
-    // Defer the stateful region to its own keyed fiber, rather than borrowing
-    // the workspace's positional hooks when tabs are inserted or removed.
-    harbor_widget::view! { cx;
-        Padding::new(0.0, 0.0, 0.0, 0.0).keyed(format!("terminal-tab-{id}")) => {
-            region;
-        }
-    }
+    // The region is a deferred component of its own keyed fiber; the padding
+    // wrapper that used to isolate it from the workspace's positional hooks
+    // is no longer needed (ADR 0079).
+    region.keyed(format!("terminal-tab-{id}"))
 }
 
 fn rail_style(cx: &BuildCx, compact: bool) -> ControlStyle {
@@ -124,21 +117,20 @@ fn new_tab_button(
     move |cx: &mut BuildCx| {
         let compact = presentation == RailPresentation::Compact;
         InteractiveRegion::new()
-            .style(rail_style(cx, compact))
+            .style(rail_style(cx, compact)).expect("valid control style")
             .on_activate({
                 let dispatcher = dispatcher.clone();
                 move |_| dispatcher.dispatch(AppCommandRequest::rail(TabCommand::New))
             })
-            .content(move |cx, state| {
+            .child_with(move |cx, state| {
                 let color = rail_style(cx, compact).resolve_state(&state).foreground;
-                harbor_widget::view! { cx;
-                    Row::new().cross_axis_alignment(Alignment::Center).gap(if compact { 0.0 } else { 8.0 }) => {
-                        ConstrainedBox::new().min_width(24.0).max_width(24.0) => {
-                            Icon::new(LucideIcon::Plus).size(20.0).color(color);
+                harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 0.0 } else { 8.0 }, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
+                        SizedBox::width(24.0) => {
+                            Icon::new(LucideIcon::Plus).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
                         }
                         if !compact {
                             Expanded::new() => {
-                                TextLabel::new("New terminal").color(color).ellipsis();
+                                TextLabel::new("New terminal").foreground(color).expect("valid color").ellipsis();
                             }
                         }
                     }
@@ -160,6 +152,7 @@ fn close_tab_button(
     style.radius = 4.0;
     let foreground = style.normal.foreground;
     let visible = row_state.selected || row_state.hovered || row_state.focused;
+    // Width is fixed; height remains a cap, not a second fixed dimension.
     ConstrainedBox::new()
         .min_width(20.0)
         .max_width(20.0)
@@ -167,8 +160,10 @@ fn close_tab_button(
         .child(
             IconButton::new(LucideIcon::X, "Close tab")
                 .style(style)
+                .expect("valid control style")
                 .icon_size(16.0)
-                .color_with(move |state| {
+                .expect("valid size")
+                .foreground_with(move |state| {
                     if visible || state.focused {
                         foreground
                     } else {

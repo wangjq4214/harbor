@@ -1,11 +1,11 @@
 use super::*;
 use crate::input::event::{Modifiers, PointerButton, PointerEvent};
 use crate::scene::primitive::{Color, Primitive};
-use crate::view::{AnyView, View};
+use crate::view::{AnyView, Component, View};
 use crate::widgets::{align::Align, sized_box::SizedBox};
 use crate::{
-    Alignment, BoxDecoration, ClipBehavior, Column, ConstrainedBox, DecoratedBox, Expanded,
-    Notification, Portal,
+    BoxDecoration, ClipBehavior, Column, ConstrainedBox, CrossAxisAlignment, DecoratedBox,
+    Expanded, NotificationCard, Portal,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -47,7 +47,8 @@ fn portal_at_root_and_beneath_clipping_parent_uses_root_geometry_and_hit_testing
     for nested in [false, true] {
         let mut rt = Runtime::new();
         rt.set_viewport(Viewport::new(300, 200, 1.0));
-        let portal = Portal::new().child(Align::new(Alignment::End).child(target()));
+        let portal =
+            Portal::new().child(Align::new(crate::Alignment2D::BOTTOM_RIGHT).child(target()));
         if nested {
             rt.set_root(
                 ConstrainedBox::new()
@@ -128,14 +129,26 @@ fn portal_lifetime_updates_and_remounts_without_layout_slots_or_stale_hits() {
         let width = width.clone();
         move |cx: &mut BuildCx| {
             let mut column = Column::new()
-                .cross_axis_alignment(Alignment::Stretch)
+                .cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .gap(17.0)
-                .child(Expanded::new().child(SizedBox::new(Size::ZERO).color(Color::BLUE)));
+                .unwrap()
+                .push_child(
+                    Expanded::new().child(
+                        SizedBox::new(Size::ZERO)
+                            .unwrap()
+                            .background(Color::BLUE)
+                            .expect("valid color"),
+                    ),
+                );
             if visible.get() {
-                column = column.child(
+                column = column.push_child(
                     Portal::new().child(
-                        Align::new(Alignment::End)
-                            .child(SizedBox::new(Size::new(width.get(), 30.0)).color(Color::RED)),
+                        Align::new(crate::Alignment2D::BOTTOM_RIGHT).child(
+                            SizedBox::new(Size::new(width.get(), 30.0))
+                                .unwrap()
+                                .background(Color::RED)
+                                .expect("valid color"),
+                        ),
                     ),
                 );
             }
@@ -227,7 +240,7 @@ fn notification_lifetime_is_caller_owned_and_close_follows_resized_position() {
     let mut rt = Runtime::new();
     rt.set_viewport(Viewport::new(900, 600, 1.0));
     let count = dismissed.clone();
-    rt.set_root(Portal::new().child(Notification::new("Action required: requested changes were not applied. Previously accepted settings remain effective.", move || { count.fetch_add(1, Ordering::Relaxed); }).placement(crate::widgets::notification::NotificationPlacement { horizontal: Alignment::End, vertical: Alignment::Start, inset: 12.0 })));
+    rt.set_root(Portal::new().child(NotificationCard::new("Action required: requested changes were not applied. Previously accepted settings remain effective.", move || { count.fetch_add(1, Ordering::Relaxed); }).placement(crate::widgets::notification_card::NotificationCardPlacement { horizontal: crate::PositionAlignment::End, vertical: crate::PositionAlignment::Start, inset: 12.0 }).unwrap()));
     rt.update(Instant::now());
     assert!(rt.events.input().focused.is_none());
     assert!(
@@ -279,7 +292,11 @@ fn nested_portals_paint_once_in_matching_hit_order_and_escape_inner_clip() {
                 .child(
                     DecoratedBox::new(BoxDecoration::new())
                         .clip_behavior(ClipBehavior::HardEdge)
-                        .child(Portal::new().child(Align::new(Alignment::End).child(target()))),
+                        .child(
+                            Portal::new().child(
+                                Align::new(crate::Alignment2D::BOTTOM_RIGHT).child(target()),
+                            ),
+                        ),
                 ),
         ),
     );
@@ -305,11 +322,13 @@ fn failed_escaped_measurement_does_not_partially_commit_ordinary_geometry() {
     let state = bad.clone();
     rt.set_root(move |cx: &mut BuildCx| {
         Column::new()
-            .child(
+            .push_child(
                 SizedBox::new(Size::new(if state.get() { 200.0 } else { 100.0 }, 60.0))
-                    .color(Color::BLUE),
+                    .unwrap()
+                    .background(Color::BLUE)
+                    .expect("valid color"),
             )
-            .child(Portal::new().child(View::new(FailingLeaf(state.get()), vec![], None)))
+            .push_child(Portal::new().child(View::new(FailingLeaf(state.get()), vec![], None)))
             .build(cx)
     });
     rt.update(Instant::now());
@@ -330,12 +349,14 @@ fn failed_escaped_measurement_does_not_partially_commit_ordinary_geometry() {
 fn focusing_escaped_content_does_not_scroll_its_declaring_scroll_view() {
     let scroll = crate::ScrollController::new();
     let handle = crate::FocusHandle::new();
-    let content =
-        Column::new()
-            .child(SizedBox::new(Size::new(100.0, 600.0)))
-            .child(Portal::new().child(
-                Align::new(Alignment::End).child(crate::Focus::new(target()).handle(handle)),
-            ));
+    let content = Column::new()
+        .push_child(SizedBox::new(Size::new(100.0, 600.0)).unwrap())
+        .push_child(
+            Portal::new().child(
+                Align::new(crate::Alignment2D::BOTTOM_RIGHT)
+                    .child(crate::Focus::new().child(target()).focus_handle(handle)),
+            ),
+        );
     let mut rt = Runtime::new();
     rt.set_viewport(Viewport::new(300, 200, 1.0));
     rt.set_root(
@@ -349,12 +370,12 @@ fn focusing_escaped_content_does_not_scroll_its_declaring_scroll_view() {
             ),
     );
     rt.update(Instant::now());
-    assert_eq!(scroll.offset(), 0.0);
+    assert_eq!(scroll.requested_offset(), 0.0);
     rt.request_focus(&handle);
     rt.update(Instant::now());
     assert!(rt.events.input().focused.is_some());
     assert_eq!(
-        scroll.offset(),
+        scroll.requested_offset(),
         0.0,
         "logical ancestors must not reveal root-relative content"
     );

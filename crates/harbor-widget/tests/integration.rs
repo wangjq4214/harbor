@@ -4,7 +4,7 @@ use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::signal::Signal;
 use harbor_widget::view::{BuildCx, Component, Key, View};
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{Border, BorderRadius, BoxDecoration, ClipBehavior, DecoratedBox};
 use std::cell::RefCell;
@@ -20,9 +20,11 @@ struct Wrapper {
 impl Component for Wrapper {
     fn build(&self, cx: &mut BuildCx) -> View {
         // Build the inner SizedBox using the same BuildCx
-        let inner = SizedBox::new(self.inner_size).build(cx);
-        // Wrap in a container view (using SizedBox as the container)
-        View::new(SizedBox::new(Size::new(200.0, 200.0)), vec![inner], None)
+        let inner = SizedBox::new(self.inner_size).unwrap().build(cx);
+        SizedBox::new(Size::new(200.0, 200.0))
+            .unwrap()
+            .child(inner)
+            .build(cx)
     }
 }
 
@@ -31,7 +33,7 @@ impl Component for Wrapper {
 #[test]
 fn sized_box_layout_integration() {
     let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
 
     let req = rt.update(Instant::now());
     assert!(req.request_redraw, "first build should request redraw");
@@ -52,7 +54,7 @@ fn sized_box_layout_integration() {
 #[test]
 fn second_update_without_changes_no_redraw() {
     let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
 
     let req1 = rt.update(Instant::now());
     assert!(req1.request_redraw);
@@ -67,13 +69,13 @@ fn second_update_without_changes_no_redraw() {
 #[test]
 fn set_root_twice_replaces_tree() {
     let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
     rt.update(Instant::now());
 
     let first_root = rt.root_id().unwrap();
 
     // Replace with new root
-    rt.set_root(SizedBox::new(Size::new(200.0, 100.0)));
+    rt.set_root(SizedBox::new(Size::new(200.0, 100.0)).unwrap());
     let second_root = rt.root_id().unwrap();
 
     // Should be a new fiber (different generation)
@@ -106,16 +108,16 @@ fn nested_sized_box_produces_correct_layout_rects() {
     // Root (Wrapper container) should have 200x200
     assert_eq!(root.layout_rect().unwrap().size(), Size::new(200.0, 200.0));
 
-    // Child (inner SizedBox) should have 50x25
+    // A size wrapper now passes its parent-enforced requested axes tightly.
     assert_eq!(root.children().len(), 1, "root should have one child");
     let child = arena.get(root.children()[0]).unwrap();
-    assert_eq!(child.layout_rect().unwrap().size(), Size::new(50.0, 25.0));
+    assert_eq!(child.layout_rect().unwrap().size(), Size::new(200.0, 200.0));
 }
 
 #[test]
 fn empty_tree_no_crash() {
     let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
     rt.update(Instant::now());
     rt.update(Instant::now());
     rt.update(Instant::now());
@@ -132,7 +134,7 @@ fn signal_write_triggers_rebuild() {
         fn build(&self, cx: &mut BuildCx) -> View {
             let state: Signal<u32> = cx.use_state(|| 0u32);
             *self.state.borrow_mut() = Some(state.clone());
-            SizedBox::new(Size::new(100.0, 50.0)).build(cx)
+            SizedBox::new(Size::new(100.0, 50.0)).unwrap().build(cx)
         }
     }
 
@@ -170,7 +172,7 @@ fn runtimes_consume_only_their_own_signal_dirty_notifications() {
         fn build(&self, cx: &mut BuildCx) -> View {
             let state = cx.use_state(|| 0u32);
             *self.state.borrow_mut() = Some(state);
-            SizedBox::new(self.size).build(cx)
+            SizedBox::new(self.size).unwrap().build(cx)
         }
     }
 
@@ -200,8 +202,8 @@ fn runtimes_consume_only_their_own_signal_dirty_notifications() {
 
 #[test]
 fn view_key_preserved() {
-    let sb = SizedBox::new(Size::new(10.0, 10.0));
-    let view = View::new(sb, vec![], Some(Key::new("test_key")));
+    let sb = SizedBox::new(Size::new(10.0, 10.0)).unwrap();
+    let view = harbor_widget::ComponentExt::keyed(sb, "test_key").build(&mut BuildCx::stub());
     assert_eq!(view.key(), Some(&Key::new("test_key")));
     assert_eq!(view.widget_type(), std::any::TypeId::of::<SizedBox>());
 }
@@ -216,11 +218,18 @@ fn runtime_detects_modal_in_deeply_nested_tree() {
 
     let mut rt = Runtime::new();
     // Non-modal root wrapping a modal scope
-    let root = Padding::new(8.0, 8.0, 8.0, 8.0).child(
-        Column::new().child(
+    let root = Padding::new(harbor_widget::Insets {
+        top: 8.0,
+        right: 8.0,
+        bottom: 8.0,
+        left: 8.0,
+    })
+    .unwrap()
+    .child(
+        Column::new().push_child(
             FocusScope::new()
                 .modal(true)
-                .child(SizedBox::new(Size::new(100.0, 50.0))),
+                .child(SizedBox::new(Size::new(100.0, 50.0)).unwrap()),
         ),
     );
     rt.set_root(root);
@@ -237,8 +246,8 @@ fn runtime_no_modal_when_tree_is_purely_non_modal() {
 
     let mut rt = Runtime::new();
     let root = Column::new()
-        .child(SizedBox::new(Size::new(100.0, 50.0)))
-        .child(SizedBox::new(Size::new(100.0, 50.0)));
+        .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap())
+        .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
     rt.set_root(root);
     rt.update(Instant::now());
     assert!(!rt.has_modal());
@@ -251,7 +260,7 @@ fn viewport_change_preserves_correct_layout_rect() {
     use harbor_widget::renderer::Viewport;
 
     let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
     rt.update(Instant::now());
 
     // Set viewport to a smaller size
@@ -279,7 +288,7 @@ fn signal_write_after_root_replacement_triggers_rebuild() {
         fn build(&self, cx: &mut BuildCx) -> View {
             let state: Signal<u32> = cx.use_state(|| 0u32);
             *self.counter.borrow_mut() = Some(state.clone());
-            SizedBox::new(Size::new(100.0, 50.0)).build(cx)
+            SizedBox::new(Size::new(100.0, 50.0)).unwrap().build(cx)
         }
     }
 
@@ -319,9 +328,9 @@ fn signal_write_after_root_replacement_triggers_rebuild() {
 #[test]
 fn multiple_set_root_without_update_works() {
     let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
-    rt.set_root(SizedBox::new(Size::new(200.0, 100.0)));
-    rt.set_root(SizedBox::new(Size::new(300.0, 150.0)));
+    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
+    rt.set_root(SizedBox::new(Size::new(200.0, 100.0)).unwrap());
+    rt.set_root(SizedBox::new(Size::new(300.0, 150.0)).unwrap());
     let req = rt.update(Instant::now());
     assert!(req.request_redraw);
 
@@ -338,8 +347,19 @@ fn zero_padding_is_noop_at_runtime_level() {
 
     let mut rt = Runtime::new();
     rt.set_root(
-        Padding::new(0.0, 0.0, 0.0, 0.0)
-            .child(SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED)),
+        Padding::new(harbor_widget::Insets {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
+        .unwrap()
+        .child(
+            SizedBox::new(Size::new(100.0, 50.0))
+                .unwrap()
+                .background(Color::RED)
+                .expect("valid color"),
+        ),
     );
     let req = rt.update(Instant::now());
     assert!(req.request_redraw);
@@ -368,7 +388,12 @@ fn should_paint_decorated_box_in_background_child_border_order_with_child_clip_o
     rt.set_root(
         DecoratedBox::new(decoration)
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(SizedBox::new(Size::new(40.0, 24.0)).color(Color::GREEN)),
+            .child(
+                SizedBox::new(Size::new(40.0, 24.0))
+                    .unwrap()
+                    .background(Color::GREEN)
+                    .expect("valid color"),
+            ),
     );
 
     // Act
@@ -401,7 +426,7 @@ fn should_preserve_layout_and_one_child_contract_for_decorated_box() {
     let mut rt = Runtime::new();
     rt.set_root(
         DecoratedBox::new(BoxDecoration::new().try_color(Color::RED).unwrap())
-            .child(SizedBox::new(Size::new(40.0, 24.0))),
+            .child(SizedBox::new(Size::new(40.0, 24.0)).unwrap()),
     );
 
     // Act
@@ -427,8 +452,12 @@ fn should_emit_no_decoration_fill_when_color_is_absent() {
     // Arrange
     let mut rt = Runtime::new();
     rt.set_root(
-        DecoratedBox::new(BoxDecoration::new())
-            .child(SizedBox::new(Size::new(12.0, 12.0)).color(Color::GREEN)),
+        DecoratedBox::new(BoxDecoration::new()).child(
+            SizedBox::new(Size::new(12.0, 12.0))
+                .unwrap()
+                .background(Color::GREEN)
+                .expect("valid color"),
+        ),
     );
 
     // Act
@@ -444,11 +473,13 @@ fn should_emit_no_decoration_fill_when_color_is_absent() {
 
 #[test]
 fn align_center_integration() {
-    use harbor_widget::layout::Alignment;
     use harbor_widget::widgets::align::Align;
 
     let mut rt = Runtime::new();
-    rt.set_root(Align::new(Alignment::Center).child(SizedBox::new(Size::new(50.0, 50.0))));
+    rt.set_root(
+        Align::new(harbor_widget::Alignment2D::CENTER)
+            .child(SizedBox::new(Size::new(50.0, 50.0)).unwrap()),
+    );
     let req = rt.update(Instant::now());
     assert!(req.request_redraw);
 
@@ -469,15 +500,15 @@ fn align_center_integration() {
 
 #[test]
 fn row_cross_axis_center_integration() {
-    use harbor_widget::layout::Alignment;
+    use harbor_widget::layout::CrossAxisAlignment;
     use harbor_widget::widgets::row::Row;
 
     let mut rt = Runtime::new();
     rt.set_root(
         Row::new()
-            .cross_axis_alignment(Alignment::Center)
-            .child(SizedBox::new(Size::new(50.0, 20.0)))
-            .child(SizedBox::new(Size::new(50.0, 100.0))),
+            .cross_axis_alignment(CrossAxisAlignment::Center)
+            .push_child(SizedBox::new(Size::new(50.0, 20.0)).unwrap())
+            .push_child(SizedBox::new(Size::new(50.0, 100.0)).unwrap()),
     );
     let req = rt.update(Instant::now());
     assert!(req.request_redraw);
@@ -507,8 +538,19 @@ fn stack_with_background_paint_count() {
     rt.set_root(
         Stack::new()
             .background(Color::BLACK)
-            .child(SizedBox::new(Size::new(80.0, 80.0)).color(Color::RED))
-            .child(SizedBox::new(Size::new(60.0, 60.0)).color(Color::GREEN)),
+            .expect("finite background")
+            .push_child(
+                SizedBox::new(Size::new(80.0, 80.0))
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color"),
+            )
+            .push_child(
+                SizedBox::new(Size::new(60.0, 60.0))
+                    .unwrap()
+                    .background(Color::GREEN)
+                    .expect("valid color"),
+            ),
     );
     rt.update(Instant::now());
 
@@ -523,7 +565,7 @@ fn stack_with_background_paint_count() {
 }
 
 #[test]
-fn should_paint_custom_paint_after_fill_with_child_clip_only() {
+fn should_paint_external_surface_after_fill_with_child_clip_only() {
     let decoration = BoxDecoration::new()
         .try_color(Color::RED)
         .unwrap()
@@ -534,7 +576,7 @@ fn should_paint_custom_paint_after_fill_with_child_clip_only() {
     rt.set_root(
         DecoratedBox::new(decoration)
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(CustomPaint::new(1)),
+            .child(ExternalSurface::new(1)),
     );
     rt.update(Instant::now());
 

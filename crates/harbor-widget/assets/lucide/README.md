@@ -21,7 +21,9 @@ stroke intersections use one coverage value rather than overlapping draws.
 use harbor_widget::{Icon, LucideIcon};
 use harbor_widget::scene::primitive::Color;
 
-let icon = Icon::new(LucideIcon::Terminal).size(20.0).color(Color::WHITE);
+let icon = Icon::new(LucideIcon::Terminal)
+    .size(20.0).expect("finite nonnegative size")
+    .foreground(Color::WHITE).expect("finite RGBA");
 ```
 
 `Icon` is a non-interactive leaf compatible with `view!`. Its default size is

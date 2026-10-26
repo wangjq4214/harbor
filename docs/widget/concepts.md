@@ -30,7 +30,7 @@ Reconciliation rules are parent-local:
 
 Use `ComponentExt::keyed`, or `Component::key()` when implementing a component's identity directly. Reordering is supported; moving a keyed child to another parent is not a state-preservation contract. `Runtime::set_root` replaces and tears down the old root even when the new description looks similar.
 
-**Construction matters:** passing a component to `.child(...)`/`view!` defers its build to its own fiber. Calling a child's `.build(cx)` eagerly shares the caller's build context. That can be intentional inside a composite implementation, but is not an independent hook boundary. `BuildCx::stub()` is for prebuilding descriptions; it is not a mounted runtime with persistent subscriptions.
+**Construction matters:** passing a component to `.child(...)`/`view!` (root or child position) defers its build to its own fiber; an already-built `View` passes through unchanged at any position. Calling a child's `.build(cx)` eagerly shares the caller's build context. That can be intentional inside a composite implementation, but is not an independent hook boundary. `BuildCx::stub()` is for prebuilding descriptions; it is not a mounted runtime with persistent subscriptions.
 
 ## Signals are pull-based shared cells, not render snapshots
 
@@ -50,19 +50,29 @@ Do not confuse these existing callbacks with a general hook system:
 
 | Public seam | When/why to use it |
 | --- | --- |
-| `CustomPaint::on_unmount(Arc<ExternalUnmountFn>)`, where `ExternalUnmountFn = dyn Fn()` | Teardown of a retained external-paint leaf when it leaves the mounted tree |
-| `CustomPaint::handler`, `schedule`, `ime`, `on_input` | External renderer, demand/deadline, focused IME and in-tree input adapters; not component mount effects |
-| `BuildCx::register_external_draw`, `register_external_schedule`, `register_external_ime` | Per-build external registrations; ordinarily supplied through `CustomPaint` builders |
+| `ExternalSurface::on_unmount(Arc<ExternalUnmountFn>)`, where `ExternalUnmountFn = dyn Fn()` | Teardown of a retained external-paint leaf when it leaves the mounted tree |
+| `ExternalSurface::on_draw`, `schedule_with`, `ime_with`, `on_input` | External renderer, demand/deadline, focused IME and in-tree input adapters; not component mount effects |
+| `BuildCx::register_external_draw`, `register_external_schedule`, `register_external_ime` | Per-build external registrations; ordinarily supplied through `ExternalSurface` builders |
 | `LayoutObserver::new(callback)` | Observe committed layout geometry; not a safe substitute for executing business work during build |
 | `WindowPlatformHooks::configure_attributes`, `window_created`, `surface_ready` | Native host construction setup with host-lifetime retained setup state, not hooks on every component |
 
 Keep long-lived resources with an explicit owner. Root replacement tears down component-local state; retain any state that must survive outside that root, and clean up external registrations and callbacks.
 
+## Input consumption is a return value, not an effect
+
+Routed input follows capture → target → bubble. A handler returning `EventHandled::Handled` stops the remaining walk after it returns; `Ignored` continues it. `PrimitiveLeaf::handle_event` and `ExternalSurface::on_input` use the same contract. Already executed capture handlers are not undone. Ordinary enclosing activation controls let descendants handle input first; intentional capture interception, such as a scrollbar owning its overlay track, remains possible.
+
+`EventCtx` accumulates focus, pointer capture/release, clipboard, paint and external-input requests. These commit even when the event is consumed, and an Ignored handler may still request effects. Handled does not automatically request repaint; `invalidate_paint()` does not automatically consume input. The public `stop_propagation()` method has been removed: migrate input handlers to returning Handled, not to a replacement context flag.
+
+Hover Enter/Leave and focus-transition notifications are separate deliveries. Consuming one cannot cancel other recipients' required notifications or the ordinary Move that follows hover bookkeeping. Hover repaint also cannot skip the Move's own command submission. An event's consumption does not automatically consume later Up/Cancel/KeyUp/IME events; explicit pointer, shortcut and composition ownership still governs those sequences.
+
+`on_click`/`on_activate` report activation and `on_enter`/`on_exit` observe boundary changes; their void callbacks do not decide propagation. The owning input handler makes that decision. See the compiled consuming/pass-through examples on `ExternalSurface::on_input`'s `ExternalInputFn` and the mounted regressions in `tests/event_consumption.rs`.
+
 ## Actions are intent, not state
 
 `Store<S, A>` combines a state signal and a FIFO action inbox. `Dispatcher<A>` is cloneable and write-only; it can cross threads when its action type permits. It does not own a reducer or effect executor. The host/application drains actions at a safe event-turn boundary, decides what they mean, executes business effects and publishes state with `set_state`.
 
-`Shortcuts<A>` maps key chords to typed actions; `Actions<A>` supplies a compatible ancestor handler. `ActionOutcome::Consumed` stops the triggering keyboard event, while `PassThrough` declines and allows routing to continue. These synchronous routing mechanisms are not the Store's FIFO queue. A handler can enqueue Store intent, but the host must still drain it.
+`ShortcutMap<A>` maps key chords to typed actions; `ActionHandler<A>` supplies a compatible ancestor handler. `ActionOutcome::Consumed` stops the triggering keyboard event, while `PassThrough` declines and allows routing to continue. These synchronous routing mechanisms are not the Store's FIFO queue. A handler can enqueue Store intent, but the host must still drain it.
 
 In particular, **enqueuing does not automatically wake the runtime**. For background producers, sending an action and waking the native event loop are separate responsibilities. Even on a UI turn, arrange reduction/publication and runtime invalidation rather than assuming dispatch changes the screen.
 

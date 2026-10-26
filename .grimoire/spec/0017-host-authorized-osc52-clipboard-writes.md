@@ -1,7 +1,7 @@
 # Host-Authorized OSC 52 Clipboard Writes
 
 **Spec ID:** 0017
-**Status:** Implemented — implementation present; automated gates passed; Windows runtime acceptance pending
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-09-30
 **Issue:** [#174](https://github.com/wangjq4214/harbor/issues/174)
 
@@ -92,15 +92,6 @@ Keep a self-contained validation summary in committed documentation and retain r
 - No actual sensitive clipboard contents, base64 payloads, or unrelated terminal content in committed artifacts.
 
 ### Gates and documentation
-
-Run applicable implementation gates and record any unrun command with its reason:
-
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
-python scripts/docs/check_docs.py
-```
 
 Update protocol checklist, the existing configuration documentation/example, and any affected retention-limit documentation to state the exact delivered target/text subset, fixed encoded/decoded limits, default policy, background restrictions, confirmation lifetime/focus exception, latest-write behavior, and denied reads. Do not mark unsupported or unexecuted scope complete.
 

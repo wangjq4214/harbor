@@ -1,0 +1,162 @@
+error[E0599]: no associated function or constant named `empty` found for struct `harbor_widget::Focus` in the current scope
+ --> tests/ui/fail/legacy_composition_methods.rs:6:20
+  |
+6 |     let _ = Focus::empty();
+  |                    ^^^^^ associated function or constant not found in `harbor_widget::Focus`
+  |
+note: if you're trying to build a new `harbor_widget::Focus`, consider using `harbor_widget::Focus::new` which returns `harbor_widget::Focus`
+ --> $WORKSPACE/crates/harbor-widget/src/widgets/focus.rs
+  |
+  |     pub fn new() -> Self {
+  |     ^^^^^^^^^^^^^^^^^^^^
+
+error[E0061]: this function takes 0 arguments but 1 argument was supplied
+ --> tests/ui/fail/legacy_composition_methods.rs:7:13
+  |
+7 |     let _ = Focus::new(TextLabel::new("old"));
+  |             ^^^^^^^^^^ --------------------- unexpected argument of type `TextLabel`
+  |
+note: associated function defined here
+ --> $WORKSPACE/crates/harbor-widget/src/widgets/focus.rs
+  |
+  |     pub fn new() -> Self {
+  |            ^^^
+help: remove the extra argument
+  |
+7 -     let _ = Focus::new(TextLabel::new("old"));
+7 +     let _ = Focus::new();
+  |
+
+error[E0599]: no method named `handle` found for struct `harbor_widget::Focus` in the current scope
+ --> tests/ui/fail/legacy_composition_methods.rs:8:26
+  |
+8 |     let _ = Focus::new().handle(FocusHandle::new());
+  |                          ^^^^^^ private field, not a method
+  |
+help: there is a method `focus_handle` with a similar name
+  |
+8 |     let _ = Focus::new().focus_handle(FocusHandle::new());
+  |                          ++++++
+
+error[E0599]: no method named `order` found for struct `harbor_widget::Focus` in the current scope
+ --> tests/ui/fail/legacy_composition_methods.rs:9:26
+  |
+9 |     let _ = Focus::new().order(1);
+  |                          ^^^^^ private field, not a method
+  |
+help: there is a method `tab_order` with a similar name
+  |
+9 |     let _ = Focus::new().tab_order(1);
+  |                          ++++
+
+error[E0599]: no method named `enabled` found for struct `harbor_widget::Focus` in the current scope
+  --> tests/ui/fail/legacy_composition_methods.rs:10:26
+   |
+10 |     let _ = Focus::new().enabled(false);
+   |                          ^^^^^^^ private field, not a method
+
+error[E0599]: no associated function or constant named `empty` found for struct `ShortcutMap<A>` in the current scope
+  --> tests/ui/fail/legacy_composition_methods.rs:11:32
+   |
+11 |     let _ = ShortcutMap::<u8>::empty();
+   |                                ^^^^^ associated function or constant not found in `ShortcutMap<u8>`
+   |
+note: if you're trying to build a new `ShortcutMap<u8>`, consider using `ShortcutMap::<A>::new` which returns `ShortcutMap<_>`
+  --> $WORKSPACE/crates/harbor-widget/src/widgets/shortcut_map.rs
+   |
+   |     pub fn new() -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+error[E0061]: this function takes 0 arguments but 1 argument was supplied
+  --> tests/ui/fail/legacy_composition_methods.rs:12:13
+   |
+12 |     let _ = ShortcutMap::<u8>::new(TextLabel::new("old"));
+   |             ^^^^^^^^^^^^^^^^^^^^^^ --------------------- unexpected argument of type `TextLabel`
+   |
+note: associated function defined here
+  --> $WORKSPACE/crates/harbor-widget/src/widgets/shortcut_map.rs
+   |
+   |     pub fn new() -> Self {
+   |            ^^^
+help: remove the extra argument
+   |
+12 -     let _ = ShortcutMap::<u8>::new(TextLabel::new("old"));
+12 +     let _ = ShortcutMap::<u8>::new();
+   |
+
+error[E0599]: no associated function or constant named `handler` found for struct `ActionHandler<A>` in the current scope
+  --> tests/ui/fail/legacy_composition_methods.rs:13:28
+   |
+13 |     let _ = ActionHandler::handler(|_: u8| ActionOutcome::Consumed);
+   |                            ^^^^^^^ associated function or constant not found in `ActionHandler<_>`
+   |
+note: if you're trying to build a new `ActionHandler<_>`, consider using `ActionHandler::<A>::new` which returns `ActionHandler<_>`
+  --> $WORKSPACE/crates/harbor-widget/src/widgets/action_handler.rs
+   |
+   |     pub fn new(handler: impl Fn(A) -> ActionOutcome + 'static) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0277]: expected an `Fn(_)` closure, found `TextLabel`
+  --> tests/ui/fail/legacy_composition_methods.rs:14:32
+   |
+14 |     let _ = ActionHandler::new(TextLabel::new("old"), |_: u8| ActionOutcome::Consumed);
+   |             ------------------ ^^^^^^^^^^^^^^^^^^^^^ expected an `Fn(_)` closure, found `TextLabel`
+   |             |
+   |             required by a bound introduced by this call
+   |
+   = help: the trait `Fn(_)` is not implemented for `TextLabel`
+note: required by a bound in `ActionHandler::<A>::new`
+  --> $WORKSPACE/crates/harbor-widget/src/widgets/action_handler.rs
+   |
+   |     pub fn new(handler: impl Fn(A) -> ActionOutcome + 'static) -> Self {
+   |                              ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `ActionHandler::<A>::new`
+
+error[E0061]: this function takes 1 argument but 2 arguments were supplied
+  --> tests/ui/fail/legacy_composition_methods.rs:14:13
+   |
+14 |     let _ = ActionHandler::new(TextLabel::new("old"), |_: u8| ActionOutcome::Consumed);
+   |             ^^^^^^^^^^^^^^^^^^                        ------------------------------- unexpected argument #2 of type `{closure@$DIR/tests/ui/fail/legacy_composition_methods.rs:14:55: 14:62}`
+   |
+note: associated function defined here
+  --> $WORKSPACE/crates/harbor-widget/src/widgets/action_handler.rs
+   |
+   |     pub fn new(handler: impl Fn(A) -> ActionOutcome + 'static) -> Self {
+   |            ^^^
+help: remove the extra argument
+   |
+14 -     let _ = ActionHandler::new(TextLabel::new("old"), |_: u8| ActionOutcome::Consumed);
+14 +     let _ = ActionHandler::new(TextLabel::new("old"));
+   |
+
+error[E0599]: no method named `content` found for struct `Button` in the current scope
+  --> tests/ui/fail/legacy_composition_methods.rs:15:27
+   |
+15 |     let _ = Button::new().content(|cx, _| TextLabel::new("old").build(cx));
+   |                           ^^^^^^^ method not found in `Button`
+
+error[E0599]: no method named `content` found for struct `InteractiveRegion` in the current scope
+  --> tests/ui/fail/legacy_composition_methods.rs:16:38
+   |
+16 |     let _ = InteractiveRegion::new().content(|cx, _| TextLabel::new("old").build(cx));
+   |                                      ^^^^^^^ private field, not a method
+
+error[E0599]: no associated function or constant named `from_callback` found for struct `LayoutObserver` in the current scope
+  --> tests/ui/fail/legacy_composition_methods.rs:18:29
+   |
+18 |     let _ = LayoutObserver::from_callback(callback);
+   |                             ^^^^^^^^^^^^^ associated function or constant not found in `LayoutObserver`
+   |
+note: if you're trying to build a new `LayoutObserver` consider using one of the following associated functions:
+      LayoutObserver::new
+      LayoutObserver::from_shared_callback
+  --> $WORKSPACE/crates/harbor-widget/src/widgets/layout_observer.rs
+   |
+   |     pub fn new(callback: impl Fn(Rect) + 'static) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   |     pub fn from_shared_callback(callback: LayoutChangedCallback) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is an associated function `from_shared_callback` with a similar name
+   |
+18 |     let _ = LayoutObserver::from_shared_callback(callback);
+   |                                  +++++++

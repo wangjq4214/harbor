@@ -1,7 +1,7 @@
 # Watched Configuration Reload and New-Session Launch Settings
 
 **Spec ID:** 0024
-**Status:** Implemented; full integrated human/remote acceptance pending.
+**Status:** Accepted (owner-confirmed)
 **Sources:** [#155](https://github.com/wangjq4214/harbor/issues/155), [#172](https://github.com/wangjq4214/harbor/issues/172), [manual spec 0023](./0023-atomic-manual-configuration-reload.md), [ADR 0062](../adr/0062-watched-reload-and-new-session-launch-settings.md). [Spec 0025](./0025-portal-and-configuration-notifications.md) qualifies only notification eligibility.
 
 ## Requirements
@@ -50,21 +50,19 @@ Use validation policy: exact revision/dirty scope, OS/ConPTY/app versions, steps
 | E12 | Valid startup launch fields plus startup-fallback regressions → first child uses accepted launch values, strict live policy remains separate. |
 
 ## Delivery and Outstanding Acceptance
-Stable aliases `0017-configuration-hot-reload` (also used by native test markers):
-| Slice | Contract | Recorded state |
-| --- | --- | --- |
-| T0001 — manual/font | 0023 R1–R8/E1–E11; this R1/R6 | Done historically; automated/scoped native plus prior user-confirmed manual acceptance, not whole package. |
-| T0002 — environment/directory | R2–R4/E1–E7/E12 | Done historically; automated/native seam plus later user-confirmed testing, not new agent UI acceptance. |
-| T0003 — watching | R4/R5/E8/E9/E11, manual/save ordering | Done historically; controlled/filesystem/scoped native-window evidence. |
-| T0004 — integrated package | All R/E, especially E10/R6 and inherited 0023 outcomes | Todo for remaining integrated human/remote acceptance; code and combined automated/native checks exist. |
-T0001–T0003 supply T0004, not a reason to assume passes compose. Launch/watcher development had no artificial dependency on each other or manual-evidence completion; only demonstrated defects create blockers. Both triggers retain one acceptance/factory/feedback owner.
+Stable aliases `0017-configuration-hot-reload` (used by native test markers):
+| Slice | Contract |
+| --- | --- |
+| T0001 — manual/font | 0023 R1–R8/E1–E11; this R1/R6 |
+| T0002 — environment/directory | R2–R4/E1–E7/E12 |
+| T0003 — watching | R4/R5/E8/E9/E11, manual/save ordering |
+| T0004 — integrated package | All R/E, especially E10/R6 and inherited 0023 outcomes |
 
-Historical slice baselines: T0001 bb307d8 (8 focused reload tests and raw ConPTY x/q bytes exactly 7871; IME/physical/rebind/OSC/backdrop/DPI partly user-confirmed); T0002 da1eaeb → 2488f96 (interactive checks initially NOT RUN, then user-confirmed); T0003 2488f965 plus watcher changes (controlled/filesystem/native observation; synthetic desktop typing unreliable). These are recorded history, not rerun here.
-T0004 at 0a4057fd1c61f8d26f0001c0a3ef37656e9131fa plus test/document diff recorded five gates passing (2465 workspace passed, 10 ignored), Windows 26300.9457 / ConPTY 1.24.260710001 / Harbor 0.1.0 debug. [Combined native test](../../src/session_launch_tests.rs) covers real saves/manual ordering, GPU/font/binding/factory coherence, child env/cwd, old-child continuity, strict rejection and retry; [reload tests](../../src/configuration_reload_tests.rs) cover compensation. Scoped native saves/fonts/cmd/PowerShell probes and raw consumed-chord bytes were observed; nvim rendered but automated edit/exit was unreliable, not full input acceptance.
-**Execution-specific waiver:** the user required detailed evidence to stay untracked/local-only. This replaced retrievable-evidence acceptance for that execution only, without ignore changes/force-add; earlier slice waiver did not itself waive T0004. The local Markdown report has since been deleted; no artifacts were inspected/revalidated by this maintenance or presented as remote evidence links.
+**Execution-specific waiver:** detailed evidence was required to remain untracked/local-only, replacing retrievable-evidence acceptance for that execution only, without ignore changes/force-add. The earlier slice waiver did not itself waive T0004. The local report was later deleted and is not available as remote evidence.
 
-**Still required:** fresh integrated Chinese IME/preedit/candidate placement/focus cancellation; physical typing/Backspace/Enter and held-key rebind; retained selection/copy after repeated fonts; complete nvim alternate exit/primary restoration; applicable backdrop/opaque/DPI and desktop OSC reset observations. Prior slice confirmations are not fresh package results. Map every R/E to actual evidence; retain TERM/literal/empty/removal, relative cwd/lost-directory and full-chain confidentiality checks. Use actual Windows child probes and real filesystem replacement/save sequences, not just fixtures. Rerun standard fmt/clippy/workspace/doc/checklist gates on the accepted integrated revision and explicitly report unavailable cases.
-Pending separately authorized remote actions: reconcile #172 font exclusion with 0023/ADRs 0059–0061, PR #201 delivered scope, #155 delivery/evidence/sub-issue links. No closure or remote action is claimed; local-only evidence is not a remote artifact.
+Regression scenarios include Chinese IME/preedit/candidate placement/focus cancellation, physical typing/Backspace/Enter and held-key rebind, retained selection/copy after repeated fonts, nvim alternate exit/primary restoration, backdrop/opaque/DPI and desktop OSC reset observations. Retain TERM/literal/empty/removal, relative cwd/lost-directory and full-chain confidentiality checks using actual Windows children and real replacement/save sequences.
+
+Historical #172 font-exclusion wording differs from 0023/ADRs 0059–0061; #155/#172/PR #201 were not remotely reconciled by this cleanup.
 
 ## Limits
 No existing-child restart/env/cwd mutation, interpolation, inherited-variable deletion, profile/palette UI, widget HMR change, live clipboard policy, OSC 7 side-effect change or special lossless font retention. Schema names/backend/timing remain implementation choices.

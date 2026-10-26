@@ -11,7 +11,7 @@ use crate::view::{AnyView, BuildCx, Component, View};
 #[derive(Clone)]
 pub struct FocusScope {
     pub modal: bool,
-    children: Vec<View>,
+    child: Option<View>,
 }
 
 impl Default for FocusScope {
@@ -24,7 +24,7 @@ impl FocusScope {
     pub fn new() -> Self {
         FocusScope {
             modal: false,
-            children: vec![],
+            child: None,
         }
     }
 
@@ -33,32 +33,34 @@ impl FocusScope {
         self
     }
 
+    /// Replaces the optional child slot.
     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
-        self.children.push(child.into_child_view());
+        self.child = Some(child.into_child_view());
         self
     }
 }
 
 impl Component for FocusScope {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        View::new(self.clone(), self.children.clone(), None)
+        View::new(self.clone(), self.child.iter().cloned().collect(), None)
     }
 }
 
 impl crate::WithChildren for FocusScope {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
     ) -> Result<Self, crate::ChildConstructionError> {
-        self.children.extend(children.into_views());
+        children.into_single("FocusScope", &mut self.child)?;
         Ok(self)
     }
 }
 
 impl AnyView for FocusScope {
     fn intrinsic_size(&self, constraints: BoxConstraints, _metrics: &TextMetrics) -> Size {
-        // FocusScope delegates to children — it's a passthrough container
-        let child_size = if self.children.is_empty() {
+        // FocusScope delegates to its optional child — it's a passthrough container
+        let child_size = if self.child.is_none() {
             Size::ZERO
         } else {
             constraints.fill_bounded(Size::ZERO)
@@ -86,8 +88,11 @@ impl AnyView for FocusScope {
                 key: Key::Tab,
                 modifiers,
             }) if !modifiers.ctrl && !modifiers.alt && !modifiers.meta => {
-                ctx.navigate_focus(!modifiers.shift);
-                EventHandled::Handled
+                if ctx.navigate_focus(!modifiers.shift) {
+                    EventHandled::Handled
+                } else {
+                    EventHandled::Ignored
+                }
             }
             _ => EventHandled::Ignored,
         }
@@ -116,18 +121,14 @@ mod tests {
             min: Size::new(10.0, 40.0),
             max: Size::new(f32::INFINITY, f32::INFINITY),
         };
-        let (size, origins) = scope.layout_children(
-            constraints,
-            &[Size::new(30.0, 20.0), Size::new(20.0, 60.0)],
-            metrics,
-        );
+        let (size, origins) = scope.layout_children(constraints, &[Size::new(30.0, 60.0)], metrics);
         assert_eq!(size, Size::new(30.0, 60.0));
-        assert_eq!(origins, vec![Point::ZERO; 2]);
+        assert_eq!(origins, vec![Point::ZERO; 1]);
         assert_eq!(
             scope.layout_children(constraints, &[], metrics).0,
             constraints.min
         );
-        let with_child = scope.child(crate::widgets::sized_box::SizedBox::new(Size::ZERO));
+        let with_child = scope.child(crate::widgets::sized_box::SizedBox::new(Size::ZERO).unwrap());
         assert_eq!(
             with_child.intrinsic_size(constraints, metrics),
             constraints.min
@@ -166,8 +167,31 @@ mod tests {
             modifiers: Default::default(),
         });
         let mut ctx = EventCtx::new();
+        ctx.set_current_fiber(dummy_fiber_id());
         let result = scope.handle_event(&event, &mut ctx, rect);
         assert_eq!(result, EventHandled::Handled);
+    }
+
+    #[test]
+    fn focus_scope_does_not_consume_tab_when_navigation_cannot_be_queued() {
+        let scope = FocusScope::new();
+        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0));
+        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: Modifiers::default(),
+        });
+        for suppressed in [false, true] {
+            let mut ctx = EventCtx::new();
+            if suppressed {
+                ctx.set_current_fiber(dummy_fiber_id());
+                ctx.suppress_focus_navigation();
+            }
+            assert_eq!(
+                scope.handle_event(&event, &mut ctx, rect),
+                EventHandled::Ignored
+            );
+            assert!(ctx.take_commands().is_empty());
+        }
     }
 
     #[test]
@@ -234,7 +258,7 @@ mod tests {
     #[test]
     fn focus_scope_intrinsic_size_with_child() {
         use crate::widgets::sized_box::SizedBox;
-        let scope = FocusScope::new().child(SizedBox::new(Size::new(100.0, 50.0)));
+        let scope = FocusScope::new().child(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let size = scope.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // FocusScope fills available max space

@@ -1,7 +1,6 @@
-//! Integration tests for QuadRenderer — slot_of, encode_range, and encode.
+//! Public ordered QuadRenderer and Runtime GPU integration tests.
 //!
-//! These tests require a wgpu Device; they are skipped silently if no GPU
-//! adapter is available.
+//! GPU tests report adapter availability; a skipped test is not GPU acceptance.
 
 use harbor_widget::layout::{Point, Rect, Size};
 use harbor_widget::renderer::Viewport;
@@ -13,11 +12,14 @@ use harbor_widget::scene::primitive::{
     Primitive,
 };
 use harbor_widget::scene::{SceneDelta, SceneItem};
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::widgets::stack::Stack;
-use harbor_widget::{Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior, DecoratedBox};
+use harbor_widget::{
+    BackdropRim, BackdropTone, Border, BorderRadius, BoxDecoration, BoxShadow, ClipBehavior,
+    DecoratedBox,
+};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -216,10 +218,6 @@ fn read_texture_sized(
     bytes
 }
 
-fn make_viewport() -> Viewport {
-    Viewport::new(800, 600, 1.0)
-}
-
 fn make_quad_item(id: u64, order: u32, x: f32, y: f32, w: f32, h: f32) -> SceneItem {
     SceneItem {
         id,
@@ -284,6 +282,9 @@ fn render_quad_items(
     encode_ids: Option<&[u64]>,
 ) -> Vec<u8> {
     let mut renderer = QuadRenderer::new(device, wgpu::TextureFormat::Bgra8Unorm);
+    let mut ordered = items.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|item| item.paint_order);
+    let scene_ids: Vec<_> = ordered.iter().map(|item| item.id).collect();
     renderer.update(
         queue,
         &SceneDelta {
@@ -293,7 +294,13 @@ fn render_quad_items(
         },
         &viewport,
     );
-    render_retained_quads(device, queue, &renderer, target_size, encode_ids)
+    render_retained_quads(
+        device,
+        queue,
+        &renderer,
+        target_size,
+        encode_ids.unwrap_or(&scene_ids),
+    )
 }
 
 fn render_retained_quads(
@@ -301,7 +308,7 @@ fn render_retained_quads(
     queue: &wgpu::Queue,
     renderer: &QuadRenderer,
     target_size: u32,
-    encode_ids: Option<&[u64]>,
+    paint_order: &[u64],
 ) -> Vec<u8> {
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("quad primitive render target"),
@@ -336,16 +343,93 @@ fn render_retained_quads(
             timestamp_writes: None,
             multiview_mask: None,
         });
-        if let Some(ids) = encode_ids {
-            for id in ids {
-                renderer.encode_range(&mut pass, renderer.slot_of(*id).unwrap(), 1);
-            }
-        } else {
-            renderer.encode(&mut pass);
-        }
+        renderer.encode_ordered(&mut pass, paint_order.iter().copied());
     }
     queue.submit(Some(encoder.finish()));
     read_texture_sized(device, queue, &target, target_size)
+}
+
+#[test]
+fn independent_ordered_output_tracks_scene_edits_and_translucent_compositing() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: no GPU adapter for independent paint-order acceptance");
+        return;
+    };
+    // Both opaque occlusion and premultiplied alpha composition must follow
+    // paint order. IDs deliberately do not sort into that order.
+    for alpha in [1.0, 0.5] {
+        let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
+        let mut scene = harbor_widget::scene::SceneGraph::new();
+        let viewport = Viewport::new(32, 32, 1.0);
+        let frames: &[&[u64]] = &[
+            &[50, 10],     // Reverse allocation order on the initial upload.
+            &[10, 50],     // Same IDs, order-only edit.
+            &[10, 99, 50], // New slot between storage-adjacent retained items.
+            &[10, 50],     // Remove the inserted layer.
+            &[50],         // Free the other original slot.
+            &[50, 7],      // Reuse it at the top, not its old paint position.
+            &[50, 99, 7],  // Reinsert removed content in the middle.
+            &[99, 7, 50],  // Reorder all retained layers.
+            &[],           // No removed content may remain visible.
+        ];
+        let color = |id| {
+            let mut c = match id {
+                50 => Color::RED,
+                10 => Color::BLUE,
+                99 => Color::GREEN,
+                7 => Color::WHITE,
+                _ => unreachable!(),
+            };
+            c.a = alpha;
+            c
+        };
+        for (frame, ids) in frames.iter().enumerate() {
+            let items = ids
+                .iter()
+                .enumerate()
+                .map(|(order, &id)| {
+                    let mut item = make_rounded_item(
+                        id,
+                        Primitive::Quad {
+                            rect: Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)),
+                            color: color(id),
+                            corner_radius: 0.0,
+                        },
+                    );
+                    item.paint_order = order as u32;
+                    item
+                })
+                .collect();
+            let mut delta = scene.diff(items);
+            if frame == 0 {
+                delta.added.reverse();
+            }
+            renderer.update(&queue, &delta, &viewport);
+            let paint_order: Vec<_> = scene.items().iter().map(|item| item.id).collect();
+            let pixels = render_retained_quads(&device, &queue, &renderer, 32, &paint_order);
+            let actual = bgra(&pixels, 16, 16);
+            let mut expected = [0.0_f32; 4];
+            for &id in ids.iter() {
+                let c = color(id);
+                for (dst, src) in expected
+                    .iter_mut()
+                    .zip([c.b * c.a, c.g * c.a, c.r * c.a, c.a])
+                {
+                    *dst = src + *dst * (1.0 - c.a);
+                }
+            }
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!(
+                    (actual as f32 - expected * 255.0).abs() <= 2.0,
+                    "alpha={alpha}, frame={frame}, order={ids:?}: actual={actual}, expected={expected}"
+                );
+            }
+        }
+        eprintln!(
+            "Independent ordered GPU readback: alpha={alpha}, {} frames executed",
+            frames.len()
+        );
+    }
 }
 
 fn test_gradient(start: Point, end: Point, stops: &[(f32, Color)]) -> harbor_widget::Paint {
@@ -610,7 +694,7 @@ fn gradient_table_survives_growth_retained_edits_slot_reuse_and_viewport_refresh
     );
     assert_eq!(
         bgra(
-            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[1])),
+            &render_retained_quads(&device, &queue, &renderer, 32, &[1]),
             16,
             2
         ),
@@ -618,14 +702,12 @@ fn gradient_table_survives_growth_retained_edits_slot_reuse_and_viewport_refresh
     );
     assert_eq!(
         bgra(
-            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[300])),
+            &render_retained_quads(&device, &queue, &renderer, 32, &[300]),
             16,
             2
         ),
         [255, 0, 0, 255]
     );
-    let first_slot = renderer.slot_of(1);
-    let reused_slot = renderer.slot_of(300);
     items[0] = make(1, [Color::BLACK, Color::WHITE]);
     renderer.update(
         &queue,
@@ -653,11 +735,9 @@ fn gradient_table_survives_growth_retained_edits_slot_reuse_and_viewport_refresh
         },
         &viewport,
     );
-    assert_eq!(renderer.slot_of(400), reused_slot);
-    assert_eq!(renderer.slot_of(1), first_slot);
     assert_eq!(
         bgra(
-            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[400])),
+            &render_retained_quads(&device, &queue, &renderer, 32, &[400]),
             16,
             16
         ),
@@ -665,14 +745,14 @@ fn gradient_table_survives_growth_retained_edits_slot_reuse_and_viewport_refresh
     );
     assert_eq!(
         bgra(
-            &render_retained_quads(&device, &queue, &renderer, 32, Some(&[1])),
+            &render_retained_quads(&device, &queue, &renderer, 32, &[1]),
             16,
             2
         ),
         [0, 0, 0, 255]
     );
     renderer.refresh_viewport(&queue, &items[..299], &Viewport::new(64, 64, 2.0));
-    let pixels = render_retained_quads(&device, &queue, &renderer, 64, Some(&[1]));
+    let pixels = render_retained_quads(&device, &queue, &renderer, 64, &[1]);
     assert_eq!(bgra(&pixels, 32, 60), [255; 4]);
     assert_eq!(bgra(&pixels, 32, 4), [0, 0, 0, 255]);
 }
@@ -710,26 +790,49 @@ fn generic_glass_composes_gradient_fill_stroke_live_blur_and_sharp_foreground() 
         .border(Border::with_paint(paint, 1.0).unwrap())
         .border_radius(radius);
     let glass = || {
-        Padding::all(4.0).child(
+        Padding::all(4.0).unwrap().child(
             harbor_widget::BackdropFilter::new(2.0)
                 .unwrap()
                 .border_radius(radius)
                 .child(
                     DecoratedBox::new(decoration.clone())
                         .clip_behavior(ClipBehavior::AntiAlias)
-                        .child(SizedBox::new(Size::new(24.0, 24.0))),
+                        .child(SizedBox::new(Size::new(24.0, 24.0)).unwrap()),
                 ),
         )
     };
     let root = |background| {
         Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
-            .child(
-                Padding::new(0.0, 0.0, 0.0, 16.0)
-                    .child(SizedBox::new(Size::new(16.0, 32.0)).color(background)),
+            .push_child(
+                SizedBox::new(Size::new(32.0, 32.0))
+                    .unwrap()
+                    .background(Color::GREEN)
+                    .expect("valid color"),
             )
-            .child(glass())
-            .child(Padding::all(13.0).child(SizedBox::new(Size::new(6.0, 6.0)).color(Color::RED)))
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 16.0,
+                })
+                .unwrap()
+                .child(
+                    SizedBox::new(Size::new(16.0, 32.0))
+                        .unwrap()
+                        .background(background)
+                        .expect("valid color"),
+                ),
+            )
+            .push_child(glass())
+            .push_child(
+                Padding::all(13.0).unwrap().child(
+                    SizedBox::new(Size::new(6.0, 6.0))
+                        .unwrap()
+                        .background(Color::RED)
+                        .expect("valid color"),
+                ),
+            )
     };
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
@@ -972,8 +1075,14 @@ fn should_preserve_shadow_fill_external_border_order_across_flushes() {
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
-        Padding::new(8.0, 8.0, 8.0, 8.0)
-            .child(DecoratedBox::new(decoration).child(CustomPaint::new(7).handler(handler))),
+        Padding::new(harbor_widget::Insets {
+            top: 8.0,
+            right: 8.0,
+            bottom: 8.0,
+            left: 8.0,
+        })
+        .unwrap()
+        .child(DecoratedBox::new(decoration).child(ExternalSurface::new(7).on_draw(handler))),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -1099,8 +1208,12 @@ fn should_render_a_visible_hard_edge_for_a_zero_blur_decorated_shadow() {
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
-        DecoratedBox::new(BoxDecoration::new().shadow(shadow))
-            .child(SizedBox::new(Size::new(16.0, 16.0)).color(Color::GREEN)),
+        DecoratedBox::new(BoxDecoration::new().shadow(shadow)).child(
+            SizedBox::new(Size::new(16.0, 16.0))
+                .unwrap()
+                .background(Color::GREEN)
+                .expect("valid color"),
+        ),
     );
     let viewport = Viewport::new(32, 32, 1.0);
     runtime.set_viewport(viewport.clone());
@@ -1276,7 +1389,7 @@ fn should_render_rounded_fill_inside_shape_and_leave_corner_outside_shape_empty(
             timestamp_writes: None,
             multiview_mask: None,
         });
-        renderer.encode(&mut pass);
+        renderer.encode_ordered(&mut pass, [1]);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1352,7 +1465,7 @@ fn should_render_rounded_border_only_on_outer_ring() {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        renderer.encode(&mut pass);
+        renderer.encode_ordered(&mut pass, [1]);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1430,7 +1543,7 @@ fn should_render_collapsed_inner_border_as_a_bounded_outer_shape() {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        renderer.encode(&mut pass);
+        renderer.encode_ordered(&mut pass, [1]);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1507,7 +1620,7 @@ fn rounded_fill_keeps_straight_edges_and_selects_asymmetric_corner_radii() {
             timestamp_writes: None,
             multiview_mask: None,
         });
-        renderer.encode(&mut pass);
+        renderer.encode_ordered(&mut pass, [1]);
     }
     queue.submit(Some(encoder.finish()));
 
@@ -1521,324 +1634,6 @@ fn rounded_fill_keeps_straight_edges_and_selects_asymmetric_corner_radii() {
     assert!(pixel(0, 16)[2] > 180 && pixel(0, 16)[3] > 180);
 }
 
-#[test]
-fn should_return_none_for_unknown_id() {
-    let Some((device, _queue)) = try_create_device() else {
-        return;
-    };
-    let renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    assert_eq!(renderer.slot_of(999), None);
-    assert_eq!(renderer.slot_of(0), None);
-    assert_eq!(renderer.slot_of(1), None);
-}
-
-#[test]
-fn should_return_correct_slot_after_update() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    let item = make_quad_item(0, 0, 10.0, 20.0, 100.0, 50.0);
-    let delta = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    // First allocated slot is 0
-    let slot = renderer.slot_of(delta.added[0].id);
-    assert!(
-        slot.is_some(),
-        "slot_of should return Some for just-added item"
-    );
-    assert_eq!(slot.unwrap(), 0);
-}
-
-#[test]
-fn should_return_none_after_item_removed() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add item
-    let item = make_quad_item(0, 0, 10.0, 10.0, 50.0, 50.0);
-    let delta1 = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta1, &viewport);
-    let assigned_id = delta1.added[0].id;
-    assert!(renderer.slot_of(assigned_id).is_some());
-
-    // Remove it
-    let delta2 = SceneDelta {
-        added: vec![],
-        removed: vec![assigned_id],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta2, &viewport);
-    assert_eq!(renderer.slot_of(assigned_id), None);
-}
-
-#[test]
-fn should_recycle_free_slots() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add item A (slot 0), then item B (slot 1) — use distinct IDs
-    let item_a = make_quad_item(100, 0, 0.0, 0.0, 10.0, 10.0);
-    let item_b = make_quad_item(200, 1, 20.0, 0.0, 10.0, 10.0);
-    let delta1 = SceneDelta {
-        added: vec![item_a, item_b],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta1, &viewport);
-    let id_a = delta1.added[0].id;
-    let id_b = delta1.added[1].id;
-    assert_eq!(renderer.slot_of(id_a), Some(0));
-    assert_eq!(renderer.slot_of(id_b), Some(1));
-
-    // Remove A (slot 0 freed), add C — should reuse slot 0
-    let item_c = make_quad_item(300, 0, 30.0, 0.0, 10.0, 10.0);
-    let delta2 = SceneDelta {
-        added: vec![item_c],
-        removed: vec![id_a],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta2, &viewport);
-    let id_c = delta2.added[0].id;
-    assert_eq!(renderer.slot_of(id_b), Some(1), "B stays in slot 1");
-    assert_eq!(renderer.slot_of(id_c), Some(0), "C reuses freed slot 0");
-    assert_eq!(renderer.slot_of(id_a), None, "A is removed");
-}
-
-#[test]
-fn should_track_multiple_items_at_distinct_slots() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    let items: Vec<SceneItem> = (0..5)
-        .map(|i| make_quad_item((i + 10) as u64, i, i as f32 * 50.0, 0.0, 40.0, 30.0))
-        .collect();
-
-    let delta = SceneDelta {
-        added: items,
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    for (i, item) in delta.added.iter().enumerate() {
-        assert_eq!(
-            renderer.slot_of(item.id),
-            Some(i as u32),
-            "item {i} should be at slot {i}"
-        );
-    }
-}
-
-#[test]
-fn should_return_none_for_id_zero_by_default() {
-    let Some((device, _queue)) = try_create_device() else {
-        return;
-    };
-    let renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    // id 0 is the default/unset value; it won't be in the map unless added
-    assert_eq!(renderer.slot_of(0), None);
-}
-
-#[test]
-fn grows_instance_buffer_without_losing_live_slots() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-    let items = (0..257)
-        .map(|index| make_quad_item(index + 1, index as u32, 0.0, 0.0, 10.0, 10.0))
-        .collect();
-    let delta = SceneDelta {
-        added: items,
-        removed: vec![],
-        modified: vec![],
-    };
-
-    renderer.update(&queue, &delta, &viewport);
-
-    assert_eq!(renderer.slot_of(1), Some(0));
-    assert_eq!(renderer.slot_of(257), Some(256));
-}
-
-#[test]
-fn should_not_panic_on_encode_range_with_no_instances() {
-    let Some((device, _queue)) = try_create_device() else {
-        return;
-    };
-    let renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-        // No instances — should be a no-op, not panic
-        renderer.encode_range(&mut pass, 0, 1);
-        renderer.encode_range(&mut pass, 0, 0);
-        renderer.encode_range(&mut pass, 999, 1);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_not_panic_on_encode_range_with_instances() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add 3 instances
-    let items: Vec<SceneItem> = (0..3)
-        .map(|i| make_quad_item(0, i, i as f32 * 100.0, 0.0, 80.0, 40.0))
-        .collect();
-    let delta = SceneDelta {
-        added: items,
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-
-        // Encode all instances via range
-        renderer.encode_range(&mut pass, 0, 3);
-        // Encode a subset
-        renderer.encode_range(&mut pass, 0, 1);
-        renderer.encode_range(&mut pass, 1, 2);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_clamp_count_to_available_instances() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add 1 instance
-    let item = make_quad_item(0, 0, 0.0, 0.0, 100.0, 50.0);
-    let delta = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-
-        // count=100 but only 1 instance — should clamp to 1 and not panic
-        renderer.encode_range(&mut pass, 0, 100);
-        // start=5 >= 1 instances — should early-return and not panic
-        renderer.encode_range(&mut pass, 5, 10);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_encode_full_range_via_encode() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    // Add 2 instances
-    let items = vec![
-        make_quad_item(0, 0, 0.0, 0.0, 100.0, 50.0),
-        make_quad_item(0, 1, 200.0, 0.0, 100.0, 50.0),
-    ];
-    let delta = SceneDelta {
-        added: items,
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-        // Full encode — should not panic
-        renderer.encode(&mut pass);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_encode_single_instance_with_range() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    let item = make_quad_item(0, 0, 0.0, 0.0, 100.0, 50.0);
-    let delta = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-        renderer.encode_range(&mut pass, 0, 1);
-    }
-    encoder.finish();
-}
-
-#[test]
-fn should_handle_zero_count_gracefully() {
-    let Some((device, queue)) = try_create_device() else {
-        return;
-    };
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let viewport = make_viewport();
-
-    let item = make_quad_item(0, 0, 0.0, 0.0, 100.0, 50.0);
-    let delta = SceneDelta {
-        added: vec![item],
-        removed: vec![],
-        modified: vec![],
-    };
-    renderer.update(&queue, &delta, &viewport);
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = create_render_pass(&device, &mut encoder);
-        // count=0 should be a no-op
-        renderer.encode_range(&mut pass, 0, 0);
-        renderer.encode_range(&mut pass, 1, 0);
-    }
-    encoder.finish();
-}
-
 // ── Runtime::encode with External primitives ────────────────────────────────
 
 #[test]
@@ -1848,7 +1643,7 @@ fn should_skip_external_draw_when_scissor_rect_is_empty() {
         return;
     };
 
-    // Arrange: CustomPaint fills the full viewport; handler must not run at zero size.
+    // Arrange: ExternalSurface fills the full viewport; handler must not run at zero size.
     let invoked = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&invoked);
     let handler: Arc<ExternalDrawFn<'static>> =
@@ -1858,7 +1653,7 @@ fn should_skip_external_draw_when_scissor_rect_is_empty() {
     let viewport = Viewport::new(0, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(99).handler(handler));
+    runtime.set_root(ExternalSurface::new(99).on_draw(handler));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -1913,13 +1708,13 @@ fn should_invoke_external_draw_with_correct_rect() {
 }
 
 #[test]
-fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
+fn should_invoke_registered_external_surface_handler_during_runtime_encode() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: a Runtime whose root CustomPaint registers a handler.
+    // Arrange: a Runtime whose root ExternalSurface registers a handler.
     let invoked_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let observed_draw_id = Arc::clone(&invoked_draw_id);
     let handler: Arc<ExternalDrawFn<'static>> =
@@ -1929,7 +1724,7 @@ fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(42).handler(handler));
+    runtime.set_root(ExternalSurface::new(42).on_draw(handler));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -1947,13 +1742,13 @@ fn should_invoke_registered_custom_paint_handler_during_runtime_encode() {
 }
 
 #[test]
-fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
+fn should_invoke_each_nested_external_surface_handler_for_its_draw_id() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: two handlers retained by CustomPaint children built through Stack.
+    // Arrange: two handlers retained by ExternalSurface children built through Stack.
     let first_draw_id = Arc::new(AtomicU64::new(u64::MAX));
     let first_observed = Arc::clone(&first_draw_id);
     let first_handler: Arc<ExternalDrawFn<'static>> =
@@ -1971,8 +1766,8 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(CustomPaint::new(1).handler(first_handler))
-            .child(CustomPaint::new(2).handler(second_handler)),
+            .push_child(ExternalSurface::new(1).on_draw(first_handler))
+            .push_child(ExternalSurface::new(2).on_draw(second_handler)),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -1990,13 +1785,13 @@ fn should_invoke_each_nested_custom_paint_handler_for_its_draw_id() {
 }
 
 #[test]
-fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitives() {
+fn should_preserve_retained_external_surface_order_and_rects_across_widget_primitives() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: retained CustomPaint handlers are interleaved with real Widget
+    // Arrange: retained ExternalSurface handlers are interleaved with real Widget
     // quad primitives. Asymmetric padding gives each callback a distinct exact
     // rectangle inside the viewport-filling Stack.
     let order = Arc::new(Mutex::new(Vec::new()));
@@ -2018,20 +1813,53 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::RED))
-            .child(
-                Padding::new(4.0, 8.0, 8.0, 4.0)
-                    .child(CustomPaint::new(1).handler(make_handler(order.clone(), rects.clone()))),
+            .push_child(
+                SizedBox::new(Size::new(24.0, 24.0))
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color"),
             )
-            .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::GREEN))
-            .child(
-                Padding::new(8.0, 4.0, 4.0, 8.0)
-                    .child(CustomPaint::new(2).handler(make_handler(order.clone(), rects.clone()))),
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 4.0,
+                    right: 8.0,
+                    bottom: 8.0,
+                    left: 4.0,
+                })
+                .unwrap()
+                .child(ExternalSurface::new(1).on_draw(make_handler(order.clone(), rects.clone()))),
             )
-            .child(SizedBox::new(Size::new(24.0, 24.0)).color(Color::BLUE))
-            .child(
-                Padding::new(12.0, 0.0, 0.0, 12.0)
-                    .child(CustomPaint::new(3).handler(make_handler(order.clone(), rects.clone()))),
+            .push_child(
+                SizedBox::new(Size::new(24.0, 24.0))
+                    .unwrap()
+                    .background(Color::GREEN)
+                    .expect("valid color"),
+            )
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 8.0,
+                    right: 4.0,
+                    bottom: 4.0,
+                    left: 8.0,
+                })
+                .unwrap()
+                .child(ExternalSurface::new(2).on_draw(make_handler(order.clone(), rects.clone()))),
+            )
+            .push_child(
+                SizedBox::new(Size::new(24.0, 24.0))
+                    .unwrap()
+                    .background(Color::BLUE)
+                    .expect("valid color"),
+            )
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 12.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 12.0,
+                })
+                .unwrap()
+                .child(ExternalSurface::new(3).on_draw(make_handler(order.clone(), rects.clone()))),
             ),
     );
     runtime.set_viewport(viewport.clone());
@@ -2058,13 +1886,13 @@ fn should_preserve_retained_custom_paint_order_and_rects_across_widget_primitive
 }
 
 #[test]
-fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive() {
+fn should_clip_external_surface_and_restore_scissor_for_following_widget_primitive() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: draw a full-target triangle through a CustomPaint padded into a 16×16 region.
+    // Arrange: draw a full-target triangle through a ExternalSurface padded into a 16×16 region.
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("custom-paint clipping test target"),
         size: wgpu::Extent3d {
@@ -2089,9 +1917,23 @@ fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive()
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)))
-            .child(Padding::new(8.0, 8.0, 8.0, 8.0).child(CustomPaint::new(1).handler(handler)))
-            .child(SizedBox::new(Size::new(8.0, 8.0)).color(Color::RED)),
+            .push_child(SizedBox::new(Size::new(32.0, 32.0)).unwrap())
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 8.0,
+                    right: 8.0,
+                    bottom: 8.0,
+                    left: 8.0,
+                })
+                .unwrap()
+                .child(ExternalSurface::new(1).on_draw(handler)),
+            )
+            .push_child(
+                SizedBox::new(Size::new(8.0, 8.0))
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color"),
+            ),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -2133,13 +1975,13 @@ fn should_clip_custom_paint_and_restore_scissor_for_following_widget_primitive()
 }
 
 #[test]
-fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
+fn should_use_last_registered_handler_when_external_surfaces_share_draw_id() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: two CustomPaint children register distinct handlers for one draw ID.
+    // Arrange: two ExternalSurface children register distinct handlers for one draw ID.
     let first_calls = Arc::new(AtomicU64::new(0));
     let first_observed = Arc::clone(&first_calls);
     let first_handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
@@ -2155,8 +1997,8 @@ fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(CustomPaint::new(42).handler(first_handler))
-            .child(CustomPaint::new(42).handler(last_handler)),
+            .push_child(ExternalSurface::new(42).on_draw(first_handler))
+            .push_child(ExternalSurface::new(42).on_draw(last_handler)),
     );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
@@ -2175,13 +2017,13 @@ fn should_use_last_registered_handler_when_custom_paints_share_draw_id() {
 }
 
 #[test]
-fn should_remove_handler_when_custom_paint_is_replaced() {
+fn should_remove_handler_when_external_surface_is_replaced() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: a Runtime with an initially registered CustomPaint handler.
+    // Arrange: a Runtime with an initially registered ExternalSurface handler.
     let calls = Arc::new(AtomicU64::new(0));
     let observed_calls = Arc::clone(&calls);
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, _, _| {
@@ -2190,7 +2032,7 @@ fn should_remove_handler_when_custom_paint_is_replaced() {
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(42).handler(handler));
+    runtime.set_root(ExternalSurface::new(42).on_draw(handler));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -2208,8 +2050,8 @@ fn should_remove_handler_when_custom_paint_is_replaced() {
     initial_encoder.finish();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    // Act: replace the CustomPaint with an unregistered instance using the same draw ID.
-    runtime.set_root(CustomPaint::new(42));
+    // Act: replace the ExternalSurface with an unregistered instance using the same draw ID.
+    runtime.set_root(ExternalSurface::new(42));
     runtime.update(Instant::now());
     let mut replacement_encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -2219,22 +2061,22 @@ fn should_remove_handler_when_custom_paint_is_replaced() {
     }
     replacement_encoder.finish();
 
-    // Assert: the removed CustomPaint's handler is not retained across rebuilds.
+    // Assert: the removed ExternalSurface's handler is not retained across rebuilds.
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn should_skip_external_primitive_when_custom_paint_has_no_handler() {
+fn should_skip_external_primitive_when_external_surface_has_no_handler() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for Runtime encode test");
         return;
     };
 
-    // Arrange: a Runtime whose CustomPaint has the default, handler-free configuration.
+    // Arrange: a Runtime whose ExternalSurface has the default, handler-free configuration.
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(42));
+    runtime.set_root(ExternalSurface::new(42));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -2287,7 +2129,11 @@ fn should_pass_retain_or_live_mode_from_eligibility_and_commit() {
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(1).handler(handler).schedule(schedule));
+    runtime.set_root(
+        ExternalSurface::new(1)
+            .on_draw(handler)
+            .schedule_with(schedule),
+    );
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -2329,7 +2175,7 @@ fn should_select_live_when_encode_has_no_deferred_ids() {
     let viewport = Viewport::new(256, 256, 1.0);
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
-    runtime.set_root(CustomPaint::new(1).handler(handler));
+    runtime.set_root(ExternalSurface::new(1).on_draw(handler));
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
 
@@ -2375,11 +2221,15 @@ fn should_select_distinct_modes_when_two_externals_differ_in_eligibility() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(CustomPaint::new(1).handler(live_handler).schedule(eligible))
-            .child(
-                CustomPaint::new(2)
-                    .handler(retain_handler)
-                    .schedule(deferred),
+            .push_child(
+                ExternalSurface::new(1)
+                    .on_draw(live_handler)
+                    .schedule_with(eligible),
+            )
+            .push_child(
+                ExternalSurface::new(2)
+                    .on_draw(retain_handler)
+                    .schedule_with(deferred),
             ),
     );
     runtime.set_viewport(viewport.clone());
@@ -2599,6 +2449,60 @@ fn should_not_leak_outside_outer_bound_when_more_than_two_clips_are_packed() {
     assert_eq!(bgra(&pixels, 16, 16), [0, 0, 255, 255]);
 }
 
+#[test]
+fn explicit_padding_decoration_order_changes_gpu_pixels_and_clip_bounds() {
+    let Some((device, queue)) = try_create_device() else {
+        eprintln!("SKIP: explicit wrapper-order GPU evidence requires an adapter");
+        return;
+    };
+    let decoration = BoxDecoration::new()
+        .try_color(Color::RED)
+        .unwrap()
+        .border_radius(BorderRadius::all(8.0).unwrap());
+    let outside = harbor_widget::view! {
+        SizedBox::new(Size::new(48.0, 48.0)) => {
+            Padding::all(8.0) => {
+                DecoratedBox::new(decoration.clone()).clip_behavior(ClipBehavior::HardEdge) => {
+                    SizedBox::new(Size::new(32.0, 32.0)).map(|s| s.background(Color::GREEN).expect("valid color"));
+                }
+            }
+        }
+    };
+    let inside = harbor_widget::view! {
+        SizedBox::new(Size::new(48.0, 48.0)) => {
+            DecoratedBox::new(decoration).clip_behavior(ClipBehavior::HardEdge) => {
+                Padding::all(8.0) => {
+                    SizedBox::new(Size::new(32.0, 32.0)).map(|s| s.background(Color::GREEN).expect("valid color"));
+                }
+            }
+        }
+    };
+    let viewport = Viewport::new(64, 64, 1.0);
+    let a = encode_root_to_pixels(
+        &device,
+        &queue,
+        move |_: &mut harbor_widget::view::BuildCx| outside.clone(),
+        viewport.clone(),
+        64,
+    );
+    let b = encode_root_to_pixels(
+        &device,
+        &queue,
+        move |_: &mut harbor_widget::view::BuildCx| inside.clone(),
+        viewport,
+        64,
+    );
+    assert_eq!(bgra(&a, 4, 24), [0, 0, 0, 0]);
+    assert_eq!(bgra(&b, 4, 24), [0, 0, 255, 255]);
+    assert_eq!(bgra(&a, 8, 8), [0, 0, 0, 0]);
+    assert_eq!(bgra(&b, 8, 8), [0, 255, 0, 255]);
+    assert_eq!(bgra(&a, 24, 24), [0, 255, 0, 255]);
+    assert_eq!(bgra(&b, 24, 24), [0, 255, 0, 255]);
+    eprintln!(
+        "0038 explicit wrapper-order GPU readback: padding/background/rounded-clip differences verified"
+    );
+}
+
 fn encode_root_to_pixels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -2650,17 +2554,23 @@ fn encode_root_to_pixels(
     read_texture_sized(device, queue, &target, size)
 }
 
-fn solid_external(device: &wgpu::Device, draw_id: u64) -> CustomPaint {
+fn solid_external(device: &wgpu::Device, draw_id: u64) -> ExternalSurface {
     solid_external_rgb(device, draw_id, 0.0, 1.0, 0.0)
 }
 
-fn solid_external_rgb(device: &wgpu::Device, draw_id: u64, r: f32, g: f32, b: f32) -> CustomPaint {
+fn solid_external_rgb(
+    device: &wgpu::Device,
+    draw_id: u64,
+    r: f32,
+    g: f32,
+    b: f32,
+) -> ExternalSurface {
     let pipeline = create_solid_pipeline_rgb(device, r, g, b);
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, pass, _| {
         pass.set_pipeline(&pipeline);
         pass.draw(0..3, 0..1);
     });
-    CustomPaint::new(draw_id).handler(handler)
+    ExternalSurface::new(draw_id).on_draw(handler)
 }
 
 fn clipped_external(device: &wgpu::Device, behavior: ClipBehavior, radius: f32) -> DecoratedBox {
@@ -2670,7 +2580,7 @@ fn clipped_external(device: &wgpu::Device, behavior: ClipBehavior, radius: f32) 
 }
 
 #[test]
-fn should_leave_custom_paint_corners_when_clip_policy_is_none() {
+fn should_leave_external_surface_corners_when_clip_policy_is_none() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2687,7 +2597,7 @@ fn should_leave_custom_paint_corners_when_clip_policy_is_none() {
 }
 
 #[test]
-fn should_discard_custom_paint_pixels_outside_arc_when_clip_is_hard_edge() {
+fn should_discard_external_surface_pixels_outside_arc_when_clip_is_hard_edge() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2710,7 +2620,7 @@ fn should_discard_custom_paint_pixels_outside_arc_when_clip_is_hard_edge() {
 }
 
 #[test]
-fn should_apply_fractional_coverage_when_custom_paint_clip_is_anti_alias() {
+fn should_apply_fractional_coverage_when_external_surface_clip_is_anti_alias() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2739,7 +2649,7 @@ fn should_apply_fractional_coverage_when_custom_paint_clip_is_anti_alias() {
 }
 
 #[test]
-fn should_keep_custom_paint_callback_geometry_when_rounded_clip_is_active() {
+fn should_keep_external_surface_callback_geometry_when_rounded_clip_is_active() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2763,7 +2673,7 @@ fn should_keep_custom_paint_callback_geometry_when_rounded_clip_is_active() {
         &queue,
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(CustomPaint::new(7).handler(handler)),
+            .child(ExternalSurface::new(7).on_draw(handler)),
         Viewport::new(32, 32, 1.0),
         32,
     );
@@ -2776,7 +2686,7 @@ fn should_keep_custom_paint_callback_geometry_when_rounded_clip_is_active() {
 }
 
 #[test]
-fn should_not_punch_following_widget_outside_custom_paint_allocation() {
+fn should_not_punch_following_widget_outside_external_surface_allocation() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2785,12 +2695,22 @@ fn should_not_punch_following_widget_outside_custom_paint_allocation() {
         &device,
         &queue,
         Stack::new()
-            .child(SizedBox::new(Size::new(8.0, 8.0)).color(Color::RED))
-            .child(Padding::new(8.0, 8.0, 8.0, 8.0).child(clipped_external(
-                &device,
-                ClipBehavior::HardEdge,
-                4.0,
-            ))),
+            .push_child(
+                SizedBox::new(Size::new(8.0, 8.0))
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color"),
+            )
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 8.0,
+                    right: 8.0,
+                    bottom: 8.0,
+                    left: 8.0,
+                })
+                .unwrap()
+                .child(clipped_external(&device, ClipBehavior::HardEdge, 4.0)),
+            ),
         Viewport::new(32, 32, 1.0),
         32,
     );
@@ -2800,7 +2720,7 @@ fn should_not_punch_following_widget_outside_custom_paint_allocation() {
 }
 
 #[test]
-fn should_clip_nested_custom_paint_to_outer_rounded_bound() {
+fn should_clip_nested_external_surface_to_outer_rounded_bound() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2811,7 +2731,7 @@ fn should_clip_nested_custom_paint_to_outer_rounded_bound() {
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
             .clip_behavior(ClipBehavior::HardEdge)
             .child(
-                Padding::all(4.0).child(
+                Padding::all(4.0).unwrap().child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
                     )
@@ -2827,7 +2747,7 @@ fn should_clip_nested_custom_paint_to_outer_rounded_bound() {
 }
 
 #[test]
-fn should_clip_custom_paint_when_viewport_scale_is_two() {
+fn should_clip_external_surface_when_viewport_scale_is_two() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2844,7 +2764,7 @@ fn should_clip_custom_paint_when_viewport_scale_is_two() {
 }
 
 #[test]
-fn should_mask_custom_paint_corners_when_encode_mode_is_retain() {
+fn should_mask_external_surface_corners_when_encode_mode_is_retain() {
     use harbor_widget::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
 
     let Some((device, queue)) = try_create_device() else {
@@ -2866,7 +2786,11 @@ fn should_mask_custom_paint_corners_when_encode_mode_is_retain() {
         &queue,
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(CustomPaint::new(1).handler(handler).schedule(schedule)),
+            .child(
+                ExternalSurface::new(1)
+                    .on_draw(handler)
+                    .schedule_with(schedule),
+            ),
         Viewport::new(32, 32, 1.0),
         32,
     );
@@ -2875,7 +2799,7 @@ fn should_mask_custom_paint_corners_when_encode_mode_is_retain() {
 }
 
 #[test]
-fn should_apply_independent_masks_when_two_clipped_custom_paints_share_a_pass() {
+fn should_apply_independent_masks_when_two_clipped_external_surfaces_share_a_pass() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2884,8 +2808,15 @@ fn should_apply_independent_masks_when_two_clipped_custom_paints_share_a_pass() 
         &device,
         &queue,
         Stack::new()
-            .child(
-                Padding::new(0.0, 16.0, 0.0, 0.0).child(
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 0.0,
+                    right: 16.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                })
+                .unwrap()
+                .child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()),
                     )
@@ -2893,8 +2824,15 @@ fn should_apply_independent_masks_when_two_clipped_custom_paints_share_a_pass() 
                     .child(solid_external(&device, 1)),
                 ),
             )
-            .child(
-                Padding::new(0.0, 0.0, 0.0, 16.0).child(
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 16.0,
+                })
+                .unwrap()
+                .child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()),
                     )
@@ -2913,7 +2851,7 @@ fn should_apply_independent_masks_when_two_clipped_custom_paints_share_a_pass() 
 }
 
 #[test]
-fn should_dest_in_underlapping_pixels_inside_custom_paint_allocation_aabb() {
+fn should_dest_in_underlapping_pixels_inside_external_surface_allocation_aabb() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2922,8 +2860,13 @@ fn should_dest_in_underlapping_pixels_inside_custom_paint_allocation_aabb() {
         &device,
         &queue,
         Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::RED))
-            .child(clipped_external(&device, ClipBehavior::HardEdge, 8.0)),
+            .push_child(
+                SizedBox::new(Size::new(32.0, 32.0))
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color"),
+            )
+            .push_child(clipped_external(&device, ClipBehavior::HardEdge, 8.0)),
         Viewport::new(32, 32, 1.0),
         32,
     );
@@ -2932,7 +2875,7 @@ fn should_dest_in_underlapping_pixels_inside_custom_paint_allocation_aabb() {
 }
 
 #[test]
-fn should_clip_custom_paint_when_viewport_scale_is_one_and_a_half() {
+fn should_clip_external_surface_when_viewport_scale_is_one_and_a_half() {
     let Some((device, queue)) = try_create_device() else {
         eprintln!("SKIP: no GPU adapter available for custom-paint clip test");
         return;
@@ -2963,13 +2906,14 @@ fn should_keep_independent_masks_when_more_than_eight_externals_share_a_pass() {
                 8 => (1.0, 0.0, 0.0),
                 _ => (0.0, 0.0, 1.0),
             };
-            root = root.child(
-                Padding::new(
-                    row as f32 * 16.0,
-                    (2 - col) as f32 * 16.0,
-                    (2 - row) as f32 * 16.0,
-                    col as f32 * 16.0,
-                )
+            root = root.push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: row as f32 * 16.0,
+                    right: (2 - col) as f32 * 16.0,
+                    bottom: (2 - row) as f32 * 16.0,
+                    left: col as f32 * 16.0,
+                })
+                .unwrap()
                 .child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
@@ -3003,8 +2947,15 @@ fn should_apply_later_mask_slot_when_unmasked_external_is_between() {
         &device,
         &queue,
         Stack::new()
-            .child(
-                Padding::new(0.0, 22.0, 0.0, 0.0).child(
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 0.0,
+                    right: 22.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                })
+                .unwrap()
+                .child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
                     )
@@ -3012,12 +2963,25 @@ fn should_apply_later_mask_slot_when_unmasked_external_is_between() {
                     .child(solid_external(&device, 1)),
                 ),
             )
-            .child(
-                Padding::new(0.0, 11.0, 0.0, 11.0)
-                    .child(solid_external_rgb(&device, 2, 0.0, 0.0, 1.0)),
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 0.0,
+                    right: 11.0,
+                    bottom: 0.0,
+                    left: 11.0,
+                })
+                .unwrap()
+                .child(solid_external_rgb(&device, 2, 0.0, 0.0, 1.0)),
             )
-            .child(
-                Padding::new(0.0, 0.0, 0.0, 22.0).child(
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 22.0,
+                })
+                .unwrap()
+                .child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
                     )
@@ -3053,7 +3017,7 @@ fn should_keep_rounded_mask_when_handler_rewrites_scissor_from_context() {
         &queue,
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
             .clip_behavior(ClipBehavior::HardEdge)
-            .child(CustomPaint::new(1).handler(handler)),
+            .child(ExternalSurface::new(1).on_draw(handler)),
         Viewport::new(32, 32, 1.0),
         32,
     );
@@ -3125,7 +3089,9 @@ fn lucide_icon_uses_runtime_frame_encoding_and_ancestor_clip() {
         &queue,
         harbor_widget::Icon::new(harbor_widget::LucideIcon::Plus)
             .size(24.0)
-            .color(Color::GREEN),
+            .expect("valid icon size")
+            .foreground(Color::GREEN)
+            .expect("valid color"),
         Viewport::new(24, 24, 1.0),
         24,
     );
@@ -3151,74 +3117,6 @@ fn lucide_icon_uses_runtime_frame_encoding_and_ancestor_clip() {
     let pixels = render_quad_item(&device, &queue, item, Viewport::new(32, 32, 1.0), 32);
     assert_eq!(bgra(&pixels, 8, 12), [0; 4]);
     assert!(bgra(&pixels, 16, 12)[1] > 200);
-}
-
-#[test]
-fn lucide_icon_updates_reuse_slots_and_switch_safely_between_primitive_types() {
-    let Some((device, queue)) = try_create_device() else {
-        eprintln!("SKIP: no GPU adapter available for Lucide retention test");
-        return;
-    };
-    let viewport = Viewport::new(32, 32, 1.0);
-    let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    let mut item = make_rounded_item(
-        7,
-        Primitive::Icon {
-            icon: harbor_widget::LucideIcon::Plus,
-            rect: Rect::from_min_size(Point::ZERO, Size::new(24.0, 24.0)),
-            color: Color::WHITE,
-        },
-    );
-    renderer.update(
-        &queue,
-        &SceneDelta {
-            added: vec![item.clone()],
-            modified: vec![],
-            removed: vec![],
-        },
-        &viewport,
-    );
-    let slot = renderer.slot_of(7).unwrap();
-    item.primitive = Primitive::Icon {
-        icon: harbor_widget::LucideIcon::X,
-        rect: Rect::from_min_size(Point::ZERO, Size::new(16.0, 16.0)),
-        color: Color::RED,
-    };
-    renderer.update(
-        &queue,
-        &SceneDelta {
-            modified: vec![item.clone()],
-            added: vec![],
-            removed: vec![],
-        },
-        &viewport,
-    );
-    assert_eq!(renderer.slot_of(7), Some(slot));
-    renderer.refresh_viewport(&queue, &[item.clone()], &Viewport::new(64, 64, 2.0));
-    item.primitive = Primitive::Text {
-        text: Arc::from("label"),
-        origin: Point::ZERO,
-        color: Color::WHITE,
-    };
-    renderer.update(
-        &queue,
-        &SceneDelta {
-            modified: vec![item],
-            added: vec![],
-            removed: vec![],
-        },
-        &viewport,
-    );
-    assert_eq!(renderer.slot_of(7), None);
-    renderer.update(
-        &queue,
-        &SceneDelta {
-            removed: vec![7],
-            added: vec![],
-            modified: vec![],
-        },
-        &viewport,
-    );
 }
 
 #[test]
@@ -3308,25 +3206,36 @@ fn backdrop_refraction_moves_edges_and_corners_but_not_center_outside_or_foregro
                     )
                     .unwrap();
                     Stack::new()
-                        .child(
+                        .push_child(
                             DecoratedBox::new(BoxDecoration::new().try_paint(ramp.into()).unwrap())
-                                .child(SizedBox::new(Size::new(32.0, 32.0))),
+                                .child(SizedBox::new(Size::new(32.0, 32.0)).unwrap()),
                         )
-                        .child(
-                            Padding::all(4.0).child(
+                        .push_child(
+                            Padding::all(4.0).unwrap().child(
                                 BackdropFilter::new(sigma)
                                     .unwrap()
                                     .edge_refraction(
                                         EdgeRefraction::new(5.0, displacement).unwrap(),
                                     )
                                     .border_radius(BorderRadius::all(6.0).unwrap())
-                                    .child(SizedBox::new(Size::new(24.0, 24.0))),
+                                    .child(SizedBox::new(Size::new(24.0, 24.0)).unwrap()),
                             ),
                         )
                         // A sharp foreground marker lies directly over the edge band.
-                        .child(
-                            Padding::new(4.0, 0.0, 0.0, 14.0)
-                                .child(SizedBox::new(Size::new(4.0, 2.0)).color(Color::RED)),
+                        .push_child(
+                            Padding::new(harbor_widget::Insets {
+                                top: 4.0,
+                                right: 0.0,
+                                bottom: 0.0,
+                                left: 14.0,
+                            })
+                            .unwrap()
+                            .child(
+                                SizedBox::new(Size::new(4.0, 2.0))
+                                    .unwrap()
+                                    .background(Color::RED)
+                                    .expect("valid color"),
+                            ),
                         )
                 };
                 runtime.set_root(root(0.0, false));
@@ -3473,7 +3382,21 @@ fn backdrop_material_tone_is_applied_in_srgb_for_both_attachment_formats() {
             b: 0.25,
             a: 1.0,
         };
-        let material = BackdropMaterial::new(0.0, 0.0, [0.1, 0.5, 0.0, 1.0], [0.0; 2]).unwrap();
+        let material = BackdropMaterial::new(
+            0.0,
+            0.0,
+            BackdropTone {
+                offset: 0.1,
+                slope: 0.5,
+                quadratic: 0.0,
+                saturation: 1.0,
+            },
+            BackdropRim {
+                highlight: 0.0,
+                shade: 0.0,
+            },
+        )
+        .unwrap();
         runtime.set_root(material_test_scene(
             gray,
             gray,
@@ -3503,11 +3426,22 @@ fn backdrop_large_sigma_softens_a_thin_line_without_a_sparse_sampling_comb() {
         let mut runtime = Runtime::new();
         runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
         let stripe = || {
-            Padding::new(0.0, 0.0, 0.0, 16.0)
-                .child(SizedBox::new(Size::new(1.0, 32.0)).color(Color::WHITE))
+            Padding::new(harbor_widget::Insets {
+                top: 0.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 16.0,
+            })
+            .unwrap()
+            .child(
+                SizedBox::new(Size::new(1.0, 32.0))
+                    .unwrap()
+                    .background(Color::WHITE)
+                    .expect("valid color"),
+            )
         };
         runtime.set_viewport(viewport.clone());
-        runtime.set_root(Stack::new().child(stripe()));
+        runtime.set_root(Stack::new().push_child(stripe()));
         runtime.update(Instant::now());
         let source_pixels = encode_filter_frame(&device, &queue, &mut runtime, viewport.clone());
         // Account for the source shape's DPI-dependent edge coverage rather
@@ -3518,10 +3452,10 @@ fn backdrop_large_sigma_softens_a_thin_line_without_a_sparse_sampling_comb() {
         let expected_peak =
             source_energy as f32 / ((2.0 * std::f32::consts::PI).sqrt() * 8.0 * scale);
         runtime.set_root(
-            Stack::new().child(stripe()).child(
+            Stack::new().push_child(stripe()).push_child(
                 harbor_widget::BackdropFilter::new(8.0)
                     .unwrap()
-                    .child(SizedBox::new(Size::new(32.0, 32.0))),
+                    .child(SizedBox::new(Size::new(32.0, 32.0)).unwrap()),
             ),
         );
         runtime.update(Instant::now());
@@ -3554,8 +3488,21 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
         eprintln!("SKIP: no GPU adapter for backdrop pixel readback");
         return;
     };
-    let material =
-        harbor_widget::BackdropMaterial::new(5.0, 0.25, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+    let material = harbor_widget::BackdropMaterial::new(
+        5.0,
+        0.25,
+        BackdropTone {
+            offset: 0.0,
+            slope: 1.0,
+            quadratic: 0.0,
+            saturation: 1.0,
+        },
+        BackdropRim {
+            highlight: 0.0,
+            shade: 0.0,
+        },
+    )
+    .unwrap();
     for (displacement, material) in [(0.0, None), (1.0, None), (1.0, Some(material))] {
         let green = create_solid_pipeline_rgb(&device, 0.0, 1.0, 0.0);
         let blue = create_solid_pipeline_rgb(&device, 0.0, 0.0, 1.0);
@@ -3586,9 +3533,9 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
             runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
             runtime.set_root(
                 Stack::new()
-                    .child(CustomPaint::new(1).handler(handler))
-                    .child(
-                        Padding::all(4.0).child(
+                    .push_child(ExternalSurface::new(1).on_draw(handler))
+                    .push_child(
+                        Padding::all(4.0).unwrap().child(
                             harbor_widget::BackdropFilter::new(2.0)
                                 .unwrap()
                                 .edge_refraction(
@@ -3596,12 +3543,16 @@ fn backdrop_blurs_external_pixels_once_per_frame_and_keeps_foreground_sharp() {
                                 )
                                 .material(material)
                                 .border_radius(BorderRadius::all(6.0).unwrap())
-                                .child(SizedBox::new(Size::new(24.0, 24.0))),
+                                .child(SizedBox::new(Size::new(24.0, 24.0)).unwrap()),
                         ),
                     )
-                    .child(
-                        Padding::all(13.0)
-                            .child(SizedBox::new(Size::new(6.0, 6.0)).color(Color::RED)),
+                    .push_child(
+                        Padding::all(13.0).unwrap().child(
+                            SizedBox::new(Size::new(6.0, 6.0))
+                                .unwrap()
+                                .background(Color::RED)
+                                .expect("valid color"),
+                        ),
                     ),
             );
             runtime.set_viewport(viewport.clone());
@@ -3657,8 +3608,21 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
         eprintln!("SKIP: no GPU adapter for backdrop alpha/resize");
         return;
     };
-    let material =
-        harbor_widget::BackdropMaterial::new(5.0, 0.25, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+    let material = harbor_widget::BackdropMaterial::new(
+        5.0,
+        0.25,
+        BackdropTone {
+            offset: 0.0,
+            slope: 1.0,
+            quadratic: 0.0,
+            saturation: 1.0,
+        },
+        BackdropRim {
+            highlight: 0.0,
+            shade: 0.0,
+        },
+    )
+    .unwrap();
     for (displacement, material) in [(0.0, None), (1.0, None), (1.0, Some(material))] {
         let mut runtime = Runtime::new();
         runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
@@ -3670,9 +3634,14 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
         };
         runtime.set_root(
             Stack::new()
-                .child(SizedBox::new(Size::new(32.0, 32.0)).color(translucent))
-                .child(
-                    Padding::all(4.0).child(
+                .push_child(
+                    SizedBox::new(Size::new(32.0, 32.0))
+                        .unwrap()
+                        .background(translucent)
+                        .expect("valid color"),
+                )
+                .push_child(
+                    Padding::all(4.0).unwrap().child(
                         DecoratedBox::new(
                             BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()),
                         )
@@ -3684,7 +3653,7 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
                                     harbor_widget::EdgeRefraction::new(4.0, displacement).unwrap(),
                                 )
                                 .material(material)
-                                .child(SizedBox::new(Size::new(24.0, 24.0))),
+                                .child(SizedBox::new(Size::new(24.0, 24.0)).unwrap()),
                         ),
                     ),
                 ),
@@ -3705,7 +3674,12 @@ fn backdrop_generic_composition_preserves_alpha_clips_and_resize() {
             }
         }
         // Removing the filter returns to the direct target path, without stale blur.
-        runtime.set_root(SizedBox::new(Size::new(32.0, 32.0)).color(Color::BLUE));
+        runtime.set_root(
+            SizedBox::new(Size::new(32.0, 32.0))
+                .unwrap()
+                .background(Color::BLUE)
+                .expect("valid color"),
+        );
         runtime.update(Instant::now());
         let pixels = encode_filter_frame(&device, &queue, &mut runtime, Viewport::new(32, 32, 1.0));
         assert_eq!(bgra(&pixels, 16, 16), [255, 0, 0, 255]);
@@ -3723,23 +3697,53 @@ fn backdrop_multiple_regions_use_distinct_uniforms_and_respect_ancestor_clip() {
         runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
         runtime.set_root(
             Stack::new()
-                .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
-                .child(
-                    Padding::new(0.0, 0.0, 0.0, 16.0)
-                        .child(SizedBox::new(Size::new(16.0, 32.0)).color(Color::BLUE)),
+                .push_child(
+                    SizedBox::new(Size::new(32.0, 32.0))
+                        .unwrap()
+                        .background(Color::GREEN)
+                        .expect("valid color"),
                 )
-                .child(
-                    Padding::new(4.0, 18.0, 4.0, 4.0).child(
+                .push_child(
+                    Padding::new(harbor_widget::Insets {
+                        top: 0.0,
+                        right: 0.0,
+                        bottom: 0.0,
+                        left: 16.0,
+                    })
+                    .unwrap()
+                    .child(
+                        SizedBox::new(Size::new(16.0, 32.0))
+                            .unwrap()
+                            .background(Color::BLUE)
+                            .expect("valid color"),
+                    ),
+                )
+                .push_child(
+                    Padding::new(harbor_widget::Insets {
+                        top: 4.0,
+                        right: 18.0,
+                        bottom: 4.0,
+                        left: 4.0,
+                    })
+                    .unwrap()
+                    .child(
                         harbor_widget::BackdropFilter::new(3.0)
                             .unwrap()
                             .edge_refraction(
                                 harbor_widget::EdgeRefraction::new(4.0, displacement).unwrap(),
                             )
-                            .child(SizedBox::new(Size::new(10.0, 24.0))),
+                            .child(SizedBox::new(Size::new(10.0, 24.0)).unwrap()),
                     ),
                 )
-                .child(
-                    Padding::new(4.0, 4.0, 4.0, 18.0).child(
+                .push_child(
+                    Padding::new(harbor_widget::Insets {
+                        top: 4.0,
+                        right: 4.0,
+                        bottom: 4.0,
+                        left: 18.0,
+                    })
+                    .unwrap()
+                    .child(
                         DecoratedBox::new(
                             BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
                         )
@@ -3751,7 +3755,7 @@ fn backdrop_multiple_regions_use_distinct_uniforms_and_respect_ancestor_clip() {
                                     harbor_widget::EdgeRefraction::new(2.0, displacement * 0.5)
                                         .unwrap(),
                                 )
-                                .child(SizedBox::new(Size::new(10.0, 24.0))),
+                                .child(SizedBox::new(Size::new(10.0, 24.0)).unwrap()),
                         ),
                     ),
                 ),
@@ -3802,10 +3806,16 @@ fn transparent_icon_button_has_no_zero_width_border_fill() {
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(
         Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::GREEN))
-            .child(
+            .push_child(
+                SizedBox::new(Size::new(32.0, 32.0))
+                    .unwrap()
+                    .background(Color::GREEN)
+                    .expect("valid color"),
+            )
+            .push_child(
                 harbor_widget::IconButton::new(harbor_widget::LucideIcon::Plus, "transparent")
-                    .style(style),
+                    .style(style)
+                    .expect("valid style"),
             ),
     );
     let viewport = Viewport::new(32, 32, 1.0);
@@ -3846,20 +3856,31 @@ fn material_test_scene(start: Color, end: Color, filter: harbor_widget::Backdrop
     )
     .unwrap();
     Stack::new()
-        .child(
+        .push_child(
             DecoratedBox::new(BoxDecoration::new().try_paint(ramp.into()).unwrap())
-                .child(SizedBox::new(Size::new(32.0, 32.0))),
+                .child(SizedBox::new(Size::new(32.0, 32.0)).unwrap()),
         )
-        .child(
-            Padding::all(4.0).child(
+        .push_child(
+            Padding::all(4.0).unwrap().child(
                 filter
                     .border_radius(BorderRadius::all(6.0).unwrap())
-                    .child(SizedBox::new(Size::new(24.0, 24.0))),
+                    .child(SizedBox::new(Size::new(24.0, 24.0)).unwrap()),
             ),
         )
-        .child(
-            Padding::new(4.0, 0.0, 0.0, 14.0)
-                .child(SizedBox::new(Size::new(4.0, 2.0)).color(Color::RED)),
+        .push_child(
+            Padding::new(harbor_widget::Insets {
+                top: 4.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 14.0,
+            })
+            .unwrap()
+            .child(
+                SizedBox::new(Size::new(4.0, 2.0))
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color"),
+            ),
         )
 }
 
@@ -3870,7 +3891,21 @@ fn backdrop_material_nonlinear_profile_preserves_center_foreground_and_live_upda
         eprintln!("SKIP: no GPU adapter for native material profile");
         return;
     };
-    let material = BackdropMaterial::new(0.0, 0.0, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+    let material = BackdropMaterial::new(
+        0.0,
+        0.0,
+        BackdropTone {
+            offset: 0.0,
+            slope: 1.0,
+            quadratic: 0.0,
+            saturation: 1.0,
+        },
+        BackdropRim {
+            highlight: 0.0,
+            shade: 0.0,
+        },
+    )
+    .unwrap();
     let mut runtime = Runtime::new();
     runtime.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
     for scale in [1.0, 1.5, 2.0] {
@@ -3959,10 +3994,38 @@ fn backdrop_material_rim_responds_to_normals_and_tone_preserves_transparent_alph
                 runtime.update(Instant::now());
                 encode_filter_frame(&device, &queue, &mut runtime, viewport.clone())
             };
-            let identity = [0.0, 1.0, 0.0, 1.0];
-            let base = render(identity, [0.0; 2]);
-            let toned = render([0.1, 0.8, -0.1, 1.05], [0.0; 2]);
-            let rim = render(identity, [0.7, 0.6]);
+            let identity = BackdropTone {
+                offset: 0.0,
+                slope: 1.0,
+                quadratic: 0.0,
+                saturation: 1.0,
+            };
+            let base = render(
+                identity,
+                BackdropRim {
+                    highlight: 0.0,
+                    shade: 0.0,
+                },
+            );
+            let toned = render(
+                BackdropTone {
+                    offset: 0.1,
+                    slope: 0.8,
+                    quadratic: -0.1,
+                    saturation: 1.05,
+                },
+                BackdropRim {
+                    highlight: 0.0,
+                    shade: 0.0,
+                },
+            );
+            let rim = render(
+                identity,
+                BackdropRim {
+                    highlight: 0.7,
+                    shade: 0.6,
+                },
+            );
             let at =
                 |data: &[u8], x: f32, y: f32| bgra(data, (x * scale) as u32, (y * scale) as u32);
             assert_eq!(at(&toned, 16.0, 16.0)[3], at(&base, 16.0, 16.0)[3]);
@@ -4009,18 +4072,48 @@ fn backdrop_material_broad_frost_blurs_both_axes_and_releases_when_disabled() {
     let viewport = Viewport::new(32, 32, 1.0);
     runtime.set_viewport(viewport.clone());
     let mut render = |mix| {
-        let material = BackdropMaterial::new(5.0, mix, [0.0, 1.0, 0.0, 1.0], [0.0; 2]).unwrap();
+        let material = BackdropMaterial::new(
+            5.0,
+            mix,
+            BackdropTone {
+                offset: 0.0,
+                slope: 1.0,
+                quadratic: 0.0,
+                saturation: 1.0,
+            },
+            BackdropRim {
+                highlight: 0.0,
+                shade: 0.0,
+            },
+        )
+        .unwrap();
         let root = Stack::new()
-            .child(SizedBox::new(Size::new(32.0, 32.0)).color(Color::BLACK))
-            .child(
-                Padding::new(15.0, 0.0, 0.0, 15.0)
-                    .child(SizedBox::new(Size::new(2.0, 2.0)).color(Color::WHITE)),
+            .push_child(
+                SizedBox::new(Size::new(32.0, 32.0))
+                    .unwrap()
+                    .background(Color::BLACK)
+                    .expect("valid color"),
             )
-            .child(
+            .push_child(
+                Padding::new(harbor_widget::Insets {
+                    top: 15.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 15.0,
+                })
+                .unwrap()
+                .child(
+                    SizedBox::new(Size::new(2.0, 2.0))
+                        .unwrap()
+                        .background(Color::WHITE)
+                        .expect("valid color"),
+                ),
+            )
+            .push_child(
                 BackdropFilter::new(0.5)
                     .unwrap()
                     .material(Some(material))
-                    .child(SizedBox::new(Size::new(32.0, 32.0))),
+                    .child(SizedBox::new(Size::new(32.0, 32.0)).unwrap()),
             );
         runtime.set_root(root);
         runtime.update(Instant::now());

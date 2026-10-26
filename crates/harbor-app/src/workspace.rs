@@ -9,9 +9,10 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionOutcome, Actions, BorderRadius, ComponentExt as _, Expanded, Focus, FocusHandle,
-    FocusScope, Icon, InteractionState, InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row,
-    Shortcuts, Store, TextEditingController, TextField,
+    ActionHandler, ActionOutcome, Align, Alignment2D, BorderRadius, ComponentExt as _,
+    CrossAxisAlignment, Expanded, FlexOptions, Focus, FocusHandle, FocusScope, Icon, Insets,
+    InteractionState, InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row, ShortcutMap,
+    SizedBox, Store, TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -68,9 +69,10 @@ fn search_bar(
     let entry = TextField::new(input)
         .decoration(appearance.input())
         .padding(6.0)
+        .expect("valid field padding")
         .placeholder("Find…")
         .focus_handle(controller.search_focus)
-        .on_changed(move |_| {
+        .on_change(move |_| {
             if !changed_ui
                 .store
                 .state()
@@ -89,7 +91,7 @@ fn search_bar(
                     generation,
                 ));
         })
-        .on_submitted(move |modifiers| {
+        .on_submit(move |modifiers| {
             submit.dispatch(AppCommandRequest::popup(
                 if modifiers.shift {
                     AppCommand::SearchPrevious
@@ -113,14 +115,14 @@ fn search_bar(
         })
     };
     let status = search.status.clone();
-    let content = harbor_widget::view! { &mut *cx;
+    let content = harbor_widget::view! {
         Padding::all(8.0) => {
-            Row::new().gap(4.0).cross_axis_alignment(harbor_widget::Alignment::Center) => {
+            Row::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
                 Expanded::new() => { entry; }
                 // Status text changes frequently; reserve its slot instead of resizing the editor.
-                harbor_widget::ConstrainedBox::new().min_width(120.0).max_width(120.0) => {
+                SizedBox::width(120.0) => {
                     harbor_widget::widgets::text_label::TextLabel::new(status)
-                        .color(cx.theme().button.normal.foreground).ellipsis();
+                        .foreground(cx.theme().button.normal.foreground).expect("valid color").ellipsis();
                 }
                 button(LucideIcon::ChevronUp, AppCommand::SearchPrevious);
                 button(LucideIcon::ChevronDown, AppCommand::SearchNext);
@@ -130,24 +132,13 @@ fn search_bar(
     };
     let card = appearance.panel(cx, content);
     Portal::new()
-        .child(
-            harbor_widget::widgets::align::Align::new(harbor_widget::Alignment::End)
-                .vertical_alignment(harbor_widget::Alignment::Start)
-                .insets(
-                    SEARCH_PANEL_INSET,
-                    SEARCH_PANEL_INSET,
-                    SEARCH_PANEL_INSET,
-                    SEARCH_PANEL_INSET,
-                )
-                .child(
-                    harbor_widget::ConstrainedBox::new()
-                        .min_width(440.0)
-                        .max_width(440.0)
-                        .min_height(SEARCH_PANEL_HEIGHT)
-                        .max_height(SEARCH_PANEL_HEIGHT)
-                        .child(card),
-                ),
-        )
+        .child(harbor_widget::view! {
+            Align::new(Alignment2D::TOP_RIGHT).insets(Insets::all(SEARCH_PANEL_INSET)) => {
+                SizedBox::new(harbor_widget::layout::Size::new(440.0, SEARCH_PANEL_HEIGHT)) => {
+                    card;
+                }
+            }
+        })
         .keyed(format!("session-search-{generation}"))
         .build(cx)
 }
@@ -164,17 +155,21 @@ fn search_icon_button(
     style.radius = 12.0; // Match the search panel's outer corners.
     InteractiveRegion::new()
         .style(style.clone())
-        .content(move |cx, state| {
+        .expect("valid control style")
+        .child_with(move |cx, state| {
             let content = Icon::new(icon)
                 .size(style.icon_size)
-                .color(style.resolve_state(&state).foreground)
+                .expect("valid icon size")
+                .foreground(style.resolve_state(&state).foreground)
+                .expect("valid color")
                 .build(cx);
-            let content = Padding::new(
-                vertical_padding,
-                horizontal_padding,
-                vertical_padding,
-                horizontal_padding,
-            )
+            let content = Padding::new(Insets {
+                top: vertical_padding,
+                right: horizontal_padding,
+                bottom: vertical_padding,
+                left: horizontal_padding,
+            })
+            .unwrap()
             .child(content)
             .build(cx);
             if state.disabled || !(state.hovered || state.pressed) {
@@ -463,12 +458,12 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
         .active()
         .is_some_and(|popup| popup.blocks_shortcuts())
     {
-        Shortcuts::empty()
+        ShortcutMap::new()
     } else {
         shortcuts(bindings)
     };
     let command_bridge = active_bridge.clone();
-    let actions = Actions::handler(move |command| {
+    let actions = ActionHandler::new(move |command| {
         let outcome = command_outcome(command, &command_bridge);
         if outcome == ActionOutcome::Consumed {
             action_dispatcher.dispatch(AppCommandRequest::shortcut(command));
@@ -491,7 +486,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
             })
         })
     });
-    harbor_widget::view! { cx; Stack::new() => {
+    harbor_widget::view! { Stack::new() => {
         root => {
             FocusScope::new() => {
                 actions => {
@@ -517,12 +512,12 @@ fn terminal_panel(
     bindings: &ResolvedKeybindings,
 ) -> View {
     let popup_state = controller.store.state().read().clone();
-    harbor_widget::view! { cx; Expanded::new() => {
+    harbor_widget::view! { Expanded::new() => {
         harbor_widget::Column::new() => {
             Expanded::new().keyed("terminal-surface") => {
                 controller.allocation.observer() => {
                     TerminalDecorationPreset::container() => {
-                        Focus::empty().handle(controller.terminal_focus) => {
+                        Focus::new().focus_handle(controller.terminal_focus) => {
                             terminal_widget(active_bridge);
                         }
                     }
@@ -546,21 +541,24 @@ pub(crate) fn root_padding(backdrop_available: bool, fallback_rgb: [f32; 3]) -> 
         }
     });
     if backdrop_available {
-        Padding::all(4.0)
+        Padding::all(4.0).unwrap()
     } else {
-        Padding::all(4.0).background(Color {
-            r: fallback[0],
-            g: fallback[1],
-            b: fallback[2],
-            a: 1.0,
-        })
+        Padding::all(4.0)
+            .unwrap()
+            .background(Color {
+                r: fallback[0],
+                g: fallback[1],
+                b: fallback[2],
+                a: 1.0,
+            })
+            .expect("finite background")
     }
 }
 
-fn shortcuts(keybindings: &ResolvedKeybindings) -> Shortcuts<AppCommand> {
+fn shortcuts(keybindings: &ResolvedKeybindings) -> ShortcutMap<AppCommand> {
     keybindings
         .bindings()
-        .fold(Shortcuts::empty(), |shortcuts, (chord, command)| {
+        .fold(ShortcutMap::new(), |shortcuts, (chord, command)| {
             shortcuts.bind(chord, command)
         })
 }
@@ -604,6 +602,6 @@ impl TerminalAllocationMailbox {
     }
 
     fn observer(&self) -> LayoutObserver {
-        LayoutObserver::from_callback(Arc::clone(&self.callback))
+        LayoutObserver::from_shared_callback(Arc::clone(&self.callback))
     }
 }

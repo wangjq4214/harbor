@@ -1,10 +1,10 @@
 #![allow(unused_parens)]
 
 use harbor_widget::layout::Size;
+use harbor_widget::view;
 use harbor_widget::view::{BuildCx, Component, View};
 use harbor_widget::widgets::column::Column;
 use harbor_widget::widgets::sized_box::SizedBox;
-use harbor_widget::view;
 
 #[derive(Clone)]
 struct StructLeaf {
@@ -13,19 +13,17 @@ struct StructLeaf {
 
 impl Component for StructLeaf {
     fn build(&self, cx: &mut BuildCx) -> View {
-        SizedBox::new(self.size).build(cx)
+        SizedBox::new(self.size).unwrap().build(cx)
     }
 }
 
 fn main() {
-    let mut cx = BuildCx::stub();
     let enabled = true;
     let choice = Some(Size::new(3.0, 4.0));
 
     let _ = view! {
-        &mut cx;
         Column::new() => {
-            SizedBox::new(Size::new(1.0, 2.0)).color(harbor_widget::scene::primitive::Color::RED);
+            SizedBox::new(Size::new(1.0, 2.0)).unwrap().background(harbor_widget::scene::primitive::Color::RED).expect("valid color");
             StructLeaf { size: Size::new(2.0, 2.0) };
             {
                 let size = Size::new(2.0, 3.0);
@@ -38,13 +36,13 @@ fn main() {
             });
             ({
                 match choice {
-                    Some(size) => SizedBox::new(size),
-                    None => SizedBox::new(Size::ZERO),
+                    Some(size) => SizedBox::new(size).unwrap(),
+                    None => SizedBox::new(Size::ZERO).unwrap(),
                 }
             });
             Column::new() => {}
         }
     };
 
-    let _ = view! { &mut cx; SizedBox::new(Size::new(8.0, 9.0)); };
+    let _ = view! {  SizedBox::new(Size::new(8.0, 9.0)); };
 }

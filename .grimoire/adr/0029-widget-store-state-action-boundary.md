@@ -2,6 +2,7 @@
 
 **Status:** Completed
 **Date:** 2026-09-10
+**Callback-bound clause partially superseded by:** [ADR 0082](./0082-ui-thread-local-widget-callbacks.md) (2026-10-23). Ordinary UI callbacks may capture local state; the Store/Dispatcher business-intent boundary and background-work wakeup policy remain unchanged.
 
 ## Context
 

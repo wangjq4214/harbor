@@ -1,6 +1,6 @@
 use harbor_widget::fiber::FiberId;
 use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
-use harbor_widget::layout::{Alignment, Point, Rect, Size};
+use harbor_widget::layout::{CrossAxisAlignment, Point, Rect, Size};
 use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::{DEFAULT_TEXT_METRICS, Runtime};
 use harbor_widget::scene::primitive::{
@@ -9,7 +9,7 @@ use harbor_widget::scene::primitive::{
 use harbor_widget::signal::Signal;
 use harbor_widget::text::TextMetrics;
 use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::padding::Padding;
 use harbor_widget::widgets::text_label::TextLabel;
 use harbor_widget::{
@@ -89,15 +89,19 @@ fn bounded_external(width: f32, draw_id: u64) -> ConstrainedBox {
     ConstrainedBox::new()
         .min_width(width)
         .max_width(width)
-        .child(CustomPaint::new(draw_id))
+        .child(ExternalSurface::new(draw_id))
 }
 
 fn rail_root(rail: f32, content: impl Component + 'static) -> Row {
     Row::new()
-        .cross_axis_alignment(Alignment::Stretch)
-        .child(bounded_external(rail, 1))
-        .child(Separator::vertical().color(Color::WHITE))
-        .child(Expanded::new().child(content))
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .push_child(bounded_external(rail, 1))
+        .push_child(
+            Separator::vertical()
+                .color(Color::WHITE)
+                .expect("valid color"),
+        )
+        .push_child(Expanded::new().child(content))
 }
 
 struct Counted<C> {
@@ -129,7 +133,7 @@ fn viewport_is_committed_before_input_without_rebuild_or_schedule_poll() {
         ExternalScheduleDemand::empty()
     });
     let content = Counted {
-        inner: CustomPaint::new(2).schedule(schedule),
+        inner: ExternalSurface::new(2).schedule_with(schedule),
         builds: builds.clone(),
         initializations: initializations.clone(),
     };
@@ -172,13 +176,13 @@ fn resize_metrics_and_scale_changes_preserve_deferred_components_and_ids() {
     runtime.set_viewport(Viewport::new(1000, 600, 1.0));
     runtime.set_root(Counted {
         inner: Row::new()
-            .cross_axis_alignment(Alignment::Stretch)
-            .child(Counted {
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .push_child(Counted {
                 inner: TextLabel::new("aa"),
                 builds: builds.clone(),
                 initializations: initializations.clone(),
             })
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(Expanded::new().child(ExternalSurface::new(2))),
         builds: builds.clone(),
         initializations: initializations.clone(),
     });
@@ -241,7 +245,7 @@ impl Component for SignalFactor {
         let value = *factor.read();
         Expanded::new()
             .factor(NonZeroU32::new(value).unwrap())
-            .child(CustomPaint::new(1))
+            .child(ExternalSurface::new(1))
             .build(cx)
     }
 }
@@ -254,12 +258,12 @@ fn signal_factor_reallocates_siblings_before_the_next_pointer_event() {
     runtime.set_viewport(Viewport::new(400, 40, 1.0));
     runtime.set_root(
         Row::new()
-            .cross_axis_alignment(Alignment::Stretch)
-            .child(SignalFactor {
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .push_child(SignalFactor {
                 exposed: exposed.clone(),
                 initializations: initializations.clone(),
             })
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(Expanded::new().child(ExternalSurface::new(2))),
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);
@@ -299,8 +303,8 @@ fn signal_content_changes_relayout_the_full_root_including_siblings() {
     runtime.set_viewport(Viewport::new(200, 40, 1.0));
     runtime.set_root(
         Row::new()
-            .child(SignalContent(exposed.clone()))
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(SignalContent(exposed.clone()))
+            .push_child(Expanded::new().child(ExternalSurface::new(2))),
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);
@@ -333,11 +337,11 @@ fn external_build_invalidation_is_not_mistaken_for_layout_only_work() {
     runtime.set_viewport(Viewport::new(200, 40, 1.0));
     runtime.set_root(
         Row::new()
-            .child(ExternalWidth {
+            .push_child(ExternalWidth {
                 width: width.clone(),
                 builds: builds.clone(),
             })
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(Expanded::new().child(ExternalSurface::new(2))),
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);
@@ -359,10 +363,10 @@ fn external_build_invalidation_is_not_mistaken_for_layout_only_work() {
 
 fn overflowing_row() -> Row {
     Row::new()
-        .cross_axis_alignment(Alignment::Stretch)
-        .child(bounded_external(80.0, 1))
-        .child(bounded_external(80.0, 2))
-        .child(Expanded::new().child(CustomPaint::new(3)))
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .push_child(bounded_external(80.0, 1))
+        .push_child(bounded_external(80.0, 2))
+        .push_child(Expanded::new().child(ExternalSurface::new(3)))
 }
 
 #[test]
@@ -412,15 +416,15 @@ fn loose_fit_does_not_make_unused_slot_hit_testable_or_redistribute_it() {
     runtime.set_viewport(Viewport::new(300, 40, 1.0));
     runtime.set_root(
         Flex::new(Axis::Horizontal)
-            .cross_axis_alignment(Alignment::Stretch)
-            .child(
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .push_child(
                 Flexible::new().child(
                     ConstrainedBox::new()
                         .max_width(20.0)
-                        .child(CustomPaint::new(1)),
+                        .child(ExternalSurface::new(1)),
                 ),
             )
-            .child(Expanded::new().child(CustomPaint::new(2))),
+            .push_child(Expanded::new().child(ExternalSurface::new(2))),
     );
     update(&mut runtime);
     assert_eq!(rect_at(&runtime, &[0]).size().width, 20.0);
@@ -437,7 +441,7 @@ fn loose_fit_does_not_make_unused_slot_hit_testable_or_redistribute_it() {
 fn separator_and_external_allocations_use_half_open_edges() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(200, 40, 1.0));
-    runtime.set_root(rail_root(56.0, CustomPaint::new(2)));
+    runtime.set_root(rail_root(56.0, ExternalSurface::new(2)));
     update(&mut runtime);
     assert_eq!(pointer(&mut runtime, 55.999, 20.0), [1]);
     assert!(pointer(&mut runtime, 56.0, 20.0).is_empty());
@@ -452,8 +456,14 @@ fn zero_viewport_with_padding_has_no_hit_and_restores_without_replacing_fibers()
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(0, 0, 1.0));
     runtime.set_root(
-        Padding::new(10.0, 10.0, 10.0, 10.0)
-            .child(Row::new().child(Expanded::new().child(CustomPaint::new(1)))),
+        Padding::new(harbor_widget::Insets {
+            top: 10.0,
+            right: 10.0,
+            bottom: 10.0,
+            left: 10.0,
+        })
+        .unwrap()
+        .child(Row::new().push_child(Expanded::new().child(ExternalSurface::new(1)))),
     );
     update(&mut runtime);
     let ids = tree_ids(&runtime);

@@ -1,7 +1,7 @@
 # Terminal Frame Scheduling and Standalone Host
 
 **Spec ID:** 0006
-**Status:** Implemented
+**Status:** Accepted (owner-confirmed)
 **Superseded in part:** the public standalone winit/wgpu host requirement (Solution, its decision, and direct-mode acceptance) is superseded by a newer decision not recorded in this repository; the retired ticket 0006/T0003 was marked Superseded.
 **Date:** 2026-09-11
 

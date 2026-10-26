@@ -1,18 +1,18 @@
 use harbor_widget::layout::Size;
 use harbor_widget::view::{BuildCx, Component};
+
 use harbor_widget::widgets::column::Column;
 use harbor_widget::widgets::sized_box::SizedBox;
-use harbor_widget::{view, ComponentExt};
+use harbor_widget::{ComponentExt, view};
 
 fn main() {
     let mut cx = BuildCx::stub();
-    let existing = SizedBox::new(Size::new(3.0, 4.0)).build(&mut cx);
+    let existing = SizedBox::new(Size::new(3.0, 4.0)).unwrap().build(&mut cx);
     let sizes = [Size::new(5.0, 6.0), Size::new(7.0, 8.0)];
     let visible = true;
     let choice = Some(Size::new(9.0, 10.0));
 
     let _root = view! {
-        &mut cx;
         Column::new() => {
             SizedBox::new(Size::new(1.0, 2.0));
             existing;
@@ -21,7 +21,7 @@ fn main() {
                 SizedBox::new(size)
             };
             for size in sizes {
-                SizedBox::new(size).keyed(size.width.to_string());
+                SizedBox::new(size).unwrap().keyed(size.width.to_string());
             }
             if visible {
                 SizedBox::new(Size::new(11.0, 12.0));

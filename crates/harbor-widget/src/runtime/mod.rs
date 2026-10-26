@@ -5,6 +5,7 @@ mod portal_tests;
 #[cfg(test)]
 mod text_input_blink_tests;
 
+use crate::construction::IntoChildView;
 use crate::effects::{
     ClipboardEffect, ControlFlowEffect, CursorEffect, ExternalInvalidation, ImeEffect,
     RuntimeEffects,
@@ -30,7 +31,7 @@ use crate::signal::{RuntimeId, RuntimeScope, mark_dirty_for, remove_runtime, tak
 use crate::text::TextRunCache;
 use crate::text::{TextMetrics, text_metrics_equal};
 use crate::theme::Theme;
-use crate::view::{BuildCx, Component, ExternalRegistrations};
+use crate::view::{BuildCx, ExternalRegistrations, View, materialize_for_fiber};
 use hashbrown::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -63,7 +64,7 @@ pub struct Runtime {
     runtime_id: RuntimeId,
     arena: FiberArena,
     root_id: Option<FiberId>,
-    root_component: Option<Box<dyn Component>>,
+    root_view: Option<View>,
     text_metrics: TextMetrics,
     scene_graph: SceneGraph,
     next_scene_item_id: u64,
@@ -99,7 +100,7 @@ impl Runtime {
             runtime_id: RuntimeId::new(),
             arena: FiberArena::new(),
             root_id: None,
-            root_component: None,
+            root_view: None,
             text_metrics,
             scene_graph: SceneGraph::new(),
             next_scene_item_id: 1,
@@ -139,7 +140,7 @@ impl Runtime {
         // hook panics, unwinding drops this detached closure environment while the
         // Runtime itself already contains only generation-neutral state.
         let old_root = self.root_id.take();
-        let old_root_component = self.root_component.take();
+        let old_root_view = self.root_view.take();
         let mut old_arena = std::mem::take(&mut self.arena);
         let old_external_draws = std::mem::take(&mut self.external_draws);
         let old_external_schedules = std::mem::take(&mut self.external_schedules);
@@ -180,7 +181,7 @@ impl Runtime {
 
         let drop_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             drop((
-                old_root_component,
+                old_root_view,
                 old_external_draws,
                 old_external_schedules,
                 old_external_ime,
@@ -195,12 +196,16 @@ impl Runtime {
         }
     }
 
-    /// Sets the root component and performs the initial build + layout.
+    /// Sets the root view description and performs the initial build + layout.
     ///
-    /// If a previous root existed, it is torn down before the replacement is built.
-    pub fn set_root(&mut self, root: impl Component + 'static) {
-        let pending_focus_handle = self.events.pending_focus_handle();
-        if self.root_id.is_some() || self.root_component.is_some() {
+    /// Accepts any value converting through `IntoChildView`: a `Component` or an
+    /// already-built `View` (as `view!` produces). If a previous root existed,
+    /// it is torn down before the replacement is built. The description is not
+    /// built here; the placeholder root Fiber, owned by the Runtime, materializes
+    /// it during `rebuild_root`.
+    pub fn set_root(&mut self, root: impl IntoChildView + 'static) {
+        if self.root_id.is_some() || self.root_view.is_some() {
+            let pending_focus_handle = self.events.pending_focus_handle();
             self.clear_root();
             self.events
                 .restore_pending_focus_handle(pending_focus_handle);
@@ -216,7 +221,7 @@ impl Runtime {
         let root_id = self.arena.insert(root_fiber);
         self.root_id = Some(root_id);
 
-        self.root_component = Some(Box::new(root));
+        self.root_view = Some(root.into_child_view());
 
         // Full rebuild from root with empty old children
         self.rebuild_root(root_id, &[]);
@@ -247,6 +252,10 @@ impl Runtime {
         effects.control_flow = control_flow;
         effects.merge(self.collect_focused_external_ime());
         effects
+    }
+    #[cfg(test)]
+    pub(crate) fn external_schedule_ids(&self) -> Vec<ExternalDrawId> {
+        self.external_schedules.keys().copied().collect()
     }
 
     /// Layout invalidation is separate from the signal/external build queue:
@@ -408,10 +417,14 @@ impl Runtime {
             theme: Arc::new(Theme::default()),
         };
 
-        let view = self.root_component.as_ref().unwrap().build(&mut cx);
+        let view = self
+            .root_view
+            .as_ref()
+            .unwrap_or_else(|| panic!("rebuild_root called without a stored root description"))
+            .clone();
         let widget_type = view.widget_type();
         let key = view.key().cloned();
-        let (inner, children, _explicit_key) = view.decompose();
+        let (inner, children, _explicit_key) = materialize_for_fiber(view, &mut cx);
         let effective_theme = inner
             .theme_override()
             .unwrap_or_else(|| Arc::new(Theme::default()));
@@ -839,7 +852,7 @@ impl Runtime {
         std::mem::take(&mut self.pending_effects)
     }
 
-    /// Drains queued external input events produced by focusable CustomPaint
+    /// Drains queued external input events produced by focusable ExternalSurface
     /// widgets during the last event dispatch.
     pub fn drain_external_input(
         &mut self,
@@ -974,10 +987,10 @@ mod tests {
     };
     use crate::input::event_ctx::EventCtx;
     use crate::scene::primitive::ExternalScheduleDemand;
-    use crate::view::View;
+    use crate::view::{Component, View};
     use crate::widgets::button::Button;
     use crate::widgets::column::Column;
-    use crate::widgets::custom_paint::CustomPaint;
+    use crate::widgets::external_surface::ExternalSurface;
     use crate::widgets::focus::Focus;
     use crate::widgets::focus_scope::FocusScope;
     use crate::widgets::layout_observer::LayoutObserver;
@@ -1017,7 +1030,11 @@ mod tests {
             LayoutObserver::new(move |_| {
                 let _ = &layout_probe;
             })
-            .child(CustomPaint::new(91).handler(draw).schedule(schedule))
+            .child(
+                ExternalSurface::new(91)
+                    .on_draw(draw)
+                    .schedule_with(schedule),
+            )
             .build(cx)
         }
     }
@@ -1063,7 +1080,7 @@ mod tests {
         assert_eq!(rt.pending_effects.ime, Some(ImeEffect::set_allowed(false)));
 
         rt.clear_root();
-        rt.set_root(SizedBox::new(Size::new(10.0, 10.0)));
+        rt.set_root(SizedBox::new(Size::new(10.0, 10.0)).unwrap());
         let new_root = rt.root_id.expect("replacement root");
         assert!(rt.arena.contains(new_root));
         assert_ne!(new_root, old_root);
@@ -1073,10 +1090,14 @@ mod tests {
     fn set_root_preserves_a_pending_stable_focus_request() {
         let handle = crate::widgets::FocusHandle::new();
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)).unwrap());
         rt.request_focus(&handle);
 
-        rt.set_root(Focus::new(Button::new("replacement")).handle(handle));
+        rt.set_root(
+            Focus::new()
+                .child(Button::text("replacement"))
+                .focus_handle(handle),
+        );
 
         assert!(rt.input().focused().is_some());
     }
@@ -1096,7 +1117,7 @@ mod tests {
     #[test]
     fn clear_root_contains_unsubscribe_panics_after_detaching_old_state() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)).unwrap());
         let root = rt.root_id.expect("mounted root");
         rt.arena
             .get_mut(root)
@@ -1118,13 +1139,15 @@ mod tests {
         let deliveries = Arc::new(AtomicU64::new(0));
         let delivered = deliveries.clone();
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(42).on_input(Arc::new(move |event, _ctx| {
-            if matches!(event, UiEvent::Keyboard(_)) {
-                delivered.fetch_add(1, Ordering::SeqCst);
-            }
-            // Like the terminal input gate: consume without requesting paint.
-            EventHandled::Handled
-        })));
+        rt.set_root(
+            ExternalSurface::new(42).on_input(Arc::new(move |event, _ctx| {
+                if matches!(event, UiEvent::Keyboard(_)) {
+                    delivered.fetch_add(1, Ordering::SeqCst);
+                }
+                // Like the terminal input gate: consume without requesting paint.
+                EventHandled::Handled
+            })),
+        );
         assert!(rt.update(now()).request_redraw);
         assert!(rt.focus_first_focusable());
         let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
@@ -1143,7 +1166,7 @@ mod tests {
 
     #[test]
     fn consumed_resize_delta_only_modifies_content_and_preserves_registrations() {
-        use crate::layout::Alignment;
+        use crate::layout::CrossAxisAlignment;
         use crate::scene::primitive::{Color, Primitive};
         use crate::view::View;
         use crate::{ConstrainedBox, Expanded, Row, Separator};
@@ -1160,17 +1183,29 @@ mod tests {
                 let schedule: Arc<ExternalScheduleFn> =
                     Arc::new(|_, _| ExternalScheduleDemand::empty());
                 Row::new()
-                    .cross_axis_alignment(Alignment::Stretch)
-                    .child(
+                    .cross_axis_alignment(CrossAxisAlignment::Stretch)
+                    .push_child(
                         ConstrainedBox::new()
                             .min_width(200.0)
                             .max_width(200.0)
-                            .child(SizedBox::new(Size::new(200.0, 80.0)).color(Color::RED)),
+                            .child(
+                                SizedBox::new(Size::new(200.0, 80.0))
+                                    .unwrap()
+                                    .background(Color::RED)
+                                    .expect("valid color"),
+                            ),
                     )
-                    .child(Separator::vertical().color(Color::WHITE))
-                    .child(
-                        Expanded::new()
-                            .child(CustomPaint::new(42).handler(handler).schedule(schedule)),
+                    .push_child(
+                        Separator::vertical()
+                            .color(Color::WHITE)
+                            .expect("valid color"),
+                    )
+                    .push_child(
+                        Expanded::new().child(
+                            ExternalSurface::new(42)
+                                .on_draw(handler)
+                                .schedule_with(schedule),
+                        ),
                     )
                     .build(cx)
             }
@@ -1286,7 +1321,7 @@ mod tests {
         let fail = Rc::new(Cell::new(false));
         let measurements = Rc::new(Cell::new(0));
         let mut rt = Runtime::new();
-        rt.set_root(Padding::all(2.0).child(FragileLeaf {
+        rt.set_root(Padding::all(2.0).unwrap().child(FragileLeaf {
             fail: fail.clone(),
             measurements: measurements.clone(),
         }));
@@ -1352,7 +1387,12 @@ mod tests {
         use crate::scene::primitive::Color;
 
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).color(Color::RED));
+        rt.set_root(
+            SizedBox::new(Size::new(100.0, 50.0))
+                .unwrap()
+                .background(Color::RED)
+                .expect("valid color"),
+        );
         let scene_ids: Vec<u64> = rt.scene_graph.items().iter().map(|item| item.id).collect();
 
         rt.run_paint_pass();
@@ -1387,11 +1427,13 @@ mod tests {
         impl Component for ColorToggle {
             fn build(&self, cx: &mut BuildCx) -> View {
                 SizedBox::new(Size::new(100.0, 50.0))
-                    .color(if self.0.get() {
+                    .unwrap()
+                    .background(if self.0.get() {
                         Color::BLUE
                     } else {
                         Color::RED
                     })
+                    .expect("valid color")
                     .build(cx)
             }
         }
@@ -1436,9 +1478,11 @@ mod tests {
                 let items = items_state.read();
                 let mut col = Column::new();
                 for key in items.iter() {
-                    col = col.child(
+                    col = col.push_child(
                         SizedBox::new(Size::new(50.0, 20.0))
-                            .color(Color::RED)
+                            .unwrap()
+                            .background(Color::RED)
+                            .expect("valid color")
                             .keyed(*key),
                     );
                 }
@@ -1515,9 +1559,11 @@ mod tests {
                 let items = state.read();
                 let mut col = Column::new();
                 for key in items.iter() {
-                    col = col.child(
+                    col = col.push_child(
                         SizedBox::new(Size::new(50.0, 20.0))
-                            .color(Color::RED)
+                            .unwrap()
+                            .background(Color::RED)
+                            .expect("valid color")
                             .keyed(*key),
                     );
                 }
@@ -1589,7 +1635,7 @@ mod tests {
                 let state = cx.use_state(|| 0u32);
                 self.observed_values.borrow_mut().push(*state.read());
                 *self.signal.borrow_mut() = Some(state);
-                SizedBox::new(Size::new(10.0, 10.0)).build(cx)
+                SizedBox::new(Size::new(10.0, 10.0)).unwrap().build(cx)
             }
         }
 
@@ -1600,7 +1646,18 @@ mod tests {
             observed_values: Rc::clone(&observed_values),
         };
         let mut rt = Runtime::new();
-        rt.set_root(Column::new().child(Padding::new(1.0, 1.0, 1.0, 1.0).child(child)));
+        rt.set_root(
+            Column::new().push_child(
+                Padding::new(crate::Insets {
+                    top: 1.0,
+                    right: 1.0,
+                    bottom: 1.0,
+                    left: 1.0,
+                })
+                .unwrap()
+                .child(child),
+            ),
+        );
 
         let root_id = rt.root_id().unwrap();
         let padding_id = rt.arena().get(root_id).unwrap().children[0];
@@ -1631,7 +1688,16 @@ mod tests {
     fn is_descendant_of_direct_child() {
         use crate::widgets::padding::Padding;
         let mut rt = Runtime::new();
-        rt.set_root(Padding::new(8.0, 8.0, 8.0, 8.0).child(SizedBox::new(Size::new(100.0, 50.0))));
+        rt.set_root(
+            Padding::new(crate::Insets {
+                top: 8.0,
+                right: 8.0,
+                bottom: 8.0,
+                left: 8.0,
+            })
+            .unwrap()
+            .child(SizedBox::new(Size::new(100.0, 50.0)).unwrap()),
+        );
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1644,7 +1710,7 @@ mod tests {
     #[test]
     fn is_descendant_of_self_is_true() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1654,7 +1720,7 @@ mod tests {
     #[test]
     fn is_descendant_of_none_is_false() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1673,7 +1739,7 @@ mod tests {
     #[test]
     fn build_ancestor_path_root_is_singleton() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1699,7 +1765,7 @@ mod tests {
         rt.set_root(
             FocusScope::new()
                 .modal(true)
-                .child(SizedBox::new(Size::new(100.0, 50.0))),
+                .child(SizedBox::new(Size::new(100.0, 50.0)).unwrap()),
         );
         rt.update(now());
 
@@ -1714,11 +1780,18 @@ mod tests {
 
         let mut rt = Runtime::new();
         rt.set_root(
-            Padding::new(8.0, 8.0, 8.0, 8.0).child(
-                Column::new().child(
+            Padding::new(crate::Insets {
+                top: 8.0,
+                right: 8.0,
+                bottom: 8.0,
+                left: 8.0,
+            })
+            .unwrap()
+            .child(
+                Column::new().push_child(
                     FocusScope::new()
                         .modal(true)
-                        .child(SizedBox::new(Size::new(100.0, 50.0))),
+                        .child(SizedBox::new(Size::new(100.0, 50.0)).unwrap()),
                 ),
             ),
         );
@@ -1732,7 +1805,7 @@ mod tests {
 
         // A separate non-modal SVG or SizedBox root returns false
         let mut rt2 = Runtime::new();
-        rt2.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt2.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt2.update(now());
         let root2_id = rt2.root_id().unwrap();
         assert!(!rt2.tree_has_modal(root2_id));
@@ -1741,7 +1814,7 @@ mod tests {
     #[test]
     fn tree_has_modal_returns_false_for_non_modal_tree() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1765,21 +1838,12 @@ mod tests {
         assert!(rt.finish_event(ctx));
     }
 
-    #[test]
-    fn finish_event_returns_true_when_stop_propagation_without_paint() {
-        // stop_propagation itself does not request paint, but we check
-        let mut rt = Runtime::new();
-        let mut ctx = EventCtx::new();
-        ctx.stop_propagation();
-        assert!(!rt.finish_event(ctx));
-    }
-
     // ── route_to_single ────────────────────────────────────────────────
 
     #[test]
     fn route_to_single_with_live_fiber() {
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -1804,29 +1868,29 @@ mod tests {
     }
 
     #[test]
-    fn runtime_with_custom_paint_root_reports_external_draws() {
+    fn runtime_with_external_surface_root_reports_external_draws() {
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(77).handler(handler));
+        rt.set_root(ExternalSurface::new(77).on_draw(handler));
         rt.update(now());
 
         assert!(rt.has_external_draws());
     }
 
     #[test]
-    fn should_report_no_external_draws_when_custom_paint_has_no_handler() {
+    fn should_report_no_external_draws_when_external_surface_has_no_handler() {
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(77));
+        rt.set_root(ExternalSurface::new(77));
         rt.update(now());
 
         assert!(!rt.has_external_draws());
     }
 
     #[test]
-    fn should_report_no_external_draws_when_custom_paint_registers_only_a_schedule() {
+    fn should_report_no_external_draws_when_external_surface_registers_only_a_schedule() {
         let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(78).schedule(schedule));
+        rt.set_root(ExternalSurface::new(78).schedule_with(schedule));
         rt.update(now());
 
         assert!(!rt.has_external_draws());
@@ -1836,7 +1900,7 @@ mod tests {
     fn should_report_external_draws_when_handler_is_nested_in_subtree() {
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
-        rt.set_root(Column::new().child(CustomPaint::new(79).handler(handler)));
+        rt.set_root(Column::new().push_child(ExternalSurface::new(79).on_draw(handler)));
         rt.update(now());
 
         assert!(rt.has_external_draws());
@@ -1846,12 +1910,12 @@ mod tests {
     fn should_drop_external_draws_when_root_is_replaced_with_plain_widget() {
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(80).handler(handler));
+        rt.set_root(ExternalSurface::new(80).on_draw(handler));
         rt.update(now());
         assert!(rt.has_external_draws());
 
         // Act — replacing the root rebuilds and reinstalls the external bag.
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         // Assert
@@ -1868,7 +1932,7 @@ mod tests {
         });
         let mut rt = Runtime::new();
         rt.set_viewport(Viewport::new(100, 40, 1.0));
-        rt.set_root(CustomPaint::new(81).ime(provider));
+        rt.set_root(ExternalSurface::new(81).ime_with(provider));
 
         let initial = rt.update(now());
         assert!(initial.ime.is_none());
@@ -1912,7 +1976,11 @@ mod tests {
         });
         let mut rt = Runtime::new();
         rt.set_viewport(Viewport::new(100, 40, 1.0));
-        rt.set_root(CustomPaint::new(82).schedule(schedule).ime(ime));
+        rt.set_root(
+            ExternalSurface::new(82)
+                .schedule_with(schedule)
+                .ime_with(ime),
+        );
         rt.update(now());
         assert!(rt.focus_first_focusable());
         state.store(0, Ordering::SeqCst);
@@ -1987,7 +2055,7 @@ mod tests {
         use crate::widgets::sized_box::SizedBox;
 
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(crate::layout::Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(crate::layout::Size::new(100.0, 50.0)).unwrap());
         rt.set_viewport(Viewport::new(800, 600, 1.0));
         assert!(rt.update(now()).request_redraw);
         assert!(!rt.update(now()).request_redraw);
@@ -2004,9 +2072,11 @@ mod tests {
     fn focus_transition_notifies_old_and_new_fibers_and_requests_redraw() {
         let mut rt = Runtime::new();
         rt.set_root(
-            FocusScope::new()
-                .child(Focus::new(CustomPaint::new(1)))
-                .child(Focus::new(CustomPaint::new(2))),
+            FocusScope::new().child(
+                crate::widgets::stack::Stack::new()
+                    .push_child(Focus::new().child(ExternalSurface::new(1)))
+                    .push_child(Focus::new().child(ExternalSurface::new(2))),
+            ),
         );
         rt.update(now());
         assert!(rt.focus_first_focusable());
@@ -2034,7 +2104,7 @@ mod tests {
     #[test]
     fn set_focus_and_clear_focus() {
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         let root_id = rt.root_id().unwrap();
@@ -2052,7 +2122,7 @@ mod tests {
     #[test]
     fn route_event_keyboard_no_focused_returns_false() {
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
@@ -2069,7 +2139,7 @@ mod tests {
     #[test]
     fn route_event_pointer_cancel_without_capture_returns_false() {
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         let event = UiEvent::Pointer(PointerEvent::new(
@@ -2097,7 +2167,7 @@ mod tests {
         // the capture. Sending events for the stale pointer is a no-op.
         let clicked = Arc::new(AtomicBool::new(false));
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK").on_click(move |_ctx| {
+        rt.set_root(Button::text("OK").on_click(move |_ctx| {
             clicked.store(true, Ordering::SeqCst);
         }));
         rt.update(now());
@@ -2115,7 +2185,7 @@ mod tests {
         );
 
         // Replace tree — old fibers are unmounted, captures cleared
-        rt.set_root(Button::new("Replacement"));
+        rt.set_root(Button::text("Replacement"));
         rt.update(now());
 
         // After tree replacement, capture should be cleared
@@ -2165,7 +2235,7 @@ mod tests {
     fn should_focus_button_when_it_is_focusable() {
         // Arrange
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         rt.update(now());
 
         // Act
@@ -2186,8 +2256,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .child(SizedBox::new(Size::new(100.0, 50.0)))
-                .child(Button::new("Next")),
+                .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap())
+                .push_child(Button::text("Next")),
         );
         rt.update(now());
 
@@ -2224,7 +2294,7 @@ mod tests {
     fn should_return_false_when_no_focusable_widgets_exist() {
         // Arrange
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)));
+        rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
         rt.update(now());
 
         // Act
@@ -2251,7 +2321,7 @@ mod tests {
         rt.prepare_text_runs(&|_ch| None);
         assert_eq!(rt.text_run_cache().len(), 1);
 
-        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)));
+        rt.set_root(SizedBox::new(Size::new(1.0, 1.0)).unwrap());
         rt.prepare_text_runs(&|_ch| None);
         assert!(rt.text_run_cache().is_empty());
     }
@@ -2259,7 +2329,7 @@ mod tests {
     #[test]
     fn button_text_rebuilds_and_marks_instances_dirty_when_atlas_revision_changes() {
         let mut rt = Runtime::new();
-        rt.set_root(Button::new("OK"));
+        rt.set_root(Button::text("OK"));
         let glyph = |_ch| {
             Some(crate::text::AtlasGlyph {
                 key: harbor_text::GlyphKey::new(
@@ -2396,7 +2466,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(1).schedule(schedule));
+        rt.set_root(ExternalSurface::new(1).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2429,8 +2499,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .child(CustomPaint::new(1).schedule(late_schedule))
-                .child(CustomPaint::new(2).schedule(early_schedule)),
+                .push_child(ExternalSurface::new(1).schedule_with(late_schedule))
+                .push_child(ExternalSurface::new(2).schedule_with(early_schedule)),
         );
         let _ = rt.update(now());
 
@@ -2450,7 +2520,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(4).schedule(schedule));
+        rt.set_root(ExternalSurface::new(4).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2473,7 +2543,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(5).schedule(schedule));
+        rt.set_root(ExternalSurface::new(5).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2492,7 +2562,7 @@ mod tests {
         // Arrange — empty demand must not invent blink-only Poll
         let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(6).schedule(schedule));
+        rt.set_root(ExternalSurface::new(6).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2516,7 +2586,7 @@ mod tests {
             ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(42).schedule(schedule));
+        rt.set_root(ExternalSurface::new(42).schedule_with(schedule));
         let _ = rt.update(now());
 
         // Act
@@ -2536,7 +2606,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(1).schedule(schedule));
+        rt.set_root(ExternalSurface::new(1).schedule_with(schedule));
         let _ = rt.update(now());
         assert_eq!(
             rt.update(now()).control_flow,
@@ -2544,7 +2614,7 @@ mod tests {
         );
 
         // Act — rebuild without a schedule provider
-        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)));
+        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)).unwrap());
         let _ = rt.update(now());
         let idle = rt.update(now());
 
@@ -2564,7 +2634,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(7).schedule(schedule));
+        rt.set_root(ExternalSurface::new(7).schedule_with(schedule));
         let _ = rt.update(now());
 
         let idle = rt.update(now());
@@ -2584,7 +2654,7 @@ mod tests {
             ordinary_present_eligible: false,
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(8).schedule(schedule));
+        rt.set_root(ExternalSurface::new(8).schedule_with(schedule));
         let _ = rt.update(now());
 
         let idle = rt.update(now());
@@ -2612,8 +2682,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .child(CustomPaint::new(1).schedule(eligible))
-                .child(CustomPaint::new(2).schedule(deferred)),
+                .push_child(ExternalSurface::new(1).schedule_with(eligible))
+                .push_child(ExternalSurface::new(2).schedule_with(deferred)),
         );
         let _ = rt.update(now());
 
@@ -2629,7 +2699,7 @@ mod tests {
     fn should_remain_eligible_when_no_external_schedule_is_registered() {
         // Arrange
         let mut rt = Runtime::new();
-        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)));
+        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)).unwrap());
         let _ = rt.update(now());
 
         // Act
@@ -2650,7 +2720,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(9).schedule(schedule));
+        rt.set_root(ExternalSurface::new(9).schedule_with(schedule));
 
         // Act — first update rebuilds dirty Fibers and then folds schedule demand
         let first = rt.update(now());
@@ -2674,8 +2744,8 @@ mod tests {
         let mut rt = Runtime::new();
         rt.set_root(
             Column::new()
-                .child(CustomPaint::new(10).schedule(eligible))
-                .child(CustomPaint::new(11).schedule(deferred)),
+                .push_child(ExternalSurface::new(10).schedule_with(eligible))
+                .push_child(ExternalSurface::new(11).schedule_with(deferred)),
         );
         let _ = rt.update(now());
 
@@ -2697,12 +2767,12 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut rt = Runtime::new();
-        rt.set_root(CustomPaint::new(12).schedule(schedule));
+        rt.set_root(ExternalSurface::new(12).schedule_with(schedule));
         let _ = rt.update(now());
         assert!(rt.update(now()).has_deferred_externals);
 
         // Act
-        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)));
+        rt.set_root(SizedBox::new(Size::new(20.0, 20.0)).unwrap());
         let _ = rt.update(now());
         let idle = rt.update(now());
 

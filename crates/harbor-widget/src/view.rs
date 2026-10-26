@@ -22,6 +22,11 @@ impl Key {
     pub fn new(s: impl Into<String>) -> Self {
         Self(s.into())
     }
+
+    /// Returns the key's text representation.
+    pub fn text(&self) -> &str {
+        &self.0
+    }
 }
 
 impl From<String> for Key {
@@ -234,7 +239,7 @@ pub(crate) trait ThemedView: 'static {
 pub(crate) trait ActionProviderView: 'static {
     fn shortcut_action(
         &self,
-        _chord: crate::widgets::shortcuts::KeyChord,
+        _chord: crate::widgets::shortcut_map::KeyChord,
     ) -> Option<Box<dyn std::any::Any>> {
         None
     }
@@ -242,7 +247,7 @@ pub(crate) trait ActionProviderView: 'static {
     fn invoke_action(
         &self,
         _action: &dyn std::any::Any,
-    ) -> Option<crate::widgets::actions::ActionOutcome> {
+    ) -> Option<crate::widgets::action_handler::ActionOutcome> {
         None
     }
 }
@@ -427,7 +432,8 @@ pub(crate) trait AnyView: 'static {
     }
 
     /// Handles an input event delivered to this widget.
-    /// Returns `EventHandled::Handled` if consumed.
+    /// Returning `EventHandled::Handled` stops remaining delivery in this walk;
+    /// accumulated commands still commit. `Ignored` continues propagation.
     /// Default: ignores all events.
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {
         let _ = (event, ctx, rect);
@@ -489,7 +495,7 @@ pub(crate) trait AnyView: 'static {
     /// Returns the typed action bound to this exact chord, if any.
     fn shortcut_action(
         &self,
-        chord: crate::widgets::shortcuts::KeyChord,
+        chord: crate::widgets::shortcut_map::KeyChord,
     ) -> Option<Box<dyn std::any::Any>> {
         self.as_action_provider()
             .and_then(|p| p.shortcut_action(chord))
@@ -499,7 +505,7 @@ pub(crate) trait AnyView: 'static {
     fn invoke_action(
         &self,
         action: &dyn std::any::Any,
-    ) -> Option<crate::widgets::actions::ActionOutcome> {
+    ) -> Option<crate::widgets::action_handler::ActionOutcome> {
         self.as_action_provider()
             .and_then(|provider| provider.invoke_action(action))
     }
@@ -517,6 +523,9 @@ pub(crate) trait AnyView: 'static {
 pub trait PrimitiveLeaf: 'static {
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive>;
+    /// Processes routed input. Return [`EventHandled::Handled`] to stop further
+    /// propagation after this handler, or `Ignored` to continue. Both results
+    /// retain requested effects; neither implicitly requests paint.
     fn handle_event(&self, _event: &UiEvent, _ctx: &mut EventCtx, _rect: Rect) -> EventHandled {
         EventHandled::Ignored
     }
@@ -554,6 +563,8 @@ pub(crate) enum ViewContents {
 }
 
 /// Produced by `Component::build` and consumed by the reconciliation system.
+/// Compose with [`Component`], [`crate::IntoChildView`] and widget child APIs;
+/// extend primitive content with [`View::leaf`]. Raw concrete construction is internal.
 #[derive(Clone)]
 pub struct View {
     pub(crate) contents: ViewContents,
@@ -568,10 +579,7 @@ impl View {
     }
 
     /// Creates a new View wrapping the given already-built AnyView tree.
-    // AnyView is pub(crate); private_bounds is intentional — this is the
-    // public API surface for crate-internal widget types.
-    #[allow(private_bounds)]
-    pub fn new(inner: impl AnyView, children: Vec<View>, key: Option<Key>) -> Self {
+    pub(crate) fn new(inner: impl AnyView, children: Vec<View>, key: Option<Key>) -> Self {
         View {
             contents: ViewContents::Concrete(Arc::new(inner)),
             explicit_key: key,
@@ -619,6 +627,7 @@ impl View {
         }
     }
 
+    #[cfg(test)]
     /// Consumes a concrete View and returns its components.
     pub(crate) fn decompose(self) -> (Arc<dyn AnyView>, Vec<View>, Option<Key>) {
         match self.contents {
@@ -632,6 +641,41 @@ impl View {
     /// Consumes this View into the data reconciliation needs to materialize it.
     pub(crate) fn into_parts(self) -> (ViewContents, Vec<View>, Option<Key>) {
         (self.contents, self.children, self.explicit_key)
+    }
+}
+
+/// Maximum number of chained deferrals a single build return may flatten in
+/// place on one Fiber before construction is rejected.
+const MAX_MATERIALIZATION_DEPTH: usize = 8;
+
+/// Materializes a view for the Fiber that produced it.
+///
+/// Already-concrete views pass through unchanged. A build return that defers
+/// another component is built against the same `BuildCx`, keeping component
+/// identity, theme, and hook sequence on a single Fiber. Depth is bounded so
+/// a self-deferring component build chain fails loudly instead of recursing
+/// forever.
+pub(crate) fn materialize_for_fiber(
+    view: View,
+    cx: &mut BuildCx,
+) -> (Arc<dyn AnyView>, Vec<View>, Option<Key>) {
+    let mut pending = view;
+    for _ in 0..MAX_MATERIALIZATION_DEPTH {
+        match pending.contents {
+            ViewContents::Concrete(inner) => {
+                return (inner, pending.children, pending.explicit_key);
+            }
+            ViewContents::Deferred { component, .. } => {
+                pending = component.build(cx);
+            }
+        }
+    }
+    match pending.contents {
+        ViewContents::Concrete(inner) => (inner, pending.children, pending.explicit_key),
+        ViewContents::Deferred { .. } => panic!(
+            "view construction exceeds {} materialization levels; a component build likely returns its own deferred description",
+            MAX_MATERIALIZATION_DEPTH
+        ),
     }
 }
 
@@ -674,7 +718,7 @@ mod tests {
     #[test]
     fn view_key_explicit() {
         use crate::widgets::sized_box::SizedBox;
-        let sb = SizedBox::new(Size::new(10.0, 10.0));
+        let sb = SizedBox::new(Size::new(10.0, 10.0)).unwrap();
         let view = View::new(sb, vec![], Some(Key::new("my_key")));
         assert_eq!(view.key(), Some(&Key::new("my_key")));
     }
@@ -682,7 +726,7 @@ mod tests {
     #[test]
     fn view_key_fallback_to_inner() {
         use crate::widgets::sized_box::SizedBox;
-        let sb = SizedBox::new(Size::new(10.0, 10.0));
+        let sb = SizedBox::new(Size::new(10.0, 10.0)).unwrap();
         // SizedBox has no key, so no fallback
         let view = View::new(sb, vec![], None);
         assert_eq!(view.key(), None);
@@ -718,8 +762,8 @@ mod tests {
     #[test]
     fn view_widget_type() {
         use crate::widgets::sized_box::SizedBox;
-        let sb1 = SizedBox::new(Size::new(10.0, 10.0));
-        let sb2 = SizedBox::new(Size::new(20.0, 20.0));
+        let sb1 = SizedBox::new(Size::new(10.0, 10.0)).unwrap();
+        let sb2 = SizedBox::new(Size::new(20.0, 20.0)).unwrap();
         let view1 = View::new(sb1, vec![], None);
         let view2 = View::new(sb2, vec![], None);
         // Same widget type
@@ -822,7 +866,7 @@ mod tests {
 
     #[test]
     fn sized_box_build() {
-        let sized_box = SizedBox::new(Size::new(100.0, 50.0));
+        let sized_box = SizedBox::new(Size::new(100.0, 50.0)).unwrap();
         let mut cx = BuildCx::stub();
         let view = sized_box.build(&mut cx);
         assert_eq!(view.children.len(), 0);
@@ -830,10 +874,10 @@ mod tests {
 
     #[test]
     fn should_preserve_parent_constraints_when_view_uses_default_child_constraints() {
-        use crate::widgets::sized_box::SizedBox;
+        use crate::widgets::text_label::TextLabel;
 
-        // Arrange
-        let view = SizedBox::new(Size::new(100.0, 50.0));
+        // Arrange: a true leaf retains the default constraint adapter.
+        let view = TextLabel::new("leaf");
         let constraints = BoxConstraints {
             min: Size::new(20.0, 10.0),
             max: Size::new(800.0, 600.0),
@@ -849,7 +893,7 @@ mod tests {
     #[test]
     fn anyview_intrinsic_size() {
         use crate::widgets::sized_box::SizedBox;
-        let sb = SizedBox::new(Size::new(100.0, 50.0));
+        let sb = SizedBox::new(Size::new(100.0, 50.0)).unwrap();
         let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
         let size = sb.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         assert_eq!(size, Size::new(100.0, 50.0));
@@ -858,7 +902,7 @@ mod tests {
     #[test]
     fn anyview_intrinsic_size_clamped() {
         use crate::widgets::sized_box::SizedBox;
-        let sb = SizedBox::new(Size::new(1000.0, 50.0));
+        let sb = SizedBox::new(Size::new(1000.0, 50.0)).unwrap();
         let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
         let size = sb.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
         // Both dimensions clamped to tight 500x500 constraint

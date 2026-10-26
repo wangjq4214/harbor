@@ -100,6 +100,17 @@ fn confirmation_result(confirmed: &AtomicBool, cancelled: &AtomicBool) -> Confir
     }
 }
 
+/// A fault observed at the approval boundary always wins over a queued button/shortcut.
+fn guard_confirmation(
+    result: ConfirmationResult,
+    fault: Option<harbor_widget::winit::GpuFault>,
+) -> ConfirmationResult {
+    match fault {
+        Some(fault) => ConfirmationResult::Fatal(FrameError::SharedGpu(fault)),
+        None => result,
+    }
+}
+
 // ── ConfirmationResult ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -172,10 +183,17 @@ impl PasteController {
         self.window.as_ref().map(|w| w.window_id())
     }
 
-    pub(crate) fn about_to_wait(&mut self, now: Instant) -> Option<ControlFlowEffect> {
+    pub(crate) fn cancel(&mut self) {
+        self.window = None;
+        self.input_gate.store(false, Ordering::Release);
+        self.palette_invocation = false;
+    }
+
+    pub(crate) fn about_to_wait(&mut self, now: Instant) -> HostIdleOutcome {
         self.window
             .as_mut()
-            .map(|window| window.about_to_wait(now).unwrap_or(ControlFlowEffect::Wait))
+            .map(|window| window.about_to_wait(now))
+            .unwrap_or_default()
     }
 
     pub(crate) fn handle_dialog_event(
@@ -218,7 +236,7 @@ impl PasteController {
             return (DialogOutcome::None, None);
         };
         let event_outcome = confirmation.handle_event(event);
-        let result = match event_outcome.result {
+        let result = match guard_confirmation(event_outcome.result, confirmation.host.gpu_fault()) {
             ConfirmationResult::Cancelled => DialogOutcome::Cancelled,
             ConfirmationResult::Confirmed => {
                 DialogOutcome::Confirmed(confirmation.raw_text().to_owned())
@@ -457,8 +475,8 @@ impl ConfirmationWindow {
     }
 
     /// Applies idle redraw effects and returns this window's wait request.
-    pub(crate) fn about_to_wait(&mut self, now: Instant) -> Option<ControlFlowEffect> {
-        self.host.about_to_wait(now, None).wait
+    pub(crate) fn about_to_wait(&mut self, now: Instant) -> HostIdleOutcome {
+        self.host.about_to_wait(now, None)
     }
 
     /// Returns the raw paste candidate text, unchanged from when the dialog opened.
@@ -468,6 +486,12 @@ impl ConfirmationWindow {
 
     /// Applies application shortcuts/preview policy, then delegates one generic event to Host.
     pub(crate) fn handle_event(&mut self, event: &WindowEvent) -> ConfirmationEventOutcome {
+        if let Some(fault) = self.host.gpu_fault() {
+            return ConfirmationEventOutcome {
+                result: ConfirmationResult::Fatal(FrameError::SharedGpu(fault)),
+                wait: None,
+            };
+        }
         if matches!(event, WindowEvent::CloseRequested) {
             return ConfirmationEventOutcome {
                 result: ConfirmationResult::Cancelled,
@@ -482,7 +506,10 @@ impl ConfirmationWindow {
             && key_event.state == ElementState::Pressed
         {
             if let Some(result) = shortcut_result(&key_event.logical_key) {
-                return ConfirmationEventOutcome { result, wait: None };
+                return ConfirmationEventOutcome {
+                    result: guard_confirmation(result, self.host.gpu_fault()),
+                    wait: None,
+                };
             }
 
             let max_scroll = self.root_state.max_scroll;
@@ -517,7 +544,13 @@ impl ConfirmationWindow {
         } else {
             confirmation_result(&self.root_state.confirmed, &self.root_state.cancelled)
         };
-        ConfirmationEventOutcome { result, wait }
+        ConfirmationEventOutcome {
+            result: guard_confirmation(
+                result,
+                host_outcome.fatal.or_else(|| self.host.gpu_fault()),
+            ),
+            wait,
+        }
     }
 }
 
@@ -532,6 +565,56 @@ mod tests {
     use super::*;
     use harbor_app::confirmation::build_confirmation_root;
     use harbor_widget::view::{BuildCx, Component};
+
+    #[test]
+    fn gpu_fault_overrides_queued_button_shortcut_and_cancel_without_writing() {
+        use harbor_widget::winit::{GpuFault, GpuFaultKind};
+        for kind in [
+            GpuFaultKind::OutOfMemory,
+            GpuFaultKind::DeviceLost,
+            GpuFaultKind::Validation,
+            GpuFaultKind::Internal,
+        ] {
+            for decision in [
+                confirmation_result(&AtomicBool::new(true), &AtomicBool::new(false)),
+                shortcut_result(&Key::Character("y".into())).unwrap(),
+                ConfirmationResult::Cancelled,
+                ConfirmationResult::None,
+            ] {
+                let fault = GpuFault {
+                    kind,
+                    message: "approval sentinel".into(),
+                };
+                let guarded = guard_confirmation(decision, Some(fault.clone()));
+                let ConfirmationResult::Fatal(error) = guarded else {
+                    panic!("fault must win");
+                };
+                assert_eq!(error, FrameError::SharedGpu(fault));
+                let result = DialogOutcome::Fatal(error);
+                assert!(
+                    !write_confirmation_outcome(
+                        &result,
+                        InputModes::default(),
+                        |_| -> Result<(), ()> {
+                            panic!("fatal approval must not write PTY");
+                        }
+                    )
+                    .unwrap()
+                );
+            }
+        }
+        assert!(matches!(
+            guard_confirmation(ConfirmationResult::Confirmed, None),
+            ConfirmationResult::Confirmed
+        ));
+        assert!(matches!(
+            guard_confirmation(
+                ConfirmationResult::Fatal(FrameError::presentation("local")),
+                None
+            ),
+            ConfirmationResult::Fatal(FrameError::Presentation(_))
+        ));
+    }
 
     #[test]
     fn confirmation_production_code_owns_only_the_common_native_host() {

@@ -1,8 +1,10 @@
 # Widget and Application Component Boundaries
 
 **Spec ID:** 0026
-**Status:** Targeted ownership changes exist; structural evidence is separate from native/HMR acceptance.
+**Status:** Accepted (owner-confirmed)
 **Sources:** [ADR 0064](../adr/0064-widget-and-application-component-ownership.md), [0025](./0025-portal-and-configuration-notifications.md), [state/actions](../adr/0029-widget-store-state-action-boundary.md), [native host/HMR](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md), [icons](../adr/0057-widget-vector-icons-without-font-glyphs.md), [terminal/application appearance](../adr/0058-terminal-themes-separate-from-application-appearance.md).
+
+**Known wording discrepancy:** R3/E5 retain persistent-error/no-expiry clauses, while linked spec 0025 and ADR 0071 require three-second expiry including errors.
 
 ## Requirements
 ### R1 — Retain Reusable Widget Mechanisms
@@ -44,4 +46,4 @@ Exports/callers/tests must agree with chosen layout. Public-path compatibility i
 | E8 | Structural/state/dependency audit plus affected consumers/native-host/HMR builds → correct preview/notification/global ownership, no duplicate owner/reverse dependency, coherent exports/callers/tests and explicit R7 compatibility. |
 
 ## Verification
-Inspect [widget inventory](../../crates/harbor-widget/src/widgets/mod.rs)/[dependencies](../../crates/harbor-widget/Cargo.toml), [shared preview](../../crates/harbor-app/src/confirmation/preview.rs), [workspace](../../crates/harbor-app/src/workspace.rs), [notification](../../crates/harbor-widget/src/widgets/notification.rs), [thin entry](../../crates/harbor-app-ui/src/lib.rs) and existing Portal/interaction/tab/confirmation/configuration coverage. Relocate/adapt tests without losing assertions. A moved file alone proves no behavior; screenshots alone prove no ownership. Apply validation policy; record actual native window/focus/DPI/HMR checks versus NOT RUN, not a source-based runtime pass. Naming/module/API strategy remains implementation choice subject to R7.
+Inspect [widget inventory](../../crates/harbor-widget/src/widgets/mod.rs)/[dependencies](../../crates/harbor-widget/Cargo.toml), [shared preview](../../crates/harbor-app/src/confirmation/preview.rs), [workspace](../../crates/harbor-app/src/workspace.rs), [notification](../../crates/harbor-widget/src/widgets/notification_card.rs), [thin entry](../../crates/harbor-app-ui/src/lib.rs) and existing Portal/interaction/tab/confirmation/configuration coverage. Relocate/adapt tests without losing assertions. A moved file alone proves no behavior; screenshots alone prove no ownership. Apply validation policy; record actual native window/focus/DPI/HMR checks versus NOT RUN, not a source-based runtime pass. Naming/module/API strategy remains implementation choice subject to R7.

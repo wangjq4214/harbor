@@ -1,7 +1,8 @@
 //! Non-terminal callers exercise the reusable presentation/extension surface.
 use harbor_widget::{
-    Actions, Alignment, Button, Column, ConstrainedBox, FocusScope, Icon, KeyChord, LucideIcon,
-    Notification, Portal, ScrollView, Shortcuts, Store, ThemeProvider,
+    ActionHandler, BuildCx, Button, Column, Component, ConstrainedBox, FocusScope, Icon, KeyChord,
+    LucideIcon, NotificationCard, Portal, PositionAlignment, ScrollView, ShortcutMap, SizedBox,
+    Stack, Store, TextLabel, ThemeProvider, View,
     input::{
         event::{
             Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
@@ -13,11 +14,8 @@ use harbor_widget::{
     runtime::Runtime,
     scene::primitive::{Color, Primitive},
     text::TextMetrics,
-    view::{BuildCx, Component, PrimitiveLeaf, View},
-    widgets::{
-        notification::{NotificationPlacement, NotificationStyle},
-        sized_box::SizedBox,
-    },
+    view::PrimitiveLeaf,
+    widgets::notification_card::{NotificationCardPlacement, NotificationCardStyle},
 };
 use std::{
     sync::{
@@ -33,15 +31,15 @@ fn generic_controls_and_actions_need_no_application_models() {
     let dispatcher = store.dispatcher();
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(320, 200, 1.0));
-    runtime.set_root(move |cx: &mut BuildCx| {
+    runtime.set_root(move |_cx: &mut BuildCx| {
         let action = dispatcher.clone();
-        harbor_widget::view! { cx;
-            ThemeProvider::new(harbor_widget::Theme::default()) => {
+        harbor_widget::view! { ThemeProvider::new(harbor_widget::Theme::default()).expect("valid theme") => {
                 FocusScope::new() => {
-                    Actions::handler(move |value: u8| { action.dispatch(value); harbor_widget::ActionOutcome::Consumed }) => {
-                        Shortcuts::empty().bind(KeyChord { key: Key::F6, modifiers: Modifiers::default() }, 7u8) => {
+                    ActionHandler::new(move |value: u8| { action.dispatch(value); harbor_widget::ActionOutcome::Consumed }) => {
+                        ShortcutMap::new().bind(KeyChord::new(Key::F6, Modifiers::default()), 7u8) => {
                             Column::new() => {
-                                Button::new("Test content");
+                                Button::text("Test content");
+                                Stack::new() => { TextLabel::new("Root imports"); }
                                 Icon::new(LucideIcon::Plus);
                                 ConstrainedBox::new().max_height(60.0) => {
                                     ScrollView::new() => {
@@ -77,8 +75,8 @@ fn pointer(runtime: &mut Runtime, position: Point, phase: PointerPhase) {
 #[test]
 fn notification_placement_style_scroll_and_dismissal_are_caller_composable() {
     for (horizontal, vertical) in [
-        (Alignment::Start, Alignment::End),
-        (Alignment::Center, Alignment::Start),
+        (PositionAlignment::Start, PositionAlignment::End),
+        (PositionAlignment::Center, PositionAlignment::Start),
     ] {
         let dismissed = Arc::new(AtomicUsize::new(0));
         let count = dismissed.clone();
@@ -90,21 +88,23 @@ fn notification_placement_style_scroll_and_dismissal_are_caller_composable() {
             .join("\n");
         runtime.set_root(
             Portal::new().child(
-                Notification::new(message, move || {
+                NotificationCard::new(message, move || {
                     count.fetch_add(1, Ordering::Relaxed);
                 })
-                .placement(NotificationPlacement {
+                .placement(NotificationCardPlacement {
                     horizontal,
                     vertical,
                     inset: 7.0,
                 })
-                .style(NotificationStyle {
+                .unwrap()
+                .style(NotificationCardStyle {
                     max_width: 180.0,
                     corner_radius: 11.0,
                     foreground: Some(Color::BLUE),
                     background: Some(Color::RED),
                     ..Default::default()
-                }),
+                })
+                .unwrap(),
             ),
         );
         runtime.update(Instant::now());
@@ -124,7 +124,7 @@ fn notification_placement_style_scroll_and_dismissal_are_caller_composable() {
         assert_eq!(rect.size().width, 180.0);
         assert_eq!(
             rect.min.x,
-            if horizontal == Alignment::Start {
+            if horizontal == PositionAlignment::Start {
                 7.0
             } else {
                 60.0
@@ -156,12 +156,14 @@ fn notification_can_be_inline_without_a_root_escape() {
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(400, 300, 1.0));
     runtime.set_root(
-        Column::new().child(
-            Notification::new("Inline content", || {}).style(NotificationStyle {
-                max_width: 140.0,
-                background: Some(Color::RED),
-                ..Default::default()
-            }),
+        Column::new().push_child(
+            NotificationCard::new("Inline content", || {})
+                .style(NotificationCardStyle {
+                    max_width: 140.0,
+                    background: Some(Color::RED),
+                    ..Default::default()
+                })
+                .unwrap(),
         ),
     );
     runtime.update(Instant::now());
@@ -240,7 +242,7 @@ fn text_metric_height_cap_tracks_fonts_and_respects_static_and_parent_bounds() {
         ConstrainedBox::new()
             .max_height(70.0)
             .max_height_with(|metrics| metrics.line_height * 2.0 + 8.0)
-            .child(SizedBox::new(Size::new(100.0, 400.0))),
+            .child(SizedBox::new(Size::new(100.0, 400.0)).unwrap()),
     );
     for (line_height, expected) in [(20.0, 48.0), (30.0, 68.0), (40.0, 70.0)] {
         runtime.set_text_metrics(TextMetrics {
@@ -266,7 +268,7 @@ fn text_metric_height_cap_rejects_invalid_values_without_committing_them() {
         runtime.set_root(
             ConstrainedBox::new()
                 .max_height_with(move |_| value)
-                .child(SizedBox::new(Size::new(100.0, 400.0))),
+                .child(SizedBox::new(Size::new(100.0, 400.0)).unwrap()),
         );
         runtime.update(Instant::now());
         assert_eq!(

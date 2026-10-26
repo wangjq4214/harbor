@@ -79,7 +79,7 @@ impl ScrollController {
 
     /// Returns the normalized requested offset. After a successful commit this
     /// equals [`ScrollMetrics::offset`].
-    pub fn offset(&self) -> f32 {
+    pub fn requested_offset(&self) -> f32 {
         *self.requested_offset.read()
     }
 
@@ -262,6 +262,7 @@ impl Component for ScrollView {
 }
 
 impl crate::WithChildren for ScrollView {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
@@ -410,7 +411,6 @@ impl AnyView for ScrollViewport {
             && self.handle_scrollbar(pointer, ctx, rect)
         {
             ctx.invalidate_paint();
-            ctx.stop_propagation();
             return EventHandled::Handled;
         }
         if ctx.is_capture_phase() {
@@ -463,7 +463,6 @@ impl AnyView for ScrollViewport {
         };
         if changed {
             ctx.invalidate_paint();
-            ctx.stop_propagation();
             EventHandled::Handled
         } else {
             EventHandled::Ignored
@@ -671,7 +670,7 @@ mod tests {
             assert_eq!(controller.metrics().viewport_extent(), 40.0);
             assert_eq!(controller.metrics().content_extent(), 0.0);
             assert_eq!(controller.metrics().offset(), 0.0);
-            assert_eq!(controller.offset(), 0.0);
+            assert_eq!(controller.requested_offset(), 0.0);
         }
     }
 
@@ -682,7 +681,7 @@ mod tests {
         assert!(!controller.jump_to(-10.0));
         assert!(controller.jump_to(f32::INFINITY));
         controller.commit_metrics(40.0, 100.0, 60.0);
-        assert_eq!(controller.offset(), 60.0);
+        assert_eq!(controller.requested_offset(), 60.0);
         assert_eq!(controller.metrics().max_scroll_extent(), 60.0);
     }
 
@@ -696,11 +695,11 @@ mod tests {
         assert!(!controller.ensure_visible(viewport, &mut visible));
         let mut below = Rect::from_min_size(Point::new(0.0, 135.0), Size::new(20.0, 20.0));
         assert!(controller.ensure_visible(viewport, &mut below));
-        assert_eq!(controller.offset(), 35.0);
+        assert_eq!(controller.requested_offset(), 35.0);
 
         controller.commit_metrics(40.0, 200.0, 35.0);
         let mut oversized = Rect::from_min_size(Point::new(0.0, 80.0), Size::new(20.0, 80.0));
         assert!(controller.ensure_visible(viewport, &mut oversized));
-        assert_eq!(controller.offset(), 15.0);
+        assert_eq!(controller.requested_offset(), 15.0);
     }
 }

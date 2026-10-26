@@ -8,7 +8,7 @@ use harbor_widget::layout::Point;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::ExternalDrawId;
 use harbor_widget::widgets::button::Button;
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::winit::{WindowPresenter, WinitAdapter};
 use harbor_widget::{ConstrainedBox, ScrollController, ScrollView, layout::Size};
@@ -19,9 +19,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
 
-fn custom_paint_runtime(draw_id: u64) -> Runtime {
+fn external_surface_runtime(draw_id: u64) -> Runtime {
     let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(draw_id));
+    runtime.set_root(ExternalSurface::new(draw_id));
     runtime.update(Instant::now());
     assert!(runtime.focus_first_focusable());
     runtime.drain_external_input();
@@ -40,7 +40,7 @@ fn should_route_wheel_invalidation_as_a_handled_redraw_effect() {
             .child(
                 ScrollView::new()
                     .controller(offset.clone())
-                    .child(SizedBox::new(Size::new(200.0, 400.0))),
+                    .child(SizedBox::new(Size::new(200.0, 400.0)).unwrap()),
             ),
     );
     runtime.update(Instant::now());
@@ -61,7 +61,7 @@ fn should_route_wheel_invalidation_as_a_handled_redraw_effect() {
     // Assert
     assert!(outcome.is_handled());
     assert!(outcome.effects.request_redraw);
-    assert!(offset.offset() < 80.0 && offset.offset() > 0.0);
+    assert!(offset.requested_offset() < 80.0 && offset.requested_offset() > 0.0);
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn should_quarantine_stale_release_until_a_fresh_pointer_down() {
     let clicked = Arc::new(AtomicBool::new(false));
     let clicked_clone = Arc::clone(&clicked);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicked_clone.store(true, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -113,7 +113,7 @@ fn host_quarantine_cancels_existing_capture_and_blocks_modal_pointer_sequences()
     let clicked = Arc::new(AtomicBool::new(false));
     let clicked_clone = Arc::clone(&clicked);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicked_clone.store(true, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -154,7 +154,7 @@ fn host_quarantine_blocks_touch_started_behind_a_modal_gate() {
     let clicked = Arc::new(AtomicBool::new(false));
     let clicked_clone = Arc::clone(&clicked);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicked_clone.store(true, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -181,7 +181,7 @@ fn stale_release_for_canceled_mouse_button_cannot_end_fresh_capture() {
     let clicked = Arc::new(AtomicBool::new(false));
     let clicked_clone = Arc::clone(&clicked);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicked_clone.store(true, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -253,7 +253,7 @@ fn should_not_request_redraw_when_wheel_is_clamped_at_scroll_boundary() {
             .child(
                 ScrollView::new()
                     .controller(offset.clone())
-                    .child(SizedBox::new(Size::new(200.0, 20.0))),
+                    .child(SizedBox::new(Size::new(200.0, 20.0)).unwrap()),
             ),
     );
     runtime.update(Instant::now());
@@ -272,14 +272,14 @@ fn should_not_request_redraw_when_wheel_is_clamped_at_scroll_boundary() {
     // Assert
     assert!(outcome.is_handled());
     assert!(!outcome.effects.request_redraw);
-    assert_eq!(offset.offset(), 0.0);
+    assert_eq!(offset.requested_offset(), 0.0);
 }
 
 #[test]
 fn should_keep_window_scale_modifiers_and_external_input_isolated() {
     // Arrange
-    let mut first_runtime = custom_paint_runtime(101);
-    let mut second_runtime = custom_paint_runtime(202);
+    let mut first_runtime = external_surface_runtime(101);
+    let mut second_runtime = external_surface_runtime(202);
     let mut first_adapter = WinitAdapter::new();
     let mut second_adapter = WinitAdapter::new();
     first_adapter.set_scale_factor(2.0);
@@ -365,7 +365,7 @@ fn should_keep_window_scale_modifiers_and_external_input_isolated() {
 #[test]
 fn should_reset_modifiers_for_keyboard_input_after_focus_loss() {
     // Arrange
-    let mut runtime = custom_paint_runtime(303);
+    let mut runtime = external_surface_runtime(303);
     let mut adapter = WinitAdapter::new();
     adapter.handle_event(
         &mut runtime,
@@ -402,7 +402,7 @@ fn should_quarantine_stale_touch_end_until_a_fresh_touch_down() {
     let clicks = Arc::new(AtomicUsize::new(0));
     let clicks_clone = Arc::clone(&clicks);
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK").on_click(move |_| {
+    runtime.set_root(Button::text("OK").on_click(move |_| {
         clicks_clone.fetch_add(1, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());
@@ -436,7 +436,7 @@ fn should_quarantine_stale_touch_end_until_a_fresh_touch_down() {
 fn should_request_redraw_when_programmatic_focus_changes() {
     // Arrange
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK"));
+    runtime.set_root(Button::text("OK"));
     runtime.update(Instant::now());
     let root_id = runtime.root_id().expect("button root");
 
@@ -454,8 +454,8 @@ fn should_request_redraw_when_programmatic_focus_changes() {
 
 #[test]
 fn programmatic_focus_events_and_effects_stay_with_the_owning_runtime() {
-    let mut owner = custom_paint_runtime(601);
-    let mut other = custom_paint_runtime(602);
+    let mut owner = external_surface_runtime(601);
+    let mut other = external_surface_runtime(602);
     let owner_id = owner.root_id().expect("owner root");
 
     owner.clear_focus();
@@ -498,7 +498,7 @@ fn mixed_mouse_and_touch_quarantine_is_scoped_to_each_pointer_source() {
     };
 
     // A fresh mouse press must not release a quarantined touch contact.
-    let mut touch_runtime = custom_paint_runtime(603);
+    let mut touch_runtime = external_surface_runtime(603);
     let mut touch_adapter = WinitAdapter::new();
     touch_adapter.handle_event(&mut touch_runtime, &touch(TouchPhase::Started, 41));
     touch_runtime.drain_external_input();
@@ -527,7 +527,7 @@ fn mixed_mouse_and_touch_quarantine_is_scoped_to_each_pointer_source() {
 
     // A fresh contact must not release a quarantined mouse button. The fresh
     // touch still receives its complete Down -> Up sequence.
-    let mut mouse_runtime = custom_paint_runtime(604);
+    let mut mouse_runtime = external_surface_runtime(604);
     let mut mouse_adapter = WinitAdapter::new();
     mouse_adapter.handle_event(
         &mut mouse_runtime,
@@ -570,7 +570,7 @@ fn mixed_mouse_and_touch_quarantine_is_scoped_to_each_pointer_source() {
 fn should_consume_programmatic_focus_redraw_effect_once_at_runtime_boundary() {
     // Arrange: focus changes are made while the runtime is otherwise idle.
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK"));
+    runtime.set_root(Button::text("OK"));
     runtime.update(Instant::now());
     let root_id = runtime.root_id().expect("button root");
 
@@ -591,7 +591,7 @@ fn should_consume_programmatic_focus_redraw_effect_once_at_runtime_boundary() {
 #[test]
 fn should_quarantine_each_supported_mouse_release_without_claiming_unsupported_buttons() {
     // Arrange: both supported buttons are held when the window loses focus.
-    let mut runtime = custom_paint_runtime(605);
+    let mut runtime = external_surface_runtime(605);
     let mut adapter = WinitAdapter::new();
     let mouse_input = |state, button| WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
@@ -637,7 +637,7 @@ fn should_quarantine_each_supported_mouse_release_without_claiming_unsupported_b
 
 fn focused_button_runtime() -> Runtime {
     let mut runtime = Runtime::new();
-    runtime.set_root(Button::new("OK"));
+    runtime.set_root(Button::text("OK"));
     runtime.update(Instant::now());
     assert!(runtime.focus_first_focusable());
     assert!(runtime.take_pending_effects().request_redraw);
@@ -706,7 +706,7 @@ fn lifecycle_update_consumes_focus_effects_before_the_next_encode_turn() {
 fn adapter_scheduler_coalesces_external_wake_frame_lifecycle_and_idle_wait() {
     // Arrange: a rooted runtime with an independent adapter-owned scheduler.
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     assert!(runtime.update(Instant::now()).request_redraw);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
@@ -739,7 +739,7 @@ fn adapter_scheduler_coalesces_external_wake_frame_lifecycle_and_idle_wait() {
     let past = now - Duration::from_millis(1);
     let mut deadline_presenter = WindowPresenter::new(800, 600, 1.0);
     let mut deadline_runtime = Runtime::new();
-    deadline_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)));
+    deadline_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)).unwrap());
     let _ = deadline_runtime.update(now);
     let _ = deadline_presenter.fold_effects(RuntimeEffects {
         control_flow: Some(ControlFlowEffect::WaitUntil(past)),
@@ -751,7 +751,7 @@ fn adapter_scheduler_coalesces_external_wake_frame_lifecycle_and_idle_wait() {
 
     // Independent presenters do not suppress each other's redraw edges.
     let mut other_runtime = Runtime::new();
-    other_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
+    other_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)).unwrap());
     let _ = other_runtime.update(now);
     let mut other = WindowPresenter::new(800, 600, 1.0);
     // Clear the continuation edge left by frame_completed before asserting isolation.
@@ -787,7 +787,7 @@ fn should_preserve_host_deadline_when_due_runtime_deadline_schedules_redraw() {
     // Arrange: fold a past WaitUntil into scheduler state, then leave a dirty
     // Fiber that would otherwise re-emit control flow through merge.
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     let _ = runtime.update(Instant::now());
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
@@ -816,7 +816,7 @@ fn should_preserve_host_deadline_when_due_runtime_deadline_schedules_redraw() {
 fn should_honor_host_deadline_when_adapter_is_idle() {
     // Arrange
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(16.0, 16.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(16.0, 16.0)).unwrap());
     let now = Instant::now();
     assert!(runtime.update(now).request_redraw);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -834,10 +834,91 @@ fn should_honor_host_deadline_when_adapter_is_idle() {
 }
 
 #[test]
+fn suspended_presenter_preserves_host_wakes_and_cross_window_waits() {
+    use harbor_widget::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
+
+    let now = Instant::now();
+    let runtime_deadline = now + Duration::from_secs(3);
+    let host_deadline = now + Duration::from_secs(2);
+    let secondary_deadline = now + Duration::from_secs(1);
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+        deadline: Some(runtime_deadline),
+        ordinary_present_eligible: false,
+        ..ExternalScheduleDemand::empty()
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(42).schedule_with(schedule));
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut adapter = WinitAdapter::new();
+    // Use the adapter's real zero-size transition, not only a scheduler flag.
+    presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(winit::dpi::PhysicalSize::new(0, 0)),
+    );
+    for deadline in [Some(host_deadline), None, Some(now), Some(now)] {
+        let idle = presenter.about_to_wait(&mut runtime, now, deadline);
+        assert!(!idle.request_redraw);
+        assert!(!idle.force_present);
+        assert!(idle.has_deferred_externals);
+        let expected = deadline
+            .filter(|at| *at > now)
+            .map(ControlFlowEffect::WaitUntil)
+            .unwrap_or(ControlFlowEffect::Wait);
+        assert_eq!(idle.control_flow, Some(expected));
+    }
+
+    let mut secondary_runtime = Runtime::new();
+    let mut secondary = WindowPresenter::new(400, 300, 1.0);
+    secondary.set_drawable(false);
+    let primary_wait = presenter
+        .about_to_wait(&mut runtime, now, Some(host_deadline))
+        .control_flow
+        .unwrap();
+    let secondary_wait = secondary
+        .about_to_wait(&mut secondary_runtime, now, Some(secondary_deadline))
+        .control_flow
+        .unwrap();
+    assert_eq!(
+        primary_wait.arbitrate(secondary_wait),
+        ControlFlowEffect::WaitUntil(secondary_deadline)
+    );
+    assert_eq!(
+        secondary_wait.arbitrate(primary_wait),
+        ControlFlowEffect::WaitUntil(secondary_deadline)
+    );
+    // Application business timers remain independently arbitrated.
+    let business_wait = ControlFlowEffect::WaitUntil(now + Duration::from_millis(100));
+    assert_eq!(
+        primary_wait
+            .arbitrate(secondary_wait)
+            .arbitrate(business_wait),
+        business_wait
+    );
+
+    let restored = presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(winit::dpi::PhysicalSize::new(800, 600)),
+    );
+    assert!(restored.effects.request_redraw);
+    assert!(restored.effects.force_present);
+    let idle = presenter.about_to_wait(&mut runtime, now, Some(host_deadline));
+    assert!(!idle.request_redraw);
+    // Recovery wins while drawable; the Runtime deadline remains independently supplied.
+    assert_eq!(
+        idle.control_flow,
+        Some(ControlFlowEffect::WaitUntil(
+            now + Duration::from_millis(100)
+        ))
+    );
+}
+
+#[test]
 fn should_request_redraw_when_idle_turn_finds_dirty_fiber() {
     // Arrange — set_root dirties the tree; no update yet.
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(12.0, 12.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(12.0, 12.0)).unwrap());
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
 
@@ -853,12 +934,13 @@ fn should_keep_confirmation_idle_when_main_adapter_has_pending_redraw() {
     // Arrange — paired adapters model main + confirmation window schedulers.
     let now = Instant::now();
     let mut main_runtime = Runtime::new();
-    main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     assert!(main_runtime.update(now).request_redraw);
     let mut main = WindowPresenter::new(800, 600, 1.0);
 
     let mut confirmation_runtime = Runtime::new();
-    confirmation_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)));
+    confirmation_runtime
+        .set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)).unwrap());
     assert!(confirmation_runtime.update(now).request_redraw);
     let mut confirmation = WindowPresenter::new(800, 600, 1.0);
 
@@ -887,12 +969,13 @@ fn should_request_independent_edges_when_both_adapters_need_redraw() {
     // Arrange
     let now = Instant::now();
     let mut main_runtime = Runtime::new();
-    main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)));
+    main_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(20.0, 20.0)).unwrap());
     assert!(main_runtime.update(now).request_redraw);
     let mut main = WindowPresenter::new(800, 600, 1.0);
 
     let mut confirmation_runtime = Runtime::new();
-    confirmation_runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)));
+    confirmation_runtime
+        .set_root(SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)).unwrap());
     assert!(confirmation_runtime.update(now).request_redraw);
     let mut confirmation = WindowPresenter::new(800, 600, 1.0);
 
@@ -915,7 +998,7 @@ fn should_coalesce_host_retry_until_frame_starts_on_adapter() {
     let first = presenter.request_frame();
     let second = presenter.request_frame();
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)).unwrap());
     let _ = runtime.update(Instant::now());
     let _ = presenter.redraw_requested(&mut runtime, Instant::now());
     let after_frame = presenter.request_frame();
@@ -931,7 +1014,7 @@ fn should_request_recovery_frame_after_drawable_window_is_restored() {
     // Arrange — the runtime is clean while a minimized adapter receives a due deadline.
     let now = Instant::now();
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)).unwrap());
     let _ = runtime.update(now);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let _ = presenter.set_drawable(false);
@@ -959,7 +1042,7 @@ fn should_not_request_another_frame_when_due_deadline_is_covered_by_redraw_edge(
     // Arrange — a pending redraw edge already covers a runtime deadline that is due.
     let now = Instant::now();
     let mut runtime = Runtime::new();
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::new(8.0, 8.0)).unwrap());
     let _ = runtime.update(now);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let scheduled = presenter.fold_effects(RuntimeEffects {
@@ -997,7 +1080,7 @@ fn should_wait_until_schedule_deadline_when_runtime_registers_external_schedule(
         ..ExternalScheduleDemand::empty()
     });
     let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(9).schedule(schedule));
+    runtime.set_root(ExternalSurface::new(9).schedule_with(schedule));
     let _ = runtime.update(Instant::now());
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let now = Instant::now();
@@ -1029,7 +1112,7 @@ fn should_request_redraw_when_due_deadline_is_replaced_by_next_schedule_phase() 
         ..ExternalScheduleDemand::empty()
     });
     let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(3).schedule(schedule));
+    runtime.set_root(ExternalSurface::new(3).schedule_with(schedule));
     let _ = runtime.update(now);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let _ = presenter.fold_effects(RuntimeEffects {
@@ -1059,7 +1142,7 @@ fn should_not_request_redraw_from_ineligible_schedule_redraw_now() {
         ..ExternalScheduleDemand::empty()
     });
     let mut runtime = Runtime::new();
-    runtime.set_root(CustomPaint::new(4).schedule(schedule));
+    runtime.set_root(ExternalSurface::new(4).schedule_with(schedule));
     let _ = runtime.update(now);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
 

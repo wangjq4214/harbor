@@ -1,0 +1,29 @@
+error[E0432]: unresolved import `harbor_widget::CustomPaint`
+ --> tests/ui/fail/old_external_surface_names.rs:1:5
+  |
+1 | use harbor_widget::CustomPaint;
+  |     ^^^^^^^^^^^^^^^-----------
+  |                    |
+  |                    no `CustomPaint` in the root
+
+error[E0432]: unresolved import `harbor_widget::widgets::CustomPaint`
+ --> tests/ui/fail/old_external_surface_names.rs:2:5
+  |
+2 | use harbor_widget::widgets::CustomPaint as OldWidget;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^-----------^^^^^^^^^^^^^
+  |                             |
+  |                             no `CustomPaint` in `widgets`
+
+error[E0432]: unresolved import `harbor_widget::widgets::custom_paint`
+ --> tests/ui/fail/old_external_surface_names.rs:3:29
+  |
+3 | use harbor_widget::widgets::custom_paint::CustomPaint as OldModule;
+  |                             ^^^^^^^^^^^^ could not find `custom_paint` in `widgets`
+
+error[E0432]: unresolved import `harbor_widget::widgets::external_surface::CustomPaint`
+ --> tests/ui/fail/old_external_surface_names.rs:4:5
+  |
+4 | use harbor_widget::widgets::external_surface::CustomPaint as OldType;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-----------^^^^^^^^^^^
+  |                                               |
+  |                                               no `CustomPaint` in `widgets::external_surface`

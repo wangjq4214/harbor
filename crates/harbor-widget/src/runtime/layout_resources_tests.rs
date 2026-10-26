@@ -1,9 +1,9 @@
 //! GPU-backed evidence for layout-only resize: compare actual retained handles.
-use crate::layout::{Alignment, Rect};
+use crate::layout::{CrossAxisAlignment, Rect};
 use crate::renderer::Viewport;
 use crate::runtime::Runtime;
 use crate::scene::primitive::{Color, ExternalDrawFn, ExternalDrawGpu, Primitive};
-use crate::widgets::custom_paint::CustomPaint;
+use crate::widgets::external_surface::ExternalSurface;
 use crate::widgets::text_label::TextLabel;
 use crate::{
     BorderRadius, BoxDecoration, ClipBehavior, ConstrainedBox, DecoratedBox, Expanded, Row,
@@ -166,21 +166,25 @@ fn should_retain_gpu_handles_and_external_allocations_across_flex_resize_and_dpi
     rt.set_viewport(Viewport::new(1000, 600, 1.0));
     rt.set_root(
         Row::new()
-            .cross_axis_alignment(Alignment::Stretch)
-            .child(
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .push_child(
                 ConstrainedBox::new()
                     .min_width(200.0)
                     .max_width(200.0)
                     .child(TextLabel::new("Rail")),
             )
-            .child(Separator::vertical().color(Color::WHITE))
-            .child(
+            .push_child(
+                Separator::vertical()
+                    .color(Color::WHITE)
+                    .expect("valid color"),
+            )
+            .push_child(
                 Expanded::new().child(
                     DecoratedBox::new(
                         BoxDecoration::new().border_radius(BorderRadius::all(4.0).unwrap()),
                     )
                     .clip_behavior(ClipBehavior::HardEdge)
-                    .child(CustomPaint::new(99).handler(Arc::clone(&handler))),
+                    .child(ExternalSurface::new(99).on_draw(Arc::clone(&handler))),
                 ),
             ),
     );
@@ -292,11 +296,20 @@ fn default_label_layout_matches_rendered_ui_advances_across_dpi() {
     let mut rt = Runtime::new();
     rt.init_text_renderer(&device, &queue, wgpu::TextureFormat::Bgra8Unorm)
         .unwrap();
-    let mut row = Row::new().gap(4.0);
+    let mut row = Row::new().gap(4.0).unwrap();
     for key in ["Ctrl", "Shift", "Tab", "R"] {
-        row = row.child(
+        row = row.push_child(
             DecoratedBox::new(BoxDecoration::new().border(Border::all(Color::WHITE, 1.0).unwrap()))
-                .child(Padding::new(1.0, 2.0, 1.0, 2.0).child(TextLabel::new(key))),
+                .child(
+                    Padding::new(crate::Insets {
+                        top: 1.0,
+                        right: 2.0,
+                        bottom: 1.0,
+                        left: 2.0,
+                    })
+                    .unwrap()
+                    .child(TextLabel::new(key)),
+                ),
         );
     }
     rt.set_root(row);
@@ -408,8 +421,8 @@ fn default_label_ellipsis_fits_rendered_ui_text_and_restores_after_resize() {
 
 #[test]
 fn notification_wrapping_fills_real_ui_width_and_caps_details_across_dpi() {
-    use crate::widgets::notification::NotificationPlacement;
-    use crate::{LucideIcon, Notification};
+    use crate::widgets::notification_card::NotificationCardPlacement;
+    use crate::{LucideIcon, NotificationCard};
     use unicode_segmentation::UnicodeSegmentation;
 
     let (device, queue) =
@@ -419,19 +432,21 @@ fn notification_wrapping_fills_real_ui_width_and_caps_details_across_dpi() {
         .unwrap();
     let source = "Wi thin and wide glyphs 项目 e\u{0301} 👩\u{200d}💻 ".repeat(100);
     rt.set_root(
-        Notification::new(source.clone(), || {})
+        NotificationCard::new(source.clone(), || {})
             .title("Configuration reload")
-            .detail_color(Color {
+            .detail_foreground(Color {
                 a: 0.82,
                 ..Color::WHITE
             })
+            .unwrap()
             .max_lines(4)
-            .close_alignment(Alignment::Start)
-            .placement(NotificationPlacement {
-                horizontal: Alignment::End,
-                vertical: Alignment::Start,
+            .close_alignment(crate::PositionAlignment::Start)
+            .placement(NotificationCardPlacement {
+                horizontal: crate::PositionAlignment::End,
+                vertical: crate::PositionAlignment::Start,
                 inset: 12.0,
-            }),
+            })
+            .unwrap(),
     );
     for scale in [1.0, 1.5, 2.0, 1.0] {
         for width in [600.0, 300.0, 600.0] {

@@ -25,7 +25,14 @@ const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 type Changed = Rc<dyn Fn(&str)>;
 type Submitted = Rc<dyn Fn(Modifiers)>;
 
-/// Controller-driven editor. User text changes invoke `on_changed`; selection,
+/// Vertical navigation outside IME composition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerticalDirection {
+    Up,
+    Down,
+}
+
+/// Controller-driven editor. User text changes invoke `on_change`; selection,
 /// composition and programmatic controller writes do not invoke it.
 #[derive(Clone)]
 pub struct EditableText {
@@ -38,7 +45,7 @@ pub struct EditableText {
     changed: Option<Changed>,
     submitted: Option<Submitted>,
     escaped: Option<Rc<dyn Fn()>>,
-    vertical_navigation: Option<Rc<dyn Fn(bool)>>,
+    vertical_navigation: Option<Rc<dyn Fn(VerticalDirection)>>,
 }
 
 impl EditableText {
@@ -56,8 +63,10 @@ impl EditableText {
             vertical_navigation: None,
         }
     }
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
+    /// Disables editing and focus eligibility. Enabled by default.
+    /// Read-only is separate and still permits selection and copy.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.enabled = !disabled;
         self
     }
     pub fn read_only(mut self, read_only: bool) -> Self {
@@ -68,19 +77,20 @@ impl EditableText {
         self.focus = Some(handle);
         self
     }
-    pub fn color(mut self, color: Color) -> Self {
+    pub fn foreground(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("EditableText.foreground", color)?;
         self.color = color;
-        self
+        Ok(self)
     }
     pub fn placeholder(mut self, text: impl Into<String>) -> Self {
         self.placeholder = text.into();
         self
     }
-    pub fn on_changed(mut self, callback: impl Fn(&str) + 'static) -> Self {
+    pub fn on_change(mut self, callback: impl Fn(&str) + 'static) -> Self {
         self.changed = Some(Rc::new(callback));
         self
     }
-    pub fn on_submitted(mut self, callback: impl Fn(Modifiers) + 'static) -> Self {
+    pub fn on_submit(mut self, callback: impl Fn(Modifiers) + 'static) -> Self {
         self.submitted = Some(Rc::new(callback));
         self
     }
@@ -89,8 +99,11 @@ impl EditableText {
         self
     }
     /// Observe unmodified vertical navigation outside IME composition.
-    /// `true` means down. Selection policy belongs to the consumer.
-    pub fn on_vertical_navigation(mut self, callback: impl Fn(bool) + 'static) -> Self {
+    /// Selection policy belongs to the consumer.
+    pub fn on_vertical_navigation(
+        mut self,
+        callback: impl Fn(VerticalDirection) + 'static,
+    ) -> Self {
         self.vertical_navigation = Some(Rc::new(callback));
         self
     }
@@ -225,16 +238,6 @@ impl Component for EditableText {
     }
 }
 
-impl crate::WithChildren for EditableText {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("EditableText")?;
-        Ok(self)
-    }
-}
-
 struct EditorView {
     config: EditableText,
     runtime: Rc<RefCell<EditingRuntime>>,
@@ -313,7 +316,11 @@ impl EditorView {
                 if !modifiers.shift
                     && let Some(callback) = &self.config.vertical_navigation
                 {
-                    callback(key == Key::ArrowDown);
+                    callback(if key == Key::ArrowDown {
+                        VerticalDirection::Down
+                    } else {
+                        VerticalDirection::Up
+                    });
                 }
             }
             Key::ArrowLeft | Key::ArrowRight => {
@@ -643,7 +650,6 @@ impl AnyView for EditorView {
         }
         self.changed(&old);
         ctx.invalidate_paint();
-        ctx.stop_propagation();
         EventHandled::Handled
     }
 

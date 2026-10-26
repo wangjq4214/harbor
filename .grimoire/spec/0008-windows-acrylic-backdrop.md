@@ -1,7 +1,7 @@
 # Windows Acrylic Backdrop
 
 **Spec ID:** 0008
-**Status:** Implemented
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-08-25
 
 **Superseded in part:** the earlier TransientWindow-first, 0.72-alpha contract in the acceptance text below is superseded by the unified backdrop tint chain (ADR 0026, amended by ADR 0028). The current four-tier chain and the configured `BACKGROUND` alpha are the reference; the earlier values are retained as historical design intent.

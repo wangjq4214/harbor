@@ -19,7 +19,7 @@ struct PublicComponent;
 
 impl Component for PublicComponent {
     fn build(&self, cx: &mut BuildCx) -> View {
-        SizedBox::new(Size::new(10.0, 10.0)).build(cx)
+        SizedBox::new(Size::new(10.0, 10.0)).unwrap().build(cx)
     }
 }
 
@@ -38,7 +38,9 @@ fn keyed_public_component_is_deferred_with_a_visible_key() {
 #[test]
 fn children_accept_components_and_existing_views_in_source_order() {
     let mut build_cx = BuildCx::stub();
-    let existing_view = SizedBox::new(Size::new(20.0, 10.0)).build(&mut build_cx);
+    let existing_view = SizedBox::new(Size::new(20.0, 10.0))
+        .unwrap()
+        .build(&mut build_cx);
     let mut children = Children::one(PublicComponent.keyed("first"));
     children.push(existing_view);
     children.extend([PublicComponent.keyed("third")]);
@@ -65,26 +67,44 @@ fn children_accept_components_and_existing_views_in_source_order() {
 }
 
 #[test]
-fn with_children_reports_single_and_leaf_cardinality_violations() {
-    let single_error = match Padding::all(1.0)
-        .child(SizedBox::new(Size::new(1.0, 1.0)))
-        .with_children(Children::one(SizedBox::new(Size::new(1.0, 1.0))))
-    {
-        Err(error) => error,
-        Ok(_) => panic!("single-child attachment should reject a second child"),
-    };
-    assert_eq!(single_error.widget, "Padding");
-    assert_eq!(single_error.cardinality, ChildCardinality::Single);
-    assert_eq!(single_error.received, 2);
-
-    let leaf_error =
-        match SizedBox::new(Size::new(1.0, 1.0)).with_children(Children::one(PublicComponent)) {
-            Err(error) => error,
-            Ok(_) => panic!("leaf attachment should reject children"),
-        };
-    assert_eq!(leaf_error.widget, "SizedBox");
-    assert_eq!(leaf_error.cardinality, ChildCardinality::Leaf);
-    assert_eq!(leaf_error.received, 1);
+fn with_children_counts_only_incoming_values_and_clears_the_slot() {
+    for staged in [false, true] {
+        for count in 0..=2 {
+            let mut parent = Padding::all(1.0).unwrap();
+            if staged {
+                parent = parent.child(PublicComponent.keyed("old"));
+            }
+            let incoming = (0..count)
+                .map(|i| PublicComponent.keyed(i.to_string()))
+                .collect();
+            match parent.with_children(incoming) {
+                Err(error) => {
+                    assert_eq!(count, 2);
+                    assert_eq!(error.widget, "Padding");
+                    assert_eq!(error.cardinality, ChildCardinality::Single);
+                    assert_eq!(error.received, 2);
+                    assert_eq!(
+                        error.to_string(),
+                        "Padding accepts at most one child; received 2 children"
+                    );
+                }
+                Ok(parent) => {
+                    assert!(count <= 1);
+                    let mut runtime = Runtime::new();
+                    runtime.set_root(parent);
+                    runtime.update(Instant::now());
+                    let root = runtime.arena().get(runtime.root_id().unwrap()).unwrap();
+                    assert_eq!(root.children().len(), count);
+                    if count == 1 {
+                        assert_eq!(
+                            runtime.arena().get(root.children()[0]).unwrap().key(),
+                            Some(&Key::new("0"))
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -116,7 +136,7 @@ impl Component for StatefulButton {
         let state = cx.use_state(|| self.initial);
         *self.signal_out.borrow_mut() = Some(state.clone());
         self.observed.borrow_mut().push(*state.read());
-        Button::new(self.label).build(cx)
+        Button::text(self.label).build(cx)
     }
 }
 
@@ -337,16 +357,21 @@ fn keyed_children_reorder_preserves_state_per_key_without_migration() {
 #[test]
 fn macro_ready_traits_produce_identical_view_tree_to_fluent_builder() {
     let fluent_tree = Column::new()
-        .child(Padding::all(4.0).child(SizedBox::new(Size::new(10.0, 20.0))))
-        .child(Button::new("Click"));
+        .push_child(
+            Padding::all(4.0)
+                .unwrap()
+                .child(SizedBox::new(Size::new(10.0, 20.0)).unwrap()),
+        )
+        .push_child(Button::text("Click"));
 
     let macro_tree = Column::new()
         .with_children(Children::from_iter([
             Padding::all(4.0)
-                .with_children(Children::one(SizedBox::new(Size::new(10.0, 20.0))))
+                .unwrap()
+                .with_children(Children::one(SizedBox::new(Size::new(10.0, 20.0)).unwrap()))
                 .unwrap()
                 .into_child_view(),
-            Button::new("Click").into_child_view(),
+            Button::text("Click").into_child_view(),
         ]))
         .unwrap();
 

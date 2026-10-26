@@ -108,6 +108,11 @@ struct SignalData<T> {
 ///
 /// Cloning a `Signal` creates a new handle to the same underlying shared state.
 /// Uses interior mutability so that `set()` can be called on a shared reference.
+///
+/// Reads do not implicitly subscribe. In a mounted component build, use
+/// [`BuildCx::track`](crate::view::BuildCx::track) for external signals or
+/// [`Store::watch`](crate::Store::watch) for Store state. The Runtime owns raw
+/// subscription bookkeeping and cleanup; publishing state does not wake the host.
 pub struct Signal<T> {
     data: Rc<RefCell<SignalData<T>>>,
 }
@@ -184,7 +189,7 @@ impl<T> Signal<T> {
     }
 
     /// Subscribes a fiber to this signal (idempotent).
-    pub fn subscribe(&self, id: FiberId) {
+    pub(crate) fn subscribe(&self, id: FiberId) {
         let runtime_id = active_runtime();
         let mut data = self.data.borrow_mut();
         if !data
@@ -200,7 +205,7 @@ impl<T> Signal<T> {
     }
 
     /// Removes a fiber's subscription in the active Runtime scope.
-    pub fn unsubscribe(&self, id: FiberId) {
+    pub(crate) fn unsubscribe(&self, id: FiberId) {
         let runtime_id = active_runtime();
         let mut data = self.data.borrow_mut();
         data.subscribers

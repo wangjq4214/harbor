@@ -578,7 +578,10 @@ fn tab_rows(runtime: &Runtime) -> Vec<FiberId> {
         .filter(|id| {
             let fiber = runtime.arena().get(*id).expect("live fiber");
             let children = fiber.children();
-            fiber.widget_type() == TypeId::of::<Row>()
+            let slot_wrapped = fiber
+                .key()
+                .is_some_and(|key| key.text() == harbor_widget::CONTENT_SLOT_KEY);
+            (fiber.widget_type() == TypeId::of::<Row>() || slot_wrapped)
                 && children.last().is_some_and(|child| {
                     let kind = runtime.arena().get(*child).unwrap().widget_type();
                     (kind == TypeId::of::<ConstrainedBox>() && children.len() == 3)
@@ -766,7 +769,7 @@ fn workspace_allocates_fixed_rail_and_finite_terminal_geometry() {
             .into_iter()
             .find_map(|id| {
                 let fiber = runtime.arena().get(id).unwrap();
-                (fiber.widget_type() == TypeId::of::<ConstrainedBox>())
+                (fiber.widget_type() == TypeId::of::<harbor_widget::SizedBox>())
                     .then(|| fiber.layout_rect().unwrap())
             })
             .expect("bounded rail");
@@ -1275,28 +1278,93 @@ fn compact_abbreviations_keep_numbers_even_when_unread() {
 
 #[test]
 #[allow(clippy::arc_with_non_send_sync)]
-fn unmounting_terminal_widget_clears_transient_preedit() {
-    use harbor_widget::widgets::sized_box::SizedBox;
+fn stable_external_surface_rebuild_preserves_input_ime_and_unmount_cleans_up() {
+    use harbor_widget::{ExternalSurface, ImeEffect, SizedBox, input::event::ImePreedit};
 
-    let terminal = Arc::new(Mutex::new(Terminal::new_headless(4, 20)));
-    terminal
-        .lock()
-        .unwrap()
-        .handle_event(harbor_terminal::TerminalEvent::Preedit(
-            harbor_terminal::Preedit::new("draft", Some((0, 5))),
-        ))
-        .unwrap();
-    let controller = WorkspaceUiController::new(
-        vec![snapshot(1, true, false)],
-        TerminalWidgetBridge::new(1, Arc::clone(&terminal), Arc::new(AtomicBool::new(false))),
-        1000.0,
-    );
-    let mut runtime = mount(controller, 1000, 320);
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let terminal = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+        4,
+        20,
+        std::io::empty(),
+        Writer(bytes.clone()),
+        || true,
+    )));
+    let weak = Arc::downgrade(&terminal);
+    let bridge =
+        TerminalWidgetBridge::new(1, Arc::clone(&terminal), Arc::new(AtomicBool::new(false)));
+    let controller =
+        WorkspaceUiController::new(vec![snapshot(1, true, false)], bridge.clone(), 1000.0);
+    let mut runtime = mount(controller.clone(), 1000, 320);
+    let surface = fiber_ids(&runtime)
+        .into_iter()
+        .find(|id| {
+            runtime.arena().get(*id).unwrap().widget_type() == TypeId::of::<ExternalSurface>()
+        })
+        .expect("the real workspace must mount ExternalSurface");
+    let rect = runtime.arena().get(surface).unwrap().layout_rect().unwrap();
+    for phase in [PointerPhase::Down, PointerPhase::Up] {
+        runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+            Point::new(rect.min.x + 8.0, rect.min.y + 8.0),
+            phase,
+            PointerButton::Left,
+            7,
+        )));
+    }
+    assert_eq!(runtime.input().focused(), Some(surface));
+    let focused = runtime.update(Instant::now());
+    assert_eq!(focused.ime, Some(ImeEffect::set_allowed(true)));
+    assert!(matches!(
+        focused.control_flow,
+        Some(harbor_widget::ControlFlowEffect::WaitUntil(_))
+    ));
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Tab,
+        modifiers: Modifiers::default(),
+    }));
+    assert_eq!(&*bytes.lock().unwrap(), b"	", "Tab stays terminal input");
+    assert_eq!(runtime.input().focused(), Some(surface));
+    runtime.dispatch(UiEvent::ImePreedit(ImePreedit::new("draft", Some((0, 5)))));
+    assert_eq!(terminal.lock().unwrap().preedit().unwrap().text, "draft");
 
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO));
+    let mut renamed = snapshot(1, true, false);
+    renamed.title = "updated while composing".into();
+    controller
+        .tabs()
+        .sync(vec![renamed], Some(bridge.clone()), 1000.0);
     runtime.update(Instant::now());
-
+    assert_eq!(runtime.input().focused(), Some(surface));
+    assert!(runtime.has_external_draws());
+    assert_eq!(
+        terminal.lock().unwrap().preedit().unwrap().text,
+        "draft",
+        "a stable rebuild must not run the terminal unmount callback"
+    );
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("你好".into())));
+    assert_eq!(&*bytes.lock().unwrap(), "	你好".as_bytes());
     assert!(terminal.lock().unwrap().preedit().is_none());
+    assert!(
+        runtime.drain_external_input().is_empty(),
+        "in-tree input is not queued twice"
+    );
+    runtime.dispatch(UiEvent::ImePreedit(ImePreedit::new("next", None)));
+
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO).unwrap());
+    let effects = runtime.update(Instant::now());
+    assert!(terminal.lock().unwrap().preedit().is_none());
+    assert!(!runtime.has_external_draws());
+    assert_eq!(effects.ime, Some(ImeEffect::set_allowed(false)));
+    assert_eq!(
+        effects.control_flow, None,
+        "removed schedule contributes no deadline"
+    );
+    assert_eq!(runtime.input().focused(), None);
+    controller.tabs().sync(Vec::new(), None, 1000.0);
+    drop(bridge);
+    drop(terminal);
+    assert!(
+        weak.upgrade().is_none(),
+        "registrations must not keep the terminal alive"
+    );
 }
 
 #[test]
@@ -1315,7 +1383,7 @@ fn clearing_workspace_releases_the_last_terminal_bridge() {
     drop(terminal);
 
     controller.tabs().sync(Vec::new(), None, 1000.0);
-    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO));
+    runtime.set_root(SizedBox::new(harbor_widget::layout::Size::ZERO).unwrap());
     runtime.update(Instant::now());
 
     assert!(weak.upgrade().is_none());
@@ -1559,9 +1627,10 @@ fn global_publication_survives_tab_mutations_responsive_changes_and_root_replace
         controller.store.state().read().notices.message().as_deref(),
         Some("invalid TOML")
     );
-    runtime.set_root(harbor_widget::widgets::sized_box::SizedBox::new(
-        harbor_widget::layout::Size::ZERO,
-    ));
+    runtime.set_root(
+        harbor_widget::widgets::sized_box::SizedBox::new(harbor_widget::layout::Size::ZERO)
+            .unwrap(),
+    );
     runtime.update(Instant::now());
     runtime.set_root(tab_workspace(controller.clone(), false));
     runtime.update(Instant::now());

@@ -48,8 +48,8 @@ The core runtime has no default features. Enable only the native integration nee
 Components implement [`Component`](src/view.rs) and return a [`View`](src/view.rs). The `view!` macro constructs child trees while preserving the same component model used by the builder APIs.
 
 ```rust
-use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::{BuildCx, Component, View};
+use harbor_widget::TextLabel;
 use harbor_widget::{Button, Column, Store, view};
 
 #[derive(Clone, Copy)]
@@ -67,9 +67,9 @@ impl Component for Counter {
         let value = *self.store.watch(cx);
         let actions = self.store.dispatcher();
 
-        view! { cx; Column::new().gap(8.0) => {
+        view! { Column::new().gap(8.0) => {
             TextLabel::new(format!("Count: {value}"));
-            Button::new("Increment")
+            Button::text("Increment")
                 .on_click(move |_| actions.dispatch(CounterAction::Increment));
         } }
     }
@@ -84,10 +84,12 @@ For dynamic lists, assign stable sibling keys:
 use harbor_widget::ComponentExt;
 
 // Inside view! { ... }
-// Button::new(item.label.clone()).keyed(item.id.to_string());
+// Button::text(item.label.clone()).keyed(item.id.to_string());
 ```
 
 Keys are parent-local. Unkeyed siblings reconcile by position.
+
+Layout stays visible as named parent components. `SizedBox` supports an optional child and optional requested axes; `Padding`/`Align` share `Insets`, and Row/Column/Flex accept `FlexOptions`. Numeric entry points return recoverable `Result`s. Ordinary `view!` resolves a final node `Result` automatically (Err panics with error and source location); intermediate Rust chains are not rewritten. See [explicit layout and fallible nodes](../../docs/widget/layout.md) for complete macro and handwritten examples, slot clearing and wrapper order.
 
 ## Mount in a native window
 
@@ -96,20 +98,21 @@ The `winit` feature exposes [`WinitWindowHostBuilder`](src/winit/host.rs). A hos
 The host must be created from `ApplicationHandler::resumed`, where an `ActiveEventLoop` is available:
 
 ```rust,no_run
-use harbor_widget::winit::{HostInitContext, WinitWindowHostBuilder};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::winit::{GpuWake, HostInitContext, WinitWindowHostBuilder};
+use harbor_widget::TextLabel;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 fn create_host(
     event_loop: &ActiveEventLoop,
+    wake: GpuWake,
 ) -> Result<harbor_widget::winit::WinitWindowHost, harbor_widget::winit::HostStartupError> {
     let builder = WinitWindowHostBuilder::new(
         Window::default_attributes().with_title("Widget example"),
         |_context: HostInitContext<'_>, _setup: &()| {
             Ok::<_, anyhow::Error>(TextLabel::new("Hello from harbor-widget"))
         },
-    );
+    ).with_gpu_wake(wake);
 
     pollster::block_on(builder.build(event_loop))
 }
@@ -118,22 +121,25 @@ fn create_host(
 The embedding `ApplicationHandler` should then:
 
 1. route events for the matching `WindowId` to `host.handle_window_event(&event)`;
-2. inspect `HostFrameOutcome` and treat fatal frame errors according to application policy;
+2. inspect `HostFrameOutcome` and the `fatal` fields of event/idle outcomes before business actions;
 3. call `host.about_to_wait(Instant::now(), application_deadline)` before sleeping;
 4. apply the returned `ControlFlowEffect` to the event loop; and
-5. keep close requests, multi-window routing, and process exit decisions outside the host.
+5. create `GpuWake::new(event_loop.create_proxy())` in the stable executable, implement `From<GpuWakeEvent>` for its user event, and inspect `host.gpu_fault()` on that wake (no redraw required);
+6. keep close requests, multi-window routing, and process exit decisions outside the host.
+
+Bootstrap requires `.with_gpu_wake(wake)`; secondary Hosts inherit the Device's original transport via `.reuse_gpu(...)`. The first device fault is persistent across all sharing Hosts. `FrameError::SharedGpu` distinguishes it from local surface recovery. Borrowed GPU users must not replace the installed device error/lost callbacks. See the [notification/lifetime contract](../../docs/widget/recipes.md#gpu-notifications-and-lifetimes).
 
 See [`tests/native_host_smoke.rs`](tests/native_host_smoke.rs) for a compact lifecycle example and the Harbor application host in [`../../src/shell.rs`](../../src/shell.rs) for production integration.
 
 ## Common building blocks
 
 - **Layout:** `Row`, `Column`, `Flex`, `Flexible`, `Expanded`, `Padding`, `SizedBox`, `ConstrainedBox`, `Align`, and `Stack`.
-- **Controls and editing:** `Button`, `IconButton`, `InteractiveRegion`, `MouseRegion`, `Focus`, `FocusScope`, `Shortcuts`, `Actions`, `TextEditingController`, `EditableText`, and `TextField`.
-- **Presentation and overlays:** `TextLabel`, `Icon`, `DecoratedBox`, `Separator`, `ThemeProvider`, `ScrollView`, `Notification`, and `Portal`. `Paint`/`LinearGradient` support fills and border strokes; `BackdropFilter` supports local blur with optional `EdgeRefraction`.
+- **Controls and editing:** `Button`, `IconButton`, `InteractiveRegion`, `MouseRegion`, `Focus`, `FocusScope`, `ShortcutMap`, `ActionHandler`, `TextEditingController`, `EditableText`, and `TextField`.
+- **Presentation and overlays:** `TextLabel`, `Icon`, `DecoratedBox`, `Separator`, `ThemeProvider`, `ScrollView`, `NotificationCard`, and `Portal`. `Paint`/`LinearGradient` support fills and border strokes; `BackdropFilter` supports local blur with optional `EdgeRefraction`.
 - **State:** `BuildCx::use_state`, `Signal`, `Store`, and `Dispatcher`.
-- **External rendering:** `CustomPaint` registers draw, scheduling, IME, input, and unmount callbacks for a renderer owned outside the widget crate.
+- **External rendering:** `ExternalSurface` registers draw, scheduling, IME, input, and unmount callbacks for a renderer owned outside the widget crate.
 
-Some widgets are available from `harbor_widget::widgets::<module>` rather than the crate root. The crate root re-exports the most commonly used construction, layout, control, and theme types.
+Prefer root imports for common widgets (including `Stack` and `TextLabel`), `Component`/`BuildCx`/`View`, and the construction/extension traits such as `IntoChildView`, `WithChildren`, and `ComponentExt`. Detailed configuration remains available in its owning `widgets::<module>`; there is no prelude.
 
 `TextLabel` measures its natural width and optional `ellipsis()` against the renderer's actual UI-font glyph advances at the current DPI. It adds no implicit padding; use `Padding` explicitly. Truncation preserves grapheme boundaries and the full source for later wider layouts. Without initialized text resources, headless layout uses the same per-Unicode-scalar fallback as text rendering, not UTF-8 byte counts.
 
@@ -151,7 +157,7 @@ Prefer `WinitWindowHost` unless you need a custom platform adapter.
 
 ## Relationship to Harbor Terminal
 
-`harbor-widget` is terminal-agnostic and does not depend on `harbor-terminal`. Harbor embeds its terminal renderer through `CustomPaint`; the application-owned bridge translates widget allocation, input, IME, and scheduling contracts into terminal operations.
+`harbor-widget` is terminal-agnostic and does not depend on `harbor-terminal`. Harbor embeds its terminal renderer through `ExternalSurface`; the application-owned bridge translates widget allocation, input, IME, and scheduling contracts into terminal operations.
 
 See the [widget concepts](../../docs/widget/concepts.md) and [composition recipes](../../docs/widget/recipes.md) for runtime ownership and integration guidance.
 

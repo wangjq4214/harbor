@@ -5,7 +5,7 @@ use crate::layout::Rect;
 use crate::renderer::FrameTarget;
 use crate::renderer::Viewport;
 use crate::renderer::backdrop::{BackdropRenderer, begin_pass};
-use crate::renderer::quad::QuadRenderer;
+use crate::renderer::quad::{QuadRenderer, QuadRun};
 use crate::renderer::text_renderer::TextRenderer;
 use crate::renderer::widget_text_atlas::WidgetTextAtlas;
 use crate::scene::clip::RoundedClip;
@@ -108,47 +108,6 @@ pub(crate) struct EncodeScene<'a> {
     pub(crate) external_draws: &'a HashMap<ExternalDrawId, Arc<ExternalDrawFn<'static>>>,
     pub(crate) external_eligible: &'a HashMap<ExternalDrawId, bool>,
     pub(crate) commit: bool,
-}
-
-/// Tracks the contiguous run of quad-renderer slots being batched into one
-/// draw call. A slot extends the run only while numerically adjacent to the
-/// previous one; anything else flushes the open run first.
-struct QuadRun {
-    start: Option<u32>,
-    count: u32,
-    previous: Option<u32>,
-}
-
-impl QuadRun {
-    fn new() -> Self {
-        Self {
-            start: None,
-            count: 0,
-            previous: None,
-        }
-    }
-
-    fn flush<'a>(&mut self, renderer: &'a QuadRenderer, pass: &mut wgpu::RenderPass<'a>) {
-        if let Some(start_slot) = self.start.take() {
-            renderer.encode_range(pass, start_slot, self.count);
-        }
-        self.count = 0;
-        self.previous = None;
-    }
-
-    fn extend<'a>(
-        &mut self,
-        renderer: &'a QuadRenderer,
-        pass: &mut wgpu::RenderPass<'a>,
-        slot: u32,
-    ) {
-        if self.previous != Some(slot.saturating_sub(1)) {
-            self.flush(renderer, pass);
-            self.start = Some(slot);
-        }
-        self.count += 1;
-        self.previous = Some(slot);
-    }
 }
 
 /// Owns GPU renderers and encodes a paint-ordered scene into a render pass.

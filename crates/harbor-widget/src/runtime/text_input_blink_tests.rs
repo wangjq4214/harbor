@@ -4,7 +4,8 @@ use crate::{
     input::event::{ImePreedit, Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent},
     scene::primitive::{ExternalScheduleDemand, Primitive},
     signal::Signal,
-    widgets::custom_paint::CustomPaint,
+    view::Component,
+    widgets::external_surface::ExternalSurface,
 };
 use std::{cell::Cell, rc::Rc, time::Duration};
 
@@ -42,7 +43,7 @@ fn idle_caret_blinks_without_rebuilding_or_notifying_text_changes() {
         observed_builds.set(observed_builds.get() + 1);
         let changes = observed_changes.clone();
         EditableText::new(controller.clone())
-            .on_changed(move |_| changes.set(changes.get() + 1))
+            .on_change(move |_| changes.set(changes.get() + 1))
             .build(cx)
     });
     let start = Instant::now();
@@ -154,12 +155,12 @@ fn focus_loss_disable_and_unmount_remove_caret_deadline() {
     let mut runtime = mount(move |cx: &mut BuildCx| {
         cx.track(&observed_enabled);
         Column::new()
-            .child(
+            .push_child(
                 EditableText::new(controller.clone())
-                    .enabled(*observed_enabled.read())
+                    .disabled(!*observed_enabled.read())
                     .focus_handle(editor_focus),
             )
-            .child(Button::new("other"))
+            .push_child(Button::text("other"))
             .build(cx)
     });
     let start = Instant::now();
@@ -218,8 +219,8 @@ fn caret_deadline_arbitrates_with_external_schedule() {
         });
         let mut runtime = mount(
             Column::new()
-                .child(EditableText::new(TextEditingController::new("abc")))
-                .child(CustomPaint::new(1).schedule(schedule)),
+                .push_child(EditableText::new(TextEditingController::new("abc")))
+                .push_child(ExternalSurface::new(1).schedule_with(schedule)),
         );
         assert_deadline(
             &runtime.update(start),

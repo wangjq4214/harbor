@@ -5,7 +5,9 @@ use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::scene::primitive::Primitive;
 use harbor_widget::view::{Component, SizedBox};
-use harbor_widget::{Button, IconButton, InteractiveRegion, LucideIcon, MouseRegion, Notification};
+use harbor_widget::{
+    Button, IconButton, InteractiveRegion, LucideIcon, MouseRegion, NotificationCard,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -37,12 +39,12 @@ fn assert_arrow(control: impl Component + 'static) {
 #[test]
 fn ordinary_controls_keep_the_arrow_when_enabled_or_disabled() {
     for disabled in [false, true] {
-        assert_arrow(Button::new("Command").disabled(disabled));
+        assert_arrow(Button::text("Command").disabled(disabled));
         assert_arrow(IconButton::new(LucideIcon::X, "Close").disabled(disabled));
         assert_arrow(
             InteractiveRegion::new()
                 .disabled(disabled)
-                .child(SizedBox::new(Size::new(80.0, 40.0))),
+                .child(SizedBox::new(Size::new(80.0, 40.0)).unwrap()),
         );
     }
 }
@@ -52,7 +54,7 @@ fn ordinary_controls_override_an_ancestor_specialized_cursor() {
     assert_arrow(
         MouseRegion::new()
             .cursor(CursorShape::Text)
-            .child(Button::new("Command")),
+            .child(Button::text("Command")),
     );
 }
 
@@ -71,7 +73,7 @@ fn explicit_link_text_resize_and_drag_cursors_remain_available() {
         runtime.set_root(
             InteractiveRegion::new()
                 .cursor(shape)
-                .child(SizedBox::new(Size::new(80.0, 40.0))),
+                .child(SizedBox::new(Size::new(80.0, 40.0)).unwrap()),
         );
         runtime.update(Instant::now());
         let effects = runtime.dispatch(pointer(Point::new(8.0, 8.0), PointerPhase::Move));
@@ -87,7 +89,7 @@ fn notification_close_keeps_the_arrow_and_still_dismisses_without_focus_theft() 
     let observed = dismissed.clone();
     let mut runtime = Runtime::new();
     runtime.set_viewport(Viewport::new(240, 120, 1.0));
-    runtime.set_root(Notification::new("Notice", move || {
+    runtime.set_root(NotificationCard::new("Notice", move || {
         observed.fetch_add(1, Ordering::SeqCst);
     }));
     runtime.update(Instant::now());

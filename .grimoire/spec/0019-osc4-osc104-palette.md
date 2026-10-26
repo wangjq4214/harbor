@@ -1,9 +1,9 @@
 # OSC 4/104 Indexed Palette
 
 **Spec ID:** 0019
-**Status:** Implemented (bounded OSC 4/104 slice)
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-10
-**Sources:** [Issue #191](https://github.com/wangjq4214/harbor/issues/191), the user's approval of the recommended contract and Spec-only endpoint on 2026-10-10, [ADR 0053](../adr/0053-bounded-session-osc-palette-policy.md), Protocol Checklist, and Validation Policy.
+**Sources:** [Issue #191](https://github.com/wangjq4214/harbor/issues/191), the user's approval of the recommended contract on 2026-10-10, [ADR 0053](../adr/0053-bounded-session-osc-palette-policy.md), Protocol Checklist, and Validation Policy.
 
 ## Scope and Settled Contract
 
@@ -11,6 +11,7 @@ Deliver bounded OSC 4 palette set/query and OSC 104 palette reset so an applicat
 
 The approved compatibility choices are indexes 0-255 only, the existing hexadecimal RGB subset, whole-request validation before effects, ordered execution of valid operations, alpha preservation on set, and startup RGBA restoration on explicit palette reset. Dynamic indexed colors are session-owned, shared across primary/alternate buffers, and preserved by RIS, DECSTR, and SGR reset. No blocking semantic decision remains for this contract.
 
+The startup-baseline wording records this slice's original scope. [ADR 0059](../adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) later supersedes reset-baseline immutability after successful configuration reload; the remaining OSC wire, isolation and alpha rules are unchanged.
 
 ## Requirements
 

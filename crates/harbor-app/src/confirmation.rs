@@ -27,11 +27,11 @@ struct ConfirmationDialogProps {
 }
 
 impl Component for ConfirmationDialogProps {
-    fn build(&self, cx: &mut BuildCx) -> View {
+    fn build(&self, _cx: &mut BuildCx) -> View {
         let cancelled = Arc::clone(&self.cancelled);
         let confirmed = Arc::clone(&self.confirmed);
-        harbor_widget::view! { cx; FocusScope::new() => {
-            Padding::new(24.0, 16.0, 24.0, 16.0) => {
+        harbor_widget::view! { FocusScope::new() => {
+            Padding::new(harbor_widget::Insets { top: 24.0, right: 16.0, bottom: 24.0, left: 16.0 }) => {
                 Column::new() => {
                     TextLabel::new(self.header_text.clone());
                     SizedBox::new(Size::new(0.0, 8.0));
@@ -43,11 +43,11 @@ impl Component for ConfirmationDialogProps {
                     );
                     SizedBox::new(Size::new(0.0, 12.0));
                     Row::new() => {
-                        Button::new(self.deny_label).on_click(move |_| {
+                        Button::text(self.deny_label).on_click(move |_| {
                             cancelled.store(true, Ordering::SeqCst);
                         });
                         SizedBox::new(Size::new(12.0, 0.0));
-                        Button::new(self.allow_label).on_click(move |_| {
+                        Button::text(self.allow_label).on_click(move |_| {
                             confirmed.store(true, Ordering::SeqCst);
                         });
                     }
@@ -94,5 +94,67 @@ pub fn build_clipboard_confirmation_root(
         cancelled,
         confirmed,
         line_height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harbor_widget::{
+        input::event::{Key, KeyboardEvent, Modifiers, UiEvent},
+        runtime::Runtime,
+    };
+    use std::time::Instant;
+
+    #[test]
+    fn confirmation_buttons_preserve_host_coordination_and_independent_permissions() {
+        for clipboard_write in [false, true] {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let confirmed = Arc::new(AtomicBool::new(false));
+            let scroll = Arc::new(AtomicUsize::new(0));
+            let mut runtime = Runtime::new();
+            if clipboard_write {
+                runtime.set_root(build_clipboard_confirmation_root(
+                    "Clipboard request".into(),
+                    vec!["preview".into()],
+                    scroll,
+                    cancelled.clone(),
+                    confirmed.clone(),
+                    18.0,
+                ));
+            } else {
+                runtime.set_root(build_confirmation_root(
+                    1,
+                    vec!["preview".into()],
+                    scroll,
+                    cancelled.clone(),
+                    confirmed.clone(),
+                    18.0,
+                ));
+            }
+            runtime.update(Instant::now());
+            assert!(runtime.focus_first_focusable());
+            let press = |runtime: &mut Runtime, key| {
+                runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key,
+                    modifiers: Modifiers::default(),
+                }));
+                runtime.update(Instant::now());
+            };
+            press(&mut runtime, Key::Enter);
+            assert!(cancelled.load(Ordering::SeqCst));
+            assert!(
+                !confirmed.load(Ordering::SeqCst),
+                "deny never grants permission"
+            );
+            cancelled.store(false, Ordering::SeqCst);
+            press(&mut runtime, Key::Tab);
+            press(&mut runtime, Key::Space);
+            assert!(confirmed.load(Ordering::SeqCst));
+            assert!(!cancelled.load(Ordering::SeqCst));
+            drop(runtime);
+            assert_eq!(Arc::strong_count(&confirmed), 1);
+            assert_eq!(Arc::strong_count(&cancelled), 1);
+        }
     }
 }

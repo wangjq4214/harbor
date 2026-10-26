@@ -1,7 +1,7 @@
 # Desktop Terminal Tabs and Declarative View Macro
 
 **Spec ID:** 0010
-**Status:** In Progress
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-09-07
 
 ## Requirement
@@ -186,8 +186,8 @@ Verify independent sessions and active-only input/paint; close B among A/B/C sel
 - A stable external DSL, `#[component]`, generated Props, hooks syntax, CSS, RSX/HTML syntax, reflection, hot reload, automatic clone/move, or automatic keys.
 - General LayoutBuilder, virtual lists, draggable Scrollbar, rich text, image/path icons, and a general Overlay system.
 
-## Outstanding Acceptance
+## Historical Acceptance Qualifications
 
-Historical 0010/T0008 is retained here as an acceptance obligation, not a passed gate. Verify activation replaces draw/schedule registrations before presentation; close removes callbacks, reader, PTY control and ownership without stale-generation targeting. Exercise failure handling and surface recovery as well as happy-path resize and final close. Run the format, clippy, workspace-test and documentation/checklist gates in the validation policy. Record real Windows shell/Vim/less/sustained-output, shortcuts, selection, scrollback, Acrylic, resize, DPI and minimize/restore evidence and quiet/active-frame/resource measurements. Unrun checks remain unrun; discovered failures require explicit follow-up, not silent exceptions.
+Historical 0010/T0008 evidence was incomplete; owner acceptance does not supply unrun Windows or performance results. Verify activation replaces draw/schedule registrations before presentation; close removes callbacks, reader, PTY control and ownership without stale-generation targeting. Exercise failure handling and surface recovery as well as happy-path resize and final close.
 
 Historical 0010/T0001–T0007 map respectively to parent-directed layout, keyed construction/reconciliation, the view macro, interaction/focus/actions/theme, scrolling/allocation observation, tab/session ownership, and responsive rail behavior defined above.

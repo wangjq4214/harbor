@@ -28,7 +28,7 @@ impl LayoutObserver {
     }
 
     /// Creates an observer from a shared callback handle.
-    pub fn from_callback(callback: LayoutChangedCallback) -> Self {
+    pub fn from_shared_callback(callback: LayoutChangedCallback) -> Self {
         Self {
             callback,
             child: None,
@@ -49,6 +49,7 @@ impl Component for LayoutObserver {
 }
 
 impl crate::WithChildren for LayoutObserver {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
@@ -87,5 +88,20 @@ impl AnyView for LayoutObserver {
 
     fn layout_changed_callback(&self) -> Option<LayoutChangedCallback> {
         Some(Arc::clone(&self.callback))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_callback_preserves_pointer_identity() {
+        let callback: LayoutChangedCallback = Arc::new(|_| {});
+        let observer = LayoutObserver::from_shared_callback(callback.clone());
+        assert!(Arc::ptr_eq(
+            &callback,
+            &observer.layout_changed_callback().unwrap()
+        ));
     }
 }

@@ -153,11 +153,11 @@ impl DecoratedBox {
         self
     }
 
-    pub fn decoration(&self) -> &BoxDecoration {
+    pub fn get_decoration(&self) -> &BoxDecoration {
         &self.decoration
     }
 
-    pub fn clip_behavior_value(&self) -> ClipBehavior {
+    pub fn get_clip_behavior(&self) -> ClipBehavior {
         self.clip_behavior
     }
 }
@@ -169,6 +169,7 @@ impl Component for DecoratedBox {
 }
 
 impl crate::WithChildren for DecoratedBox {
+    type Capability = crate::SingleChild;
     fn with_children(
         mut self,
         children: crate::Children,
@@ -344,8 +345,8 @@ mod tests {
 
     #[test]
     fn layout_preserves_child_size_and_constraints() {
-        let widget =
-            DecoratedBox::new(BoxDecoration::default()).child(SizedBox::new(Size::new(20.0, 10.0)));
+        let widget = DecoratedBox::new(BoxDecoration::default())
+            .child(SizedBox::new(Size::new(20.0, 10.0)).unwrap());
         let constraints = BoxConstraints::loose(Size::new(100.0, 100.0));
         let (size, positions) = widget.layout_children(
             constraints,
@@ -414,7 +415,7 @@ mod tests {
     #[test]
     fn omits_transparent_effects_and_supports_empty_child() {
         let widget = DecoratedBox::new(BoxDecoration::new().try_color(Color::TRANSPARENT).unwrap())
-            .child(SizedBox::new(Size::ZERO));
+            .child(SizedBox::new(Size::ZERO).unwrap());
         let constraints = BoxConstraints::loose(Size::new(100.0, 100.0));
         let (size, positions) =
             widget.layout_children(constraints, &[], &crate::runtime::DEFAULT_TEXT_METRICS);
@@ -434,7 +435,7 @@ mod tests {
     fn layout_size(clip_behavior: ClipBehavior) -> Size {
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
             .clip_behavior(clip_behavior)
-            .child(SizedBox::new(Size::new(20.0, 10.0)))
+            .child(SizedBox::new(Size::new(20.0, 10.0)).unwrap())
             .layout_children(
                 BoxConstraints::loose(Size::new(100.0, 100.0)),
                 &[Size::new(20.0, 10.0)],

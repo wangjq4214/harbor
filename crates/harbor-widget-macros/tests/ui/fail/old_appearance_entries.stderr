@@ -1,0 +1,94 @@
+error[E0599]: no method named `color` found for struct `SizedBox` in the current scope
+ --> tests/ui/fail/old_appearance_entries.rs:8:44
+  |
+8 |     let _ = SizedBox::width(10.0).unwrap().color(Color::RED);
+  |                                            ^^^^^ method not found in `SizedBox`
+
+error[E0599]: no method named `color` found for struct `TextLabel` in the current scope
+ --> tests/ui/fail/old_appearance_entries.rs:9:33
+  |
+9 |     let _ = TextLabel::new("x").color(Color::RED);
+  |                                 ^^^^^ private field, not a method
+
+error[E0599]: no method named `color` found for struct `harbor_widget::Icon` in the current scope
+  --> tests/ui/fail/old_appearance_entries.rs:10:38
+   |
+10 |     let _ = Icon::new(LucideIcon::X).color(Color::RED);
+   |                                      ^^^^^ private field, not a method
+
+error[E0599]: no method named `color` found for struct `EditableText` in the current scope
+  --> tests/ui/fail/old_appearance_entries.rs:12:42
+   |
+12 |     let _ = EditableText::new(c.clone()).color(Color::RED);
+   |                                          ^^^^^ private field, not a method
+
+error[E0599]: no method named `color` found for struct `TextField` in the current scope
+  --> tests/ui/fail/old_appearance_entries.rs:13:39
+   |
+13 |     let _ = TextField::new(c.clone()).color(Color::RED);
+   |                                       ^^^^^ method not found in `TextField`
+
+error[E0599]: no method named `on_changed` found for struct `EditableText` in the current scope
+  --> tests/ui/fail/old_appearance_entries.rs:14:42
+   |
+14 |     let _ = EditableText::new(c.clone()).on_changed(|_| {});
+   |                                          ^^^^^^^^^^
+   |
+help: there is a method `on_change` with a similar name
+   |
+14 -     let _ = EditableText::new(c.clone()).on_changed(|_| {});
+14 +     let _ = EditableText::new(c.clone()).on_change(|_| {});
+   |
+
+error[E0599]: no method named `on_changed` found for struct `TextField` in the current scope
+  --> tests/ui/fail/old_appearance_entries.rs:15:39
+   |
+15 |     let _ = TextField::new(c.clone()).on_changed(|_| {});
+   |                                       ^^^^^^^^^^
+   |
+help: there is a method `on_change` with a similar name
+   |
+15 -     let _ = TextField::new(c.clone()).on_changed(|_| {});
+15 +     let _ = TextField::new(c.clone()).on_change(|_| {});
+   |
+
+error[E0599]: no method named `on_submitted` found for struct `EditableText` in the current scope
+  --> tests/ui/fail/old_appearance_entries.rs:16:42
+   |
+16 |     let _ = EditableText::new(c.clone()).on_submitted(|_| {});
+   |                                          ^^^^^^^^^^^^
+   |
+help: there is a method `on_submit` with a similar name
+   |
+16 -     let _ = EditableText::new(c.clone()).on_submitted(|_| {});
+16 +     let _ = EditableText::new(c.clone()).on_submit(|_| {});
+   |
+
+error[E0599]: no method named `on_submitted` found for struct `TextField` in the current scope
+  --> tests/ui/fail/old_appearance_entries.rs:17:31
+   |
+17 |     let _ = TextField::new(c).on_submitted(|_| {});
+   |                               ^^^^^^^^^^^^
+   |
+help: there is a method `on_submit` with a similar name
+   |
+17 -     let _ = TextField::new(c).on_submitted(|_| {});
+17 +     let _ = TextField::new(c).on_submit(|_| {});
+   |
+
+error[E0599]: no method named `color_with` found for struct `IconButton` in the current scope
+  --> tests/ui/fail/old_appearance_entries.rs:18:49
+   |
+18 |     let _ = IconButton::new(LucideIcon::X, "x").color_with(|_| Color::RED);
+   |                                                 ^^^^^^^^^^ method not found in `IconButton`
+
+error[E0599]: no method named `label` found for struct `IconButton` in the current scope
+  --> tests/ui/fail/old_appearance_entries.rs:19:49
+   |
+19 |     let _ = IconButton::new(LucideIcon::X, "x").label();
+   |                                                 ^^^^^ private field, not a method
+   |
+help: there is a method `get_label` with a similar name
+   |
+19 |     let _ = IconButton::new(LucideIcon::X, "x").get_label();
+   |                                                 ++++

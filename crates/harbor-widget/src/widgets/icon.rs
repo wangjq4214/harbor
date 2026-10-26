@@ -24,21 +24,18 @@ impl Icon {
         }
     }
 
-    /// Sets the preferred square size in dp. Zero hides the artwork; invalid
-    /// (negative or non-finite) values leave the previous size unchanged.
-    pub fn size(mut self, size: f32) -> Self {
-        if size.is_finite() && size >= 0.0 {
-            self.size = size;
-        }
-        self
+    /// Sets a finite, nonnegative square size in dp. Zero hides the artwork.
+    pub fn size(mut self, size: f32) -> Result<Self, crate::LayoutConfigError> {
+        crate::layout::configuration::validate_scalar("Icon.size", size)?;
+        self.size = size;
+        Ok(self)
     }
 
-    /// Sets a tint including opacity. Non-finite colors are ignored.
-    pub fn color(mut self, color: Color) -> Self {
-        if color.is_finite() {
-            self.color = Some(color);
-        }
-        self
+    /// Sets a tint including opacity; finite components outside `[0,1]` are legal.
+    pub fn foreground(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
+        crate::theme::validate_color("Icon.foreground", color)?;
+        self.color = Some(color);
+        Ok(self)
     }
 }
 
@@ -50,16 +47,6 @@ impl Component for Icon {
                 .unwrap_or(cx.theme().icon_button.normal.foreground),
         );
         View::new(icon, vec![], None)
-    }
-}
-
-impl crate::WithChildren for Icon {
-    fn with_children(
-        self,
-        children: crate::Children,
-    ) -> Result<Self, crate::ChildConstructionError> {
-        children.ensure_leaf("Icon")?;
-        Ok(self)
     }
 }
 
@@ -94,7 +81,11 @@ mod tests {
 
     #[test]
     fn icon_is_square_centered_and_independent_of_text_metrics() {
-        let icon = Icon::new(LucideIcon::Terminal).size(18.0).color(Color::RED);
+        let icon = Icon::new(LucideIcon::Terminal)
+            .size(18.0)
+            .expect("valid icon size")
+            .foreground(Color::RED)
+            .expect("valid color");
         let mut metrics = DEFAULT_TEXT_METRICS;
         metrics.cell_width = 80.0;
         metrics.line_height = 120.0;
@@ -116,15 +107,17 @@ mod tests {
     #[test]
     fn icon_shrinks_without_distortion_and_bounds_invalid_inputs() {
         let rect = Rect::from_min_size(Point::ZERO, Size::new(12.0, 8.0));
-        let icon = Icon::new(LucideIcon::Plus)
-            .size(f32::NAN)
-            .size(-1.0)
-            .size(f32::INFINITY);
-        assert_eq!(icon.size, 20.0);
+        for value in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(Icon::new(LucideIcon::Plus).size(value).is_err());
+        }
+        let icon = Icon::new(LucideIcon::Plus);
         let primitives = icon.paint_primitives(rect, &DEFAULT_TEXT_METRICS);
         assert!(matches!(&primitives[0], Primitive::Icon { rect, .. }
             if rect.size() == Size::new(8.0, 8.0) && rect.min == Point::new(2.0, 0.0)));
-        for icon in [icon.clone().size(0.0), icon.color(Color::TRANSPARENT)] {
+        for icon in [
+            icon.clone().size(0.0).expect("valid icon size"),
+            icon.foreground(Color::TRANSPARENT).expect("valid color"),
+        ] {
             assert!(
                 icon.paint_primitives(rect, &DEFAULT_TEXT_METRICS)
                     .is_empty()

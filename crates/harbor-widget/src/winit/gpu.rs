@@ -23,7 +23,7 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 #[cfg(target_os = "windows")]
 pub const RENDER_TARGET_IS_TOPMOST: bool = true;
 
-fn selected_backends() -> wgpu::Backends {
+pub(super) fn selected_backends() -> wgpu::Backends {
     #[cfg(all(feature = "backend-dx12", feature = "backend-vulkan"))]
     {
         wgpu::Backends::DX12 | wgpu::Backends::VULKAN
@@ -148,6 +148,7 @@ fn create_main_surface(
 
 /// Reusable native GPU resources shared by all window surfaces.
 pub struct SharedGpu {
+    monitor: super::gpu_fault::GpuMonitor,
     instance: Arc<wgpu::Instance>,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -156,7 +157,10 @@ pub struct SharedGpu {
 
 impl SharedGpu {
     /// Bootstraps the shared adapter from the main window's compatible surface.
-    pub(crate) async fn new(main_window: Arc<Window>) -> Result<(Self, WindowSurface)> {
+    pub(crate) async fn new(
+        main_window: Arc<Window>,
+        wake: super::GpuWake,
+    ) -> Result<(Self, WindowSurface)> {
         let size = main_window.inner_size();
         let backends = selected_backends();
         let instance = Arc::new(wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -198,7 +202,10 @@ impl SharedGpu {
             .await
             .context("request device")?;
 
+        let monitor = super::gpu_fault::GpuMonitor::start(&device, wake)
+            .context("start GPU notification progress")?;
         let gpu = Self {
+            monitor,
             instance,
             adapter,
             device,
@@ -232,6 +239,12 @@ impl SharedGpu {
         )
     }
 
+    /// Persistent observation; never consumes or resets the shared failure.
+    pub fn fault(&self) -> Option<super::GpuFault> {
+        self.monitor.fault()
+    }
+
+    /// Borrowed device access. Do not replace the Host's error/lost callbacks.
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }

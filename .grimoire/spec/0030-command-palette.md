@@ -1,11 +1,12 @@
 # Command Palette: Existing-Command Delivery
 
 **Spec ID:** 0030
-**Status:** Draft; approved direction, not implemented or runtime-accepted.
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-18
-**Sources:** [Issue #156](https://github.com/wangjq4214/harbor/issues/156); the user's 2026-10-18 approval of the proposed defaults and Spec → Slice route.
-**Material extension:** [ADR 0070](../adr/0070-shared-application-glass-presets-with-local-overrides.md) defines shared panel presets and a distinguishable editor; [spec 0032](./0032-native-liquid-glass-material.md) selects the native liquid-glass upgrade without changing this spec's command, editing or focus contracts. These links do not establish runtime acceptance.
-**Lifecycle extension:** [Spec 0033](./0033-exclusive-extensible-application-popups.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md) select exclusive, extensible popup management: opening the palette closes and clears search; search-close/next/previous availability follows that closed state, while search-open creates a fresh focused panel. No hidden-search retention or automatic restoration is required. Other command, editing and operation-destination contracts remain unchanged; this is not implementation evidence.
+**Sources:** [Issue #156](https://github.com/wangjq4214/harbor/issues/156); the user's 2026-10-18 approval of the proposed defaults.
+**Material extension:** [ADR 0070](../adr/0070-shared-application-glass-presets-with-local-overrides.md) defines shared panel presets and a distinguishable editor; [spec 0032](./0032-native-liquid-glass-material.md) selects the native liquid-glass upgrade without changing this spec's command, editing or focus contracts.
+**Lifecycle extension:** [Spec 0033](./0033-exclusive-extensible-application-popups.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md) select exclusive, extensible popup management: opening the palette closes and clears search; search-close/next/previous availability follows that closed state, while search-open creates a fresh focused panel. No hidden-search retention or automatic restoration is required. Other command, editing and operation-destination contracts remain unchanged.
+**Presentation override:** [ADR 0078](../adr/0078-command-palette-disabled-items-without-reasons.md) explicitly supersedes the reason-display clauses in R4/E4 below: unavailable entries are visibly disabled without a reason or reason tooltip. The original clauses remain historical; revalidation, failure feedback, focus and input isolation are unchanged.
 
 ## Requirements
 
@@ -68,8 +69,6 @@ Update user/developer status documentation only for implemented and evidenced be
 
 ## Solution and Integration Seams
 
-The inspected baseline is `28f2a159449fc3f43e0b9e4aa174a5cd721d7d12`. Existing registry labels and visibility are in [command.rs](../../crates/harbor-app/src/command.rs); effective binding publication, root composition and the sole application intent inbox are in [workspace.rs](../../crates/harbor-app/src/workspace.rs). Existing execution is in [shell.rs](../../src/shell.rs); [search.rs](../../crates/harbor-app/src/search.rs) illustrates command-specific focus results. These are integration points, not mandates to put all new logic into those files.
-
 | Seam | Connects | Expects | Provides |
 | --- | --- | --- | --- |
 | Discovery | Registry/resolved bindings → palette | Implemented visible entries, current binding table and context | Searchable labels/IDs, truthful shortcut display and availability; no duplicate catalog |
@@ -105,7 +104,7 @@ Do not conflate editor state, application palette state, command availability an
 
 Add focused registry/configuration, matching/selection, availability/revalidation, widget-routing and Host-integration coverage. Exercise actual typed queue/drain paths with execution counts and a PTY writer capture, not only isolated filter functions. Native Windows E1–E9 evidence remains necessary where keyboard, focus, IME, clipboard and lifecycle are involved; existing editor/search smoke does not automatically validate the palette.
 
-At implementation acceptance run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace` and `python scripts/docs/check_docs.py`. #156's older `scripts/check_docs.py` path has moved; [the current developer guide](../../docs/developer/README.md) explicitly says the checklist-statistics script was removed. Record `python scripts/checklist_summary.py` as NOT RUN with that reason rather than recreating it or claiming a pass. Keep durable evidence under `docs/verification/` (create it during evidence work) or link retrievable CI artifacts, as #156 permits.
+Evidence must remain self-contained or retrievable; unavailable or retired validation tooling is not a passing check.
 
 ## Out of Scope and Deferred Package Work
 
@@ -113,6 +112,8 @@ At implementation acceptance run `cargo fmt --check`, `cargo clippy --all-target
 - Fuzzy matching, shell-command execution, a second command bus/editor, or changes to underlying search/clipboard/terminal semantics.
 - New promises about mouse dismissal, ranking beyond substring filtering, MRU/history, localization, persistence, pixel styling or performance thresholds. These were not selected; existing ownership and usable keyboard behavior still apply.
 
-## Handoff and Limitations
+## Delivery and outstanding acceptance
 
-Selected endpoint: Spec → Slice only. Local CONTEXT/ADR/spec/ticket writes are authorized; no production changes, implementation/QA execution, GitHub issue mutation, staging or commit is included. New qualifying knowledge has been recorded in ADR 0069 and the Command Palette context entry; existing registry/ownership decisions were reused rather than duplicated. No blocking requirement decision remains for this bounded scope. Incidental API/layout choices remain with implementation; a new domain or scope decision must return to refinement rather than be silently invented by a ticket.
+Stable aliases needed by palette test comments: `0001-command-palette/T0001` = tabs/reload; T0002 = terminal/search actions and destination focus; T0003 = Windows regression matrix (R1–R8/E1–E9).
+
+**Known historical observation:** terminal text behind the palette and overlapping notifications reduced readability; a later material change alone does not establish resolution. See [troubleshooting](../../docs/app/troubleshooting.md#current-limitations). Profile/pane/appearance commands remain deferred under #156.

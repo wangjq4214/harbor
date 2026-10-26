@@ -1,0 +1,29 @@
+error[E0616]: field `background` of struct `SizedBox` is private
+ --> tests/ui/fail/private_background_fields.rs:6:35
+  |
+6 |     SizedBox::width(1.0).unwrap().background = Some(Color::RED);
+  |                                   ^^^^^^^^^^ private field
+
+error[E0616]: field `background` of struct `Align` is private
+ --> tests/ui/fail/private_background_fields.rs:7:37
+  |
+7 |     Align::new(Alignment2D::CENTER).background = Some(Color::RED);
+  |                                     ^^^^^^^^^^ private field
+
+error[E0616]: field `background` of struct `Padding` is private
+ --> tests/ui/fail/private_background_fields.rs:8:32
+  |
+8 |     Padding::all(0.0).unwrap().background = Some(Color::RED);
+  |                                ^^^^^^^^^^ private field
+
+error[E0616]: field `background` of struct `Flex` is private
+ --> tests/ui/fail/private_background_fields.rs:9:33
+  |
+9 |     Flex::new(Axis::Horizontal).background = Some(Color::RED);
+  |                                 ^^^^^^^^^^ private field
+
+error[E0616]: field `background` of struct `Stack` is private
+  --> tests/ui/fail/private_background_fields.rs:10:18
+   |
+10 |     Stack::new().background = Some(Color::RED);
+   |                  ^^^^^^^^^^ private field

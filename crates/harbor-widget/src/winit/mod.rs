@@ -7,6 +7,7 @@
 mod effects;
 mod event;
 mod gpu;
+mod gpu_fault;
 #[cfg(feature = "hmr")]
 mod hmr;
 mod host;
@@ -36,6 +37,7 @@ use winit::window::Window;
 pub use gpu::RENDER_TARGET_IS_TOPMOST;
 pub(crate) use gpu::WindowSurface;
 pub use gpu::{SharedGpu, select_compositing_alpha_mode};
+pub use gpu_fault::{GpuFault, GpuFaultKind, GpuWake, GpuWakeEvent};
 #[cfg(feature = "hmr")]
 pub use hmr::{WidgetHmrConfig, WidgetHmrWork};
 pub use host::{
@@ -619,7 +621,7 @@ mod tests {
     use crate::runtime::Runtime;
     use crate::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
     use crate::widgets::button::Button;
-    use crate::widgets::custom_paint::CustomPaint;
+    use crate::widgets::external_surface::ExternalSurface;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use winit::dpi::PhysicalPosition;
@@ -1816,7 +1818,7 @@ mod tests {
     #[test]
     fn adapter_dispatches_focus_events_and_forwards_redraw_effects() {
         let mut runtime = Runtime::new();
-        runtime.set_root(crate::widgets::button::Button::new("OK"));
+        runtime.set_root(crate::widgets::button::Button::text("OK"));
         runtime.update(Instant::now());
         runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
             key: crate::input::event::Key::Tab,
@@ -1916,7 +1918,7 @@ mod tests {
         let clicked = Arc::new(AtomicBool::new(false));
         let clicked_clone = Arc::clone(&clicked);
         let mut runtime = Runtime::new();
-        runtime.set_root(Button::new("OK").on_click(move |_| {
+        runtime.set_root(Button::text("OK").on_click(move |_| {
             clicked_clone.store(true, Ordering::SeqCst);
         }));
         runtime.update(Instant::now());
@@ -1954,7 +1956,7 @@ mod tests {
         let clicked = Arc::new(AtomicBool::new(false));
         let clicked_clone = Arc::clone(&clicked);
         let mut runtime = Runtime::new();
-        runtime.set_root(Button::new("OK").on_click(move |_| {
+        runtime.set_root(Button::text("OK").on_click(move |_| {
             clicked_clone.store(true, Ordering::SeqCst);
         }));
         runtime.update(Instant::now());
@@ -2027,7 +2029,7 @@ mod tests {
         }
 
         let mut runtime = Runtime::new();
-        runtime.set_root(Button::new("OK"));
+        runtime.set_root(Button::text("OK"));
         runtime.update(Instant::now());
         let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
         press(&mut runtime, &mut adapter);
@@ -2077,7 +2079,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(91).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(91).schedule_with(schedule));
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
         let armed = presenter.fold_effects(RuntimeEffects {
             request_redraw: true,
@@ -2153,7 +2155,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2181,7 +2183,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2203,7 +2205,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
 
         // Act
@@ -2229,7 +2231,7 @@ mod tests {
             })
         };
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2259,7 +2261,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2293,7 +2295,7 @@ mod tests {
             ..ExternalScheduleDemand::empty()
         });
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2325,7 +2327,7 @@ mod tests {
             })
         };
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);
@@ -2367,7 +2369,7 @@ mod tests {
             })
         };
         let mut runtime = Runtime::new();
-        runtime.set_root(CustomPaint::new(2026).schedule(schedule));
+        runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
         let now = Instant::now();
         let _ = runtime.update(now);
         let mut presenter = WindowPresenter::new(800, 600, 1.0);

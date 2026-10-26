@@ -11,6 +11,7 @@ Harbor is a pre-1.0 workspace toolkit, not a complete desktop framework. Pin the
 | Build your first tree, retain state, then submit application intent | [Learn WIDGET](learn.md) |
 | Understand identity, hooks, signals, actions, effects and invalidation | [Mental models](concepts.md) |
 | Find an existing control and its support boundary | [Widget catalog](catalog.md) |
+| Declare sizes, insets and positioning; recover invalid configuration | [Explicit layout and fallible nodes](layout.md) |
 | Connect a native host, editing controller or root overlay | [Composition recipes](recipes.md) |
 | Test your components and troubleshoot integration | [Testing](testing.md) |
 
@@ -30,7 +31,7 @@ Host: window, clipboard, IME, surface, scheduling, presentation
 - A `Signal` holds UI-thread state. Writes invalidate subscribers; builds pull current values.
 - A `Store` separates published state from one-shot actions. Dispatch queues intent; it does **not** reduce state or wake a sleeping host.
 - `WinitWindowHost` supplies the ordinary native integration. A bare `Runtime` is useful for deterministic tests and custom hosts, but does not create a window.
-- `CustomPaint` embeds an externally owned renderer. A terminal is one consumer, not a dependency of the widget library.
+- `ExternalSurface` embeds an externally owned renderer. A terminal is one consumer, not a dependency of the widget library.
 
 ## Install and orient
 

@@ -3,7 +3,7 @@ use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::Runtime;
 use harbor_widget::signal::Signal;
 use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::custom_paint::CustomPaint;
+use harbor_widget::widgets::external_surface::ExternalSurface;
 use harbor_widget::widgets::sized_box::SizedBox;
 use harbor_widget::{ConstrainedBox, LayoutObserver};
 use std::cell::RefCell;
@@ -43,7 +43,7 @@ fn observer_delivers_distinct_committed_rects_and_callback_work_waits_for_next_u
                     requested_size.set(Size::new(30.0, 10.0));
                 }
             })
-            .child(SizedBox::new(size))
+            .child(SizedBox::new(size).unwrap())
             .build(cx)
         }
     }
@@ -89,7 +89,7 @@ fn observer_ignores_failed_layout_and_notifies_after_recovery() {
             }
             .min_height(10.0)
             .max_height(10.0)
-            .child(SizedBox::new(Size::new(width, 10.0)));
+            .child(SizedBox::new(Size::new(width, 10.0)).unwrap());
             let calls = self.calls.clone();
             LayoutObserver::new(move |rect| calls.borrow_mut().push(rect))
                 .child(child)
@@ -129,7 +129,7 @@ fn observer_skips_zero_viewport_and_coalesces_restore_to_same_rect() {
     runtime.set_viewport(Viewport::new(0, 0, 1.0));
     runtime.set_root(
         LayoutObserver::new(move |rect| observed.borrow_mut().push(rect))
-            .child(CustomPaint::new(7)),
+            .child(ExternalSurface::new(7)),
     );
     update(&mut runtime);
     assert!(calls.borrow().is_empty());
@@ -152,9 +152,9 @@ fn observer_drops_staged_callback_when_fiber_unmounts_before_delivery() {
     let mut runtime = Runtime::new();
     runtime.set_root(
         LayoutObserver::new(move |rect| observed.borrow_mut().push(rect))
-            .child(SizedBox::new(Size::new(20.0, 10.0))),
+            .child(SizedBox::new(Size::new(20.0, 10.0)).unwrap()),
     );
-    runtime.set_root(SizedBox::new(Size::new(5.0, 5.0)));
+    runtime.set_root(SizedBox::new(Size::new(5.0, 5.0)).unwrap());
 
     update(&mut runtime);
     assert!(calls.borrow().is_empty());
@@ -174,7 +174,7 @@ fn replacing_callback_without_geometry_change_does_not_notify_again() {
             let generation = *self.generation.read();
             let calls = self.calls.clone();
             LayoutObserver::new(move |_| calls.borrow_mut().push(generation))
-                .child(SizedBox::new(Size::new(20.0, 10.0)))
+                .child(SizedBox::new(Size::new(20.0, 10.0)).unwrap())
                 .build(cx)
         }
     }
@@ -192,4 +192,38 @@ fn replacing_callback_without_geometry_change_does_not_notify_again() {
     generation.set(1);
     update(&mut runtime);
     assert_eq!(&*calls.borrow(), &[0]);
+}
+
+#[test]
+fn shared_callback_retains_the_original_handle_and_runs_only_after_layout() {
+    use harbor_widget::LayoutChangedCallback;
+    use std::sync::Arc;
+
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let observed = calls.clone();
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the shared callback API intentionally permits UI-local captures"
+    )]
+    let callback: LayoutChangedCallback = Arc::new(move |rect| observed.borrow_mut().push(rect));
+    let weak = Arc::downgrade(&callback);
+    let observer = LayoutObserver::from_shared_callback(callback.clone())
+        .child(SizedBox::new(Size::new(20.0, 10.0)).unwrap());
+    assert_eq!(Arc::strong_count(&callback), 2);
+    drop(callback);
+    assert!(weak.upgrade().is_some());
+    assert!(calls.borrow().is_empty());
+
+    let mut runtime = Runtime::new();
+    runtime.set_root(observer);
+    assert!(calls.borrow().is_empty(), "construction must not notify");
+    update(&mut runtime);
+    assert_eq!(*calls.borrow(), [root_rect(&runtime)]);
+    update(&mut runtime);
+    assert_eq!(calls.borrow().len(), 1);
+    drop(runtime);
+    assert!(
+        weak.upgrade().is_none(),
+        "unmount releases the shared callback"
+    );
 }

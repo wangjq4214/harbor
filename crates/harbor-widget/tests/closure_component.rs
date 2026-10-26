@@ -19,7 +19,7 @@ fn signal_state_rebuilds_closure_component() {
         let state = cx.use_state(|| 0u32);
         component_observed.borrow_mut().push(*state.read());
         *component_state_handle.borrow_mut() = Some(state);
-        SizedBox::new(Size::new(1.0, 1.0)).build(cx)
+        SizedBox::new(Size::new(1.0, 1.0)).unwrap().build(cx)
     });
     runtime.update(Instant::now());
 

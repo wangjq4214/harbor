@@ -47,9 +47,29 @@ Text editing belongs to the reusable controller/editing core/field layers. Searc
 
 Painting updates an ordered flat scene; `SceneDelta` records additions, modifications and removals for retained GPU data. Only adjacent compatible items may batch. Transparent primitives must not cross paint boundaries during optimization.
 
+### Public rendering layers
+
+**Prefer Runtime for ordinary scene rendering.** `Runtime::encode` walks paint order inside a caller-owned render pass. Use `Runtime::encode_frame` for full-frame orchestration, including backdrop filters. Runtime also coordinates text and external draws.
+
+For independent scenes of supported quads, borders, shadows, paints and icons, use `renderer::quad::QuadRenderer`:
+
+```rust,ignore
+// Keep both scene and renderer across frames. Supply incoming items in paint
+// order, with stable IDs for retained content.
+let delta = scene.diff(incoming_items);
+quads.update(queue, &delta, &viewport);
+// If the viewport changed, refresh all retained instances as well.
+quads.refresh_viewport(queue, scene.items(), &viewport);
+quads.encode_ordered(pass, scene.items().iter().map(|item| item.id));
+```
+
+The caller supplies every live supported ID once, back-to-front, on each draw, including frames with order-only changes. The ID sequence is the ordering input: `SceneDelta` insertion history and numeric IDs are not paint order. If managing items without `SceneGraph`, order their IDs by `SceneItem::paint_order` yourself. Apply deltas before encoding and refresh all retained instances when viewport conversion changes. The caller owns the compatible pass/target, submission and presentation. Unsupported or missing IDs are skipped and break batches; QuadRenderer does not orchestrate text, external draws or backdrop filters.
+
+GPU slots remain reusable internal storage, never paint indices. Only consecutive compatible work in the supplied paint order may batch; separated storage-adjacent slots do not merge across another item. Slot lookup, storage-range drawing and the former unordered `QuadRenderer::encode` are no longer public; migrate to `encode_ordered` without compatibility aliases.
+
 Rectangular clipping uses scissors; rounded clipping also constrains painting and hit testing, including external draws. Decoration does not alter measured size. `BackdropFilter` samples already-drawn in-window content and leaves foreground sharp; it is not desktop capture or Windows Acrylic. Encoder-level `Runtime::encode_frame` supports these local filters; the caller-owned render-pass `encode` path rejects filter primitives. Product glass recipes remain outside the toolkit.
 
-`CustomPaint` registers an `ExternalDrawId` with independent draw, input, IME and schedule providers. Encoding flushes widget batches around the external item, supplies physical allocation/scissor and frame-scoped GPU access, then restores state for following items. The terminal owns its renderer and input semantics; the runtime owns the region's geometry, clipping, focus, routing and paint order.
+`ExternalSurface` registers an `ExternalDrawId` with independent draw, input, IME and schedule providers. Encoding flushes widget batches around the external item, supplies physical allocation/scissor and frame-scoped GPU access, then restores state for following items. The terminal owns its renderer and input semantics; the runtime owns the region's geometry, clipping, focus, routing and paint order.
 
 External eligibility is tracked per draw. A deferred terminal can reuse its retained projection while widgets in the same window continue updating; a forced commit can request live projection. Engine update acknowledgement belongs to the bridge, never the generic widget renderer. See [terminal session](terminal-session.md).
 

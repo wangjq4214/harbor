@@ -6,29 +6,35 @@ Build a tree first, retain an editor second, then separate application intent fr
 
 ## 1. Describe an interface
 
-A component receives a `BuildCx` and returns a `View`. Closures with the signature `Fn(&mut BuildCx) -> View + 'static` are components too. Build describes the interface; it is not the place to start I/O or execute application commands.
+A component receives a `BuildCx` and returns a `View`. Closures with the signature `Fn(&mut BuildCx) -> View + 'static` are components too. `view!` also produces a `View`: it converts every root and child through `IntoChildView`, so components defer until reconciliation assigns their Fiber and no context parameter is passed to the macro. Build describes the interface; it is not the place to start I/O or execute application commands.
 
 ```rust
-use harbor_widget::{Column, runtime::Runtime, view::{BuildCx, Component}};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::{Column, runtime::Runtime, view};
+use harbor_widget::TextLabel;
 use std::time::Instant;
 
 fn main() {
     let mut runtime = Runtime::new();
-    runtime.set_root(|cx: &mut BuildCx| {
-        Column::new().gap(8.0)
-            .child(TextLabel::new("Hello, Harbor"))
-            .child(TextLabel::new("A description, not a native control handle"))
-            .build(cx)
+    runtime.set_root(view! {
+        Column::new().gap(8.0) => {
+            TextLabel::new("Hello, Harbor");
+            TextLabel::new("A description, not a native control handle");
+        }
     });
     let effects = runtime.update(Instant::now());
     assert!(effects.request_redraw);
 }
 ```
 
-`set_root` mounts and builds immediately; the first `update` collects pending work/effects. A redraw request is not a presented frame. The host must render and present the scene.
+`set_root` accepts a component or a `view!` description; the root Fiber belongs to the Runtime and materializes the description during the first update, which collects pending work/effects. A redraw request is not a presented frame. The host must render and present the scene.
 
 `.child(component)` defers that component's build until reconciliation assigns its fiber. The equivalent `view!` construction is shown in step 3. Prefer deferred construction for stateful children: eagerly calling each child's `.build(cx)` can put its hooks into the caller's slot sequence instead of giving it independent identity.
+
+Prefer the `harbor_widget` root for common widgets, `Component`/`BuildCx`/`View`, and construction traits (`IntoChildView`, `WithChildren`, `ComponentExt`); detailed configuration stays in its owning module. No prelude is needed.
+
+Child attachment is component-owned: leaves have no child block; single-child containers use `.child(value)` to replace their slot; `Row`, `Column`, `Flex`, and `Stack` use `.children(values)` to replace the list and `.push_child(value)` / `.extend_children(values)` to append. A `=> { ... }` block is one replacement, not an append. An empty block clears existing content; an ordinary value statement preserves it. `Align` owns one child (use `Stack` for overlays). `InteractiveRegion::child` and `.child_with` replace each other.
+
+Static over-counts on single-child containers and all leaf blocks fail compilation. Runtime-dependent lists validate during construction: handwritten `.with_children(Children)` returns `ChildConstructionError`; ordinary `view!` panics with the receiver, allowed count, and incoming count. External components implement public `WithChildren` with `type Capability = SingleChild` or `MultiChild` and the same replacement/clearing rules; `Children::into_single` validates and replaces an `Option<View>` without building components.
 
 **Try:** add another label. Use `Row` instead of `Column`. Then read [flex layout](../flex-layout.md) before adding `Expanded` or scroll constraints: layout is parent-constrained, not CSS.
 
@@ -38,7 +44,7 @@ Do not recreate an editor controller on every build. Store its handle in a hook 
 
 ```rust
 use harbor_widget::{TextEditingController, TextField, runtime::Runtime};
-use harbor_widget::view::{BuildCx, Component, View};
+use harbor_widget::{BuildCx, Component, View};
 use std::time::Instant;
 
 struct Draft;
@@ -65,16 +71,49 @@ Keep hook calls in the same order and of the same types on every build. A type m
 
 **Try in a native host:** type in the middle, select and replace text, and trigger an unrelated rebuild. The controller should not reset.
 
-## 3. Send intent; publish the result
+## 3. Update local UI state directly
 
-A button should queue application intent, not run a reducer during build. `Store<S, A>` has two distinct sides: `watch(cx)` subscribes to published state, and `dispatcher()` gives callbacks an action-only capability.
+Ordinary UI callbacks can capture local Signals. Keep explicit clones for repeated builds and end read borrows before updating state. No action queue is needed for a purely local counter.
+
+```rust
+use harbor_widget::{Button, Column, runtime::Runtime, view};
+use harbor_widget::{BuildCx, Component, View};
+use harbor_widget::TextLabel;
+use std::time::Instant;
+
+struct LocalCounter;
+impl Component for LocalCounter {
+    fn build(&self, cx: &mut BuildCx) -> View {
+        let count = cx.use_state(|| 0u32);
+        cx.track(&count);
+        let value = *count.read();
+        view! { Column::new().gap(8.0) => {
+            TextLabel::new(format!("Count: {value}"));
+            Button::text("Increment").on_click(move |_| {
+                let next = *count.read() + 1;
+                count.set(next);
+            });
+        } }
+    }
+}
+
+fn main() {
+    let mut runtime = Runtime::new();
+    runtime.set_root(LocalCounter);
+    let _effects = runtime.update(Instant::now());
+}
+```
+
+## 4. Send business intent; publish the result
+
+For business operations, a button queues application intent rather than running a reducer or platform effect. `Store<S, A>` has two distinct sides: `watch(cx)` subscribes to published state, and `dispatcher()` gives callbacks an action-only capability.
 
 This complete example also supplies a tiny **application-owned** reducer. Calling the dispatcher in `main` simulates an action already delivered by a host turn; it does not simulate pointer input.
 
 ```rust
 use harbor_widget::{Button, Column, Store, view};
-use harbor_widget::view::{BuildCx, Component, View};
-use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::{BuildCx, Component, View};
+use harbor_widget::TextLabel;
 use harbor_widget::runtime::Runtime;
 use std::time::Instant;
 
@@ -88,9 +127,9 @@ impl Component for Counter {
     fn build(&self, cx: &mut BuildCx) -> View {
         let count = *self.store.watch(cx); // end the borrow before callbacks run
         let actions = self.store.dispatcher();
-        view! { cx; Column::new().gap(8.0) => {
+        view! { Column::new().gap(8.0) => {
             TextLabel::new(format!("Count: {count}"));
-            Button::new("Increment")
+            Button::text("Increment")
                 .on_click(move |_| actions.dispatch(CounterAction::Increment));
         } }
     }
@@ -123,11 +162,11 @@ fn main() {
 }
 ```
 
-`Button::on_click` requires `Fn(&mut EventCtx) + Send + Sync + 'static`. A UI-thread `Signal` uses `Rc<RefCell<_>>` and cannot be captured there. The action dispatcher is the appropriate capability when its action type satisfies the callback's thread bounds. Do not use `Arc<Mutex<Signal<_>>>` to bypass the UI-thread ownership model.
+`Button::on_click` accepts `Fn(&mut EventCtx) + 'static` on the UI thread, including direct Signal or `Rc` captures. Use Dispatcher for business intent, not merely to satisfy callback bounds. Signal remains UI-thread-owned; do not wrap it in `Arc<Mutex<_>>` to share it with background work.
 
 **Important:** `Dispatcher::dispatch` only enqueues. It does not wake a runtime, schedule a frame, run effects or publish state. Drain after input routing, reduce on the UI thread, publish, and ensure the host processes invalidation. Background senders also need an event-loop wake mechanism; an inbox alone cannot wake a sleeping window.
 
-## 4. Give repeated children identity
+## 5. Give repeated children identity
 
 Import `harbor_widget::ComponentExt` and use `.keyed(stable_id)` on components when items may reorder. For example, `.child(TextLabel::new("Saved").keyed("save-status"))` uses a stable sibling-local identity. Keys must be unique under their parent; do not generate a new key on every build or use changing display text as the ID.
 

@@ -1,10 +1,10 @@
 # Color Emoji and Whole Sequence Presentation (#181)
 
 **Spec ID:** 0020
-**Status:** Implementation present; integrated Windows/performance acceptance unverified
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-10
 
-**Stable execution aliases:** ticket-set0015/T0001 = native sequence presentation; T0002 = terminal atlas/invalidation; T0003 = integrated Windows/performance acceptance under R1–R7. Scripts referring to ticket-set0015 T0003 retain this meaning. Neither #153's evidence gap nor #176's final acceptance is a new blocking prerequisite; their contracts remain invariants.
+**Stable execution aliases:** ticket-set0015/T0001 = native sequence presentation; T0002 = terminal atlas/invalidation; T0003 = integrated Windows/performance acceptance under R1–R7. Scripts referring to ticket-set0015 T0003 retain this meaning.
 **Sources:** [Issue #181](https://github.com/wangjq4214/harbor/issues/181); the refinement conversation approving DirectWrite + Direct2D offscreen presentation and bounded uniform downscaling; [ADR 0054](../adr/0054-color-emoji-offscreen-presentation.md).
 
 ## Requirements
@@ -59,20 +59,11 @@ Provide focused shaping, resource-bound/atlas, geometry and dirty-range tests fo
 
 Record revision and dirty-tree scope, OS/ConPTY/font/DPI versions, reproducible commands/steps, expected and observed results, artifacts and exclusions, following Validation Policy. Keep raw artifacts local or link retrievable CI artifacts; committed summaries are self-contained and do not link local-only captures. A delayed write alone does not prove distinct PTY reads; identify the actual fragmentation exercised.
 
-Run or account honestly for:
-
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
-python scripts/docs/check_docs.py
-```
-
 Use PASS / FAIL / NOT RUN / BLOCKED for actual checks. Missing Windows/GPU capabilities do not turn skipped runtime checks into passes. Update behavior/support documentation only for implemented and evidenced scope.
 
 ## Acceptance status
 
-Native sequence and renderer/atlas implementations are present (`harbor-text` sequence backend and `harbor-terminal::render::{sequence,color_atlas,text}`); historical 0015/T0001 and T0002 were marked Done with unchecked acceptance. That is not proof of every criterion. Final 0015/T0003 Windows/clipboard, font/format/capability, actual fragmentation, font/DPI/appearance, composition, forced repack/overflow and comparable ordinary/cold/warm performance evidence remains unverified here. R1–R7 retain those obligations; no numeric performance threshold is introduced. Follow the [profiling guide](../../docs/developer/profiling.md) and rerun affected evidence after code changes.
+Owner acceptance supersedes the former unverified integrated Windows/performance status. Historical 0015/T0001 and T0002 were marked Done with unchecked acceptance, not proof of every criterion; this acceptance records no new test executions or resolution of the no-wrap discrepancy below. R1–R7 remain regression criteria, with comparable performance evidence guided by the [profiling guide](../../docs/developer/profiling.md) and no numeric performance threshold.
 
 ## Limitations and Out of Scope
 

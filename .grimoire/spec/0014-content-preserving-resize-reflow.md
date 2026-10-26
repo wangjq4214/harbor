@@ -1,10 +1,10 @@
 # Content-Preserving Resize Reflow
 
 **Spec ID:** 0014
-**Status:** In Progress
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-09-20
 
-**Stable execution aliases:** 0012/T0001–T0006 = retained metadata, shared decoder/copy, canonical anchors, width projection, height/capacity and buffer/PTY transaction below; 0012/T0007 = Test Plan and final acceptance. Implementation is present; broader Windows shell/nvim/clipboard and large-history latency/memory acceptance remains NOT RUN. Use an integrated revision, repeat affected captures after changes, and advance ADR-0018/0042 only after accepted evidence. Preserve one decoder/offset vocabulary and one composed prepared primary result.
+**Stable execution aliases:** 0012/T0001–T0006 = retained metadata, shared decoder/copy, canonical anchors, width projection, height/capacity and buffer/PTY transaction below; 0012/T0007 = Test Plan and final acceptance. Historical acceptance notes lacked broader Windows shell/nvim/clipboard and large-history latency/memory evidence; owner acceptance does not assert missing checks ran. Preserve one decoder/offset vocabulary and one composed prepared primary result.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ The first delivery must:
 8. Provide deterministic model/copy regression coverage plus recorded Windows shell, `nvim`, and large-history resize evidence; and
 9. Establish an acknowledged, bounded PTY-reader barrier so chunks observed before resize are parsed exactly once under the old geometry and the reader cannot publish across the resize transaction.
 
-[ADR 0018](../adr/0018-non-reflow-resize-preserved-soft-wrap-markers.md) records the historical non-reflow baseline. Reflow implementation is present; final acceptance and explicit ADR-0018/0042 status reconciliation remain outstanding.
+[ADR 0018](../adr/0018-non-reflow-resize-preserved-soft-wrap-markers.md) records the historical non-reflow baseline. ADR-0018/0042 status reconciliation remains unrecorded: ADR 0018 is Completed and ADR 0042 is Proposed; owner acceptance here does not edit those records.
 
 ## Solution
 
@@ -146,7 +146,7 @@ Trimming is restricted to primary resize, not the copy operation itself. Before 
 
 ## Test Plan
 
-- **Reference-model and fixture tests:** Define logical atom decode/project fixtures before switching production resize. Cover long lines, explicit and soft line boundaries, consecutive blank lines, ordinary and styled trailing spaces, hyperlinks, pending wrap, CJK at boundaries, partially selected wide glyphs, head-truncated lines, and repeated round trips.
+- **Reference-model and fixture tests:** Define logical atom decode/project fixtures. Cover long lines, explicit and soft line boundaries, consecutive blank lines, ordinary and styled trailing spaces, hyperlinks, pending wrap, CJK at boundaries, partially selected wide glyphs, head-truncated lines, and repeated round trips.
 - **Normal-buffer tests:** Verify identity allocation/non-reuse, ring wraparound, metadata movement for scroll and structural edits, width/height policies, physical capacity, partial-line eviction, full damage, and no stale generation-to-content aliasing.
 - **Anchor tests:** Verify before/after affinity under insert/delete, overwrite stability, row movement, reflow projection, destruction/eviction invalidation, review fallback, cursor insertion boundaries, saved cursor, and complete-selection invalidation when one endpoint is lost.
 - **Selection/copy tests:** Verify pixel/`GenPos`/anchor conversion, forward and reverse drag, word and logical-line selection, selection retention across output and resize, meaningful trailing blanks, explicit newlines, soft-wrap joining, wide continuation skipping, and eviction behavior.
@@ -155,7 +155,7 @@ Trimming is restricted to primary resize, not the copy operation itself. Before 
 - **Alternate-screen tests:** Cover `?47`, `?1047`, `?1048`, and `?1049` resize/restore behavior, active and parked alternate buffers, saved-primary reflow, no alternate scrollback, RIS, and current whole-screen isolation.
 - **Barrier protocol tests:** Deterministically interleave barrier requests with a read completed before publication and with a blocked read. Prove ordered matching acknowledgements, exactly-once chunks, no publication while paused, no stale-epoch reuse, and successful resume/retry.
 - **Failure tests:** Inject barrier interruption failure, barrier timeout, model preparation failure, and PTY resize failure; prove bounded return, no unacknowledged resize, no partial model commit, no premature pointer clearing, unchanged authoritative geometry on failure, mandatory reader resume, no reader leak, and successful retry.
-- **Focused commands:** Run targeted `harbor-terminal` and `harbor-pty` tests during development, then the standard gates: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `python scripts/docs/check_docs.py`.
+- **Quality gates:** Targeted `harbor-terminal` and `harbor-pty` tests, format, clippy across all targets/features with warnings denied, workspace tests, and documentation checks follow validation policy.
 - **Windows runtime evidence:** Record revision, dirty-tree scope, Windows/ConPTY/application versions, exact steps, expected and observed results, PASS/FAIL/NOT RUN/BLOCKED outcome, artifacts, and exclusions for PowerShell or `cmd`, `nvim`, clipboard selection/copy, primary/alternate transitions, repeated mixed resize, and interruption of a blocked ConPTY read during barrier acquisition. Explicitly reproduce PowerShell's padded directory table before and after resizing, checking that resizing does not introduce empty rows between its entries.
 - **Performance evidence:** Record large-history resize latency and memory/cost under fixed machine, font, viewport, history, and build-profile conditions. This specification sets no unsupported pass threshold; preserve comparable captures so a threshold or optimization can be justified from evidence.
 
@@ -177,4 +177,3 @@ Trimming is restricted to primary resize, not the copy operation itself. Before 
 - N02 may evolve a glyph atom into a richer text cluster while preserving logical-line identity and anchor semantics.
 - N08 search and N09 shell-command navigation can store content anchors and use the same eviction invalidation contract.
 - N15 may make history capacity configurable and establish measured resize budgets without changing bounded eviction semantics.
-- After implementation and acceptance, supersede or update ADR-0018 explicitly and change ADR-0042 from Proposed to the appropriate implementation status.

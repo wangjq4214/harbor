@@ -1,0 +1,22 @@
+error[E0599]: no method named `handler` found for struct `ExternalSurface` in the current scope
+  --> tests/ui/fail/old_external_surface_methods.rs:11:37
+   |
+11 |     let _ = ExternalSurface::new(1).handler(draw);
+   |                                     ^^^^^^^ private field, not a method
+
+error[E0599]: no method named `schedule` found for struct `ExternalSurface` in the current scope
+  --> tests/ui/fail/old_external_surface_methods.rs:12:37
+   |
+12 |     let _ = ExternalSurface::new(1).schedule(schedule);
+   |                                     ^^^^^^^^ private field, not a method
+   |
+help: there is a method `schedule_with` with a similar name
+   |
+12 |     let _ = ExternalSurface::new(1).schedule_with(schedule);
+   |                                             +++++
+
+error[E0599]: no method named `ime` found for struct `ExternalSurface` in the current scope
+  --> tests/ui/fail/old_external_surface_methods.rs:13:37
+   |
+13 |     let _ = ExternalSurface::new(1).ime(ime);
+   |                                     ^^^ private field, not a method

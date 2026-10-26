@@ -9,13 +9,15 @@ mod parse;
 
 use proc_macro::TokenStream;
 
-/// Builds a concrete root [`harbor_widget::view::View`] from a Component tree.
+/// Builds a view description from a Component tree.
 ///
-/// Use `view! { cx; root }`. A child value is an ordinary Rust `expression;`,
+/// Use `view! { root }`. A child value is an ordinary Rust `expression;`,
 /// a child-bearing component is `expression => { children }`, and bare `for`,
 /// `if` / `else`, and `match` organize child lists. Rust blocks are ordinary
-/// value expressions and therefore require a trailing semicolon. Roots are built
-/// directly through `Component`; child values convert through `IntoChildView`.
+/// value expressions and therefore require a trailing semicolon. Roots and
+/// child values convert through `IntoChildView`: components defer until
+/// reconciliation assigns their Fiber, already-built `View` values pass
+/// through unchanged.
 #[proc_macro]
 pub fn view(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as ast::ViewInput);

@@ -1,16 +1,16 @@
 # Native Liquid Glass Material for Search, Command Palette and Notifications
 
 **Spec ID:** 0032
-**Status:** Draft; user-selected direction, not implemented or visually accepted.
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-22
-**Sources:** The user linked Glass-HQ/liquid-glass, approved the recommended search + command-palette native material-only scope and spec endpoint, then explicitly invoked grimoire-loop and added notifications while retaining their existing behavior. [ADR 0076](../adr/0076-native-liquid-glass-material-port.md) records the architectural direction.
+**Sources:** The user linked Glass-HQ/liquid-glass, approved the search + command-palette native material-only scope, then added notifications while retaining their existing behavior. [ADR 0076](../adr/0076-native-liquid-glass-material-port.md) records the architectural direction.
 
 ## Source Contract and Relationship to Existing Specifications
 
 - **C1 — Selected outcome:** Adapt the reference's glass material to the existing search, command-palette and notification panels, not a whole-application restyle.
 - **C2 — Selected solution:** Native material algorithms over the existing widget backdrop path; reusable rendering mechanisms in `harbor-widget`, application recipes and per-panel overrides in `harbor-app`. No React/WebView/SVG runtime integration.
 - **C3 — Selected effects:** Edge-local refraction, outline-normal-dependent highlights and side shading, and material blur/tone processing. Keep foreground and hit testing unchanged.
-- **C4 — Selected exclusions:** No upstream press/stretch/morph/fusion animation work, desktop capture/refraction, side-rail/button restyle or implementation in this refinement stage.
+- **C4 — Selected exclusions:** No upstream press/stretch/morph/fusion animation work, desktop capture/refraction or side-rail/button restyle.
 - **C5 — Retained contracts:** [Search appearance spec 0029](./0029-search-panel-glass-appearance.md), [command-palette spec 0030](./0030-command-palette.md), and [ADR 0070](../adr/0070-shared-application-glass-presets-with-local-overrides.md) remain applicable. This spec adds a shared material upgrade, not new search, editing, command or focus semantics.
 
 The external source baseline is [Glass-HQ/liquid-glass commit a4331da89ee47bcaaef3276de522257f37b0ee26](https://github.com/Glass-HQ/liquid-glass/tree/a4331da89ee47bcaaef3276de522257f37b0ee26):
@@ -67,11 +67,9 @@ No new TOML configuration or changes to global widget appearance defaults are se
 
 Retain the upstream copyright and MIT permission notice with adapted code/substantial portions and in the delivered distribution as applicable. Document the upstream revision and adapted source scope so later maintenance can distinguish provenance from Harbor-specific changes.
 
-Actual native visual evidence is required for material acceptance; shader compilation or passing GPU tests alone is insufficient. Record executed versus NOT RUN checks and reproducible comparison conditions. This spec is not implementation or visual acceptance evidence.
+Actual native visual evidence is required for material acceptance; shader compilation or passing GPU tests alone is insufficient. Record executed versus NOT RUN checks and reproducible comparison conditions.
 
 ## Solution and Integration Seams
-
-The inspected Harbor baseline is `e6939994bbfab37b78745404c0e18b1883503e7b`. Relevant existing surfaces are [BackdropFilter](../../crates/harbor-widget/src/widgets/backdrop_filter.rs), [backdrop renderer](../../crates/harbor-widget/src/renderer/backdrop.rs), [backdrop shader](../../crates/harbor-widget/src/renderer/backdrop.wgsl), [frame encoder](../../crates/harbor-widget/src/runtime/frame_encoder.rs) and [application appearance recipes](../../crates/harbor-app/src/appearance.rs).
 
 Adapt the reference's material mathematics to GPU-native passes over the existing live backdrop. The upstream map-to-readback-to-PNG-to-SVG bridge serves browser integration and is not the selected Harbor solution. Exact API names, shader/pass partition, geometry representation and caching remain implementation choices, not an implementation plan in this contract.
 
@@ -103,16 +101,11 @@ Adapt the reference's material mathematics to GPU-native passes over the existin
 - Cover shared/default/local recipe propagation for both consumers and unchanged panel/editor geometry. Reuse applicable search/palette behavior tests rather than interpreting a visual change as permission to revise their semantics.
 - Capture native before/after evidence for E1–E5 with revision, DPI, background and panel conditions recorded. Verify live updates rather than using only a static reference screenshot. Exact visual tuning is not a pixel-perfect comparison against the upstream web demo.
 - Observe render/resource cost under the same controlled conditions and retain existing scheduling/bounded-resource obligations. No new numeric frame-time, memory or visual-difference threshold was selected; do not invent one or claim performance acceptance from test existence.
-- Production implementation, native visual checks and runtime/GPU test execution have not been performed by this spec-only refinement.
 
 ## Decisions, Assumptions and Exclusions
 
 - **Native port rather than embedding:** C2 and ADR 0076. Existing widget/app boundaries remain in force under ADRs 0066–0070.
-- **Material-only first delivery:** C1/C3/C4. Three consumers share one rendering contract, so this is one spec; no ticket decomposition is selected at this endpoint.
+- **Material-only delivery:** C1/C3/C4. Three consumers share one rendering contract.
 - **Retained appearance constraints:** C5. No prior ADR is superseded; geometric static rim shading is not the previously excluded dynamic-lighting system. Existing search geometry/translucency/no-shadow and palette editor distinction remain requirements.
 - **No unconfirmed product assumption:** Material numeric tuning and rendering internals are implementation choices within the settled contract, not new domain decisions. A need to change prior geometry, scope, appearance policy or platform sampling must return to refinement.
 - **Outside scope:** Whole-window desktop refraction/capture; side-rail/button restyling; upstream press/stretch/morph/fusion animations; web control behavior; appearance/material switching UI; new TOML schema; arbitrary filters; comprehensive Glass toolkit; pixel-exact/physical-optics guarantees.
-
-## Handoff and Endpoint
-
-Route: settled discussion → recorded architectural direction → spec only. Durable recording is in ADR 0076 and the Native Glass Material CONTEXT entry; prior knowledge was reused, not duplicated. No blocking requirement decision remains for this bounded material port. No implementation, separate plan, ticket slicing, runtime QA, staging or commit is authorized by this artifact. A subsequent user invocation of `grimoire-loop` may implement this contract; any newly necessary product/architecture decision returns to refinement before downstream work proceeds.

@@ -6,12 +6,12 @@ use crate::fiber::{FiberArena, FiberId};
 use crate::input::event::{
     FocusEvent, Key, KeyboardEvent, PointerBoundaryKind, PointerPhase, UiEvent,
 };
-use crate::input::event_ctx::{EventCommand, EventCtx, EventPhase};
+use crate::input::event_ctx::{EventCommand, EventCtx, EventHandled, EventPhase};
 use crate::input::state::InputState;
 use crate::layout::{Point, Rect};
 use crate::scene::primitive::ExternalDrawId;
 use crate::view::EnsureVisibleResult;
-use crate::widgets::shortcuts::KeyChord;
+use crate::widgets::shortcut_map::KeyChord;
 use std::any::Any;
 
 /// A canceled action retains only its key ownership until release/new press.
@@ -80,7 +80,7 @@ impl EventRouter {
     /// dropped the previous release, so stale ownership must not capture this one.
     #[cfg(feature = "winit")]
     pub(crate) fn begin_key_press(&mut self, key: Key) {
-        let key = KeyChord::new(key, Default::default()).key;
+        let key = KeyChord::new(key, Default::default()).key();
         self.consumed_shortcuts
             .retain(|shortcut| shortcut.key != key);
     }
@@ -223,7 +223,7 @@ impl EventRouter {
             }
             UiEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
                 if let Some(index) = self.consumed_shortcuts.iter().position(|shortcut| {
-                    shortcut.key == KeyChord::new(*key, Default::default()).key
+                    shortcut.key == KeyChord::new(*key, Default::default()).key()
                 }) {
                     self.consumed_shortcuts.remove(index);
                     return true;
@@ -233,7 +233,7 @@ impl EventRouter {
                 if let Some(shortcut) = self
                     .consumed_shortcuts
                     .iter()
-                    .find(|shortcut| shortcut.key == KeyChord::new(*key, Default::default()).key)
+                    .find(|shortcut| shortcut.key == KeyChord::new(*key, Default::default()).key())
                 {
                     if let Some(editor) = shortcut.editor
                         && self.focused_event_target(arena) == Some(editor)
@@ -303,9 +303,9 @@ impl EventRouter {
                         self.find_shortcut(arena, root_id, *key, *modifiers)
                 {
                     let outcome = self.invoke_action(arena, source, action.as_ref());
-                    if outcome == Some(crate::widgets::actions::ActionOutcome::Consumed) {
+                    if outcome == Some(crate::widgets::action_handler::ActionOutcome::Consumed) {
                         self.consumed_shortcuts.push(ConsumedShortcut {
-                            key: KeyChord::new(*key, Default::default()).key,
+                            key: KeyChord::new(*key, Default::default()).key(),
                             action: Some((source, action)),
                             editor: None,
                         });
@@ -366,33 +366,37 @@ impl EventRouter {
             ctx.suppress_focus_navigation();
         }
 
-        ctx.set_phase(EventPhase::Capture);
-        for &ancestor_id in ancestors {
-            if Self::is_modal_block(arena, ancestor_id, target) {
-                return self.finish_event(arena, ctx);
+        'walk: {
+            ctx.set_phase(EventPhase::Capture);
+            for &ancestor_id in ancestors {
+                if Self::is_modal_block(arena, ancestor_id, target)
+                    || Self::invoke_handler(arena, ancestor_id, event, &mut ctx)
+                        == EventHandled::Handled
+                {
+                    break 'walk;
+                }
             }
-            Self::invoke_handler(arena, ancestor_id, event, &mut ctx);
-            if ctx.is_propagation_stopped() {
-                return self.finish_event(arena, ctx);
-            }
-        }
 
-        ctx.set_phase(EventPhase::Target);
-        if let Some(target) = target {
-            Self::invoke_handler(arena, target, event, &mut ctx);
-            if ctx.is_propagation_stopped() {
-                return self.finish_event(arena, ctx);
+            ctx.set_phase(EventPhase::Target);
+            if let Some(target) = target
+                && Self::invoke_handler(arena, target, event, &mut ctx) == EventHandled::Handled
+            {
+                break 'walk;
             }
-        }
 
-        ctx.set_phase(EventPhase::Bubble);
-        for &ancestor_id in ancestors.iter().rev() {
-            Self::invoke_handler(arena, ancestor_id, event, &mut ctx);
-            if ctx.is_propagation_stopped() {
-                return self.finish_event(arena, ctx);
+            ctx.set_phase(EventPhase::Bubble);
+            for &ancestor_id in ancestors.iter().rev() {
+                if Self::invoke_handler(arena, ancestor_id, event, &mut ctx)
+                    == EventHandled::Handled
+                {
+                    break 'walk;
+                }
             }
         }
-        hover_needs_redraw || self.finish_event(arena, ctx)
+        // Consumption only stops delivery. Always commit this walk, even when
+        // an earlier, independently delivered hover notification requested paint.
+        let event_needs_redraw = self.finish_event(arena, ctx);
+        hover_needs_redraw || event_needs_redraw
     }
 
     pub(crate) fn route_to_single(
@@ -408,7 +412,7 @@ impl EventRouter {
 
     pub(crate) fn finish_event(&mut self, arena: &FiberArena, mut ctx: EventCtx) -> bool {
         if let Some((key, editor)) = ctx.take_consumed_key() {
-            let key = KeyChord::new(key, Default::default()).key;
+            let key = KeyChord::new(key, Default::default()).key();
             if !self.consumed_shortcuts.iter().any(|press| press.key == key) {
                 self.consumed_shortcuts.push(ConsumedShortcut {
                     key,
@@ -703,7 +707,7 @@ impl EventRouter {
         }
 
         // With no focus, only the root's unambiguous single-child wrapper chain
-        // participates. This supports global Actions -> Shortcuts composition
+        // participates. This supports global ActionHandler -> ShortcutMap composition
         // without activating branch-local bindings arbitrarily.
         let mut current = Some(root);
         let mut matched = None;
@@ -731,7 +735,7 @@ impl EventRouter {
         arena: &FiberArena,
         source: FiberId,
         action: &dyn Any,
-    ) -> Option<crate::widgets::actions::ActionOutcome> {
+    ) -> Option<crate::widgets::action_handler::ActionOutcome> {
         let mut current = Some(source);
         while let Some(fiber) = current {
             if let Some(outcome) = arena
@@ -1004,12 +1008,19 @@ impl EventRouter {
             .and_then(|fiber| fiber.view.as_ref())
             .is_some_and(|view| view.accepts_pointer_boundaries())
     }
-    fn invoke_handler(arena: &FiberArena, fiber: FiberId, event: &UiEvent, ctx: &mut EventCtx) {
+    fn invoke_handler(
+        arena: &FiberArena,
+        fiber: FiberId,
+        event: &UiEvent,
+        ctx: &mut EventCtx,
+    ) -> EventHandled {
         let rect = arena.get(fiber).and_then(|fiber| fiber.layout_rect);
         let view = arena.get(fiber).and_then(|fiber| fiber.view.clone());
         if let (Some(view), Some(rect)) = (view, rect) {
             ctx.set_current_fiber(fiber);
-            view.handle_event(event, ctx, rect);
+            view.handle_event(event, ctx, rect)
+        } else {
+            EventHandled::Ignored
         }
     }
 }
@@ -1022,3 +1033,6 @@ fn valid_non_empty_rect(rect: Rect) -> bool {
         && rect.max.x > rect.min.x
         && rect.max.y > rect.min.y
 }
+
+#[cfg(test)]
+mod tests;

@@ -2,8 +2,8 @@ use proc_macro2::Span;
 use syn::{Expr, Pat, Token, spanned::Spanned};
 
 /// Parsed input to `view! { cx; root }`.
+/// Parsed input to `view! { root }`.
 pub struct ViewInput {
-    pub cx: Expr,
     pub root: Root,
 }
 

@@ -1,7 +1,7 @@
 # Box Drawing and Decoration Lifecycle
 
 **Spec ID:** 0022
-**Status:** Implementation present; integrated acceptance unverified
+**Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-11
 
 **Stable execution aliases:** 0016/T0001 = procedural boxes (R1/R2/R4); T0002 = decoration metric lifecycle (R3/R4); T0003 = combined desktop acceptance (R5 and Definition of Done), including source/test comments and historical evidence labels referring to T0003.
@@ -9,7 +9,7 @@
 
 ## Scope and Settled Contract
 
-Deliver seamless terminal box drawing for the complete **U+2500–U+257F Box Drawing** block and correct underline, strikethrough, and overline presentation across metric/resource and viewport/DPI transitions. The user approved terminal-owned procedural geometry, the complete block, native font-resource replacement smoke without adding user-configuration hot reload, and the **Spec -> slice** endpoint on 2026-10-11.
+Deliver seamless terminal box drawing for the complete **U+2500–U+257F Box Drawing** block and correct underline, strikethrough, and overline presentation across metric/resource and viewport/DPI transitions. The user approved terminal-owned procedural geometry, the complete block, native font-resource replacement smoke without adding user-configuration hot reload on 2026-10-11.
 
 Historical acceptance records retain their original scope; NOT RUN cases are not passes.
 
@@ -54,26 +54,21 @@ The native font item is deliberately scoped to Windows DirectWrite font-resource
 - Run a named Windows application workload with box-drawing borders, not only a synthetic CPU fixture. Include relevant redraw/resize observations and explicitly identify the application and transport exercised.
 - Run Windows native font-resource replacement smoke with DirectWrite and actual GPU rendering: replace the font resources with a configuration that changes metrics and observe box drawing, ordinary glyphs, and all three decoration kinds before/after. Distinguish this from restarting with a different startup font, reloading the same metrics, simulated geometry, and desktop user-settings hot reload.
 - Perform actual cross-monitor window moves between displays with differing DPI/scale and observe the same presentation before/after. A static 1.5x display observation, offscreen scale mutation, or GPU unit test is not that runtime evidence.
-- If an evidence case cannot be run, record why and preserve NOT RUN/BLOCKED. The issue permits explicit deferral, but the user has not authorized blanket deferral of the required native-resource or cross-monitor cases. Obtain and record the missing case's explicit scope decision before claiming completion by deferral. A failed case remains a defect/blocker, not a pass or an implicit deferral.
-- Record fresh results for all standard quality gates listed below. Existing historical passes and configured CI jobs do not establish a new execution pass.
+- If an evidence case cannot be run, record why and preserve NOT RUN/BLOCKED. Any deferral must be explicitly authorized and recorded; owner acceptance is not evidence that an unavailable case ran. A failed case remains a defect, not a pass or an implicit deferral.
+- Record fresh results for all standard quality gates. Existing historical passes and configured CI jobs do not establish a new execution pass.
 
 ## Acceptance status
 
-The procedural-box and decoration metric-lifecycle implementations do not establish integrated desktop acceptance. Historical 0016/T0003 was marked Done on user-reported verification with no apparent issues, but supplied no tested revision, environment, named application, native replacement/cross-monitor procedures or fresh gate results. Its detailed acceptance remained unchecked. R5 and the definition below remain required: no implicit deferral, broader support or #193 closure follows from that report. New evidence summaries must be self-contained, without local-only raw-artifact links.
+Owner acceptance supersedes the former unverified integrated desktop status. Historical 0016/T0003 completion was based on user-reported verification with no apparent issues, without a self-contained runtime/gate record; it is not new test evidence. The intermittent font-replacement GPU comparison noted in [development progress](../../docs/developer/progress.md) remains a known issue, not a repair established by acceptance or a successful rerun. Evidence summaries remain self-contained, without local-only raw-artifact links.
 
 ## Definition of Done
 
-- [ ] R1-R4 have focused CPU geometry and practical GPU encode/readback coverage, including joins, local updates, metric changes, degenerate inputs, and resize bounds.
-- [ ] Existing ordinary text, emoji/combining/preedit, SGR/OSC 8/conceal, source/copy/width, and coherent damage/invalidation behavior remain intact within affected regression coverage.
-- [ ] R5 has named Windows workload, native changed-metrics resource replacement, and actual cross-monitor records, or an explicitly authorized and documented deferral for each unavailable required case. No FAIL is presented as completion.
-- [ ] Fresh standard quality results and evidence limitations are recorded; documentation claims only implemented and actually verified behavior.
+These are retained acceptance/regression criteria, not new execution results.
 
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
-python scripts/docs/check_docs.py
-```
+- R1-R4 have focused CPU geometry and practical GPU encode/readback coverage, including joins, local updates, metric changes, degenerate inputs, and resize bounds.
+- Existing ordinary text, emoji/combining/preedit, SGR/OSC 8/conceal, source/copy/width, and coherent damage/invalidation behavior remain intact within affected regression coverage.
+- R5 has named Windows workload, native changed-metrics resource replacement, and actual cross-monitor records, or an explicitly authorized and documented deferral for each unavailable required case. No FAIL is presented as completion.
+- Fresh standard quality results and evidence limitations are recorded; documentation claims only implemented and actually verified behavior.
 
 ## Out of Scope
 

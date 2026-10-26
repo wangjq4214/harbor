@@ -358,7 +358,11 @@ fn paint_text(clip_behavior: ClipBehavior) -> harbor_widget::scene::SceneDelta {
     runtime.set_root(
         DecoratedBox::new(BoxDecoration::new().border_radius(BorderRadius::all(8.0).unwrap()))
             .clip_behavior(clip_behavior)
-            .child(TextLabel::new("Hi").color(Color::RED)),
+            .child(
+                TextLabel::new("Hi")
+                    .foreground(Color::RED)
+                    .expect("valid color"),
+            ),
     );
     runtime.update(Instant::now());
     runtime

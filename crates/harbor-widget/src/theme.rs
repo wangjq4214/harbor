@@ -1,7 +1,75 @@
 //! Semantic desktop theme tokens shared by widget controls.
 
+use crate::layout::{LayoutConfigError, configuration::validate_scalar};
 use crate::scene::primitive::Color;
 use crate::widgets::InteractionState;
+
+/// An ordinary solid color contained a non-finite RGBA component.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorConfigError {
+    pub field: &'static str,
+    pub color: Color,
+}
+
+impl std::fmt::Display for ColorConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} must have finite RGBA components; got {:?}",
+            self.field, self.color
+        )
+    }
+}
+
+impl std::error::Error for ColorConfigError {}
+
+pub(crate) fn validate_color(field: &'static str, color: Color) -> Result<(), ColorConfigError> {
+    if color.is_finite() {
+        Ok(())
+    } else {
+        Err(ColorConfigError { field, color })
+    }
+}
+
+/// A field-specific error at a complete style/theme consumption boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AppearanceError {
+    Scalar {
+        scope: &'static str,
+        error: LayoutConfigError,
+    },
+    Color {
+        scope: &'static str,
+        error: ColorConfigError,
+    },
+}
+
+impl AppearanceError {
+    fn in_scope(self, scope: &'static str) -> Self {
+        match self {
+            Self::Scalar { error, .. } => Self::Scalar { scope, error },
+            Self::Color { error, .. } => Self::Color { scope, error },
+        }
+    }
+}
+
+impl std::fmt::Display for AppearanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scalar { scope, error } => write!(f, "{scope}.{error}"),
+            Self::Color { scope, error } => write!(f, "{scope}.{error}"),
+        }
+    }
+}
+
+impl std::error::Error for AppearanceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Scalar { error, .. } => Some(error),
+            Self::Color { error, .. } => Some(error),
+        }
+    }
+}
 
 /// The colors used to draw one control state.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +123,68 @@ impl From<&InteractionState> for ControlVisualState {
 }
 
 impl ControlStyle {
+    /// Validates the complete raw input, including inactive state colors.
+    /// Finite scalars may still overflow when combined during layout.
+    pub fn validate(&self) -> Result<(), AppearanceError> {
+        for (field, value) in [
+            ("min_height", self.min_height),
+            ("horizontal_padding", self.horizontal_padding),
+            ("icon_size", self.icon_size),
+            ("border_width", self.border_width),
+            ("radius", self.radius),
+        ] {
+            validate_scalar(field, value).map_err(|error| AppearanceError::Scalar {
+                scope: "ControlStyle",
+                error,
+            })?;
+        }
+        for (fields, colors) in [
+            (
+                ["normal.background", "normal.border", "normal.foreground"],
+                self.normal,
+            ),
+            (
+                ["hovered.background", "hovered.border", "hovered.foreground"],
+                self.hovered,
+            ),
+            (
+                ["pressed.background", "pressed.border", "pressed.foreground"],
+                self.pressed,
+            ),
+            (
+                [
+                    "selected.background",
+                    "selected.border",
+                    "selected.foreground",
+                ],
+                self.selected,
+            ),
+            (
+                [
+                    "disabled.background",
+                    "disabled.border",
+                    "disabled.foreground",
+                ],
+                self.disabled,
+            ),
+        ] {
+            for (field, color) in
+                fields
+                    .into_iter()
+                    .zip([colors.background, colors.border, colors.foreground])
+            {
+                validate_color(field, color).map_err(|error| AppearanceError::Color {
+                    scope: "ControlStyle",
+                    error,
+                })?;
+            }
+        }
+        validate_color("focus_ring", self.focus_ring).map_err(|error| AppearanceError::Color {
+            scope: "ControlStyle",
+            error,
+        })
+    }
+
     /// Resolves colors for a discrete control visual state.
     pub fn resolve_visual_state(&self, state: ControlVisualState) -> ControlColors {
         match state {
@@ -98,6 +228,22 @@ pub struct Theme {
     pub button: ControlStyle,
     pub icon_button: ControlStyle,
     pub spacing: f32,
+}
+
+impl Theme {
+    /// Validates both control roles and spacing at the consumption boundary.
+    pub fn validate(&self) -> Result<(), AppearanceError> {
+        self.button
+            .validate()
+            .map_err(|error| error.in_scope("Theme.button"))?;
+        self.icon_button
+            .validate()
+            .map_err(|error| error.in_scope("Theme.icon_button"))?;
+        validate_scalar("spacing", self.spacing).map_err(|error| AppearanceError::Scalar {
+            scope: "Theme",
+            error,
+        })
+    }
 }
 
 impl Default for Theme {
