@@ -11,6 +11,7 @@ use super::{
     FrameError, FrameOutcome, SharedGpu, WindowPresenter, WindowSurface, WinitAdapter,
     WinitFrameTarget,
 };
+use crate::IntoChildView;
 use crate::effects::{
     ClipboardEffect, ClipboardEffectError, ControlFlowEffect, ExternalInvalidation, RuntimeEffects,
 };
@@ -18,7 +19,6 @@ use crate::input::event::UiEvent;
 use crate::renderer::Viewport;
 use crate::scene::primitive::ExternalDrawId;
 use crate::text::TextMetrics;
-use crate::view::Component;
 use crate::widgets::FocusHandle;
 use anyhow::Context as _;
 use std::any::Any;
@@ -234,13 +234,15 @@ impl<P, F> WinitWindowHostBuilder<P, F>
 where
     P: WindowPlatformHooks,
 {
+    /// Builds a host from a one-shot, fallible Component or View factory.
+    /// Components are built by the Runtime after setup; existing Views pass through unchanged.
     pub async fn build<R>(
         self,
         event_loop: &ActiveEventLoop,
     ) -> Result<WinitWindowHost, HostStartupError>
     where
         F: for<'a> FnOnce(HostInitContext<'a>, &'a P::Setup) -> anyhow::Result<R>,
-        R: Component + 'static,
+        R: IntoChildView + 'static,
     {
         let WinitWindowHostBuilder {
             attributes,
@@ -268,13 +270,14 @@ where
     }
 
     /// Builds a complete host and atomically returns application-owned bootstrap output.
+    /// Accepts the same Component/View roots and Runtime-owned mounting protocol as [`Self::build`].
     pub async fn build_with_output<R, A>(
         self,
         event_loop: &ActiveEventLoop,
     ) -> Result<(WinitWindowHost, A), HostStartupError>
     where
         F: for<'a> FnOnce(HostInitContext<'a>, &'a P::Setup) -> anyhow::Result<(R, A)>,
-        R: Component + 'static,
+        R: IntoChildView + 'static,
     {
         let attributes = self
             .platform

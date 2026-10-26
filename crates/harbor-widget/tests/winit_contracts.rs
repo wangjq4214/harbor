@@ -23,6 +23,57 @@ use winit::event::{
 use winit::keyboard::{Key, KeyLocation, ModifiersState};
 use winit::window::Window;
 
+// These bodies are type-checked without requiring a native event loop/GPU.
+#[allow(dead_code)]
+async fn root_factory_parity_contract(
+    event_loop: &winit::event_loop::ActiveEventLoop,
+) -> Result<(), HostStartupError> {
+    use harbor_widget::layout::Size;
+    use harbor_widget::{IntoChildView, SizedBox, View, view};
+
+    let component = || SizedBox::new(Size::new(16.0, 16.0)).unwrap();
+    let existing: View = component().into_child_view();
+    let _ = WinitWindowHostBuilder::new(
+        Window::default_attributes(),
+        |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>(component()),
+    )
+    .build(event_loop)
+    .await?;
+    let _ = WinitWindowHostBuilder::new(
+        Window::default_attributes(),
+        |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>(view! { component(); }),
+    )
+    .build(event_loop)
+    .await?;
+    let _ = WinitWindowHostBuilder::new(
+        Window::default_attributes(),
+        move |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>(existing),
+    )
+    .build(event_loop)
+    .await?;
+
+    let existing: View = component().into_child_view();
+    let _ = WinitWindowHostBuilder::new(
+        Window::default_attributes(),
+        |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>((component(), 42)),
+    )
+    .build_with_output(event_loop)
+    .await?;
+    let _ = WinitWindowHostBuilder::new(
+        Window::default_attributes(),
+        |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>((view! { component(); }, 42)),
+    )
+    .build_with_output(event_loop)
+    .await?;
+    let _ = WinitWindowHostBuilder::new(
+        Window::default_attributes(),
+        move |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>((existing, 42)),
+    )
+    .build_with_output(event_loop)
+    .await?;
+    Ok(())
+}
+
 #[test]
 fn widget_manifest_does_not_depend_on_terminal_or_application_crates() {
     let manifest = include_str!("../Cargo.toml");

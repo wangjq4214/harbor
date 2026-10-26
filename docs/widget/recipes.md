@@ -11,7 +11,7 @@ Use a path dependency with `harbor-widget`'s `winit` feature, plus `winit = "0.3
 This complete minimal executable owns the event loop while `WinitWindowHost` owns one window, runtime, adapter, surface and presentation lifecycle. It exits on close or a fatal frame error. Startup failure is deliberately fatal in this small example; a product should choose its own error UI/recovery policy.
 
 ```rust,no_run
-use harbor_widget::{ControlFlowEffect, TextEditingController, TextField};
+use harbor_widget::{ControlFlowEffect, TextEditingController, TextField, view};
 use harbor_widget::winit::{HostInitContext, WinitWindowHost, WinitWindowHostBuilder};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -38,9 +38,10 @@ impl ApplicationHandler for App {
         let builder = WinitWindowHostBuilder::new(
             Window::default_attributes().with_title("Harbor field"),
             |_context: HostInitContext<'_>, _setup: &()| {
-                // Root construction, not repeated Component::build work.
-                Ok::<_, anyhow::Error>(TextField::new(TextEditingController::new(""))
-                    .placeholder("Type here"))
+                // A macro View needs no wrapper Component. Mount/build/hooks stay Runtime-owned.
+                Ok::<_, anyhow::Error>(view! {
+                    TextField::new(TextEditingController::new("")).placeholder("Type here");
+                })
             },
         );
         self.host = Some(pollster::block_on(builder.build(event_loop))
@@ -78,6 +79,8 @@ fn main() -> Result<(), winit::error::EventLoopError> {
     event_loop.run_app(&mut App::default())
 }
 ```
+
+Both `build` and `build_with_output` accept `IntoChildView + 'static` roots: ordinary Components, macro Views, or existing Views moved into the one-shot factory. Do not call `Component::build` in the factory to satisfy a root bound. `build_with_output` returns application bootstrap output only alongside a successfully constructed Host.
 
 For multiple windows, route by `WindowId`, arbitrate their wait requests (using `ControlFlowEffect::arbitrate`) and reuse `SharedGpu` where appropriate. Do not share focus/surface state between windows. The small example above is not a multi-window or mobile suspend/resume lifecycle implementation.
 
