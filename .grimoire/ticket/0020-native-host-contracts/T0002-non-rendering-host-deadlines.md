@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [spec 0042](../../spec/0042-native-host-roots-deadlines-and-gpu-outcomes.md) R2/R6, E2; [ADR 0088](../../adr/0088-native-host-root-deadline-and-shared-gpu-fault-contracts.md) D2; review F15.
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -36,3 +36,7 @@ Separate future Host wake demand from render eligibility in the existing schedul
 ## Out of Scope
 
 Moving business timers into widgets, using redraw to emulate wake delivery, automatic Store wakeup and GPU error-policy implementation.
+
+## Delivery Evidence
+
+See [T0002 delivery evidence](./T0002-non-rendering-host-deadlines-evidence.md) for criterion coverage, commands, actual native timer results and verification limits.

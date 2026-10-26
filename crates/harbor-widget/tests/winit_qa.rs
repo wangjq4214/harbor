@@ -834,6 +834,87 @@ fn should_honor_host_deadline_when_adapter_is_idle() {
 }
 
 #[test]
+fn suspended_presenter_preserves_host_wakes_and_cross_window_waits() {
+    use harbor_widget::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
+
+    let now = Instant::now();
+    let runtime_deadline = now + Duration::from_secs(3);
+    let host_deadline = now + Duration::from_secs(2);
+    let secondary_deadline = now + Duration::from_secs(1);
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(move |_, _| ExternalScheduleDemand {
+        deadline: Some(runtime_deadline),
+        ordinary_present_eligible: false,
+        ..ExternalScheduleDemand::empty()
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(42).schedule_with(schedule));
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut adapter = WinitAdapter::new();
+    // Use the adapter's real zero-size transition, not only a scheduler flag.
+    presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(winit::dpi::PhysicalSize::new(0, 0)),
+    );
+    for deadline in [Some(host_deadline), None, Some(now), Some(now)] {
+        let idle = presenter.about_to_wait(&mut runtime, now, deadline);
+        assert!(!idle.request_redraw);
+        assert!(!idle.force_present);
+        assert!(idle.has_deferred_externals);
+        let expected = deadline
+            .filter(|at| *at > now)
+            .map(ControlFlowEffect::WaitUntil)
+            .unwrap_or(ControlFlowEffect::Wait);
+        assert_eq!(idle.control_flow, Some(expected));
+    }
+
+    let mut secondary_runtime = Runtime::new();
+    let mut secondary = WindowPresenter::new(400, 300, 1.0);
+    secondary.set_drawable(false);
+    let primary_wait = presenter
+        .about_to_wait(&mut runtime, now, Some(host_deadline))
+        .control_flow
+        .unwrap();
+    let secondary_wait = secondary
+        .about_to_wait(&mut secondary_runtime, now, Some(secondary_deadline))
+        .control_flow
+        .unwrap();
+    assert_eq!(
+        primary_wait.arbitrate(secondary_wait),
+        ControlFlowEffect::WaitUntil(secondary_deadline)
+    );
+    assert_eq!(
+        secondary_wait.arbitrate(primary_wait),
+        ControlFlowEffect::WaitUntil(secondary_deadline)
+    );
+    // Application business timers remain independently arbitrated.
+    let business_wait = ControlFlowEffect::WaitUntil(now + Duration::from_millis(100));
+    assert_eq!(
+        primary_wait
+            .arbitrate(secondary_wait)
+            .arbitrate(business_wait),
+        business_wait
+    );
+
+    let restored = presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(winit::dpi::PhysicalSize::new(800, 600)),
+    );
+    assert!(restored.effects.request_redraw);
+    assert!(restored.effects.force_present);
+    let idle = presenter.about_to_wait(&mut runtime, now, Some(host_deadline));
+    assert!(!idle.request_redraw);
+    // Recovery wins while drawable; the Runtime deadline remains independently supplied.
+    assert_eq!(
+        idle.control_flow,
+        Some(ControlFlowEffect::WaitUntil(
+            now + Duration::from_millis(100)
+        ))
+    );
+}
+
+#[test]
 fn should_request_redraw_when_idle_turn_finds_dirty_fiber() {
     // Arrange — set_root dirties the tree; no update yet.
     let mut runtime = Runtime::new();

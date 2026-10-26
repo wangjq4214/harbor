@@ -133,11 +133,15 @@ impl FrameScheduler {
 
     /// Calculates idle-turn redraw and wait policy, optionally considering a
     /// host-supplied deadline that must not overwrite the runtime deadline.
+    /// Suspension suppresses render wake demand, not future Host wake demand.
     pub(crate) fn about_to_wait(
         &mut self,
         now: Instant,
         host_deadline: Option<Instant>,
     ) -> RuntimeEffects {
+        // Business work belongs to the caller. Due input must neither spin nor
+        // mask another future demand in drawable deadline arbitration.
+        let host_deadline = host_deadline.filter(|deadline| *deadline > now);
         if !self.drawable {
             if let Some(deadline) = self.runtime_deadline
                 && now >= deadline
@@ -150,7 +154,11 @@ impl FrameScheduler {
                 self.recovery_deadline = None;
             }
             return RuntimeEffects {
-                control_flow: Some(ControlFlowEffect::Wait),
+                control_flow: Some(
+                    host_deadline
+                        .map(ControlFlowEffect::WaitUntil)
+                        .unwrap_or(ControlFlowEffect::Wait),
+                ),
                 ordinary_present_eligible: true,
                 has_deferred_externals: self.has_deferred_externals,
                 ..RuntimeEffects::default()
@@ -1025,5 +1033,120 @@ mod tests {
         assert_eq!(idle.control_flow, Some(ControlFlowEffect::Wait));
         assert!(!idle.force_present);
         assert!(!restored.force_present);
+    }
+
+    #[test]
+    fn suspended_host_deadlines_wake_without_rendering_or_spinning() {
+        let now = Instant::now();
+        let host = now + Duration::from_secs(1);
+        let mut scheduler = FrameScheduler::default();
+        scheduler.set_drawable(false);
+
+        for (at, deadline, expected) in [
+            (now, None, ControlFlowEffect::Wait),
+            (now, Some(host), ControlFlowEffect::WaitUntil(host)),
+            (host, Some(host), ControlFlowEffect::Wait),
+            (host, Some(host), ControlFlowEffect::Wait),
+            (
+                host + Duration::from_secs(1),
+                Some(host),
+                ControlFlowEffect::Wait,
+            ),
+            (
+                host + Duration::from_secs(1),
+                Some(host + Duration::from_secs(2)),
+                ControlFlowEffect::WaitUntil(host + Duration::from_secs(2)),
+            ),
+            (host + Duration::from_secs(1), None, ControlFlowEffect::Wait),
+        ] {
+            let effects = scheduler.about_to_wait(at, deadline);
+            assert_eq!(effects.control_flow, Some(expected));
+            assert!(!effects.request_redraw);
+            assert!(!effects.force_present);
+            assert!(!scheduler.redraw_pending());
+        }
+    }
+
+    #[test]
+    fn suspended_host_wake_preserves_render_demand_and_coalesces_restoration() {
+        let now = Instant::now();
+        let runtime = now + Duration::from_secs(2);
+        let host = now + Duration::from_secs(1);
+        for demand in [
+            ControlFlowEffect::Poll,
+            ControlFlowEffect::WaitUntil(runtime),
+        ] {
+            let mut scheduler = FrameScheduler::default();
+            scheduler.schedule(RuntimeEffects {
+                request_redraw: true,
+                control_flow: Some(demand),
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            });
+            // Arm a recovery deadline, then suspend with redraw still outstanding.
+            scheduler.about_to_wait(now, None);
+            scheduler.set_drawable(false);
+            for at in [now, now + FrameScheduler::RECOVERY_INTERVAL] {
+                let effects = scheduler.about_to_wait(at, Some(host));
+                assert_eq!(
+                    effects.control_flow,
+                    Some(ControlFlowEffect::WaitUntil(host))
+                );
+                assert!(!effects.request_redraw);
+                assert!(!effects.force_present);
+            }
+            assert!(scheduler.recovery_deadline().is_none());
+
+            let restored = scheduler.set_drawable(true);
+            assert!(restored.request_redraw);
+            assert!(restored.force_present);
+            assert!(!scheduler.set_drawable(true).request_redraw);
+            let idle = scheduler.about_to_wait(host, Some(host));
+            assert!(!idle.request_redraw);
+            if demand == ControlFlowEffect::Poll {
+                assert_eq!(idle.control_flow, Some(ControlFlowEffect::Poll));
+            } else {
+                assert_eq!(scheduler.runtime_deadline, Some(runtime));
+                assert_eq!(
+                    idle.control_flow,
+                    Some(ControlFlowEffect::WaitUntil(
+                        host + FrameScheduler::RECOVERY_INTERVAL
+                    ))
+                );
+            }
+            let started = scheduler.frame_started(RuntimeEffects {
+                has_deferred_externals: true,
+                ..RuntimeEffects::default()
+            });
+            assert!(started.force_present);
+            assert!(!started.request_redraw);
+        }
+    }
+
+    #[test]
+    fn expired_host_deadline_does_not_mask_drawable_runtime_or_recovery_wait() {
+        let now = Instant::now();
+        let runtime = now + Duration::from_secs(2);
+        for deferred in [false, true] {
+            let mut scheduler = FrameScheduler::default();
+            scheduler.schedule(RuntimeEffects {
+                control_flow: Some(ControlFlowEffect::WaitUntil(runtime)),
+                has_deferred_externals: deferred,
+                ..RuntimeEffects::default()
+            });
+            for expired in [now - Duration::from_secs(1), now] {
+                let effects = scheduler.about_to_wait(now, Some(expired));
+                let expected = if deferred {
+                    now + FrameScheduler::RECOVERY_INTERVAL
+                } else {
+                    runtime
+                };
+                assert_eq!(
+                    effects.control_flow,
+                    Some(ControlFlowEffect::WaitUntil(expected))
+                );
+                assert!(!effects.request_redraw);
+            }
+        }
     }
 }

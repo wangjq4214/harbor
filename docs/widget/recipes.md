@@ -82,6 +82,8 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 
 Both `build` and `build_with_output` accept `IntoChildView + 'static` roots: ordinary Components, macro Views, or existing Views moved into the one-shot factory. Do not call `Component::build` in the factory to satisfy a root bound. `build_with_output` returns application bootstrap output only alongside a successfully constructed Host.
 
+Pass an application wake deadline as the second argument to `host.about_to_wait(now, Some(deadline))`. Future Host deadlines remain `WaitUntil` demands even while the window is zero-sized/non-drawable, without acquiring/submitting a frame or polling render animation. The application performs due business work and reschedules/removes the deadline; expired Host input is ignored and does not request redraw. Runtime deadlines remain separate and normal coalesced rendering resumes on restoration. Keep independently owned business/notification timers in the application's final wait arbitration.
+
 For multiple windows, route by `WindowId`, arbitrate their wait requests (using `ControlFlowEffect::arbitrate`) and reuse `SharedGpu` where appropriate. Do not share focus/surface state between windows. The small example above is not a multi-window or mobile suspend/resume lifecycle implementation.
 
 ### Add an application controller

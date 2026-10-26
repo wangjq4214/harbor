@@ -679,6 +679,12 @@ impl WinitWindowHost {
         self.redraw()
     }
 
+    /// Computes this window's wait demand, including application work that does
+    /// not require rendering. A future `host_deadline` survives zero-size
+    /// suspension; it does not request a frame or replace Runtime deadlines.
+    /// The caller handles due work and refreshes/removes its deadline. Expired
+    /// Host deadlines are ignored. Arbitrate the result with other windows and
+    /// independent application timers before setting event-loop control flow.
     pub fn about_to_wait(
         &mut self,
         now: Instant,
