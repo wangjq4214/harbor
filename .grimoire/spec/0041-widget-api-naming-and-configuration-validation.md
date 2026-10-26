@@ -3,7 +3,7 @@
 **Spec ID:** 0041
 **Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-25
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U4/F6/F7/F8, the §7 full mapping and the §5–6 preserved boundaries; this round of conversation successively confirmed the full breaking migration, explicit rejection of invalid configuration, and the additional contracts R4–R7 of this document.
+**Sources:** historical UI/API review U4/F6/F7/F8; the adopted mapping and preserved boundaries are retained in R1–R8 below; this round of conversation successively confirmed the full breaking migration, explicit rejection of invalid configuration, and the additional contracts R4–R7 of this document.
 **Decision record:** [ADR 0087](../adr/0087-widget-api-naming-and-validation-boundaries.md).
 
 ## Requirements
@@ -22,9 +22,9 @@
 
 - Migrate the corresponding module/file names, public exports, in-repo callers, macro fixtures, examples, and current API docs in step; do not maintain a compatibility layer through old aliases, old constructors, or duplicate synonymous entry points. Old names in historical ADRs/specs may keep their historical meaning; do not treat historical text as current API examples.
 - `CrossAxisAlignment` still contains true Stretch; first separate positioning-only consumers from that type — do not mechanically rename and then let notification positioning keep accepting Stretch.
-- Keep `MainAxisAlignment`, `PositionAlignment`, `Alignment2D`, `FlexOptions`, `FocusHandle`, the controllers, and the other component names listed in §7.1. Private ControlSurface is not made public, and no uniform Widget/Box suffix is added.
+- Keep `MainAxisAlignment`, `PositionAlignment`, `Alignment2D`, `FlexOptions`, `FocusHandle`, and the controller names. Retain the layout names `Row`, `Column`, `Flex`, `Stack`, `Padding`, `Align`, `SizedBox`, `ConstrainedBox`, `Flexible`, `Expanded`, `Spacer`; content/control names `TextLabel`, `Icon`, `Button`, `IconButton`, `EditableText`, `TextField`, `Separator`; and wrapper/mechanism names `DecoratedBox`, `BackdropFilter`, `ScrollView`, `Focus`, `FocusScope`, `MouseRegion`, `InteractiveRegion`, `LayoutObserver`, `ThemeProvider`, `Portal`. Their distinct responsibilities remain meaningful: do not merge text display/editing layers or rename Portal to imply a native window. Private ControlSurface is not made public, and no uniform Widget/Box suffix is added.
 
-Source: review §7.1/7.5; ADR 0087 D1/D2/D5.
+Source: accepted type mapping and migration policy (R1/R8); ADR 0087 D1/D2/D5.
 
 ### R2 — Constructors, content setters, and queries express consistent operations
 
@@ -49,7 +49,7 @@ Source: review §7.1/7.5; ADR 0087 D1/D2/D5.
 - Widget configuration queries use `get_property`, keeping `Align::get_insets`. Controllers and immutable value types do not mechanically gain a `get_` prefix. `ScrollMetrics::offset()` remains the committed actual position, while `requested_offset()` is only the request awaiting clamping by a successful layout; preserve request normalization and the existing scroll actions.
 - Keep semantically meaningful convenience entries such as `Button::text/icon`, `SizedBox::width/height`, `Separator::horizontal/vertical`, `ThemeProvider::from_signal`, and Flex `with_options`.
 
-Source: review §7.2/7.4; ADR 0087 D3; [ADR 0079](../adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md), [ADR 0080](../adr/0080-unify-child-cardinality-and-replacement-semantics.md).
+Source: accepted constructor/content/query mapping (R2); ADR 0087 D3; [ADR 0079](../adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md), [ADR 0080](../adr/0080-unify-child-cardinality-and-replacement-semantics.md).
 
 ### R3 — Property/callback naming does not change responsibility, polarity, or event timing
 
@@ -70,7 +70,7 @@ Source: review §7.2/7.4; ADR 0087 D3; [ADR 0079](../adr/0079-defer-root-constru
 - Keep the name `on_vertical_navigation` and change its bool to `VerticalDirection::{Up, Down}`; old true corresponds to Down and false to Up. EditableText, TextField, and the application palette use the same explicit meaning, keep IME priority and the existing trigger scope, and add no horizontal navigation.
 - Ordinary UI callbacks still support UI-local captures; Rc/Arc, Send/Sync, lifetime, and call timing of shared callback handles and of external draw/input/IME/schedule providers do not mechanically change because of renaming.
 
-Source: review F8, §7.3; ADR 0087 D3; [ADR 0081](../adr/0081-preserve-click-naming-and-standardize-disabled-builders.md), [ADR 0082](../adr/0082-ui-thread-local-widget-callbacks.md).
+Source: historical finding F8 and accepted property/callback mapping (R3); ADR 0087 D3; [ADR 0081](../adr/0081-preserve-click-naming-and-standardize-disabled-builders.md), [ADR 0082](../adr/0082-ui-thread-local-widget-callbacks.md).
 
 ### R4 — Make explicit the legal domain of the remaining appearance inputs
 
@@ -128,7 +128,7 @@ Source: review F8 and the user's additional confirmation item 3; ADR 0087 D7; th
 - Recommend importing common components, `Component/BuildCx/View`, and the existing construction/extension traits from the `harbor_widget` root; complete the root exports of common components such as Stack and TextLabel, replacing old root names per R1. Fine-grained configuration remains available in its owning module; exporting all internal types at the root is not required, and no prelude is added.
 - Root re-exports do not widen visibility: internal boundaries such as U3's raw View construction and raw Signal subscription remain internal boundaries.
 
-Source: review F6/F8, §7.1; the user's additional confirmation item 4; ADR 0087 D2/D8; [ADR 0086](../adr/0086-normalized-key-chords-and-private-runtime-control.md).
+Source: historical findings F6/F8 and accepted positioning/import policy (R7); the user's additional confirmation item 4; ADR 0087 D2/D8; [ADR 0086](../adr/0086-normalized-key-chords-and-private-runtime-control.md).
 
 ### R8 — Repository-level migration preserves business and runtime contracts
 
@@ -138,7 +138,7 @@ Source: review F6/F8, §7.1; the user's additional confirmation item 4; ADR 0087
 - Keep the application's search/palette/rail/notification/terminal bridge command sources, generation gating, focus/IME, text callback order, scroll requests versus actual position, and draw/clip order unchanged. Store/Dispatcher FIFO and the absence of automatic wake, Host/application ownership, and teardown order are unchanged.
 - Verify preservation and unmount under stable identity; actual remounts caused by type/structure changes should be stated truthfully, and no lossless migration across parent levels or across old/new HMR type identity is promised. Headless/mounted tests do not replace native focus, IME, or real DLL generation teardown acceptance.
 
-Source: review §4–7; ADR 0087 D3/D5; ADR 0079–0086.
+Source: preserved migration/runtime boundaries (R8); ADR 0087 D3/D5; ADR 0079–0086.
 
 ## Solution and Seams
 
@@ -197,13 +197,13 @@ Affected surface: `crates/harbor-widget/src/{theme,lib,construction,view}.rs` an
 
 | Choice | Source |
 | --- | --- |
-| Full §7 mapping, no old aliases, repository-level migration | first user confirmation; review §7; ADR 0087 D1–D3 |
+| Full mapping in R1–R3/R7, no old aliases, repository-level migration | first user confirmation; ADR 0087 D1–D3 |
 | Ordinary input structs, direct Result, dynamic per-consumption validation with panic | second user confirmation item 2; ADR 0087 D6 |
 | Finite non-negative sizes, positive notification max_width, finite-only ordinary colors, derived overflow left to layout | second user confirmation item 1, previous explicit-rejection confirmation; ADR 0087 D4; ADR 0084 |
 | Named tone/rim, keeping the old rejections and clamp/cap | review F8, second user confirmation item 3; current backdrop_filter.rs; ADR 0087 D7 |
-| Positioning without Stretch, explicit Up/Down | review F8/§7.1/§7.3 adopted in full; ADR 0087 D2/D3 |
+| Positioning without Stretch, explicit Up/Down | accepted mapping in R1/R3/R7; ADR 0087 D2/D3 |
 | Completed root imports, fine-grained configuration in owning modules, no prelude | second user confirmation item 4; ADR 0087 D8 |
-| Preserve existing runtime/application/acceptance boundaries | review §5–7; ADR 0079–0086; ADR 0087 D5 |
+| Preserve existing runtime/application/acceptance boundaries | R8; ADR 0079–0086; ADR 0087 D5 |
 
 ## Verification and Limitations
 

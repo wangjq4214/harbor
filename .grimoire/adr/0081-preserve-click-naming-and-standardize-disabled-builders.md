@@ -5,7 +5,7 @@
 
 ## Context
 
-[UI_API_REVIEW.md](../../UI_API_REVIEW.md) F3 recommends both UI-thread callback consistency and public API renaming: activation callbacks to `on_activate` and availability setters to `enabled`. These are separable choices. Button and IconButton already expose `on_click` and `disabled`; TextField and its EditableText core expose `enabled`.
+The historical UI/API review F3 recommends both UI-thread callback consistency and public API renaming: activation callbacks to `on_activate` and availability setters to `enabled`. These are separable choices. Button and IconButton already expose `on_click` and `disabled`; TextField and its EditableText core expose `enabled`.
 
 During F3 refinement, the user rejected renaming the button APIs and approved aligning TextField and EditableText with the existing negative availability setter instead. This records the agreed public API direction, not implementation or test acceptance. [ADR 0065](./0065-layered-widget-text-input.md)'s controller/core/field boundaries remain unchanged; that record leaves exact public API spelling open.
 

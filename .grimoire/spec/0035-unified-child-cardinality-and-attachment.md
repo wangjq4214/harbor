@@ -3,7 +3,7 @@
 **Spec ID:** 0035
 **Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-23
-**Sources:** `UI_API_REVIEW.md` F2/P0; refinement conversation accepting replacement/clearing semantics, construction-time dynamic errors; [ADR 0080](../adr/0080-unify-child-cardinality-and-replacement-semantics.md); [ADR 0032](../adr/0032-view-macro-rust-expression-grammar.md); [ADR 0079](../adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md).
+**Sources:** historical UI/API review F2/P0; refinement conversation accepting replacement/clearing semantics, construction-time dynamic errors; [ADR 0080](../adr/0080-unify-child-cardinality-and-replacement-semantics.md); [ADR 0032](../adr/0032-view-macro-rust-expression-grammar.md); [ADR 0079](../adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md).
 
 This contract revises the child-attachment clauses of [spec 0010](0010-desktop-terminal-tabs-and-view-macro.md): empty blocks are valid only for child-capable parents, leaf child blocks are rejected, and attachment is replacement rather than accumulation. [Spec 0034](0034-deferred-view-root-and-content-slot-boundary.md)'s deferred root/content-slot boundaries remain applicable.
 
@@ -135,11 +135,11 @@ Both root and nested parent expressions use the same replacement semantics. Sing
 - **Choice:** Setters/block assignment replace; empty assignment clears; only named append methods append.
   **Source:** Accepted refinement conversation; ADR 0080 D2–D3. This resolves the review's overwrite-versus-error inconsistency without treating a multi-value assignment as repeated setters.
 - **Choice:** Public capability-based static validation, no widget-name whitelist and no leaf attachment boilerplate.
-  **Source:** UI_API_REVIEW F2 and accepted refinement; ADR 0080 D1/D4.
+  **Source:** historical UI/API review F2 and accepted refinement; ADR 0080 D1/D4.
 - **Choice:** Keep ordinary `view! -> View`; dynamic cardinality errors panic there but remain recoverable in handwritten checked construction.
   **Source:** Explicitly accepted refinement limitation; ADR 0080 D5.
 - **Choice:** SingleChild Align and mutually replacing InteractiveRegion child/content settings without altering content Fiber ownership.
-  **Source:** UI_API_REVIEW F2, accepted refinement; ADR 0080 D6 and ADR 0079 D4.
+  **Source:** historical UI/API review F2, accepted refinement; ADR 0080 D6 and ADR 0079 D4.
 
 ## Test Plan
 

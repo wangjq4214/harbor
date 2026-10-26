@@ -3,7 +3,7 @@
 **Spec ID:** 0039
 **Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-25
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U2, F11 and F12; refinement conversation selecting return-value-controlled propagation, removal of public `stop_propagation()`; [ADR 0085](../adr/0085-return-driven-event-consumption-and-unconditional-commit.md).
+**Sources:** historical UI/API review U2, F11 and F12; refinement conversation selecting return-value-controlled propagation, removal of public `stop_propagation()`; [ADR 0085](../adr/0085-return-driven-event-consumption-and-unconditional-commit.md).
 
 This contract covers U2 only.
 

@@ -5,7 +5,7 @@
 
 ## Context
 
-`UI_API_REVIEW.md` U3 groups F10 and F16: public `KeyChord` fields allow values that bypass constructor normalization; public `View::new` accepts built-in widgets with arbitrary children despite its private `AnyView` bound; public Signal subscription methods require a hidden Runtime scope. These interfaces permit compilable operations that violate construction or subscription expectations.
+The historical UI/API review U3 groups F10 and F16: public `KeyChord` fields allow values that bypass constructor normalization; public `View::new` accepts built-in widgets with arbitrary children despite its private `AnyView` bound; public Signal subscription methods require a hidden Runtime scope. These interfaces permit compilable operations that violate construction or subscription expectations.
 
 The refinement conversation approved one U3 spec, direct API tightening without compatibility entry points, and preservation of the existing first-match rule within a single shortcut map. This records the selected direction, not completed implementation or acceptance.
 

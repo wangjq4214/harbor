@@ -2,7 +2,7 @@
 
 **Status:** Testing
 **Date:** 2026-10-25
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U2, F11 and F12; refinement conversation accepting return-value-controlled propagation and removal of public `stop_propagation()` after comparing Harbor, Flutter and Web event models.
+**Sources:** historical UI/API review U2, F11 and F12; refinement conversation accepting return-value-controlled propagation and removal of public `stop_propagation()` after comparing Harbor, Flutter and Web event models.
 **Related:** [ADR 0009](./0009-app-cross-window-input-gate.md), [ADR 0029](./0029-widget-store-state-action-boundary.md).
 
 ## Context

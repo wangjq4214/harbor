@@ -3,7 +3,7 @@
 **Spec ID:** 0043
 **Status:** Draft
 **Date:** 2026-10-26
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U6/F14 and §§4–6; the refinement conversation approving Runtime as the recommended ordinary entry, an independently usable ordered QuadRenderer, internal storage operations, atomic migration without compatibility aliases, and preservation of reuse/batching.
+**Sources:** historical UI/API review U6/F14; preserved migration/ownership and evidence boundaries are retained in R4–R5 below; the refinement conversation approving Runtime as the recommended ordinary entry, an independently usable ordered QuadRenderer, internal storage operations, atomic migration without compatibility aliases, and preservation of reuse/batching.
 **Decision record:** [ADR 0089](../adr/0089-public-renderer-paint-order-boundary.md).
 
 This is a new requirements contract, not an implementation or acceptance report. The earlier owner-acceptance baseline for existing specifications does not establish delivery of this new U6 contract.
@@ -43,7 +43,7 @@ Source: approved refinement API/migration boundary; ADR 0089 D3.
 - Preserve Runtime's existing ordered scene walk and its batch boundaries around other rendering work. U6 addresses independent public usage; it is not evidence that Runtime's current ordering is broken.
 - Preserve U1–U5 contracts and the review's ownership/lifecycle boundaries. Do not change native Host ownership, GPU-fault policy or HMR teardown as part of this unit.
 
-Source: review §§4–5; ADR 0089 D4; runtime guide; [ADR 0003](../adr/0003-widget-independent-pipeline.md).
+Source: preserved ownership and batching contracts; ADR 0089 D4; runtime guide; [ADR 0003](../adr/0003-widget-independent-pipeline.md).
 
 ### R5 — Establish public-boundary and real draw-result evidence
 
@@ -52,7 +52,7 @@ Source: review §§4–5; ADR 0089 D4; runtime guide; [ADR 0003](../adr/0003-wid
 - Keep internal reuse/batching evidence and public GPU output evidence distinct. Stable-slot assertions, successful command encoding, and Runtime-only rendering tests do not establish the independent entry's occlusion contract.
 - Report GPU adapter/backend availability and actual execution. A skipped/no-adapter test is not successful GPU acceptance, and existing tests are evidence entry points rather than results of this refinement.
 
-Source: review U6 and §6; ADR 0089 D5; existing GPU-test adapter/readback seams.
+Source: independent-entry verification contract; ADR 0089 D5; existing GPU-test adapter/readback seams.
 
 ## Solution and Integration Seams
 

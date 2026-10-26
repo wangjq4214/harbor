@@ -3,7 +3,7 @@
 **Spec ID:** 0038
 **Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-24
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) F5, including its related F7/F8 layout concerns; refinement conversation selecting targeted breaking migration, plain input configurations with fallible component construction (option A), automatic final-node Result handling in ordinary `view!`, construction-site panic on Err.
+**Sources:** historical UI/API review F5, including its related F7/F8 layout concerns; refinement conversation selecting targeted breaking migration, plain input configurations with fallible component construction (option A), automatic final-node Result handling in ordinary `view!`, construction-site panic on Err.
 **Decision record:** [ADR 0084](../adr/0084-explicit-layout-trees-and-local-configuration.md).
 
 ## Requirements

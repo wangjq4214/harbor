@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-10-23
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) F4/P1; refinement conversation approving the recommended responsibility split, composable Button contract, constructor migration, single-line ellipsis and retained InteractiveRegion style entry point.
+**Sources:** historical UI/API review F4/P1; refinement conversation approving the recommended responsibility split, composable Button contract, constructor migration, single-line ellipsis and retained InteractiveRegion style entry point.
 **Related:** [ADR 0057](./0057-widget-vector-icons-without-font-glyphs.md), [ADR 0064](./0064-widget-and-application-component-ownership.md), [ADR 0079](./0079-defer-root-construction-and-unify-content-slot-boundaries.md), [ADR 0080](./0080-unify-child-cardinality-and-replacement-semantics.md), [ADR 0081](./0081-preserve-click-naming-and-standardize-disabled-builders.md), [ADR 0082](./0082-ui-thread-local-widget-callbacks.md).
 
 ## Context

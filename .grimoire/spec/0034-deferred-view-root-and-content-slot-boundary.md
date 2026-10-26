@@ -3,7 +3,7 @@
 **Spec ID:** 0034
 **Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-23
-**Sources:** `UI_API_REVIEW.md` finding F1/P0; [ADR 0079](../adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md) (partial supersede of [ADR 0032](../adr/0032-view-macro-rust-expression-grammar.md)); this spec revises the root/signature clauses of [spec 0010](0010-desktop-terminal-tabs-and-view-macro.md) §"Macro contract".
+**Sources:** historical UI/API review finding F1/P0; [ADR 0079](../adr/0079-defer-root-construction-and-unify-content-slot-boundaries.md) (partial supersede of [ADR 0032](../adr/0032-view-macro-rust-expression-grammar.md)); this spec revises the root/signature clauses of [spec 0010](0010-desktop-terminal-tabs-and-view-macro.md) §"Macro contract".
 
 ## Requirements
 
@@ -142,7 +142,7 @@ boundary and the Component/View runtime (no second description model):
 
 ## Out of Scope
 
-- Findings F2–F8 of `UI_API_REVIEW.md` (child cardinality, callback thread model, Button
+- Findings F2–F8 from the historical UI/API review (child cardinality, callback thread model, Button
   composition, combination methods, constructor/naming, validation strategy, named parameter
   types) — separate decisions.
 - Deferred build returns inside component bodies; deep chained deferral.

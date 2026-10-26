@@ -3,7 +3,7 @@
 **Spec ID:** 0037
 **Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-23
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) F4/P1 and its verification requirements; refinement conversation accepting the recommended target contract and the three explicit choices (breaking constructor migration, single-line ellipsis, retained InteractiveRegion style facade); [ADR 0083](../adr/0083-composable-buttons-and-shared-control-surfaces.md).
+**Sources:** historical UI/API review F4/P1 and its verification requirements; refinement conversation accepting the recommended target contract and the three explicit choices (breaking constructor migration, single-line ellipsis, retained InteractiveRegion style facade); [ADR 0083](../adr/0083-composable-buttons-and-shared-control-surfaces.md).
 
 F1–F3 construction, callback and lifecycle contracts remain applicable.
 

@@ -3,7 +3,7 @@
 **Spec ID:** 0036
 **Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-23
-**Sources:** `UI_API_REVIEW.md` F3/P0; refinement conversation accepting retained `on_click`, disabled-by-builder/default-enabled controls, TextField/EditableText alignment, UI-local callback coverage including color/dismissal callbacks, Button/IconButton focus handles, no old editor `enabled` aliases, and simpler upper-layer calls; [ADR 0081](../adr/0081-preserve-click-naming-and-standardize-disabled-builders.md); [ADR 0082](../adr/0082-ui-thread-local-widget-callbacks.md).
+**Sources:** historical UI/API review F3/P0; refinement conversation accepting retained `on_click`, disabled-by-builder/default-enabled controls, TextField/EditableText alignment, UI-local callback coverage including color/dismissal callbacks, Button/IconButton focus handles, no old editor `enabled` aliases, and simpler upper-layer calls; [ADR 0081](../adr/0081-preserve-click-naming-and-standardize-disabled-builders.md); [ADR 0082](../adr/0082-ui-thread-local-widget-callbacks.md).
 
 This contract deliberately revises the review's proposed `on_activate`/`enabled` renaming direction.
 

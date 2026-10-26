@@ -5,7 +5,7 @@
 
 ## Context
 
-`UI_API_REVIEW.md` F2 identifies inconsistent child construction: single-child setters replace existing content while `WithChildren` counts existing and incoming children together and rejects replacement; `Align` accepts multiple children but lays out only the first; leaves implement empty-list acceptance and nonempty-list rejection. The current macro collects every block into a dynamic `Children` and panics on attachment errors.
+The historical UI/API review F2 identifies inconsistent child construction: single-child setters replace existing content while `WithChildren` counts existing and incoming children together and rejects replacement; `Align` accepts multiple children but lays out only the first; leaves implement empty-list acceptance and nonempty-list rejection. The current macro collects every block into a dynamic `Children` and panics on attachment errors.
 
 The refinement conversation accepted the following contract and the route of one F2 spec, without implementation or ticket slicing. This records an agreed direction, not implemented behavior. [ADR 0032](./0032-view-macro-rust-expression-grammar.md)'s Rust-expression grammar and evaluation-order guarantees remain applicable; [ADR 0079](./0079-defer-root-construction-and-unify-content-slot-boundaries.md)'s deferred construction and content-Fiber boundaries remain unchanged.
 

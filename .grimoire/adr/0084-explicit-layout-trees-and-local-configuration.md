@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-10-24
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) F5; refinement conversation accepting breaking repository-wide migration, inclusion of the F8 layout types and related F7 validation contract, and a spec-only endpoint.
+**Sources:** historical UI/API review F5; refinement conversation accepting breaking repository-wide migration, inclusion of the F8 layout types and related F7 validation contract, and a spec-only endpoint.
 **Related:** [ADR 0032](./0032-view-macro-rust-expression-grammar.md), [ADR 0079](./0079-defer-root-construction-and-unify-content-slot-boundaries.md), [ADR 0080](./0080-unify-child-cardinality-and-replacement-semantics.md), [ADR 0083](./0083-composable-buttons-and-shared-control-surfaces.md).
 
 ## Context

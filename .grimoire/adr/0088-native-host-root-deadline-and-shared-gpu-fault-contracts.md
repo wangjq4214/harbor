@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-10-26
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U5/F9/F13/F15; the 2026-10-26 refinement conversation approving the recommendations below and the spec → tickets endpoint.
+**Sources:** historical UI/API review U5/F9/F13/F15; the 2026-10-26 refinement conversation approving the recommendations below and the spec → tickets endpoint.
 **Related:** [ADR 0031](./0031-widget-winit-adapter-owns-native-host-infrastructure.md), [ADR 0079](./0079-defer-root-construction-and-unify-content-slot-boundaries.md).
 
 ## Context

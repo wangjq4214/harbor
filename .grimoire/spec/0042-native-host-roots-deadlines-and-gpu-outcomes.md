@@ -3,7 +3,7 @@
 **Spec ID:** 0042
 **Status:** Accepted (owner-confirmed)
 **Date:** 2026-10-26
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U5/F9/F13/F15 and preserved boundaries in §§5–6; the 2026-10-26 refinement conversation approving IntoChildView root factories, non-rendering Host deadlines, persistent shared-GPU fatal reporting with application-owned exit, no automatic device reconstruction.
+**Sources:** historical UI/API review U5/F9/F13/F15; preserved ownership/lifecycle and evidence boundaries are retained in R6 and Verification and Limitations below; the 2026-10-26 refinement conversation approving IntoChildView root factories, non-rendering Host deadlines, persistent shared-GPU fatal reporting with application-owned exit, no automatic device reconstruction.
 **Decision record:** [ADR 0088](../adr/0088-native-host-root-deadline-and-shared-gpu-fault-contracts.md).
 
 ## Requirements
@@ -63,7 +63,7 @@ Source: approved application-owned exit policy and shared-device multi-window re
 - New GPU/wake registrations must not retain callbacks/captures from an unloaded HMR generation. Root-factory widening must not move build/hook ownership or change existing HMR teardown ordering. Existing native focus/IME/HMR obligations are not discharged by this spec's static or injected tests.
 - Migrate affected public callers, native examples/docs, compilation contracts, tests and application consumers together. Preserve U1–U4 child, event, private-boundary and naming/validation contracts; do not repeat their delivered implementation or expand into U6 renderer-order redesign.
 
-Source: review §§4–6; ADR 0088 D1/D7; ADR 0031 and ADR 0079; [spec 0012](./0012-widget-winit-native-host-consolidation.md).
+Source: preserved ownership/lifecycle and migration contract; ADR 0088 D1/D7; ADR 0031 and ADR 0079; [spec 0012](./0012-widget-winit-native-host-consolidation.md).
 
 ## Solution and Integration Seams
 
@@ -116,7 +116,7 @@ Relevant baseline (`a6da35c`, source inspection, not a U5 execution result): bui
 | persistent per-SharedGpu fault, thread-safe record/wake, non-frame reporting | F13; approved refinement; ADR 0088 D3/D4 |
 | OOM/unexpected device loss/uncaptured validation/internal are fatal; expected destruction is not | approved refinement; ADR 0088 D5 |
 | Harbor exits on shared-device fatal, widget never owns exit; no automatic device rebuild | approved refinement; ADR 0088 D5/D6; ADR 0031 |
-| production wiring, injection, multi-window and real device evidence are separate | review §6; approved refinement; ADR 0088 D7 |
+| production wiring, injection, multi-window and real device evidence are separate | approved evidence boundaries; ADR 0088 D7 |
 
 No blocking product or architecture choice remains. Low-level API/helper spellings and notification-progress mechanics are not assumed facts; implementations must establish that their selected mechanism meets R3 rather than invent a different wake/error contract.
 

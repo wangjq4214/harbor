@@ -7,7 +7,7 @@
 
 ## Context
 
-[UI_API_REVIEW.md](../../UI_API_REVIEW.md) F3 identifies a mismatch between UI-thread Signal ownership (`Rc<RefCell<_>>`) and Button, IconButton and MouseRegion callback bounds (`Send + Sync`). InteractiveRegion and text-input callbacks already accept local captures. Source inspection additionally found the same unnecessary restriction on IconButton's `color_with` and Notification's dismissal callback; these run in UI content construction and event handling respectively.
+The historical UI/API review F3 identifies a mismatch between UI-thread Signal ownership (`Rc<RefCell<_>>`) and Button, IconButton and MouseRegion callback bounds (`Send + Sync`). InteractiveRegion and text-input callbacks already accept local captures. Source inspection additionally found the same unnecessary restriction on IconButton's `color_with` and Notification's dismissal callback; these run in UI content construction and event handling respectively.
 
 The user approved the UI-thread callback scope, including these additional callbacks. The accepted direction removes an artificial threading constraint without moving business effects into widgets. Public naming follows ADR 0081 rather than the review's proposed renaming.
 

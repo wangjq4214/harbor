@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-10-26
-**Sources:** [UI_API_REVIEW.md](../../UI_API_REVIEW.md) U6/F14 and §§4–6; the refinement conversation approving the proposed public API boundaries, atomic migration without compatibility aliases, and a single-spec endpoint.
+**Sources:** historical UI/API review U6/F14; preserved migration/ownership and evidence boundaries are retained in the decisions below; the refinement conversation approving the proposed public API boundaries, atomic migration without compatibility aliases, and a single-spec endpoint.
 **Related:** [ADR 0003](./0003-widget-independent-pipeline.md).
 
 ## Context

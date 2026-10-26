@@ -5,7 +5,7 @@
 
 ## Context
 
-The UI/API review (`UI_API_REVIEW.md`, finding F1/P0) identified an inconsistency in view
+The historical UI/API review (finding F1/P0) identified an inconsistency in view
 construction boundaries:
 
 - `view!` macro roots eagerly call `Component::build(cx)` while child components are deferred
