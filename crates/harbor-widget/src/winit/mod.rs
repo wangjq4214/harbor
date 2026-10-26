@@ -7,6 +7,7 @@
 mod effects;
 mod event;
 mod gpu;
+mod gpu_fault;
 #[cfg(feature = "hmr")]
 mod hmr;
 mod host;
@@ -36,6 +37,7 @@ use winit::window::Window;
 pub use gpu::RENDER_TARGET_IS_TOPMOST;
 pub(crate) use gpu::WindowSurface;
 pub use gpu::{SharedGpu, select_compositing_alpha_mode};
+pub use gpu_fault::{GpuFault, GpuFaultKind, GpuWake, GpuWakeEvent};
 #[cfg(feature = "hmr")]
 pub use hmr::{WidgetHmrConfig, WidgetHmrWork};
 pub use host::{

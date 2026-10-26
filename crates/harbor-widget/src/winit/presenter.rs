@@ -537,6 +537,7 @@ impl FrameOutcome {
 /// A fatal presentation failure for the host to diagnose and handle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FrameError {
+    SharedGpu(super::GpuFault),
     OutOfMemory,
     DeviceLost,
     Validation(String),

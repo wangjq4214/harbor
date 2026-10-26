@@ -27,6 +27,7 @@ use winit::window::Window;
 #[allow(dead_code)]
 async fn root_factory_parity_contract(
     event_loop: &winit::event_loop::ActiveEventLoop,
+    wake: harbor_widget::winit::GpuWake,
 ) -> Result<(), HostStartupError> {
     use harbor_widget::layout::Size;
     use harbor_widget::{IntoChildView, SizedBox, View, view};
@@ -37,18 +38,21 @@ async fn root_factory_parity_contract(
         Window::default_attributes(),
         |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>(component()),
     )
+    .with_gpu_wake(wake.clone())
     .build(event_loop)
     .await?;
     let _ = WinitWindowHostBuilder::new(
         Window::default_attributes(),
         |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>(view! { component(); }),
     )
+    .with_gpu_wake(wake.clone())
     .build(event_loop)
     .await?;
     let _ = WinitWindowHostBuilder::new(
         Window::default_attributes(),
         move |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>(existing),
     )
+    .with_gpu_wake(wake.clone())
     .build(event_loop)
     .await?;
 
@@ -57,18 +61,21 @@ async fn root_factory_parity_contract(
         Window::default_attributes(),
         |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>((component(), 42)),
     )
+    .with_gpu_wake(wake.clone())
     .build_with_output(event_loop)
     .await?;
     let _ = WinitWindowHostBuilder::new(
         Window::default_attributes(),
         |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>((view! { component(); }, 42)),
     )
+    .with_gpu_wake(wake.clone())
     .build_with_output(event_loop)
     .await?;
     let _ = WinitWindowHostBuilder::new(
         Window::default_attributes(),
         move |_cx: HostInitContext<'_>, _: &()| Ok::<_, anyhow::Error>((existing, 42)),
     )
+    .with_gpu_wake(wake.clone())
     .build_with_output(event_loop)
     .await?;
     Ok(())
@@ -259,6 +266,7 @@ impl WindowPlatformHooks for ContractHooks {
 async fn owned_host_contract(
     event_loop: &winit::event_loop::ActiveEventLoop,
     shared_gpu: Arc<SharedGpu>,
+    wake: harbor_widget::winit::GpuWake,
 ) -> Result<(), HostStartupError> {
     let (first, application_output): (WinitWindowHost, u32) = WinitWindowHostBuilder::new(
         Window::default_attributes().with_visible(false),
@@ -280,6 +288,7 @@ async fn owned_host_contract(
             ))
         },
     )
+    .with_gpu_wake(wake)
     .with_platform_hooks(ContractHooks)
     .build_with_output(event_loop)
     .await?;

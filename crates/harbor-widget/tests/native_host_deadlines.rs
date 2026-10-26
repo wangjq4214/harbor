@@ -4,7 +4,8 @@
 //! transitions. This proves native timer delivery, not OS minimize behavior.
 
 use harbor_widget::winit::{
-    HostFrameOutcome, HostInitContext, WinitWindowHost, WinitWindowHostBuilder,
+    GpuWake, GpuWakeEvent, HostFrameOutcome, HostInitContext, WinitWindowHost,
+    WinitWindowHostBuilder,
 };
 use harbor_widget::{ControlFlowEffect, SizedBox, layout::Size};
 use std::sync::{Arc, mpsc};
@@ -17,13 +18,14 @@ use winit::window::{Window, WindowId};
 
 #[derive(Default)]
 struct DeadlineSmoke {
+    wake: Option<GpuWake>,
     hosts: Vec<WinitWindowHost>,
     deadlines: Vec<Instant>,
     wakes: usize,
     complete: bool,
 }
 
-impl ApplicationHandler<()> for DeadlineSmoke {
+impl ApplicationHandler<GpuWakeEvent> for DeadlineSmoke {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if !self.hosts.is_empty() {
             return;
@@ -37,7 +39,8 @@ impl ApplicationHandler<()> for DeadlineSmoke {
                 |_: HostInitContext<'_>, _: &()| {
                     Ok::<_, anyhow::Error>(SizedBox::new(Size::new(10.0, 10.0)).unwrap())
                 },
-            );
+            )
+            .with_gpu_wake(self.wake.as_ref().unwrap().clone());
             if let Some(primary) = self.hosts.first() {
                 builder = builder.reuse_gpu(Arc::clone(primary.shared_gpu()));
             }
@@ -123,7 +126,7 @@ impl ApplicationHandler<()> for DeadlineSmoke {
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: GpuWakeEvent) {
         // Failure watchdog only; it never supplies a successful business wake.
         event_loop.exit();
     }
@@ -133,17 +136,21 @@ impl ApplicationHandler<()> for DeadlineSmoke {
 #[test]
 #[ignore = "requires an interactive Windows desktop and native GPU"]
 fn suspended_hosts_receive_native_deadline_wakes_then_restore() {
-    let mut builder = EventLoop::<()>::with_user_event();
+    let mut builder = EventLoop::<GpuWakeEvent>::with_user_event();
     builder.with_any_thread(true);
     let event_loop = builder.build().expect("create native deadline event loop");
     let proxy = event_loop.create_proxy();
+    let wake = GpuWake::new(proxy.clone());
     let (done, receiver) = mpsc::channel();
     let watchdog = std::thread::spawn(move || {
         if receiver.recv_timeout(Duration::from_secs(30)).is_err() {
-            let _ = proxy.send_event(());
+            let _ = proxy.send_event(GpuWakeEvent);
         }
     });
-    let mut app = DeadlineSmoke::default();
+    let mut app = DeadlineSmoke {
+        wake: Some(wake),
+        ..Default::default()
+    };
     let result = event_loop.run_app(&mut app);
     let _ = done.send(());
     watchdog.join().unwrap();

@@ -175,6 +175,7 @@ pub enum HostGpuSource {
 pub struct WinitWindowHostBuilder<P, F> {
     attributes: WindowAttributes,
     gpu_source: HostGpuSource,
+    gpu_wake: Option<super::GpuWake>,
     platform: P,
     root_factory: F,
     focus_first: bool,
@@ -187,6 +188,7 @@ impl<F> WinitWindowHostBuilder<NoopWindowPlatformHooks, F> {
         Self {
             attributes,
             gpu_source: HostGpuSource::Bootstrap,
+            gpu_wake: None,
             platform: NoopWindowPlatformHooks,
             root_factory,
             focus_first: false,
@@ -197,6 +199,11 @@ impl<F> WinitWindowHostBuilder<NoopWindowPlatformHooks, F> {
 }
 
 impl<P, F> WinitWindowHostBuilder<P, F> {
+    /// Required for bootstrap. Reused devices retain their original native transport.
+    pub fn with_gpu_wake(mut self, wake: super::GpuWake) -> Self {
+        self.gpu_wake = Some(wake);
+        self
+    }
     pub fn reuse_gpu(mut self, gpu: Arc<SharedGpu>) -> Self {
         self.gpu_source = HostGpuSource::Reuse(gpu);
         self
@@ -216,6 +223,7 @@ impl<P, F> WinitWindowHostBuilder<P, F> {
         WinitWindowHostBuilder {
             attributes: self.attributes,
             gpu_source: self.gpu_source,
+            gpu_wake: self.gpu_wake,
             platform,
             root_factory: self.root_factory,
             #[cfg(feature = "hmr")]
@@ -247,6 +255,7 @@ where
         let WinitWindowHostBuilder {
             attributes,
             gpu_source,
+            gpu_wake,
             platform,
             root_factory,
             focus_first,
@@ -256,6 +265,7 @@ where
         let (host, ()) = WinitWindowHostBuilder {
             attributes,
             gpu_source,
+            gpu_wake,
             platform,
             root_factory: move |context: HostInitContext<'_>, setup: &P::Setup| {
                 root_factory(context, setup).map(|root| (root, ()))
@@ -293,10 +303,17 @@ where
 
         let (gpu, surface) = match self.gpu_source {
             HostGpuSource::Bootstrap => {
-                let (gpu, surface) =
-                    SharedGpu::new(Arc::clone(&window)).await.map_err(|error| {
-                        HostStartupError::new(HostStartupStage::GpuBootstrap, error)
-                    })?;
+                let (gpu, surface) = SharedGpu::new(
+                    Arc::clone(&window),
+                    self.gpu_wake.ok_or_else(|| {
+                        HostStartupError::new(
+                            HostStartupStage::GpuBootstrap,
+                            anyhow::anyhow!("GPU bootstrap requires with_gpu_wake"),
+                        )
+                    })?,
+                )
+                .await
+                .map_err(|error| HostStartupError::new(HostStartupStage::GpuBootstrap, error))?;
                 (Arc::new(gpu), surface)
             }
             HostGpuSource::Reuse(gpu) => {
@@ -385,6 +402,12 @@ where
                 )
             })?
             .flatten();
+        if let Some(fault) = gpu.fault() {
+            return Err(HostStartupError::new(
+                HostStartupStage::RuntimeInitialization,
+                fault,
+            ));
+        }
         Ok((
             WinitWindowHost {
                 runtime,
@@ -403,7 +426,8 @@ where
     }
 }
 
-/// The result of a complete host-owned frame attempt.
+/// The result of a host-owned frame attempt. Presented means submitted/requested,
+/// not GPU completion; later asynchronous faults arrive through the wake/idle boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub enum HostFrameOutcome {
     Presented {
@@ -450,6 +474,7 @@ impl HostFrameOutcome {
 /// A routed native event, including business input drained at the host boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HostEventOutcome {
+    pub fatal: Option<super::GpuFault>,
     pub handled: bool,
     pub external_input: Vec<(ExternalDrawId, UiEvent)>,
     pub frame: Option<HostFrameOutcome>,
@@ -457,8 +482,9 @@ pub struct HostEventOutcome {
 }
 
 /// A non-frame host turn and its cross-window wait demand.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HostIdleOutcome {
+    pub fatal: Option<super::GpuFault>,
     pub wait: Option<ControlFlowEffect>,
 }
 
@@ -480,6 +506,11 @@ pub struct WinitWindowHost {
 }
 
 impl WinitWindowHost {
+    /// Explicit non-frame observation, also used on GpuWakeEvent delivery.
+    pub fn gpu_fault(&self) -> Option<super::GpuFault> {
+        self.gpu.fault()
+    }
+
     pub fn window(&self) -> &Window {
         &self.window
     }
@@ -558,14 +589,20 @@ impl WinitWindowHost {
         let (wait, clipboard_result) = apply_window_effects_checked(&self.window, effects);
         clipboard_result
             .expect("clipboard write effect must survive presenter folding")
-            .map(|()| HostIdleOutcome { wait })
+            .map(|()| HostIdleOutcome {
+                wait,
+                fatal: self.gpu_fault(),
+            })
     }
 
     /// Applies one opaque adapter-owned hot-reload work item on the UI thread.
     #[cfg(feature = "hmr")]
     pub fn handle_hmr_work(&mut self, work: WidgetHmrWork) -> HostIdleOutcome {
         if self.hmr.is_none() {
-            return HostIdleOutcome::default();
+            return HostIdleOutcome {
+                fatal: self.gpu_fault(),
+                wait: None,
+            };
         }
 
         match work.into_kind() {
@@ -580,7 +617,10 @@ impl WinitWindowHost {
                 if !accepted {
                     tracing::warn!(generation, "ignored stale widget HMR prepare work");
                     drop(barrier);
-                    return HostIdleOutcome::default();
+                    return HostIdleOutcome {
+                        fatal: self.gpu_fault(),
+                        wait: None,
+                    };
                 }
 
                 self.adapter.quarantine_active_pointers();
@@ -615,7 +655,10 @@ impl WinitWindowHost {
                         generation,
                         "ignored stale or duplicate widget HMR activation"
                     );
-                    return HostIdleOutcome::default();
+                    return HostIdleOutcome {
+                        fatal: self.gpu_fault(),
+                        wait: None,
+                    };
                 }
 
                 let installed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -651,6 +694,7 @@ impl WinitWindowHost {
                 tracing::info!(generation, "activated widget HMR generation");
                 HostIdleOutcome {
                     wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
+                    fatal: self.gpu_fault(),
                 }
             }
         }
@@ -664,6 +708,7 @@ impl WinitWindowHost {
         effects.merge(update);
         HostIdleOutcome {
             wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
+            fatal: self.gpu_fault(),
         }
     }
 
@@ -671,6 +716,7 @@ impl WinitWindowHost {
         let effects = self.presenter.request_frame();
         HostIdleOutcome {
             wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
+            fatal: self.gpu_fault(),
         }
     }
 
@@ -690,18 +736,35 @@ impl WinitWindowHost {
         now: Instant,
         host_deadline: Option<Instant>,
     ) -> HostIdleOutcome {
+        if let Some(fault) = self.gpu_fault() {
+            return HostIdleOutcome {
+                fatal: Some(fault),
+                wait: None,
+            };
+        }
         let effects = self
             .presenter
             .about_to_wait(&mut self.runtime, now, host_deadline);
         HostIdleOutcome {
             wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
+            fatal: self.gpu_fault(),
         }
     }
 
     pub fn handle_window_event(&mut self, event: &WindowEvent) -> HostEventOutcome {
+        if let Some(fault) = self.gpu_fault() {
+            return HostEventOutcome {
+                fatal: Some(fault),
+                handled: true,
+                external_input: Vec::new(),
+                frame: None,
+                wait: None,
+            };
+        }
         if matches!(event, WindowEvent::RedrawRequested) {
             let frame = self.redraw();
             return HostEventOutcome {
+                fatal: self.gpu_fault(),
                 handled: true,
                 external_input: self.runtime.drain_external_input(),
                 wait: frame.wait(),
@@ -725,6 +788,7 @@ impl WinitWindowHost {
         {
             self.adapter.observe_blocked_widget_event(event);
             return HostEventOutcome {
+                fatal: self.gpu_fault(),
                 handled: true,
                 external_input: Vec::new(),
                 frame: None,
@@ -739,11 +803,13 @@ impl WinitWindowHost {
             event,
             Some((size.width, size.height)),
         );
+        let wait = apply_editor_window_effects(&self.window, &mut self.runtime, outcome.effects);
         HostEventOutcome {
+            fatal: self.gpu_fault(),
             handled: outcome.handled,
             external_input: self.runtime.drain_external_input(),
             frame: None,
-            wait: apply_editor_window_effects(&self.window, &mut self.runtime, outcome.effects),
+            wait,
         }
     }
 
@@ -751,19 +817,34 @@ impl WinitWindowHost {
         let effects = self.presenter.fold_effects(effects);
         HostIdleOutcome {
             wait: apply_editor_window_effects(&self.window, &mut self.runtime, effects),
+            fatal: self.gpu_fault(),
         }
     }
 
     fn redraw(&mut self) -> HostFrameOutcome {
+        if let Some(fault) = self.gpu_fault() {
+            return HostFrameOutcome::Fatal {
+                error: FrameError::SharedGpu(fault),
+                wait: None,
+            };
+        }
         let target = WinitFrameTarget::new(&self.window, &self.gpu, &mut self.surface);
         let frame = self
             .presenter
             .render_with_prepare(&mut self.runtime, target, |runtime| {
                 runtime.prepare_text(self.gpu.queue());
             });
-        finish_frame_with(frame, |effects| {
+        let outcome = finish_frame_with(frame, |effects| {
             apply_editor_window_effects(&self.window, &mut self.runtime, effects)
-        })
+        });
+        if let Some(fault) = self.gpu_fault() {
+            HostFrameOutcome::Fatal {
+                error: FrameError::SharedGpu(fault),
+                wait: outcome.wait(),
+            }
+        } else {
+            outcome
+        }
     }
 }
 

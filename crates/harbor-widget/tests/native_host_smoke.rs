@@ -2,6 +2,7 @@
 
 use harbor_widget::layout::Size;
 use harbor_widget::signal::Signal;
+use harbor_widget::winit::{GpuWake, GpuWakeEvent};
 use harbor_widget::winit::{
     HostFrameOutcome, HostInitContext, WinitWindowHost, WinitWindowHostBuilder,
 };
@@ -75,6 +76,7 @@ fn attributes() -> winit::window::WindowAttributes {
 fn root_case<R: IntoChildView + 'static>(
     event_loop: &ActiveEventLoop,
     gpu: Option<Arc<SharedGpu>>,
+    wake: &GpuWake,
     with_output: bool,
     describe: impl FnOnce(StatefulRoot) -> R,
 ) -> Result<WinitWindowHost, String> {
@@ -112,6 +114,7 @@ fn root_case<R: IntoChildView + 'static>(
                 factory(context, setup).map(|root| (root, String::from("bootstrap output")))
             },
         )
+        .with_gpu_wake(wake.clone())
         .with_platform_hooks(SetupHooks(Rc::clone(&trace)))
         .focus_first(true);
         if let Some(gpu) = gpu {
@@ -123,6 +126,7 @@ fn root_case<R: IntoChildView + 'static>(
         host
     } else {
         let mut builder = WinitWindowHostBuilder::new(attributes(), factory)
+            .with_gpu_wake(wake.clone())
             .with_platform_hooks(SetupHooks(Rc::clone(&trace)))
             .focus_first(true);
         if let Some(gpu) = gpu {
@@ -227,6 +231,7 @@ fn startup_failures(event_loop: &ActiveEventLoop, gpu: &Arc<SharedGpu>) {
 
 #[derive(Default)]
 struct NativeHostSmoke {
+    wake: Option<GpuWake>,
     result: Option<Result<(), String>>,
 }
 
@@ -234,6 +239,7 @@ impl NativeHostSmoke {
     fn build_host(
         event_loop: &ActiveEventLoop,
         shared_gpu: Option<Arc<harbor_widget::winit::SharedGpu>>,
+        wake: &GpuWake,
     ) -> Result<WinitWindowHost, harbor_widget::winit::HostStartupError> {
         let builder = WinitWindowHostBuilder::new(
             Window::default_attributes()
@@ -247,7 +253,8 @@ impl NativeHostSmoke {
                     17_u32,
                 ))
             },
-        );
+        )
+        .with_gpu_wake(wake.clone());
         let result = match shared_gpu {
             Some(gpu) => pollster::block_on(builder.reuse_gpu(gpu).build_with_output(event_loop)),
             None => pollster::block_on(builder.build_with_output(event_loop)),
@@ -272,13 +279,14 @@ impl NativeHostSmoke {
     }
 
     fn run(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
-        let mut primary = Self::build_host(event_loop, None)
+        let wake = self.wake.as_ref().unwrap();
+        let mut primary = Self::build_host(event_loop, None, wake)
             .map_err(|error| format!("primary host startup failed: {error}"))?;
         Self::present(&mut primary)?;
 
         for lifecycle in 0..SECONDARY_LIFECYCLES {
             let gpu = Arc::clone(primary.shared_gpu());
-            let mut secondary = Self::build_host(event_loop, Some(Arc::clone(&gpu)))
+            let mut secondary = Self::build_host(event_loop, Some(Arc::clone(&gpu)), wake)
                 .map_err(|error| format!("secondary host startup {lifecycle} failed: {error}"))?;
             assert!(
                 Arc::ptr_eq(primary.shared_gpu(), secondary.shared_gpu()),
@@ -308,13 +316,16 @@ impl NativeHostSmoke {
 
         // Both public builders × Component/macro View/existing View, using the
         // production native mount path. Include a fresh GPU bootstrap as well as reuse.
-        let fresh = root_case(event_loop, None, false, |root| root)?;
+        let fresh = root_case(event_loop, None, wake, false, |root| root)?;
         for with_output in [false, true] {
             let gpu = || Some(Arc::clone(fresh.shared_gpu()));
-            drop(root_case(event_loop, gpu(), with_output, |root| root)?);
+            drop(root_case(event_loop, gpu(), wake, with_output, |root| {
+                root
+            })?);
             drop(root_case(
                 event_loop,
                 gpu(),
+                wake,
                 with_output,
                 |root| view! { root; },
             )?);
@@ -325,6 +336,7 @@ impl NativeHostSmoke {
             drop(root_case(
                 event_loop,
                 gpu(),
+                wake,
                 with_output,
                 describe_existing,
             )?);
@@ -338,7 +350,7 @@ impl NativeHostSmoke {
     }
 }
 
-impl ApplicationHandler for NativeHostSmoke {
+impl ApplicationHandler<GpuWakeEvent> for NativeHostSmoke {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.result.is_none() {
             self.result = Some(self.run(event_loop));
@@ -360,10 +372,13 @@ impl ApplicationHandler for NativeHostSmoke {
 #[test]
 #[ignore = "requires an interactive Windows desktop and native GPU"]
 fn hidden_hosts_present_and_reuse_gpu_across_repeated_secondary_lifecycles() {
-    let mut builder = EventLoop::builder();
+    let mut builder = EventLoop::<GpuWakeEvent>::with_user_event();
     builder.with_any_thread(true);
     let event_loop = builder.build().expect("create native smoke event loop");
-    let mut app = NativeHostSmoke::default();
+    let mut app = NativeHostSmoke {
+        wake: Some(GpuWake::new(event_loop.create_proxy())),
+        ..Default::default()
+    };
     event_loop
         .run_app(&mut app)
         .expect("run native smoke event loop");

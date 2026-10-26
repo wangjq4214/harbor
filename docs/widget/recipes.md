@@ -12,15 +12,14 @@ This complete minimal executable owns the event loop while `WinitWindowHost` own
 
 ```rust,no_run
 use harbor_widget::{ControlFlowEffect, TextEditingController, TextField, view};
-use harbor_widget::winit::{HostInitContext, WinitWindowHost, WinitWindowHostBuilder};
+use harbor_widget::winit::{GpuWake, GpuWakeEvent, HostInitContext, WinitWindowHost, WinitWindowHostBuilder};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-#[derive(Default)]
-struct App { host: Option<WinitWindowHost> }
+struct App { host: Option<WinitWindowHost>, wake: GpuWake }
 
 fn apply_wait(event_loop: &ActiveEventLoop, wait: Option<ControlFlowEffect>) {
     if let Some(wait) = wait {
@@ -32,7 +31,13 @@ fn apply_wait(event_loop: &ActiveEventLoop, wait: Option<ControlFlowEffect>) {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<GpuWakeEvent> for App {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: GpuWakeEvent) {
+        if let Some(fault) = self.host.as_ref().and_then(|host| host.gpu_fault()) {
+            eprintln!("fatal GPU error: {fault}");
+            event_loop.exit();
+        }
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.host.is_some() { return; }
         let builder = WinitWindowHostBuilder::new(
@@ -43,7 +48,7 @@ impl ApplicationHandler for App {
                     TextField::new(TextEditingController::new("")).placeholder("Type here");
                 })
             },
-        );
+        ).with_gpu_wake(self.wake.clone());
         self.host = Some(pollster::block_on(builder.build(event_loop))
             .expect("create native widget host"));
     }
@@ -59,7 +64,7 @@ impl ApplicationHandler for App {
         }
         let outcome = host.handle_window_event(&event);
         apply_wait(event_loop, outcome.wait);
-        if outcome.frame.as_ref().is_some_and(|frame| frame.is_fatal()) {
+        if outcome.fatal.is_some() || outcome.frame.as_ref().is_some_and(|frame| frame.is_fatal()) {
             self.host.take();
             event_loop.exit();
         }
@@ -69,14 +74,20 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(host) = self.host.as_mut() {
             let outcome = host.about_to_wait(Instant::now(), None);
+            if let Some(fault) = outcome.fatal {
+                eprintln!("fatal GPU error: {fault}");
+                event_loop.exit();
+                return;
+            }
             apply_wait(event_loop, outcome.wait);
         }
     }
 }
 
 fn main() -> Result<(), winit::error::EventLoopError> {
-    let event_loop = EventLoop::new()?;
-    event_loop.run_app(&mut App::default())
+    let event_loop = EventLoop::<GpuWakeEvent>::with_user_event().build()?;
+    let wake = GpuWake::new(event_loop.create_proxy());
+    event_loop.run_app(&mut App { host: None, wake })
 }
 ```
 
@@ -85,6 +96,16 @@ Both `build` and `build_with_output` accept `IntoChildView + 'static` roots: ord
 Pass an application wake deadline as the second argument to `host.about_to_wait(now, Some(deadline))`. Future Host deadlines remain `WaitUntil` demands even while the window is zero-sized/non-drawable, without acquiring/submitting a frame or polling render animation. The application performs due business work and reschedules/removes the deadline; expired Host input is ignored and does not request redraw. Runtime deadlines remain separate and normal coalesced rendering resumes on restoration. Keep independently owned business/notification timers in the application's final wait arbitration.
 
 For multiple windows, route by `WindowId`, arbitrate their wait requests (using `ControlFlowEffect::arbitrate`) and reuse `SharedGpu` where appropriate. Do not share focus/surface state between windows. The small example above is not a multi-window or mobile suspend/resume lifecycle implementation.
+
+### GPU notifications and lifetimes
+
+Bootstrap requires `.with_gpu_wake(GpuWake::new(proxy))`; for a custom event type implement `From<GpuWakeEvent>` in the stable executable. Reused Hosts inherit the bootstrap Device's transport. The wake is device-level: inspect all relevant Hosts, not only a visible window. Check event/idle `fatal`, frame `FrameError::SharedGpu`, or the explicit non-frame `host.gpu_fault()` before approving business actions. Harbor cancels confirmations and exits; the widget crate never owns exit policy.
+
+Immediately after device creation, SharedGpu installs actual lost/uncaptured-error callbacks. They retain only weak shared state, record the first categorized diagnostic, and signal the proxy once. Observations never consume/reset it. OOM, unexpected device loss, validation and internal errors are fatal; normal Destroyed notifications are ignored. Surface lost/outdated/suboptimal remain local. No Device/Queue recreation is attempted.
+
+One joined worker per Device calls nonblocking `Device::poll(PollType::Poll)` every 50 ms, independently of UI drawability. In wgpu-core 30 this maintains native fence progress and fires deferred callbacks, even without redraw/animation/business deadlines. DX12 additionally uses a read-only `GetDeviceRemovedReason` query: wgpu-hal 30's nonblocking fence query alone does not classify the removal sentinel. Vulkan uses wgpu's fence/timeline polling and error callbacks; physical-failure detection still depends on backend/driver reporting. It does not acquire, encode, submit or present; no render-animation Poll is introduced. Backend/driver detection latency is not a completion guarantee. A requested/presented frame does **not** prove GPU execution completed; later faults arrive on a subsequent wake/Host boundary.
+
+The last SharedGpu owner stops/unparks/joins its worker before dropping Device/Queue. No callback captures a Host, Runtime, Window or root factory; a closed proxy is harmless. Keep the proxy event conversion in the stable executable, never a reloadable generation. Borrowed external GPU users must not overwrite error/lost callbacks. Existing Runtime/root destruction before native resources and HMR release barriers are unchanged. Real driver-loss/OOM and DLL-unload evidence remain separate from harmless validation/callback tests.
 
 ### Add an application controller
 

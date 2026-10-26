@@ -98,20 +98,21 @@ The `winit` feature exposes [`WinitWindowHostBuilder`](src/winit/host.rs). A hos
 The host must be created from `ApplicationHandler::resumed`, where an `ActiveEventLoop` is available:
 
 ```rust,no_run
-use harbor_widget::winit::{HostInitContext, WinitWindowHostBuilder};
+use harbor_widget::winit::{GpuWake, HostInitContext, WinitWindowHostBuilder};
 use harbor_widget::TextLabel;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 fn create_host(
     event_loop: &ActiveEventLoop,
+    wake: GpuWake,
 ) -> Result<harbor_widget::winit::WinitWindowHost, harbor_widget::winit::HostStartupError> {
     let builder = WinitWindowHostBuilder::new(
         Window::default_attributes().with_title("Widget example"),
         |_context: HostInitContext<'_>, _setup: &()| {
             Ok::<_, anyhow::Error>(TextLabel::new("Hello from harbor-widget"))
         },
-    );
+    ).with_gpu_wake(wake);
 
     pollster::block_on(builder.build(event_loop))
 }
@@ -120,10 +121,13 @@ fn create_host(
 The embedding `ApplicationHandler` should then:
 
 1. route events for the matching `WindowId` to `host.handle_window_event(&event)`;
-2. inspect `HostFrameOutcome` and treat fatal frame errors according to application policy;
+2. inspect `HostFrameOutcome` and the `fatal` fields of event/idle outcomes before business actions;
 3. call `host.about_to_wait(Instant::now(), application_deadline)` before sleeping;
 4. apply the returned `ControlFlowEffect` to the event loop; and
-5. keep close requests, multi-window routing, and process exit decisions outside the host.
+5. create `GpuWake::new(event_loop.create_proxy())` in the stable executable, implement `From<GpuWakeEvent>` for its user event, and inspect `host.gpu_fault()` on that wake (no redraw required);
+6. keep close requests, multi-window routing, and process exit decisions outside the host.
+
+Bootstrap requires `.with_gpu_wake(wake)`; secondary Hosts inherit the Device's original transport via `.reuse_gpu(...)`. The first device fault is persistent across all sharing Hosts. `FrameError::SharedGpu` distinguishes it from local surface recovery. Borrowed GPU users must not replace the installed device error/lost callbacks. See the [notification/lifetime contract](../../docs/widget/recipes.md#gpu-notifications-and-lifetimes).
 
 See [`tests/native_host_smoke.rs`](tests/native_host_smoke.rs) for a compact lifecycle example and the Harbor application host in [`../../src/shell.rs`](../../src/shell.rs) for production integration.
 
