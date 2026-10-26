@@ -150,7 +150,7 @@ Stable retired execution aliases retain these contracts and historical evidence 
 
 ### T0003 — Shared GPU fatal delivery
 
-`0020-native-host-contracts/T0003` = R3–R6, E3–E5. [Retained historical evidence](../ticket/0020-native-host-contracts/T0003-shared-gpu-fatal-delivery-evidence.md) distinguishes deterministic categories/policy, actual wgpu validation, independent progress and native two-Host wake/observation on DX12/Vulkan from unavailable hardware-failure and DLL traces.
+`0020-native-host-contracts/T0003` = R3–R6, E3–E5. [Native GPU-fault regressions](../../crates/harbor-widget/tests/native_gpu_faults.rs) retain regression coverage. Historical evidence (recoverable from commit `86ed01aba5edc873fc2733927cb92d22135b29f3`) distinguishes deterministic categories/policy, actual wgpu validation, independent progress and native two-Host wake/observation on DX12/Vulkan from unavailable hardware-failure and DLL traces.
 
 ### Shared limitations and remaining owners
 
