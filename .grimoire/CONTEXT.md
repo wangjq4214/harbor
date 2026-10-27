@@ -384,6 +384,9 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Relationships:**
   - contains Wide Cell invariant
 
+### Nerd Font Icon Presentation
+- **Definition:** The selected terminal presentation policy renders the official Nerd Fonts icon collection at natural size for the current font/size/DPI, preserving proportions and allowing artwork to overflow its logical cells even when it overlaps neighboring content. Assigned cells, following-blank eligibility and cursor/selection/IME occupancy do not impose icon-specific clipping or fitting boundaries. Private-use Unicode membership alone does not select this policy. Visual overflow does not move neighboring text or change logical columns, retained content, cursor advancement, wrapping, reflow or selection/copy semantics. See [ADR 0093](./adr/0093-natural-overflow-nerd-font-icons.md), superseding ADR 0092. [Spec 0044](./spec/0044-proportion-preserving-nerd-font-icons.md) records the natural-overflow requirements, focused implementation evidence and remaining acceptance limitations; earlier clipping results are historical.
+
 ### Wide Cell
 - **Definition:** A terminal grid representation in which a double-width glyph occupies a base cell and an adjacent continuation cell.
 - **Synonyms:** Wide Character Cell, Wide Glyph
