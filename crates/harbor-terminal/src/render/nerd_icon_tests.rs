@@ -175,7 +175,7 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
         let mut update = initial.clone();
         update.damage = UpdateDamage::Ranges(vec![]);
         match kind {
-            "cursor" => update.snapshot.cursor_x = 1,
+            "cursor" => std::sync::Arc::make_mut(&mut update.snapshot).cursor_x = 1,
             "selection" => {
                 update.selection = Some(SelectionBounds {
                     start_row: 0,
@@ -185,8 +185,8 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
                 })
             }
             _ => {
-                update.snapshot.cursor_x = 1;
-                update.snapshot.cursor_visible = false;
+                std::sync::Arc::make_mut(&mut update.snapshot).cursor_x = 1;
+                std::sync::Arc::make_mut(&mut update.snapshot).cursor_visible = false;
                 update.preedit = Some(Preedit::new("中", None));
             }
         }
@@ -232,7 +232,7 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
     // Text and narrowed cell geometry do not crop or scale the native quad.
     for (block_col, cell_width) in [(1, view.cell_width), (2, view.cell_width), (2, 7.0)] {
         let mut update = initial.clone();
-        update.snapshot.cells[block_col].ch = 'Z';
+        std::sync::Arc::make_mut(&mut update.snapshot).cells[block_col].ch = 'Z';
         update.damage = UpdateDamage::FullUpload;
         let mut constrained = view;
         constrained.cell_width = cell_width;
@@ -246,8 +246,8 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
     }
     assert!(renderer.sync_viewport(view, false));
     let mut edge = initial.clone();
-    edge.snapshot.cells[0] = Cell::default();
-    edge.snapshot.cells[11] = initial.snapshot.cells[0].clone();
+    std::sync::Arc::make_mut(&mut edge.snapshot).cells[0] = Cell::default();
+    std::sync::Arc::make_mut(&mut edge.snapshot).cells[11] = initial.snapshot.cells[0].clone();
     edge.damage = UpdateDamage::FullUpload;
     assert!(renderer.prepare(gpu, &edge, true));
     let quad = renderer.text.build_range_vertices(
@@ -326,9 +326,11 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
     for inverse in [false, true] {
         let mut styled = initial.clone();
         styled.damage = UpdateDamage::FullUpload;
-        styled.snapshot.cells[0].bg = Color::Named(1);
+        std::sync::Arc::make_mut(&mut styled.snapshot).cells[0].bg = Color::Named(1);
         if inverse {
-            styled.snapshot.cells[0].attrs.set(CellAttrs::INVERSE);
+            std::sync::Arc::make_mut(&mut styled.snapshot).cells[0]
+                .attrs
+                .set(CellAttrs::INVERSE);
         }
         assert!(renderer.prepare(gpu, &styled, true));
         assert_geometry(&renderer.text, &styled.snapshot, &view);

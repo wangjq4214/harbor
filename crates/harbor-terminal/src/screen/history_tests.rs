@@ -486,16 +486,16 @@ fn csi_3j_preserves_saved_primary_and_private_3j_does_not_erase_history() {
         let mut t = terminal(2, 8, 20, 100);
         t.put_str("OLD\r\nMID\r\nLIVE");
         t.screen.scroll_up(1);
-        let normal = t.screen.normal.clone();
+        let normal = (*t.screen.normal).clone();
         t.put_str("\x1b[?3J");
-        assert_eq!(t.screen.normal, normal);
+        assert_eq!(*t.screen.normal, normal);
         t.put_str(&format!("\x1b[?{mode}hALT\x1b[3J"));
         assert!(t.screen.is_alt());
         assert_eq!(&t.screen.row_text(0)[..3], "ALT");
-        assert_eq!(t.screen.saved_primary.as_ref().unwrap().normal, normal);
+        assert_eq!(*t.screen.saved_primary.as_ref().unwrap().normal, normal);
         t.put_str(&format!("\x1b[?{mode}l"));
         assert!(!t.screen.is_alt());
-        assert_eq!(t.screen.normal, normal);
+        assert_eq!(*t.screen.normal, normal);
         accounting(&t.screen);
     }
 }

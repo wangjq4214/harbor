@@ -1237,7 +1237,7 @@ fn t0002_gpu_retained_edits_stride_projection_and_invalid_recovery_match_full() 
         assert!(!layer.is_dirty());
         compare(&layer, &update.snapshot, &view);
     }
-    let mut malformed = update.snapshot.clone();
+    let mut malformed = (*update.snapshot).clone();
     malformed.rows = usize::MAX;
     layer.prepare_with_dirty(gpu, &malformed, &[], &view);
     assert!(layer.is_dirty());

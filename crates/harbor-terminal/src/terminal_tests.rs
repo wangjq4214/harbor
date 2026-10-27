@@ -5897,10 +5897,12 @@ fn live_bottom_resize_round_trip_preserves_every_scrollback_view() {
         let mut views = Vec::new();
         loop {
             let snapshot = terminal.snapshot();
-            let rows = snapshot
-                .cells
-                .chunks(snapshot.cols)
-                .map(|row| row.iter().map(|cell| cell.ch).collect())
+            let rows = (0..snapshot.rows)
+                .map(|row| {
+                    (0..snapshot.cols)
+                        .map(|col| snapshot.cell_char(row, col))
+                        .collect()
+                })
                 .collect();
             let queried_rows: Vec<String> = (0..snapshot.rows)
                 .map(|row| terminal.row_text(row))
@@ -5995,8 +5997,10 @@ fn narrow_resize_near_capacity_does_not_duplicate_logical_lines() {
 fn mixed_resize_keeps_review_content_and_cursor_meaning_for_short_lines() {
     fn reviewed_first_line(terminal: &Terminal) -> String {
         let snapshot = terminal.snapshot();
-        snapshot.cells[..snapshot.cols]
+        snapshot
+            .cells
             .iter()
+            .take(snapshot.cols)
             .map(|cell| cell.ch)
             .collect::<String>()
             .trim_end()

@@ -493,7 +493,7 @@ fn complete_tiles_suppress_combining_overlays_and_conceal_removes_presentation()
     let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
     let mut engine = Terminal::new_headless(4, 16);
     engine.put_str("♥️");
-    let mut snap = engine.read_update(Instant::now()).snapshot;
+    let mut snap = (*engine.read_update(Instant::now()).snapshot).clone();
     let (mut layer, viewport) = text(gpu, &snap);
     assert!(layer.sequences.tile_cells.contains(&0));
     // A mark on a tile-represented cell must not be painted a second time.
@@ -520,7 +520,7 @@ fn unsupported_sequence_keeps_a_fitted_leading_glyph_and_source_then_overwrites_
     let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
     let mut engine = Terminal::new_headless(4, 16);
     engine.put_str("👩");
-    let mut snap = engine.read_update(Instant::now()).snapshot;
+    let mut snap = (*engine.read_update(Instant::now()).snapshot).clone();
     snap.cells[0].suffix = "\u{200d}A".into();
     let (mut layer, viewport) = text(gpu, &snap);
     assert!(layer.sequences.emoji_cells.contains(&0));
@@ -740,8 +740,8 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
     // Rejected resource preparation: malformed/oversized grids fail before publish.
     for (rows, cols) in [(0, 10), (usize::MAX, 10), (3, usize::MAX)] {
         let mut invalid = update.clone();
-        invalid.snapshot.rows = rows;
-        invalid.snapshot.cols = cols;
+        std::sync::Arc::make_mut(&mut invalid.snapshot).rows = rows;
+        std::sync::Arc::make_mut(&mut invalid.snapshot).cols = cols;
         assert!(pipeline.replace_fonts(gpu, fonts(), &invalid).is_err());
         assert_eq!(pipeline.viewport(), valid_view);
         assert_eq!(metric_values(pipeline.metrics()), valid_metrics);

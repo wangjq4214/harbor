@@ -80,6 +80,13 @@ pub use types::{
     TerminalPointerPhase, WorkingDirectoryMetadata,
 };
 pub use update::TerminalUpdate;
+mod revision;
+mod snapshot;
+#[cfg(test)]
+mod update_tests;
+use revision::Revisioned;
+pub use snapshot::SnapshotCells;
+use std::sync::Arc;
 
 /// GPU-independent terminal state, input, and PTY session.
 pub struct Terminal {
@@ -100,7 +107,7 @@ pub struct Terminal {
     preedit: Option<Preedit>,
     /// Set when ingest returns synchronized output to eligible; consumed by `frame_demand`.
     /// GPU-independent cursor blink and redraw timing.
-    blink: CursorBlinkState,
+    blink: Revisioned<CursorBlinkState>,
     pending_ordinary_present: bool,
     /// Redraw for transient preedit changes, retained until preparation or acknowledgement.
     pending_preedit_redraw: bool,
@@ -108,6 +115,7 @@ pub struct Terminal {
     update_needs_full: bool,
     /// Invalidates acknowledgements read before a renderer projection was lost.
     projection_epoch: u64,
+    presentation_revision: u64,
 }
 
 impl Terminal {
@@ -136,7 +144,7 @@ impl Terminal {
         // Carry it over before the newly queued PTY bytes are ever parsed.
         io.set_clipboard_delivery(self.io.clipboard_delivery());
         self.io = io;
-        self.blink = CursorBlinkState::new(Instant::now());
+        self.blink = CursorBlinkState::new(Instant::now()).into();
         self
     }
 
@@ -186,11 +194,12 @@ impl Terminal {
             appearance,
             backdrop_available: false,
             preedit: None,
-            blink: CursorBlinkState::new(Instant::now()),
+            blink: CursorBlinkState::new(Instant::now()).into(),
             pending_ordinary_present: false,
             pending_preedit_redraw: false,
             update_needs_full: true,
             projection_epoch: 0,
+            presentation_revision: 0,
         }
     }
 
@@ -231,7 +240,10 @@ impl Terminal {
     /// Set once at startup; the background layer rebuilds when the resolved
     /// tint changes on the next prepare.
     pub fn set_backdrop_available(&mut self, available: bool) {
-        self.backdrop_available = available;
+        if self.backdrop_available != available {
+            self.advance_presentation_revision();
+            self.backdrop_available = available;
+        }
     }
 
     /// Advances the GPU-independent engine for a live host draw. A failed PTY resize
@@ -415,6 +427,9 @@ impl Terminal {
                     }
                     outcome.redraw = self.preedit.as_ref() != Some(next);
                     self.pending_preedit_redraw |= outcome.redraw;
+                    if outcome.redraw {
+                        self.advance_presentation_revision();
+                    }
                     self.preedit = Some(next.clone());
                 }
                 return Ok(outcome);
@@ -554,13 +569,20 @@ impl Terminal {
     /// The first projection and projections after `invalidate_update` require a full upload.
     /// Call `acknowledge_update` only once the renderer has prepared this exact state.
     pub fn read_update(&self, now: Instant) -> TerminalUpdate {
-        let snapshot = self.snapshot();
+        let snapshot = Arc::new(self.snapshot());
         let damage = if self.update_needs_full {
             UpdateDamage::FullUpload
         } else {
             UpdateDamage::Ranges(snapshot.dirty_ranges.clone())
         };
         TerminalUpdate {
+            acknowledgement: update::Acknowledgement {
+                snapshot: snapshot.clone(),
+                revisions: self.mutation_revisions(),
+                session: self.read_session,
+                presentation: self.presentation_revision,
+                damage: damage.clone(),
+            },
             snapshot,
             damage,
             selection: self.pointer.bounds(),
@@ -572,13 +594,18 @@ impl Terminal {
         }
     }
 
-    /// Acknowledge only an update whose content still matches the current engine.
+    /// Acknowledge only an authentic update with current mutation/projection provenance.
+    /// No grid-cell comparison is performed, including for A -> B -> A mutations.
     /// Returns false on intervening changes, so a later read can replay them.
     pub fn acknowledge_update(&mut self, update: &TerminalUpdate) -> bool {
         if self.projection_epoch != update.projection_epoch {
             return false;
         }
-        if !self.screen.matches_snapshot(&update.snapshot)
+        if update.acknowledgement.session != self.read_session
+            || update.acknowledgement.revisions != self.mutation_revisions()
+            || update.acknowledgement.presentation != self.presentation_revision
+            || !Arc::ptr_eq(&update.acknowledgement.snapshot, &update.snapshot)
+            || update.acknowledgement.damage != update.damage
             || self.pointer.bounds() != update.selection
             || self.preedit != update.preedit
             || TerminalAppearance::from_palette(self.screen.active_palette()) != update.appearance
@@ -595,6 +622,25 @@ impl Terminal {
         true
     }
 
+    fn mutation_revisions(&self) -> [revision::Revision; 6] {
+        let screen = self.screen.mutation_revisions();
+        [
+            screen[0],
+            screen[1],
+            screen[2],
+            screen[3],
+            self.pointer.mutation_revision(),
+            self.blink.stamp(),
+        ]
+    }
+
+    fn advance_presentation_revision(&mut self) {
+        self.presentation_revision = self
+            .presentation_revision
+            .checked_add(1)
+            .expect("terminal presentation revision exhausted");
+    }
+
     /// Request a full reconstruction when a renderer's retained projection is uncertain.
     pub fn invalidate_update(&mut self) {
         self.update_needs_full = true;
@@ -605,6 +651,7 @@ impl Terminal {
     pub fn clear_preedit(&mut self) -> bool {
         let cleared = self.preedit.take().is_some();
         if cleared {
+            self.advance_presentation_revision();
             self.blink.reset(Instant::now());
             self.pending_preedit_redraw = true;
         }

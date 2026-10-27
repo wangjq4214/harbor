@@ -9,7 +9,8 @@ use crate::{
 /// engine; the first update (and any update after an uncertain projection) is full.
 #[derive(Clone, Debug)]
 pub struct TerminalUpdate {
-    pub snapshot: TerminalSnapshot,
+    /// Shared coherent projection. Detaching it creates a synthetic, non-acknowledgeable update.
+    pub snapshot: std::sync::Arc<TerminalSnapshot>,
     pub damage: UpdateDamage,
     pub selection: Option<SelectionBounds>,
     pub preedit: Option<Preedit>,
@@ -18,4 +19,13 @@ pub struct TerminalUpdate {
     pub frame_demand: FrameDemand,
     /// Internal projection epoch; invalidation makes old acknowledgements stale.
     pub(crate) projection_epoch: u64,
+    pub(crate) acknowledgement: Acknowledgement,
+}
+#[derive(Clone, Debug)]
+pub(crate) struct Acknowledgement {
+    pub(crate) snapshot: std::sync::Arc<TerminalSnapshot>,
+    pub(crate) revisions: [crate::revision::Revision; 6],
+    pub(crate) session: crate::read_model::SessionId,
+    pub(crate) presentation: u64,
+    pub(crate) damage: UpdateDamage,
 }

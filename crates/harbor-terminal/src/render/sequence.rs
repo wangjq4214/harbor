@@ -560,7 +560,7 @@ mod tests {
             harbor_text::load_system_fonts(&harbor_config::FontSettings::default()).unwrap();
         let mut engine = crate::Terminal::new_headless(2, 8);
         engine.put_str("👩");
-        let mut snap = engine.read_update(std::time::Instant::now()).snapshot;
+        let mut snap = (*engine.read_update(std::time::Instant::now()).snapshot).clone();
         snap.cells[0].suffix = "\u{200d}\u{301}".repeat(128);
         let source = snap.cells[0].raw_text();
         let viewport = RenderViewport::with_surface(9.0, 19.0, (256, 128), (256, 128));

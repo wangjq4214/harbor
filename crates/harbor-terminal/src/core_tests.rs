@@ -3,7 +3,7 @@ use harbor_config::BLINK_INTERVAL_MS;
 use std::time::{Duration, Instant};
 
 #[test]
-fn update_acknowledgement_compares_entire_snapshot_without_rebuilding_it() {
+fn update_acknowledgement_rejects_modified_snapshot_by_identity() {
     let mut engine = Terminal::new_headless(2, 4);
     engine.put_str("abcdefghijk");
     engine.scroll_viewport_to_top();
@@ -12,7 +12,7 @@ fn update_acknowledgement_compares_entire_snapshot_without_rebuilding_it() {
     macro_rules! altered {
         ($change:expr) => {{
             let mut changed = update.clone();
-            $change(&mut changed.snapshot);
+            $change(std::sync::Arc::make_mut(&mut changed.snapshot));
             variants.push(changed);
         }};
     }
@@ -20,7 +20,7 @@ fn update_acknowledgement_compares_entire_snapshot_without_rebuilding_it() {
     altered!(|s: &mut crate::TerminalSnapshot| s.cols += 1);
     altered!(|s: &mut crate::TerminalSnapshot| s.cells[0].ch = '\0');
     altered!(|s: &mut crate::TerminalSnapshot| {
-        s.cells.pop();
+        s.cells = s.cells.iter().take(s.cells.len() - 1).cloned().collect();
     });
     altered!(|s: &mut crate::TerminalSnapshot| s.cursor_x += 1);
     altered!(|s: &mut crate::TerminalSnapshot| s.cursor_y += 1);
@@ -36,7 +36,7 @@ fn update_acknowledgement_compares_entire_snapshot_without_rebuilding_it() {
     altered!(|s: &mut crate::TerminalSnapshot| s.is_alt = !s.is_alt);
     altered!(|s: &mut crate::TerminalSnapshot| s.dirty_ranges.clear());
     for changed in variants {
-        assert_ne!(engine.snapshot(), changed.snapshot);
+        assert_ne!(engine.snapshot(), *changed.snapshot);
         assert!(!engine.acknowledge_update(&changed));
     }
     assert!(engine.acknowledge_update(&update));

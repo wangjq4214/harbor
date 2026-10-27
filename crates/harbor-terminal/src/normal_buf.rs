@@ -96,6 +96,8 @@ pub struct NormalBuf {
     content_generation: u64,
     content_revision: u64,
     row_versions: Vec<u64>,
+    /// Visible projection cache; never uses or consumes damage as freshness.
+    snapshot_cache: std::cell::RefCell<crate::snapshot::SnapshotCache>,
     /// Next never-before-issued logical line identity.
     next_logical_line_id: u64,
     /// Ring capacity in rows = `max_scrollback + visible_rows`.
@@ -144,6 +146,10 @@ impl PartialEq for NormalBuf {
 }
 impl Eq for NormalBuf {}
 impl NormalBuf {
+    pub(crate) fn snapshot_cells(&self) -> crate::SnapshotCells {
+        self.snapshot_cache.borrow_mut().project(self)
+    }
+
     fn touch_ring_row(&mut self, ring_row: usize) {
         self.content_revision = self
             .content_revision
@@ -210,6 +216,7 @@ impl NormalBuf {
             content_generation: crate::read_model::fresh_identity(),
             content_revision: 0,
             row_versions: vec![0; total_rows],
+            snapshot_cache: Default::default(),
             next_logical_line_id,
             visible_rows: rows,
             cols,
@@ -728,6 +735,9 @@ impl NormalBuf {
     pub(crate) fn discard_text_extension(&mut self, row: usize, col: usize, ch: char) {
         let index = self.display_to_ring(row) * self.cols + col;
         self.cells[index].discard_text_extension(ch);
+        // Refresh this projected Cell without invalidating semantic content readers.
+        let generation = self.history_start + self.scroll_count as u64 + row as u64;
+        self.snapshot_cache.get_mut().invalidate_row(generation);
     }
 
     /// Returns a mutable reference to the cell at `(display_row, col)`.
@@ -1010,6 +1020,7 @@ impl NormalBuf {
             .map_err(|_| PreparationError::AllocationFailed)?;
         row_versions.resize(total_rows, 0);
         Ok(Self {
+            snapshot_cache: Default::default(),
             cells,
             cell_state,
             row_metadata,

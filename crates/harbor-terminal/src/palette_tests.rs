@@ -315,7 +315,7 @@ fn osc_palette_semantic_cells_skipped_updates_and_stale_acknowledgement() {
         updated.snapshot.dirty_ranges
     );
     let active = updated.appearance.palette();
-    for cell in &updated.snapshot.cells[..8] {
+    for cell in updated.snapshot.cells.iter().take(8) {
         assert_eq!(
             active.resolve(cell.fg)[..3],
             Rgba::from_rgb8(0x12, 0x34, 0x56).components()[..3]

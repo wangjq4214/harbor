@@ -379,7 +379,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 ## Terminal Domain
 
 ### Terminal
-- **Definition:** The GPU-independent terminal engine/session abstraction owning screen state, VT parsing, input, selection, timing and PTY I/O. A separate wgpu renderer consumes coherent snapshots/damage; reading does not acknowledge damage, so skipped/failed draws retain pending changes. Window/Device ownership stays with the host, with GPU access injected through Terminal Widget Bridge. See [ADR 0045](./adr/0045-gpu-independent-terminal-core-boundary.md).
+- **Definition:** The GPU-independent terminal engine/session abstraction owning screen state, VT parsing, input, selection, timing and PTY I/O. A separate wgpu renderer consumes coherent row-shared snapshots/damage; mutation provenance and exact shared snapshot identity validate acknowledgement without cell equality. Reading does not acknowledge damage, so skipped/failed draws retain pending changes. [ADR 0094](./adr/0094-mutation-revisions-and-incremental-terminal-updates.md) records incremental projection and conservative mutation invalidation. Window/Device ownership stays with the host, with GPU access injected through Terminal Widget Bridge. See [ADR 0045](./adr/0045-gpu-independent-terminal-core-boundary.md).
 - **Synonyms:** Terminal Engine
 - **Relationships:**
   - contains Wide Cell invariant

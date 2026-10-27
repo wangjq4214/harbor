@@ -427,6 +427,7 @@ mod tests {
             eprintln!("no GPU adapter; CPU upload policy test still runs");
             return;
         };
+        eprintln!("terminal update test adapter: {:?}", adapter.get_info());
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("terminal update test device"),
             required_features: wgpu::Features::empty(),

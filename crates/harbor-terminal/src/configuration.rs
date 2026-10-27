@@ -92,7 +92,7 @@ impl ConfigurationResize<'_> {
     pub fn update(&self, baseline: Palette) -> TerminalUpdate {
         let mut update = self.terminal.read_update(Instant::now());
         if let Some((screen, pointer)) = &self.prepared {
-            update.snapshot = screen.snapshot(&self.terminal.screen);
+            update.snapshot = screen.snapshot(&self.terminal.screen).into();
             update.selection = pointer.bounds();
         }
         update.appearance =
