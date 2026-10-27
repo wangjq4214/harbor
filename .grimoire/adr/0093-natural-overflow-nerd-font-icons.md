@@ -3,7 +3,7 @@
 **Status:** Testing
 **Date:** 2026-10-27
 **Supersedes:** [0092-natural-size-clipped-nerd-font-icons](./0092-natural-size-clipped-nerd-font-icons.md)
-**Sources:** User refinement: “现在这个图标还是不理想……改成不裁剪，重叠就让他重叠吧，让图标可以自然溢出就行了”.
+**Sources:** User refinement (translated from Chinese): "The icon still does not look right ... stop clipping it; let it overlap if necessary and overflow naturally."
 
 ## Context
 
