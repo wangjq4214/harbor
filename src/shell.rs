@@ -974,6 +974,15 @@ impl ActiveSession {
         if let Some(wait) = self.sync_terminal_allocation() {
             combined_flow = combined_flow.arbitrate(wait);
         }
+        // Output, scheduling and allocation above only dispatch/submit managed work.
+        // Admit one shared batch here, never a separate batch per callback or tab.
+        let resized = self.tabs.advance_resizes();
+        if resized.active_changed {
+            self.main_host.request_frame();
+        }
+        if resized.ready_remaining {
+            combined_flow = combined_flow.arbitrate(ControlFlowEffect::Poll);
+        }
         // Allocation can start a new acquisition this turn. Observe its deadline
         // after submission, even if no reader wake/text/draw follows it.
         if let Some(deadline) = self.tabs.resize_deadline() {

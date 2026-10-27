@@ -252,6 +252,15 @@ impl TerminalRenderPipeline {
         self.raster_scale
     }
 
+    /// Grid represented by the last prepared GPU projection, not the latest
+    /// allocation viewport (which can change before a reader ACK is admitted).
+    pub fn grid_size(&self) -> crate::TerminalSize {
+        crate::TerminalSize {
+            rows: self.grid.0,
+            cols: self.grid.1,
+        }
+    }
+
     pub fn viewport(&self) -> RenderViewport {
         self.viewport
     }

@@ -392,7 +392,15 @@ impl TerminalWidgetBridge {
                             }
                         }
                         let metrics = *renderer.metrics();
+                        // A draw before admission can already install the new viewport
+                        // with an old grid. Compare the prepared projection as well.
+                        let projection_grid_changed = renderer.grid_size()
+                            != (TerminalSize {
+                                rows: term.screen().rows(),
+                                cols: term.screen().cols(),
+                            });
                         if needs_live_projection(mode, &term, renderer.viewport(), target, &metrics)
+                            || projection_grid_changed
                         {
                             let now = std::time::Instant::now();
                             let (viewport, grid_changed) =
@@ -1136,6 +1144,7 @@ mod tests {
         assert!(snapshot.dirty_ranges.is_empty());
         // The product coordinator broadcasts sizes using startup metrics before the
         // bridge draws. Both phases must agree, including after a skipped draw/DPI change.
+        terminal.lock().unwrap().use_host_resize_scheduling();
         for scale in [1.0, 1.25, 1.5, 2.0, 1.5, 1.0] {
             for (width, height) in [(80.0, 60.0), (96.0, 64.0), (80.0, 60.0)] {
                 let rect = Rect::from_min_size(Point::ZERO, Size::new(width, height));
@@ -1147,8 +1156,17 @@ mod tests {
                     .unwrap()
                     .try_resize_if_changed(size)
                     .unwrap();
-                let before_draw = terminal.lock().unwrap().snapshot();
+                let before_admission = terminal.lock().unwrap().snapshot();
                 draw(&ctx, 99, ExternalDrawMode::Live); // unmatched/skipped frame
+                draw(&ctx, 73, ExternalDrawMode::Retain); // allocation can precede admission
+                let waiting = terminal.lock().unwrap().snapshot();
+                assert_eq!(
+                    (waiting.rows, waiting.cols),
+                    (before_admission.rows, before_admission.cols),
+                    "drawing must not bypass host admission"
+                );
+                terminal.lock().unwrap().advance_resize().unwrap();
+                let before_draw = terminal.lock().unwrap().snapshot();
                 draw(&ctx, 73, ExternalDrawMode::Retain);
                 let after_draw = terminal.lock().unwrap().snapshot();
                 assert_eq!(

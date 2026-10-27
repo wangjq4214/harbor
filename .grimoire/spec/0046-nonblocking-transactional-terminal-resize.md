@@ -4,8 +4,9 @@
 **Status:** Draft
 **Date:** 2026-10-27
 **Sources:** User refinement confirming six constraints: asynchronous ACK acquisition without UI blocking or long-held Terminal locks; exactly-once old/new-geometry ordering; latest-target request merging; reader release and explicit incomplete recovery; multi-terminal font-reload atomicity; unified normal-drain/ACK dispatch. The user selected a Spec-only endpoint.
-**Decision:** [ADR 0095](../adr/0095-event-driven-resize-barrier-and-shared-reader-dispatch.md).
-**Regression contracts:** [0014 — content-preserving resize](./0014-content-preserving-resize-reflow.md), [0023 — atomic configuration reload](./0023-atomic-manual-configuration-reload.md). This specification changes how barrier acquisition progresses, not their content-retention or accepted-configuration policies.
+**Revision scope:** The user selected option A for the unresolved multi-tab resize accumulation: active-priority, fair, bounded cross-tab scheduling. R8–R10 and E11–E15 are the new draft supplement; R1–R7/E1–E10 remain regression obligations under the [project acceptance baseline](../README.md#acceptance-baseline). This supplement does not claim that the new scheduling behavior is implemented or accepted.
+**Decisions:** [ADR 0095](../adr/0095-event-driven-resize-barrier-and-shared-reader-dispatch.md) and [ADR 0096 — bounded multi-tab scheduling](../adr/0096-bounded-multi-tab-resize-scheduling.md).
+**Regression contracts:** [0010 — all-tab allocation](./0010-desktop-terminal-tabs-and-view-macro.md), [0014 — content-preserving resize](./0014-content-preserving-resize-reflow.md), [0023 — atomic configuration reload](./0023-atomic-manual-configuration-reload.md). This specification governs event-driven barrier acquisition and bounded cross-tab scheduling, not replacement of their content-retention or accepted-configuration policies.
 
 ## Requirements
 
@@ -67,11 +68,33 @@ Asynchronous acquisition changes neither session/PTY/child identity nor buffer-s
 
 Font reload remains terminal-only and must not reset sessions, clear buffers, change independent UI fonts or reject ordinary history eviction/clipping as a new lossless-retention policy. Configuration atomicity is not a promise to freeze or undo child execution/output during asynchronous acquisition.
 
+### R8 — Bounded aggregate ordinary resize execution
+
+Ordinary allocation-driven resize must not synchronously execute an unrestricted sweep of every ready tab's expensive preparation/reflow, native PTY resize and model commit in one host turn. Accepting the latest allocation for all live tabs is distinct from completing every tab in that turn. Apply a bounded amount of expensive cross-tab resize work, then permit UI event processing before continuing remaining work.
+
+The bound must cover aggregate execution across broadcast, output-ready processing, idle pending progress and render/input drain paths that can finish a resize. Moving work out of `resize_all_if_changed()` while another path still sweeps all ready tabs does not satisfy this requirement. Target bookkeeping and ordered event dispatch do not themselves authorize an additional unrestricted transaction batch.
+
+This is option A from ADR 0096: no new numeric batch/time threshold is selected. One running transaction may still synchronously take substantial time; the requirement prevents unbounded cross-tab accumulation, not single-operation latency or preemption. R6's coordinated font/configuration transaction and atomic publication rules remain unchanged; this supplement does not require splitting that group's native commit across UI turns.
+
+### R9 — Active priority, background fairness and independent continuation
+
+Prioritize the currently active tab's applicable resize work while fairly advancing inactive tabs. A tab awaiting ACK must not make other ready tabs wait for that ACK. Active priority must not become starvation of ready background work, including during repeated active-tab activity. A change of active tab must be reflected in subsequent scheduling, without preempting an already running transaction.
+
+Inactive tabs receive the latest target and progress without activation, additional child text output or hidden terminal painting. When a batch yields with work still ready, arrange continued progress rather than sleeping until unrelated activity. Where work awaits ACK/deadline/failure, retain R1–R5's event-driven progress, byte ordering and reader-release guarantees. All live tabs converge to the latest normalized target when requests settle and their transactions succeed; ordinary per-tab commits need not be simultaneous.
+
+### R10 — Latest intent, per-tab completion and honest aggregate state
+
+Keep the latest allocation intent, each terminal's committed geometry and aggregate completion distinguishable. A previously completed broadcast size is not sufficient to skip a new request when another target remains pending. In particular, after completed A, pending B, then requested A, cancel/supersede unstarted B work; it must not later commit B merely because an aggregate cache treated A as already complete. Apply R4's existing rules to transactions already committed before the new request.
+
+Partial success, pending work or a failed tab must not be reported/cached as every live tab having completed the latest target. Preserve retry and R5's failure/release behavior without repeatedly resizing successful same-target tabs or admitting an unlimited retry sweep in one turn. Closing a tab must not allow its obsolete queued work to affect a different session.
+
 ## Solution
 
 Use the established event-driven acknowledged barrier direction in ADR 0095. Treat request submission, ordered ACK dispatch, transaction completion and failure/recovery as distinguishable progress, not one synchronous UI call that waits for the reader. Keep pending target and epoch coordination available without retaining a borrowed/locked Terminal across the ACK wait.
 
 Shared dispatch preserves a single interpretation of the reader stream for normal drain and resize. After the matching boundary and all pre-ACK bytes have been processed, existing detached preparation, PTY effect and model commit guarantees continue to apply. Request merging limits superseded work; application-level coordination remains responsible for coherent font/configuration acceptance across terminals.
+
+For ordinary multi-tab allocation changes, ADR 0096 adds bounded cross-tab execution with active priority and background fairness. Allocation intent reaches every live tab, while per-tab transactions may finish over multiple host turns. Host continuation and all paths capable of finishing a transaction must respect the same aggregate scheduling bound. Completion tracking must not mistake target submission, an old broadcast cache or partial success for current all-tab completion. This changes cross-tab scheduling, not individual transaction ordering or the font-group acceptance boundary.
 
 This describes responsibilities and exchanged guarantees, not an implementation plan, prescribed module layout, async runtime, thread design or public API signature.
 
@@ -85,16 +108,21 @@ This describes responsibilities and exchanged guarantees, not an implementation 
 | Platform capabilities | Terminal/session coordination ↔ `harbor-pty` | Reader interruption/resume, fallible native resize and teardown | Existing platform-handle encapsulation; release on all paths; explicit failures |
 | Geometry transaction | Resize coordination ↔ screen/pointer/parser model | Pre-boundary bytes parsed; prepared state; native effect result | Old geometry before commit; prepared allocation-free commit on success; compensation/recovery on failure |
 | Configuration group | Application coordinator ↔ all applicable terminals/render resources/factory | Per-session acquisition/preparation/native results; one candidate and prior accepted generation | One accepted configuration generation or rejection/explicit recovery failure; no per-session candidate publication |
+| Multi-tab allocation/scheduling | Application allocation owner ↔ live tab resize coordination ↔ host event loop | Latest normalized target, active identity, per-tab readiness/committed geometry, failure/closure and continuation | All-tab target delivery; bounded aggregate ordinary execution; active priority with background fairness; honest completion and independent wake/deadline progress |
 
-### Current integration surfaces
+### Integration surfaces at supplement refinement
 
-These are verified entry points, not required future names or file layout:
+These baseline observations were verified during refinement, before the scheduling supplement was implemented; they are not required future names or file layout:
 
-- `crates/harbor-terminal/src/io.rs`: `TerminalSession::acquire_resize_barrier`, reader commands/events, `TerminalIo::drain`, parser/reply delivery and reader lifecycle. The current two-second `recv_timeout` loop and no-op `BarrierAck` drain arm are the behaviors to replace.
-- `crates/harbor-terminal/src/lib.rs`: ordinary resize, render preparation, drain and frame-demand paths that can acquire or consume reader events.
-- `crates/harbor-terminal/src/configuration.rs`: configuration geometry preparation, group native effects, compensation and reader release.
-- `src/tab_coordinator.rs`: application-owned configuration acceptance, Terminal synchronization, font/render resources and future-session factory.
-- `harbor-pty` control capabilities: interrupting blocked reads, native resize and session teardown without exposing raw platform handles.
+- `crates/harbor-app/src/tab_manager.rs`: `resize_all_if_changed` currently visits all tabs and can synchronously finish ready transactions; its `last_broadcast_size` guard must not erase newer pending intent.
+- `crates/harbor-terminal/src/io.rs`: event-driven barrier requests, shared ordered ACK/byte drain, deadlines, cancellation and reader release.
+- `crates/harbor-terminal/src/lib.rs`: ordinary resize submission/completion, synchronous `try_resize_transaction`, drain and frame-demand paths. Event-driven ACK acquisition alone does not bound the aggregate transaction work.
+- `src/tab_coordinator.rs`: allocation conversion, pending-tab enumeration and deadline aggregation, alongside the separate configuration coordinator.
+- `src/shell.rs`: output-ready processing and `about_to_wait`'s pending resize loop can complete transactions outside target broadcast; continuation and UI yielding must cover these paths.
+- `crates/harbor-app/src/terminal_view.rs`: render-driven resize/drain integration must not bypass the host's aggregate ordinary scheduling guarantee.
+- `crates/harbor-terminal/src/configuration.rs` and `harbor-pty`: preserve configuration compensation/publication and platform resize/teardown capabilities. Their single-operation/native group duration is not newly bounded by option A.
+
+The original pre-event-driven `recv_timeout`/no-op ACK observations motivated R1–R7; they are historical, not a claim about the current source.
 
 ## End-to-End Tests
 
@@ -110,21 +138,29 @@ These are verified entry points, not required future names or file layout:
 | E8 — Group rejection | Same group; separately inject a member's barrier failure, resource preparation failure or later-session PTY failure after an earlier native success. Include normal drain/resize progress during acquisition. | Candidate is not partially published; earlier native effects are compensated where needed, old accepted settings remain, every reader is released, ACK ownership/order remains correct and ordinary retry succeeds. Covers R3/R5/R6. |
 | E9 — Compensation failure | Later member's PTY resize fails and compensation of an earlier success also fails. | Explicit fault-recovery outcome identifies failed operations/unrecovered sessions; previous accepted settings/resources retained, reader release and geometry reconciliation attempted; no claim of complete restoration or successful/partial reload. Covers R5/R6. |
 | E10 — Retention and editing regression | Repeated window and font resizes with history, selection/copy, pending shell input and alternate-screen transitions. | Existing bounded retention, producer-compatible geometry, cursor/input/IME/render coherence and session identity hold; no new reset, lossless-retention rejection or independent UI-font change. Covers R7. |
+| E11 — All-ready burst and UI yield | More live tabs are ready than fit the selected implementation's per-turn bound; request a changed allocation and queue an unrelated UI action. Exercise broadcast and pending-output/idle completion in the same turn, plus render/drain entry paths. | All tabs receive the target, but ready transactions are spread across bounded turns; the UI action runs before the entire backlog is committed. Entry paths cannot each create an independent unrestricted sweep. Individual transaction duration is not asserted. Covers R8. |
+| E12 — Priority and fairness | Ready active and background tabs, including an earlier-listed background tab; continue active activity and switch active identity while pending. Separately gate one member's ACK. | Active work receives scheduling priority; background ready work still progresses, and subsequent priority reflects activation. One gated ACK does not prevent another ready terminal from completing. No activation or extra text is needed for hidden progress. Covers R9. |
+| E13 — Return to a completed allocation | All tabs completed A; hold B pending, request A again, then release old ACKs and drive all continuation paths. Also exercise a case where only some tabs had already committed B before requesting A. | The A request is not discarded by the broadcast cache. Unstarted B work does not commit after supersession; all surviving successful terminals finish at A with no stranded reader or stale aggregate completion. Previously committed B terminals return to A through normal resize. Covers R4/R10. |
+| E14 — Partial failure and closure | Several tabs share a target; one succeeds, another fails or awaits ACK, and one closes while queued. Continue bounded turns and retry the recoverable failure. | Aggregate completion stays incomplete while applicable live members remain pending/failed; successful tabs are not needlessly resized, reader release/retry works and closed work cannot affect another session. Retry respects the turn bound. Covers R5/R8/R10. |
+| E15 — Quiet background continuation | Inactive tabs have ready work left after a batch, with no further child output or visible terminal draw; repeat with ACK-only wakes and a pending deadline. | Remaining ready work continues across turns to convergence; waiting work is dispatched or fails through its proper wake/deadline. No activation, unrelated input, extra text or hidden painting is necessary. Covers R3/R9. |
 
 ## Decisions and Traceability
 
 - **Nonblocking wait without long-held Terminal locks:** User constraint 1 and ADR 0095; moving a blocking wait behind a retained lock is insufficient.
 - **Keep ordered barrier, not opportunistic drain:** User constraint 2, ADR 0043 and ADR 0095; removing the barrier loses the proven reader boundary.
-- **Unified ACK dispatch:** User's additional drain finding and ADR 0095; the current no-op ACK arm cannot remain for pending acquisition.
+- **Unified ACK dispatch:** User's original drain finding and ADR 0095; ACK dispatch must remain functional for pending acquisition rather than revert to the historical no-op behavior.
 - **Latest-target coalescing:** User constraint 3 and ADR 0095; avoid expensive intermediate work without weakening transaction safety.
 - **Explicit incomplete recovery:** User constraint 4 and ADR 0061; native compensation is fallible and restoration cannot be assumed.
 - **One configuration generation:** User constraint 5, [ADR 0059](../adr/0059-atomic-manual-reload-and-terminal-only-fonts.md) and spec 0023; individual asynchronous success is not group acceptance.
+- **Bounded multi-tab execution, not worker-thread redesign:** User's explicit option A selection and ADR 0096; prioritize active work, advance inactive work fairly, preserve all-tab intent and avoid aggregate synchronous sweeps. R8–R10/E11–E15 express this selection without choosing a numeric budget or public API.
 
 ## Verification Guidance and Limits
 
 Use controlled reader gates and clocks to establish progress and race ordering, rather than sleeps or an invented latency threshold. Observe UI event completion, acquisition of the actual Terminal synchronization boundary, committed geometry, per-target preparation/native-effect counts, byte interpretation, epoch delivery, reader release, accepted resource generations and recovery outcomes.
 
 Exercise budget-exhausted drains and ACK-only wakes, read completion before publication, blocked-read interruption, timeout racing with ACK, repeated targets/epochs, session teardown, and multi-session success/rejection/compensation failure. Validate actual Windows ConPTY interruption and repeated resize/font-reload behavior with cmd/PowerShell pending input, inactive tabs and a persistent alternate-screen application; deterministic reader tests alone do not prove platform behavior. Retain spec 0014/0023 regression evidence obligations.
+
+For R8–R10, observe host-turn boundaries, ready backlog, per-tab transaction starts/completions, target changes and unrelated UI event completion. Use more ready tabs than the implementation's declared turn bound; exercise all completion entry paths together rather than testing only broadcast. Establish priority, non-starvation and quiet continuation with controlled readiness/wakes, not sleep-based smoothness claims. Include A→B→A and partial-commit target changes, failure/retry and queued closure. These are required evidence obligations, not tests executed during refinement.
 
 Record revision/dirty scope, Windows/ConPTY/application versions, exact steps, expected versus observed results and PASS/FAIL/NOT RUN/BLOCKED. This specification is requirements work only: no implementation, tests or Windows runtime acceptance is claimed.
 
@@ -133,6 +169,7 @@ No new timeout value, quantitative lock/latency budget, public API shape or reco
 ## Out of Scope
 
 - Implementation planning, ticket decomposition, code changes or QA execution at this Spec-only endpoint.
+- Moving individual ordinary reflow/native PTY operations off the UI thread, preempting a running resize, guaranteeing single-tab latency, or newly bounding the font/configuration group's native commit duration (option B is not selected).
 - Replacing established buffer-specific retention/reflow, ConPTY geometry or configuration publication policy.
 - Claiming generation-time ordering for unread OS-pipe bytes, freezing child execution, restarting sessions or introducing hidden lossless content backups.
 - Selecting a new timeout, async runtime, public API or new recovery-exit policy merely to express asynchronous ACK progress.

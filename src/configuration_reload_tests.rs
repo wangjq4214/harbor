@@ -5,6 +5,119 @@ use harbor_config::{Osc52WritePolicy, RawKeybinding, Rgba, Settings};
 use harbor_widget::{renderer::Viewport, runtime::Runtime};
 use std::{sync::atomic::AtomicBool, time::Instant};
 
+#[cfg(windows)]
+#[test]
+fn native_multi_tab_resize_yields_for_runtime_input_and_quiet_background_completion() {
+    let mut f = Fixture::new();
+    f.attach_native_children(); // actual cmd and PowerShell PTYs, already at READY
+    let native = f.tabs.configuration_targets();
+    for _ in 0..5 {
+        f.tabs
+            .create_tab(|_, draw| {
+                #[allow(clippy::arc_with_non_send_sync)]
+                let terminal = Arc::new(Mutex::new(Terminal::new_headless(10, 40)));
+                let bridge = TerminalWidgetBridge::new(
+                    draw,
+                    terminal.clone(),
+                    Arc::new(AtomicBool::new(false)),
+                );
+                Ok(TerminalTabResources::new(
+                    terminal,
+                    bridge,
+                    "quiet-background",
+                ))
+            })
+            .unwrap();
+    }
+    // The Runtime still mounts this original bridge, with a real reload shortcut.
+    let active = native[1].0;
+    f.tabs.activate(active);
+    let target = TerminalSize { rows: 12, cols: 50 };
+    f.tabs.resize_all_if_changed(target);
+    let all = f.tabs.configuration_targets();
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    // Withhold dispatch of the active member's ACK, independently of reader timing.
+    loop {
+        for (id, _, _) in &all {
+            if *id != active {
+                f.tabs.process_output(*id);
+            }
+        }
+        if all
+            .iter()
+            .filter(|(id, _, _)| *id != active)
+            .all(|(_, terminal, _)| terminal.lock().unwrap().resize_ready())
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native background ACK not dispatched"
+        );
+        std::thread::yield_now();
+    }
+    assert!(!native[1].1.lock().unwrap().resize_ready());
+    let first = f.tabs.advance_resizes();
+    assert_eq!(first.attempted, 2);
+    assert!(!first.active_changed && first.ready_remaining);
+    assert_eq!(f.tabs.last_broadcast_size(), None);
+    // Real unrelated Runtime input completes before ACK admission/backlog completion.
+    f.assert_reload_binding('r');
+    assert_eq!(native[1].1.try_lock().unwrap().screen().cols(), 40);
+    assert_eq!(
+        all.iter()
+            .filter(|(_, terminal, _)| terminal.lock().unwrap().screen().cols() == 50)
+            .count(),
+        2
+    );
+
+    loop {
+        for (id, _, _) in &all {
+            f.tabs.process_output(*id);
+        }
+        f.tabs.resize_all_if_changed(target);
+        let turn = f.tabs.advance_resizes();
+        assert!(turn.attempted <= 2);
+        if f.tabs.last_broadcast_size() == Some(target) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "quiet resize backlog did not converge"
+        );
+        std::thread::yield_now();
+    }
+    for (_, terminal, _) in &all {
+        let terminal = terminal.try_lock().unwrap();
+        assert_eq!(
+            (terminal.screen().rows(), terminal.screen().cols()),
+            (12, 50)
+        );
+        assert!(!terminal.resize_pending());
+    }
+    // Both native readers were resumed; the original children respond after resizing.
+    for (_, terminal, _) in &native {
+        terminal.lock().unwrap().write_pty(b"continue\r").unwrap();
+    }
+    let deadline = Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let mut resumed = true;
+        for (index, (id, terminal, _)) in native.iter().enumerate() {
+            f.tabs.process_output(*id);
+            resumed &=
+                retained_text(&terminal.lock().unwrap()).contains(&format!("RESUMED{index}"));
+        }
+        if resumed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native reader stranded after resize"
+        );
+        std::thread::yield_now();
+    }
+}
+
 struct Fixture {
     device: wgpu::Device,
     queue: wgpu::Queue,

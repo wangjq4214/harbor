@@ -2,6 +2,153 @@
 use super::*;
 use crate::Terminal;
 
+#[test]
+fn host_admission_keeps_acked_work_deferred_and_stream_ordered_through_all_drains() {
+    let f = Fixture::new();
+    let target = TerminalSize { rows: 4, cols: 10 };
+    {
+        let mut terminal = f.terminal.lock().unwrap();
+        terminal.use_host_resize_scheduling();
+        assert!(!terminal.try_resize_if_changed(target).unwrap());
+        assert!(!terminal.resize_ready());
+    }
+    let epoch = f.epoch();
+    f.bytes(b"\x1b[3;20H\x1b[6n\x1b[");
+    f.ack(epoch);
+    {
+        let mut terminal = f.terminal.lock().unwrap();
+        assert!(terminal.drain_pty());
+        terminal.frame_demand(Instant::now());
+        terminal
+            .handle_event(crate::TerminalEvent::Focus(
+                crate::TerminalFocusEvent::Gained,
+            ))
+            .unwrap();
+        assert!(terminal.resize_ready());
+        assert_eq!(
+            (terminal.screen().rows(), terminal.screen().cols()),
+            (3, 20)
+        );
+        assert_eq!(*f.replies.lock().unwrap(), b"\x1b[3;20R");
+        assert!(matches!(f.commands.try_recv(), Err(TryRecvError::Empty)));
+        assert!(terminal.advance_resize().unwrap());
+        assert_eq!(
+            (terminal.screen().rows(), terminal.screen().cols()),
+            (4, 10)
+        );
+        assert!(!terminal.advance_resize().unwrap());
+    }
+    assert_eq!(f.commands.try_recv().unwrap(), ReaderCommand::Resume(epoch));
+    f.bytes(b"4;10H\x1b[6n");
+    f.terminal.lock().unwrap().drain_pty();
+    assert_eq!(*f.replies.lock().unwrap(), b"\x1b[3;20R\x1b[4;10R");
+}
+
+#[test]
+fn host_admission_failure_and_cancellation_release_reader_and_allow_retry() {
+    let f = Fixture::new();
+    {
+        let mut terminal = f.terminal.lock().unwrap();
+        terminal.use_host_resize_scheduling();
+        terminal
+            .try_resize_if_changed(TerminalSize {
+                rows: usize::MAX,
+                cols: usize::MAX,
+            })
+            .unwrap();
+    }
+    let epoch = f.epoch();
+    f.ack(epoch);
+    {
+        let mut terminal = f.terminal.lock().unwrap();
+        assert!(!terminal.drain_pty(), "ACK only is not child text");
+        assert!(terminal.resize_ready());
+        assert!(terminal.advance_resize().is_err());
+        assert!(!terminal.resize_pending());
+        assert_eq!(
+            (terminal.screen().rows(), terminal.screen().cols()),
+            (3, 20)
+        );
+    }
+    assert_eq!(f.commands.try_recv().unwrap(), ReaderCommand::Resume(epoch));
+    f.terminal
+        .lock()
+        .unwrap()
+        .try_resize_if_changed(TerminalSize { rows: 4, cols: 8 })
+        .unwrap();
+    let cancelled = f.epoch();
+    f.terminal.lock().unwrap().cancel_resize();
+    assert_eq!(
+        f.commands.try_recv().unwrap(),
+        ReaderCommand::Resume(cancelled)
+    );
+    f.ack(cancelled);
+    f.terminal.lock().unwrap().drain_pty();
+    assert!(!f.terminal.lock().unwrap().resize_ready());
+    f.terminal
+        .lock()
+        .unwrap()
+        .try_resize_if_changed(TerminalSize { rows: 4, cols: 9 })
+        .unwrap();
+    let retried = f.epoch();
+    assert_ne!(retried, cancelled);
+    f.ack(retried);
+    let mut terminal = f.terminal.lock().unwrap();
+    terminal.drain_pty();
+    assert!(terminal.advance_resize().unwrap());
+    assert_eq!(terminal.screen().cols(), 9);
+    assert_eq!(
+        f.commands.try_recv().unwrap(),
+        ReaderCommand::Resume(retried)
+    );
+}
+
+#[test]
+fn host_admission_timeout_is_actionable_without_child_text_or_presentation() {
+    let f = Fixture::new();
+    {
+        let mut terminal = f.terminal.lock().unwrap();
+        terminal.use_host_resize_scheduling();
+        terminal.io.session.pty.as_mut().unwrap().barrier_timeout = Duration::ZERO;
+        terminal
+            .try_resize_if_changed(TerminalSize { rows: 4, cols: 8 })
+            .unwrap();
+    }
+    let epoch = f.epoch();
+    {
+        let mut terminal = f.terminal.lock().unwrap();
+        terminal.frame_demand(Instant::now());
+        assert!(
+            terminal.resize_ready(),
+            "failed acquisition must receive a cleanup slot"
+        );
+        assert!(terminal.resize_deadline().is_none());
+        assert!(terminal.advance_resize().is_err());
+        assert!(!terminal.resize_pending());
+        assert_eq!(terminal.screen().cols(), 20);
+        terminal.io.session.pty.as_mut().unwrap().barrier_timeout = RESIZE_BARRIER_TIMEOUT;
+    }
+    assert!(
+        f.commands
+            .try_iter()
+            .any(|command| command == ReaderCommand::Resume(epoch))
+    );
+    f.ack(epoch);
+    f.terminal.lock().unwrap().drain_pty();
+    f.terminal
+        .lock()
+        .unwrap()
+        .try_resize_if_changed(TerminalSize { rows: 4, cols: 9 })
+        .unwrap();
+    let next = f.epoch();
+    assert_ne!(next, epoch);
+    f.ack(next);
+    let mut terminal = f.terminal.lock().unwrap();
+    assert!(!terminal.drain_pty());
+    assert!(terminal.advance_resize().unwrap());
+    assert_eq!(terminal.screen().cols(), 9);
+}
+
 struct RecordingWriter(Arc<Mutex<Vec<u8>>>);
 impl Write for RecordingWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

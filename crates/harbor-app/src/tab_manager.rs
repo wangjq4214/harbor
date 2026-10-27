@@ -179,6 +179,17 @@ fn normalize_shell_title(title: String, shell_fallback: &str) -> String {
     }
 }
 
+// One ready active attempt plus at least one rotating background opportunity.
+const RESIZE_BATCH_LIMIT: usize = 2;
+
+/// Effects of the single ordinary resize admission batch in a host turn.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResizeBatchOutcome {
+    pub active_changed: bool,
+    pub ready_remaining: bool,
+    pub attempted: usize,
+}
+
 /// Ordered Host-owned terminal sessions.
 pub struct TabManager {
     pub(crate) search: crate::search::SessionSearch,
@@ -187,6 +198,8 @@ pub struct TabManager {
     next_tab_id: u64,
     next_draw_id: ExternalDrawId,
     last_broadcast_size: Option<TerminalSize>,
+    resize_target: Option<TerminalSize>,
+    resize_cursor: usize,
     clipboard_delivery: Option<ClipboardDelivery>,
 }
 
@@ -206,6 +219,8 @@ impl TabManager {
             next_tab_id: 1,
             next_draw_id: ExternalDrawId::new(1),
             last_broadcast_size: None,
+            resize_target: None,
+            resize_cursor: 0,
             clipboard_delivery: None,
         }
     }
@@ -232,6 +247,13 @@ impl TabManager {
                 .map_err(|_| anyhow!("terminal lock poisoned during tab creation"))?
                 .set_clipboard_delivery(delivery);
         }
+        // A tab's output/input/draw callbacks may dispatch ACKs, never admit resize work.
+        resources
+            .terminal
+            .lock()
+            .map_err(|_| anyhow!("terminal lock poisoned during tab creation"))?
+            .use_host_resize_scheduling();
+        self.last_broadcast_size = None;
         let title = resources.shell_fallback.clone();
         self.tabs.push(TerminalTab {
             id,
@@ -346,6 +368,7 @@ impl TabManager {
     }
 
     pub fn accept_configuration_size(&mut self, size: TerminalSize) {
+        self.resize_target = Some(size);
         self.last_broadcast_size = Some(size);
     }
 
@@ -430,8 +453,11 @@ impl TabManager {
             self.cancel_search();
         }
         let removed = self.tabs.remove(index);
-        if was_active && let Ok(mut terminal) = removed.terminal.lock() {
-            terminal.clear_preedit();
+        if let Ok(mut terminal) = removed.terminal.lock() {
+            terminal.cancel_resize();
+            if was_active {
+                terminal.clear_preedit();
+            }
         }
 
         if self.tabs.is_empty() {
@@ -527,44 +553,97 @@ impl TabManager {
         }
     }
 
-    /// Broadcasts a distinct valid grid to every live terminal.
-    ///
-    /// The cache advances only if every terminal lock succeeds. A partial broadcast is retried on
-    /// the next Host turn; terminals already at the requested size make that retry a local no-op.
+    /// Submit the latest valid allocation to every live terminal without running
+    /// any expensive transaction. Returns true only on newly observed all-tab completion.
+    /// The host must call advance_resizes once per turn and continue ready work.
     pub fn resize_all_if_changed(&mut self, size: TerminalSize) -> bool {
-        if size.rows == 0 || size.cols == 0 || self.last_broadcast_size == Some(size) {
+        if size.rows == 0 || size.cols == 0 {
             return false;
         }
-
-        let mut all_succeeded = true;
+        let size = TerminalSize {
+            rows: size.rows.max(1),
+            cols: size.cols.max(2),
+        };
+        if self.resize_target == Some(size) && self.last_broadcast_size == Some(size) {
+            return false;
+        }
+        // Never deduplicate against completed geometry: A -> pending B -> A must
+        // cancel B in every terminal, even when A was the last completed broadcast.
+        self.resize_target = Some(size);
         for tab in &mut self.tabs {
             match tab.terminal.lock() {
                 Ok(mut terminal) => {
                     if let Err(error) = terminal.try_resize_if_changed(size) {
-                        all_succeeded = false;
-                        tracing::warn!(
-                            tab_id = tab.id.get(),
-                            error = %format_args!("{error:#}"),
-                            "failed to resize terminal"
-                        );
+                        tracing::warn!(tab_id = tab.id.get(), %error, "failed to request terminal resize");
                     }
-                    all_succeeded &= terminal.screen().rows() == size.rows.max(1)
-                        && terminal.screen().cols() == size.cols.max(2);
                 }
-                Err(_) => {
-                    all_succeeded = false;
-                    tracing::warn!(
-                        tab_id = tab.id.get(),
-                        "terminal lock unavailable during resize"
-                    );
-                }
+                Err(_) => tracing::warn!(
+                    tab_id = tab.id.get(),
+                    "terminal lock unavailable during resize"
+                ),
             }
         }
-        if all_succeeded && !self.tabs.is_empty() {
-            self.last_broadcast_size = Some(size);
-            true
-        } else {
-            false
+        self.refresh_resize_completion()
+    }
+
+    fn refresh_resize_completion(&mut self) -> bool {
+        let previous = self.last_broadcast_size;
+        self.last_broadcast_size = self.resize_target.filter(|size| {
+            !self.tabs.is_empty()
+                && self.tabs.iter().all(|tab| {
+                    tab.terminal.lock().is_ok_and(|terminal| {
+                        terminal.screen().rows() == size.rows
+                            && terminal.screen().cols() == size.cols
+                    })
+                })
+        });
+        self.last_broadcast_size.is_some() && previous != self.last_broadcast_size
+    }
+
+    /// Only the host's once-per-turn admission point calls this. All other paths
+    /// merely submit targets or dispatch ordered reader events.
+    pub fn advance_resizes(&mut self) -> ResizeBatchOutcome {
+        let mut outcome = ResizeBatchOutcome::default();
+        let active = self.active;
+        if let Some(tab) = self.tabs.iter().find(|tab| Some(tab.id) == active) {
+            Self::advance_tab_resize(tab, true, &mut outcome);
+        }
+        // A persistent cursor, not Vec order or the current active identity, owns
+        // background fairness. Failure attempts also consume a slot.
+        for _ in 0..self.tabs.len() {
+            if outcome.attempted == RESIZE_BATCH_LIMIT {
+                break;
+            }
+            self.resize_cursor %= self.tabs.len();
+            let index = self.resize_cursor;
+            self.resize_cursor = (index + 1) % self.tabs.len();
+            let tab = &self.tabs[index];
+            if Some(tab.id) != active {
+                Self::advance_tab_resize(tab, false, &mut outcome);
+            }
+        }
+        outcome.ready_remaining = self.tabs.iter().any(|tab| {
+            tab.terminal
+                .lock()
+                .is_ok_and(|terminal| terminal.resize_ready())
+        });
+        self.refresh_resize_completion();
+        outcome
+    }
+
+    fn advance_tab_resize(tab: &TerminalTab, active: bool, outcome: &mut ResizeBatchOutcome) {
+        let Ok(mut terminal) = tab.terminal.lock() else {
+            return;
+        };
+        if !terminal.resize_ready() {
+            return;
+        }
+        outcome.attempted += 1;
+        match terminal.advance_resize() {
+            Ok(changed) => outcome.active_changed |= active && changed,
+            Err(error) => {
+                tracing::warn!(tab_id = tab.id.get(), %error, "failed to complete terminal resize")
+            }
         }
     }
 
@@ -1346,7 +1425,9 @@ mod tests {
         create(&mut manager);
         let requested = TerminalSize { rows: 12, cols: 42 };
 
-        assert!(manager.resize_all_if_changed(requested));
+        assert!(!manager.resize_all_if_changed(requested));
+        assert_eq!(manager.last_broadcast_size(), None);
+        assert_eq!(manager.advance_resizes().attempted, 2);
         assert_eq!(manager.last_broadcast_size(), Some(requested));
         for tab in &manager.tabs {
             let snapshot = tab.terminal.lock().unwrap().drain_and_snapshot();
@@ -1355,6 +1436,249 @@ mod tests {
         assert!(!manager.resize_all_if_changed(requested));
         assert!(!manager.resize_all_if_changed(TerminalSize { rows: 0, cols: 42 }));
         assert_eq!(manager.last_broadcast_size(), Some(requested));
+    }
+
+    fn dimensions(manager: &TabManager) -> Vec<TerminalSize> {
+        manager
+            .tabs
+            .iter()
+            .map(|tab| {
+                let terminal = tab.terminal.lock().unwrap();
+                TerminalSize {
+                    rows: terminal.screen().rows(),
+                    cols: terminal.screen().cols(),
+                }
+            })
+            .collect()
+    }
+
+    fn settle_resize(manager: &mut TabManager) {
+        for _ in 0..manager.tabs.len() + 1 {
+            if !manager.advance_resizes().ready_remaining {
+                return;
+            }
+        }
+        panic!("ready resize backlog failed to converge");
+    }
+
+    #[test]
+    fn resize_burst_yields_with_one_shared_bound_despite_output_input_and_draws() {
+        use harbor_terminal::{RenderTarget, TerminalEvent, TerminalFocusEvent, TextMetrics};
+        let mut manager = TabManager::new();
+        for _ in 0..7 {
+            create(&mut manager);
+        }
+        let target = TerminalSize { rows: 6, cols: 30 };
+        let initial = dimensions(&manager);
+        manager.resize_all_if_changed(target);
+        let metrics = TextMetrics {
+            cell_width: 8.0,
+            line_height: 16.0,
+            ascent: 12.0,
+            underline_position: 14.0,
+            underline_thickness: 1.0,
+            strikethrough_position: 8.0,
+            strikethrough_thickness: 1.0,
+        };
+        // None of these entry paths may create its own transaction budget.
+        for (id, terminal, bridge) in manager.configuration_targets() {
+            manager.process_output(id);
+            bridge.is_alt_screen();
+            let mut terminal = terminal.lock().unwrap();
+            terminal.frame_demand(std::time::Instant::now());
+            terminal
+                .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+                .unwrap();
+            terminal.prepare_render_frame(
+                RenderTarget::new((0.0, 0.0), (800, 600), (800, 600)),
+                &metrics,
+                std::time::Instant::now(),
+            );
+        }
+        manager.resize_all_if_changed(target);
+        assert_eq!(
+            dimensions(&manager),
+            initial,
+            "fan-out/callbacks must not commit"
+        );
+        let batch = manager.advance_resizes();
+        assert_eq!(batch.attempted, RESIZE_BATCH_LIMIT);
+        assert!(batch.active_changed && batch.ready_remaining);
+        assert_eq!(
+            dimensions(&manager)
+                .iter()
+                .filter(|s| **s == target)
+                .count(),
+            RESIZE_BATCH_LIMIT
+        );
+        assert_eq!(manager.last_broadcast_size(), None);
+        // An ordinary model/UI action runs before the entire ready backlog.
+        let next_active = manager.tabs[3].id;
+        assert!(manager.activate(next_active).active_bridge_changed);
+        manager.advance_resizes();
+        assert_eq!(
+            terminal(&manager, next_active)
+                .lock()
+                .unwrap()
+                .screen()
+                .cols(),
+            30
+        );
+        settle_resize(&mut manager); // no additional bytes, draws or activation
+        assert!(dimensions(&manager).iter().all(|s| *s == target));
+        assert_eq!(manager.last_broadcast_size(), Some(target));
+        assert!(manager.snapshots().iter().all(|tab| !tab.unread));
+        assert_eq!(manager.advance_resizes().attempted, 0);
+    }
+
+    #[test]
+    fn resize_active_priority_still_rotates_background_under_continuous_targets() {
+        let mut manager = TabManager::new();
+        for _ in 0..8 {
+            create(&mut manager);
+        }
+        let mut served = std::collections::HashSet::new();
+        for turn in 0..8 {
+            let target = TerminalSize {
+                rows: 4,
+                cols: 21 + turn,
+            };
+            manager.resize_all_if_changed(target);
+            let batch = manager.advance_resizes();
+            assert_eq!(batch.attempted, RESIZE_BATCH_LIMIT);
+            assert_eq!(*dimensions(&manager).last().unwrap(), target);
+            for (tab, size) in manager.tabs.iter().zip(dimensions(&manager)) {
+                if size == target {
+                    served.insert(tab.id);
+                }
+            }
+        }
+        assert_eq!(
+            served.len(),
+            manager.tabs.len(),
+            "active changes cannot starve background"
+        );
+    }
+
+    #[test]
+    fn resize_return_to_completed_a_cancels_b_with_and_without_partial_commits() {
+        for partially_commit in [false, true] {
+            let mut manager = TabManager::new();
+            for _ in 0..6 {
+                create(&mut manager);
+            }
+            let a = TerminalSize { rows: 4, cols: 20 };
+            let b = TerminalSize { rows: 5, cols: 31 };
+            assert!(manager.resize_all_if_changed(a));
+            manager.resize_all_if_changed(b);
+            assert_eq!(manager.last_broadcast_size(), None);
+            if partially_commit {
+                manager.advance_resizes();
+            }
+            manager.resize_all_if_changed(a);
+            settle_resize(&mut manager);
+            assert_eq!(manager.last_broadcast_size(), Some(a));
+            assert!(dimensions(&manager).iter().all(|s| *s == a));
+            assert!(
+                manager
+                    .tabs
+                    .iter()
+                    .all(|tab| !tab.terminal.lock().unwrap().resize_pending())
+            );
+            assert_eq!(manager.advance_resizes().attempted, 0);
+        }
+    }
+
+    #[test]
+    fn resize_failure_attempts_are_bounded_retryable_and_closure_cancels_queued_work() {
+        let mut manager = TabManager::new();
+        for _ in 0..7 {
+            create(&mut manager);
+        }
+        let impossible = TerminalSize {
+            rows: usize::MAX,
+            cols: usize::MAX,
+        };
+        manager.resize_all_if_changed(impossible);
+        for _ in 0..3 {
+            let batch = manager.advance_resizes();
+            assert_eq!(batch.attempted, RESIZE_BATCH_LIMIT);
+            assert!(batch.ready_remaining);
+            assert_eq!(manager.last_broadcast_size(), None);
+            assert!(dimensions(&manager).iter().all(|s| s.cols == 20));
+            manager.resize_all_if_changed(impossible);
+        }
+        let target = TerminalSize { rows: 5, cols: 28 };
+        manager.resize_all_if_changed(target);
+        let doomed = manager.tabs[2].id;
+        let retained = terminal(&manager, doomed);
+        manager.close(doomed);
+        assert!(!retained.lock().unwrap().resize_pending());
+        let (replacement, _) = create(&mut manager);
+        assert_ne!(replacement, doomed);
+        manager.resize_all_if_changed(target);
+        settle_resize(&mut manager);
+        assert_eq!(
+            retained.lock().unwrap().screen().cols(),
+            20,
+            "obsolete tab work never commits"
+        );
+        assert!(dimensions(&manager).iter().all(|s| *s == target));
+        assert_eq!(manager.last_broadcast_size(), Some(target));
+    }
+
+    #[test]
+    fn resize_partial_request_failure_never_claims_aggregate_completion() {
+        let mut manager = TabManager::new();
+        for _ in 0..4 {
+            create(&mut manager);
+        }
+        manager
+            .create_tab(|_, draw| {
+                // This reader has no interrupt capability: acquisition must reject,
+                // while other sessions remain able to finish the shared allocation.
+                #[allow(clippy::arc_with_non_send_sync)]
+                let terminal = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+                    4,
+                    20,
+                    std::io::empty(),
+                    std::io::sink(),
+                    || true,
+                )));
+                let bridge = TerminalWidgetBridge::new(
+                    draw,
+                    terminal.clone(),
+                    Arc::new(AtomicBool::new(false)),
+                );
+                Ok(TerminalTabResources::new(
+                    terminal,
+                    bridge,
+                    "unsupported-reader",
+                ))
+            })
+            .unwrap();
+        let failed = manager.active_id().unwrap();
+        let target = TerminalSize { rows: 5, cols: 30 };
+        manager.resize_all_if_changed(target);
+        settle_resize(&mut manager);
+        assert_eq!(
+            dimensions(&manager)
+                .iter()
+                .filter(|size| **size == target)
+                .count(),
+            4
+        );
+        assert_eq!(manager.last_broadcast_size(), None);
+        manager.resize_all_if_changed(target);
+        assert_eq!(
+            manager.advance_resizes().attempted,
+            0,
+            "successful sessions are not retried"
+        );
+        assert_eq!(manager.last_broadcast_size(), None);
+        manager.close(failed);
+        manager.advance_resizes();
+        assert_eq!(manager.last_broadcast_size(), Some(target));
     }
 
     #[test]

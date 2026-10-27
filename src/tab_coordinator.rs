@@ -527,6 +527,11 @@ impl TabCoordinator {
             .collect()
     }
 
+    /// The sole admission point for ordinary multi-tab resize transactions.
+    pub(crate) fn advance_resizes(&mut self) -> harbor_app::tab_manager::ResizeBatchOutcome {
+        self.tabs.advance_resizes()
+    }
+
     pub(crate) fn resize_deadline(&self) -> Option<std::time::Instant> {
         self.tabs
             .configuration_targets()

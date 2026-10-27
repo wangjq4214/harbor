@@ -118,6 +118,8 @@ pub struct Terminal {
     projection_epoch: u64,
     presentation_revision: u64,
     pending_resize: Option<TerminalSize>,
+    /// Application-owned admission prevents drains/draws from doing an unbounded tab sweep.
+    host_driven_resize: bool,
 }
 
 impl Terminal {
@@ -203,6 +205,7 @@ impl Terminal {
             projection_epoch: 0,
             presentation_revision: 0,
             pending_resize: None,
+            host_driven_resize: false,
         }
     }
 
@@ -260,7 +263,9 @@ impl Terminal {
         let viewport = RenderViewport::from_target(target, metrics);
         self.pointer.set_viewport(viewport);
         self.pointer.set_input_scale(target.scale_factor);
-        let grid_changed = self.resize_if_changed(viewport.compute_grid_size());
+        // Managed terminals take geometry intent only from their allocation owner.
+        let grid_changed =
+            !self.host_driven_resize && self.resize_if_changed(viewport.compute_grid_size());
         self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
         let _ = self.pointer.tick(&mut self.screen, now);
         (viewport, grid_changed)
@@ -385,7 +390,9 @@ impl Terminal {
     /// Returns whether any bytes were parsed; additional output may remain queued.
     pub fn drain_pty(&mut self) -> bool {
         let parsed = self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
-        if let Err(error) = self.finish_pending_resize() {
+        if !self.host_driven_resize
+            && let Err(error) = self.finish_pending_resize()
+        {
             tracing::error!(%error, "asynchronous terminal resize failed");
         }
         parsed
@@ -751,7 +758,8 @@ impl Terminal {
 
     /// Requests the latest grid dimensions. Returns true only when a change commits;
     /// false also covers a pending reader ACK. Drive drain_pty/frame_demand and
-    /// resize_deadline until completion. No Terminal lock is retained across calls.
+    /// resize_deadline until completion. Host-scheduled engines additionally require
+    /// advance_resize admission. No Terminal lock is retained across calls.
     pub fn try_resize_if_changed(&mut self, new_size: TerminalSize) -> anyhow::Result<bool> {
         let normalized = TerminalSize {
             rows: new_size.rows.max(1),
@@ -776,6 +784,39 @@ impl Terminal {
             self.io.request_resize_barrier(Instant::now())?;
         }
         self.pending_resize = Some(normalized);
+        if self.host_driven_resize {
+            Ok(false)
+        } else {
+            self.finish_pending_resize()
+        }
+    }
+
+    /// Transfer ordinary resize admission to the host. Requests and all automatic
+    /// drain/render paths then leave expensive transactions to advance_resize().
+    /// Standalone engines retain automatic completion by default.
+    pub fn use_host_resize_scheduling(&mut self) {
+        self.host_driven_resize = true;
+    }
+
+    /// Abandon ordinary queued work without taking over a configuration-owned barrier.
+    pub fn cancel_resize(&mut self) {
+        if self.pending_resize.take().is_some() && !self.io.configuration_barrier_active() {
+            self.io.cancel_resize_barrier();
+        }
+    }
+
+    /// Ready ordinary work, including failed acquisition needing cleanup. Merely
+    /// polling this does not consume reader events or take the configuration barrier.
+    pub fn resize_ready(&self) -> bool {
+        self.pending_resize.is_some()
+            && !self.io.configuration_barrier_active()
+            && !matches!(self.io.resize_barrier_ready(), Ok(false))
+    }
+
+    /// Admit at most one ordinary transaction after ordered drain observed its ACK.
+    /// A multi-terminal host must bound calls to this across all of its sessions.
+    /// Errors release the reader and leave geometry unchanged.
+    pub fn advance_resize(&mut self) -> anyhow::Result<bool> {
         self.finish_pending_resize()
     }
 
