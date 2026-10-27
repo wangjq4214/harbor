@@ -143,6 +143,77 @@ fn text(gpu: TerminalGpuAccess<'_>, snap: &TerminalSnapshot) -> (Text, RenderVie
 }
 
 #[test]
+fn cached_resize_preserves_atlas_and_matches_fresh_with_preedit() {
+    let Some((device, queue)) = test_gpu() else {
+        return;
+    };
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut engine = Terminal::new_headless(4, 16);
+    engine.put_str("AB e\u{301}\r\nCD");
+    let first = engine.read_update(Instant::now());
+    let (mut layer, viewport) = text(gpu, &first.snapshot);
+    let preedit = Preedit::new("AB", None);
+    layer.prepare_with_dirty(gpu, &first.snapshot, &[], &viewport, Some(&preedit));
+    let pixels = layer.atlas.pixels().to_vec();
+    let glyph = *layer.atlas.glyph_by_char('A').unwrap();
+    for (rows, cols) in [(8, 8), (3, 12), (4, 16), (2, 8)] {
+        engine.resize(rows, cols);
+        let update = engine.read_update(Instant::now());
+        layer.prepare_with_dirty(gpu, &update.snapshot, &[], &viewport, Some(&preedit));
+        layer.prepare_preedit(gpu, Some(&preedit), &update.snapshot, &viewport);
+        assert_eq!(layer.atlas.pixels(), pixels);
+        let now = layer.atlas.glyph_by_char('A').unwrap();
+        assert_eq!((now.atlas_x, now.atlas_y), (glyph.atlas_x, glyph.atlas_y));
+        let (mut fresh, _) = text(gpu, &update.snapshot);
+        fresh.prepare_with_dirty(gpu, &update.snapshot, &[], &viewport, Some(&preedit));
+        fresh.prepare_preedit(gpu, Some(&preedit), &update.snapshot, &viewport);
+        assert_eq!(
+            read_draw(&device, &queue, |p| layer.draw(p)),
+            read_draw(&device, &queue, |p| fresh.draw(p)),
+            "mismatch at {rows}x{cols}"
+        );
+    }
+}
+
+#[test]
+fn resize_discovers_history_suffixes_and_preedit_without_damage() {
+    let Some((device, queue)) = test_gpu() else {
+        return;
+    };
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut engine = Terminal::new_headless(2, 8);
+    engine.put_str("e\u{301}\r\nAB\r\nCD");
+    let initial = engine.read_update(Instant::now());
+    let (mut layer, viewport) = text(gpu, &initial.snapshot);
+    assert!(
+        layer.atlas.glyph_by_char('e').is_none(),
+        "history starts outside the visible atlas"
+    );
+    let old = *layer.atlas.glyph_by_char('A').unwrap();
+    engine.resize(4, 8);
+    let update = engine.read_update(Instant::now());
+    let preedit = Preedit::new("Q", None);
+    // Deliberately omit damage: new geometry must discover every paint input.
+    layer.prepare_with_dirty(gpu, &update.snapshot, &[], &viewport, Some(&preedit));
+    layer.prepare_preedit(gpu, Some(&preedit), &update.snapshot, &viewport);
+    for ch in ['e', '\u{301}', 'Q'] {
+        assert!(
+            layer.atlas.glyph_by_char(ch).is_some(),
+            "missing required {ch}"
+        );
+    }
+    let new = layer.atlas.glyph_by_char('A').unwrap();
+    assert_eq!((new.atlas_x, new.atlas_y), (old.atlas_x, old.atlas_y));
+    let (mut fresh, _) = text(gpu, &update.snapshot);
+    fresh.prepare_with_dirty(gpu, &update.snapshot, &[], &viewport, Some(&preedit));
+    fresh.prepare_preedit(gpu, Some(&preedit), &update.snapshot, &viewport);
+    assert_eq!(
+        read_draw(&device, &queue, |p| layer.draw(p)),
+        read_draw(&device, &queue, |p| fresh.draw(p))
+    );
+}
+
+#[test]
 fn ordinary_only_keeps_r8_and_never_shapes_or_allocates_color_resources() {
     let Some((device, queue)) = test_gpu() else {
         return;

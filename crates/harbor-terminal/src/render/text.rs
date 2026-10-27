@@ -212,6 +212,7 @@ impl GpuGlyphAtlas {
 
 // Whole emoji units use SequenceLayer; ordinary text and bounded leading-glyph
 // fallback retain the scalar R8 atlas. Model source/assigned width stay authoritative.
+
 /// Scalars needed by both the initial atlas and incremental dirty uploads.
 fn paint_chars(cell: &Cell) -> Vec<char> {
     if cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
@@ -718,16 +719,28 @@ impl Text {
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
 
+        let mut requested = if resized {
+            Self::collect_all_chars(snap)
+        } else {
+            Self::collect_unique_chars_from_dirty(snap, dirty_ranges)
+        };
+        if let Some(preedit) = preedit {
+            requested.extend(preedit.text.chars());
+        }
+        let result = self
+            .atlas
+            .rasterize_new_with_active(&self.fonts, &requested, || {
+                // Only pressure recovery needs the whole unchanged projection.
+                let mut active = Self::collect_all_chars(snap);
+                if let Some(preedit) = preedit {
+                    active.extend(preedit.text.chars());
+                }
+                active
+            });
+        self.apply_rasterize_result(gpu, result);
+
         if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
-            let mut all_chars = Self::collect_all_chars(snap);
-            if let Some(preedit) = preedit {
-                all_chars.extend(preedit.text.chars());
-                all_chars.sort_unstable();
-                all_chars.dedup();
-            }
-            self.atlas.rebuild(&self.fonts, &all_chars);
-            self.gpu_atlas.update_full(gpu.queue(), &self.atlas);
             self.sequences.prepare(
                 gpu,
                 &self.fonts,
@@ -763,15 +776,6 @@ impl Text {
             self.dirty = false;
             return;
         }
-
-        let mut unique = Self::collect_unique_chars_from_dirty(snap, dirty_ranges);
-        if let Some(preedit) = preedit {
-            unique.extend(preedit.text.chars());
-            unique.sort_unstable();
-            unique.dedup();
-        }
-        let result = self.atlas.rasterize_new(&self.fonts, &unique);
-        self.apply_rasterize_result(gpu, result);
 
         if self.dirty
             || !dirty_ranges.is_empty()

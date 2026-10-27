@@ -292,6 +292,35 @@ impl GlyphAtlas {
         self.rasterize_new_at_size(fonts, chars, size)
     }
 
+    /// Adds requested glyphs incrementally, collecting the full active set only
+    /// when packing fails. The callback must include unchanged visible glyphs and
+    /// overlays; entries outside that set are reclaimable during the repack.
+    pub fn rasterize_new_with_active(
+        &mut self,
+        fonts: &FontBook,
+        chars: &[char],
+        active: impl FnOnce() -> Vec<char>,
+    ) -> RasterizeResult {
+        let size = FontSize::new(fonts.size()).expect("configured font size must be valid");
+        self.font_size = size;
+        self.rasterize_new_at_size_with_retention(fonts, chars, size, |atlas| {
+            active()
+                .into_iter()
+                .filter_map(|ch| {
+                    let request = ResolutionKey::new(ch, size, FontStyle::REGULAR);
+                    match *atlas
+                        .resolution
+                        .entry(request)
+                        .or_insert_with(|| fonts.resolve(ch, size.get(), FontStyle::REGULAR))
+                    {
+                        GlyphResolution::Available(key) => Some(key),
+                        GlyphResolution::Unavailable => None,
+                    }
+                })
+                .collect()
+        })
+    }
+
     /// Rasterizes uncached glyphs at an explicit physical font size.
     ///
     /// Unlike [`Self::rasterize_new`], this does not change the default size used
@@ -314,6 +343,16 @@ impl GlyphAtlas {
         chars: &[char],
         size: FontSize,
         retained_keys: &[GlyphKey],
+    ) -> RasterizeResult {
+        self.rasterize_new_at_size_with_retention(fonts, chars, size, |_| retained_keys.to_vec())
+    }
+
+    fn rasterize_new_at_size_with_retention(
+        &mut self,
+        fonts: &FontBook,
+        chars: &[char],
+        size: FontSize,
+        retained_keys: impl FnOnce(&mut Self) -> Vec<GlyphKey>,
     ) -> RasterizeResult {
         let mut chars: Vec<char> = chars.to_vec();
         chars.sort_unstable();
@@ -356,9 +395,8 @@ impl GlyphAtlas {
 
         if !self.store.add_incremental(&new_glyphs) {
             tracing::debug!("atlas full; evicting and rebuilding");
-            let all_keys: Vec<GlyphKey> = retained_keys
-                .iter()
-                .copied()
+            let all_keys: Vec<GlyphKey> = retained_keys(self)
+                .into_iter()
                 .chain(new_keys.iter().copied())
                 .collect();
             self.rebuild_by_keys(fonts, &all_keys);
@@ -497,6 +535,52 @@ mod tests {
             },
             bitmap: vec![id as u8; width * height],
         }
+    }
+
+    #[test]
+    fn active_working_set_reuses_then_reclaims_under_pressure() {
+        let fonts = test_font_book();
+        let mut atlas = GlyphAtlas::new();
+        let no_pressure = || panic!("active set must stay lazy without pressure");
+        atlas.rasterize_new_with_active(&fonts, &['a', 'b'], no_pressure);
+        let before = *atlas.glyph_by_char('a').unwrap();
+
+        let hit = atlas.rasterize_new_with_active(&fonts, &['a'], no_pressure);
+        assert!(!hit.evicted && hit.new_keys.is_empty());
+        let added = atlas.rasterize_new_with_active(&fonts, &['c'], no_pressure);
+        assert!(!added.evicted);
+        assert_eq!(added.new_keys.len(), 1);
+        let after = atlas.glyph_by_char('a').unwrap();
+        assert_eq!(
+            (before.atlas_x, before.atlas_y),
+            (after.atlas_x, after.atlas_y)
+        );
+        assert!(
+            atlas.glyph_by_char('b').is_some(),
+            "no-pressure path retains history"
+        );
+
+        // Force pressure within this private unit test, without a production hook.
+        atlas.store.shelves = vec![Shelf {
+            y: 0,
+            height: MAX_ATLAS_SIZE,
+            next_x: MAX_ATLAS_SIZE,
+        }];
+        let mut collections = 0;
+        // a/c are unchanged; e has not even been resolved by the dirty request.
+        let repacked = atlas.rasterize_new_with_active(&fonts, &['d'], || {
+            collections += 1;
+            vec!['a', 'c', 'd', 'e']
+        });
+        assert!(repacked.evicted);
+        assert_eq!(collections, 1);
+        for ch in ['a', 'c', 'd', 'e'] {
+            assert!(atlas.glyph_by_char(ch).is_some(), "missing active {ch}");
+        }
+        assert!(
+            atlas.glyph_by_char('b').is_none(),
+            "stale glyph not reclaimed"
+        );
     }
 
     #[test]
