@@ -4065,7 +4065,7 @@ impl std::io::Read for BurstReader {
 }
 
 #[test]
-fn pty_queue_is_bounded_and_wakes_once_until_drained() {
+fn pty_queue_is_bounded_and_wakes_for_remaining_batches() {
     let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reader = BurstReader {
@@ -4102,10 +4102,16 @@ fn pty_queue_is_bounded_and_wakes_once_until_drained() {
         );
         std::thread::yield_now();
     }
-    // The final chunk may have arrived during the first drain or after it
-    // re-armed the wake flag; either way the UI thread can drain it now.
-    let _ = terminal.drain_pty();
-    assert!(!terminal.drain_pty());
+    wake_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("budget exhaustion must request a continuation");
+    // A batch is bounded, so the remaining FIFO may take several drains.
+    for _ in 0..PTY_QUEUE_CAPACITY {
+        if !terminal.drain_pty() {
+            return;
+        }
+    }
+    panic!("finite burst did not drain");
 }
 
 struct ErrorReader {

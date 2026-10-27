@@ -118,6 +118,8 @@ impl Terminal {
     ///
     /// Construct fallible GPU resources first: if they fail, the intact endpoint
     /// bundle is dropped using its unstarted-session shutdown protocol.
+    /// `wake` must only post a nonblocking host notification, without re-entering
+    /// the terminal. It can run on the reader or the thread draining output.
     pub fn start_session_from_endpoints(
         self,
         endpoints: PtyEndpoints,
@@ -193,6 +195,8 @@ impl Terminal {
     }
 
     /// Creates a headless Terminal with test PTY endpoints (no GPU).
+    /// The nonblocking, non-reentrant `wake` callback may run on the reader
+    /// or the thread draining output.
     pub fn new_headless_with_io<R, W>(
         rows: usize,
         cols: usize,
@@ -359,7 +363,8 @@ impl Terminal {
         });
     }
 
-    /// Drains all reader-thread output in FIFO order into the terminal parser.
+    /// Parses a bounded batch of reader-thread output in FIFO order.
+    /// Returns whether any bytes were parsed; additional output may remain queued.
     pub fn drain_pty(&mut self) -> bool {
         self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer))
     }
@@ -635,7 +640,7 @@ impl Terminal {
         Some((x, y))
     }
 
-    /// Drains pending PTY output before returning the current terminal snapshot.
+    /// Parses one bounded batch of PTY output before returning the current snapshot.
     pub fn drain_and_snapshot(&mut self) -> TerminalSnapshot {
         self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
         self.snapshot()

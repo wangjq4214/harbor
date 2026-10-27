@@ -4,7 +4,7 @@
 use std::{
     io::{Read, Write},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
     },
@@ -24,11 +24,14 @@ use crate::types::{TerminalEvent, TerminalPointerPhase};
 /// The maximum number of parser events buffered between the blocking PTY reader
 /// and the UI thread. Backpressure here bounds memory without blocking UI.
 pub(crate) const PTY_QUEUE_CAPACITY: usize = 32;
+// Each reader chunk is at most 4096 bytes. Bound work even if the queue refills.
+const PTY_DRAIN_EVENT_BUDGET: usize = 16;
 
 const RESIZE_BARRIER_TIMEOUT: Duration = Duration::from_secs(2);
 const BARRIER_INTERRUPT_RETRY: Duration = Duration::from_millis(10);
 
 type ReaderInterrupt = Arc<dyn Fn(&JoinHandle<()>) -> anyhow::Result<()> + Send + Sync + 'static>;
+type Wake = Arc<Mutex<dyn Fn() -> bool + Send>>;
 #[derive(Debug)]
 enum ReaderEvent {
     Bytes(Vec<u8>),
@@ -68,6 +71,7 @@ struct TerminalPty {
     reader: Option<JoinHandle<()>>,
     control: Option<PtyControl>,
     wake_pending: Arc<AtomicBool>,
+    wake: Wake,
     next_barrier_epoch: u64,
     test_interrupt: Option<ReaderInterrupt>,
     barrier_timeout: Duration,
@@ -113,13 +117,15 @@ impl TerminalPty {
         let (commands, reader_commands) = mpsc::channel();
         let wake_pending = Arc::new(AtomicBool::new(false));
         let reader_wake_pending = Arc::clone(&wake_pending);
+        let wake: Wake = Arc::new(Mutex::new(wake));
+        let reader_wake = Arc::clone(&wake);
         let reader = spawn(Box::new(move || {
             pump_reader(
                 reader,
                 output_tx,
                 reader_commands,
                 reader_wake_pending,
-                wake,
+                move || (reader_wake.lock().unwrap_or_else(|e| e.into_inner()))(),
             )
         }));
         let reader = match reader {
@@ -140,6 +146,7 @@ impl TerminalPty {
             reader: Some(reader),
             control,
             wake_pending,
+            wake,
             next_barrier_epoch: 1,
             test_interrupt: None,
             barrier_timeout: RESIZE_BARRIER_TIMEOUT,
@@ -673,22 +680,29 @@ impl TerminalIo {
 
     // ── PTY I/O ───────────────────────────────────────────────────────
 
-    /// Drains ordered PTY bytes and parses them on the logical thread.
+    /// Parses at most one budget of ordered reader events on the logical thread.
     pub(crate) fn drain(&mut self, screen: &mut Screen, pointer: &mut PointerInteraction) -> bool {
         let mut consumed_bytes = false;
-        loop {
+        for _ in 0..PTY_DRAIN_EVENT_BUDGET {
             match self.session.next_event() {
                 Ok(Some(ReaderEvent::Bytes(bytes))) => {
                     consumed_bytes = true;
                     self.process_reader_bytes(screen, pointer, &bytes);
                 }
                 Ok(Some(ReaderEvent::BarrierAck(_))) => {}
-                Ok(None) => break,
+                Ok(None) => return consumed_bytes,
                 Err(_) => {
                     self.observe_reader_disconnect(screen);
-                    break;
+                    return consumed_bytes;
                 }
             }
+        }
+        // The reader coalesces wakes until the queue is empty. We stopped before
+        // observing that state, so explicitly request another turn, including
+        // when synchronized output suppresses ordinary presentation. A harmless
+        // extra wake is possible if the last event exhausted the queue.
+        if let Some(pty) = self.session.pty.as_ref() {
+            let _ = (pty.wake.lock().unwrap_or_else(|e| e.into_inner()))();
         }
         consumed_bytes
     }
@@ -869,6 +883,163 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bounded_drain_rewakes_and_preserves_order_through_synchronized_output_and_eof() {
+        let (tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
+        let (commands, _command_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let wake_pending = Arc::new(AtomicBool::new(true));
+        let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
+            output,
+            commands,
+            writer: Box::new(std::io::sink()),
+            reader: None,
+            control: None,
+            wake_pending: Arc::clone(&wake_pending),
+            wake: Arc::new(Mutex::new(move || wake_tx.send(()).is_ok())),
+            next_barrier_epoch: 1,
+            test_interrupt: None,
+            barrier_timeout: RESIZE_BARRIER_TIMEOUT,
+        }));
+        tx.send(ReaderEvent::Bytes(b"\x1b[?2026h".to_vec()))
+            .unwrap();
+        for _ in 1..PTY_DRAIN_EVENT_BUDGET {
+            tx.send(ReaderEvent::Bytes(b"a".to_vec())).unwrap();
+        }
+        tx.send(ReaderEvent::Bytes(b"\x1b[?2026lb".to_vec()))
+            .unwrap();
+        drop(tx);
+
+        let mut screen = Screen::new(2, 80);
+        let mut pointer = PointerInteraction::default();
+        assert!(io.drain(&mut screen, &mut pointer));
+        assert!(!screen.ordinary_present_eligible());
+        assert_eq!(
+            screen.row_text(0).trim_end(),
+            "a".repeat(PTY_DRAIN_EVENT_BUDGET - 1)
+        );
+        wake_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("continuation wake");
+        assert!(wake_pending.load(Ordering::Acquire));
+        assert!(!io.session.closed_observed);
+
+        assert!(io.drain(&mut screen, &mut pointer));
+        assert_eq!(
+            screen.row_text(0).trim_end(),
+            format!("{}b", "a".repeat(PTY_DRAIN_EVENT_BUDGET - 1))
+        );
+        assert!(screen.ordinary_present_eligible());
+        assert!(io.session.closed_observed);
+        assert!(!wake_pending.load(Ordering::Acquire));
+        assert!(wake_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn exact_budget_empty_queue_rearms_for_later_producer_wake() {
+        let (tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
+        let (commands, _command_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let wake_pending = Arc::new(AtomicBool::new(true));
+        let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
+            output,
+            commands,
+            writer: Box::new(std::io::sink()),
+            reader: None,
+            control: None,
+            wake_pending: Arc::clone(&wake_pending),
+            wake: Arc::new(Mutex::new(move || wake_tx.send(()).is_ok())),
+            next_barrier_epoch: 1,
+            test_interrupt: None,
+            barrier_timeout: RESIZE_BARRIER_TIMEOUT,
+        }));
+        for _ in 0..PTY_DRAIN_EVENT_BUDGET {
+            tx.send(ReaderEvent::Bytes(b"x".to_vec())).unwrap();
+        }
+        let mut screen = Screen::new(2, 80);
+        let mut pointer = PointerInteraction::default();
+        assert!(io.drain(&mut screen, &mut pointer));
+        wake_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(!io.drain(&mut screen, &mut pointer));
+        assert!(!wake_pending.load(Ordering::Acquire));
+        assert!(wake_rx.try_recv().is_err());
+
+        // The real producer sends before atomically arming its coalesced wake.
+        tx.send(ReaderEvent::Bytes(b"y".to_vec())).unwrap();
+        assert!(!wake_pending.swap(true, Ordering::AcqRel));
+        let wake = &io.session.pty.as_ref().unwrap().wake;
+        assert!((wake.lock().unwrap())());
+        wake_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(io.drain(&mut screen, &mut pointer));
+        assert_eq!(
+            screen.row_text(0).trim_end(),
+            format!("{}y", "x".repeat(PTY_DRAIN_EVENT_BUDGET))
+        );
+        assert!(!wake_pending.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn live_refilling_reader_progresses_on_continuation_wakes() {
+        struct ChunkReader {
+            count: usize,
+            full: Sender<()>,
+            finish: Receiver<()>,
+        }
+        impl Read for ChunkReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.count == PTY_QUEUE_CAPACITY * 2 {
+                    self.finish.recv().unwrap();
+                    return Ok(0);
+                }
+                self.count += 1;
+                if self.count == PTY_QUEUE_CAPACITY + 1 {
+                    self.full.send(()).unwrap();
+                }
+                buffer[0] = b'z';
+                Ok(1)
+            }
+        }
+        let (full_tx, full_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let mut io = TerminalIo::new(
+            ChunkReader {
+                count: 0,
+                full: full_tx,
+                finish: finish_rx,
+            },
+            std::io::sink(),
+            None,
+            move || wake_tx.send(()).is_ok(),
+        );
+        full_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let mut screen = Screen::new(2, 100);
+        let mut pointer = PointerInteraction::default();
+        while screen.row_text(0).trim_end().len() < PTY_QUEUE_CAPACITY * 2 {
+            wake_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("reader or continuation wake");
+            io.drain(&mut screen, &mut pointer);
+        }
+        assert_eq!(
+            screen.row_text(0).trim_end(),
+            "z".repeat(PTY_QUEUE_CAPACITY * 2)
+        );
+        finish_tx.send(()).unwrap();
+        wake_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("EOF wake");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !io.session.closed_observed {
+            io.drain(&mut screen, &mut pointer);
+            assert!(
+                Instant::now() < deadline,
+                "reader disconnect was not observed"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
     fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
         for interrupt_failure in [false, true] {
             const CHUNKS: usize = 201;
@@ -934,6 +1105,7 @@ mod tests {
                 reader: Some(reader),
                 control: None,
                 wake_pending: Arc::new(AtomicBool::new(true)),
+                wake: Arc::new(Mutex::new(|| true)),
                 next_barrier_epoch: 7,
                 test_interrupt: Some(Arc::new(move |_| {
                     if interrupt_failure {
