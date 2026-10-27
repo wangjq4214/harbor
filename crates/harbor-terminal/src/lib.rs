@@ -578,7 +578,7 @@ impl Terminal {
         if self.projection_epoch != update.projection_epoch {
             return false;
         }
-        if self.snapshot() != update.snapshot
+        if !self.screen.matches_snapshot(&update.snapshot)
             || self.pointer.bounds() != update.selection
             || self.preedit != update.preedit
             || TerminalAppearance::from_palette(self.screen.active_palette()) != update.appearance

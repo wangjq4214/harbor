@@ -1033,6 +1033,30 @@ impl Screen {
             dirty_ranges: self.dirty_ranges(),
         }
     }
+    /// Compares the complete snapshot without cloning the visible grid.
+    pub(crate) fn matches_snapshot(&self, snapshot: &crate::model::TerminalSnapshot) -> bool {
+        let rows = self.rows();
+        let cols = self.cols();
+        snapshot.rows == rows
+            && snapshot.cols == cols
+            && (0..rows)
+                .flat_map(|row| (0..cols).map(move |col| self.cell(row, col)))
+                .eq(snapshot.cells.iter())
+            && snapshot.cursor_x == self.cursor_x()
+            && snapshot.cursor_y == self.cursor_y()
+            && snapshot.cursor_visible == self.cursor_visible()
+            && snapshot.cursor_blink == self.cursor_blink()
+            && snapshot.cursor_shape == self.cursor_shape()
+            && snapshot.scroll_count == self.scroll_count()
+            && snapshot.view_offset == self.view_offset()
+            && snapshot.history_start == self.history_start()
+            && (0..rows)
+                .map(|row| self.is_wrapped(row))
+                .eq(snapshot.wrapped.iter().copied())
+            && snapshot.is_alt == self.is_alt()
+            && snapshot.input_modes == self.input_modes()
+            && snapshot.dirty_ranges == self.dirty_ranges()
+    }
 
     pub fn selected_text(&self, bounds: SelectionBounds) -> String {
         match crate::logical_content::selected_text(&self.normal, bounds) {
