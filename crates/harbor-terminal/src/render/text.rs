@@ -465,27 +465,43 @@ impl Text {
                 let (cell_x, cell_y) = viewport.cell_pos(range.row, col);
                 let baseline = cell_y + self.metrics.ascent.ceil();
                 let assigned_width = self.metrics.cell_width * f32::from(cell.grid_width());
-                if self.sequences.emoji_cells.contains(&idx) {
-                    let quad = super::sequence::fitted_quad(
-                        harbor_text::TileBounds {
-                            left: glyph.bearing_x,
-                            top: self.metrics.ascent.ceil() as i32
-                                - glyph.bearing_y
-                                - glyph.height as i32,
-                            width: glyph.width,
-                            height: glyph.height,
-                        },
-                        [glyph.uv.left, glyph.uv.top, glyph.uv.right, glyph.uv.bottom],
-                        [
-                            cell_x,
-                            cell_y,
-                            viewport.cell_width
-                                * usize::from(cell.grid_width()).min(snap.cols - col) as f32,
-                            viewport.line_height,
-                        ],
-                        (surf_w, surf_h),
-                        glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs),
-                    )
+                let is_icon =
+                    super::nerd_icons::contains(cell.ch) && !super::sequence::emoji_candidate(cell);
+                if self.sequences.emoji_cells.contains(&idx) || is_icon {
+                    let bounds = harbor_text::TileBounds {
+                        left: glyph.bearing_x,
+                        top: self.metrics.ascent.ceil() as i32
+                            - glyph.bearing_y
+                            - glyph.height as i32,
+                        width: glyph.width,
+                        height: glyph.height,
+                    };
+                    let uv = [glyph.uv.left, glyph.uv.top, glyph.uv.right, glyph.uv.bottom];
+                    let color =
+                        glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
+                    let quad = if is_icon {
+                        super::nerd_icons::natural_quad(
+                            bounds,
+                            uv,
+                            [cell_x, cell_y],
+                            (surf_w, surf_h),
+                            color,
+                        )
+                    } else {
+                        super::sequence::fitted_quad(
+                            bounds,
+                            uv,
+                            [
+                                cell_x,
+                                cell_y,
+                                viewport.cell_width
+                                    * usize::from(cell.grid_width()).min(snap.cols - col) as f32,
+                                viewport.line_height,
+                            ],
+                            (surf_w, surf_h),
+                            color,
+                        )
+                    }
                     .unwrap_or(
                         [TexturedVertex {
                             color: [0.0; 4],
@@ -506,8 +522,7 @@ impl Text {
                     glyph_right += offset;
                 }
 
-                // Nerd Font / PUA icons often rasterize wider than one cell.
-                // Scale them into the assigned cells instead of clipping them.
+                // Non-collection ordinary glyphs retain their established policy.
                 if glyph.width as f32 > assigned_width && assigned_width > 0.0 {
                     glyph_left = cell_x;
                     glyph_right = cell_x + assigned_width;
@@ -961,6 +976,10 @@ pub(super) fn textured_pipeline(
         cache: None,
     })
 }
+
+#[cfg(test)]
+#[path = "nerd_icon_tests.rs"]
+mod nerd_icon_tests;
 
 #[cfg(test)]
 #[path = "text_tests.rs"]
