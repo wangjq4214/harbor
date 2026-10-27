@@ -78,4 +78,4 @@ This artifact defines future acceptance only. No implementation, tests, performa
 
 ## Implementation verification
 
-[Repair verification](../../docs/developer/grid-resize-glyph-atlas-reuse.md) records the retained focused tests and remaining verification limits. At the owner's request, no custom test feature, cross-crate pressure hook or work counters are retained. This does not promote the spec status or claim complete desktop acceptance.
+Retained focused tests live in [`render/text_tests.rs`](../../crates/harbor-terminal/src/render/text_tests.rs) and [`harbor-text/src/atlas.rs`](../../crates/harbor-text/src/atlas.rs). The evidence requirements and limits above still apply. At the owner's request, no custom test feature, cross-crate pressure hook or work counters are retained. This does not promote the spec status or claim complete desktop acceptance.

@@ -1541,22 +1541,27 @@ mod tests {
 
     #[test]
     fn shell_production_code_owns_only_the_common_native_host() {
-        let production = include_str!("shell.rs")
-            .split("\n#[cfg(test)]\nmod tests {")
-            .next()
-            .expect("production section");
-        for legacy in [
-            "WindowSurface",
-            "WinitAdapter",
-            "WinitFrameTarget",
-            "create_transitional_child_runtime",
-            "SurfaceConfiguration",
-        ] {
-            assert!(
-                !production.contains(legacy),
-                "shell production code must not reference legacy host infrastructure: {legacy}"
-            );
+        let lf = include_str!("shell.rs").replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+        // Git checkouts may use either line ending; never scan the test's own blacklist.
+        for source in [&lf, &crlf] {
+            let normalized = source.replace("\r\n", "\n");
+            let (production, _) = normalized
+                .split_once("\n#[cfg(test)]\nmod tests {")
+                .expect("test module boundary");
+            for legacy in [
+                "WindowSurface",
+                "WinitAdapter",
+                "WinitFrameTarget",
+                "create_transitional_child_runtime",
+                "SurfaceConfiguration",
+            ] {
+                assert!(
+                    !production.contains(legacy),
+                    "shell production code must not reference legacy host infrastructure: {legacy}"
+                );
+            }
+            assert!(production.contains("main_host: WinitWindowHost"));
         }
-        assert!(production.contains("main_host: WinitWindowHost"));
     }
 }
