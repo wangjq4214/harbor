@@ -2383,6 +2383,22 @@ fn wait_for_pty_bytes(terminal: &mut Terminal, wake_rx: &std::sync::mpsc::Receiv
     }
 }
 
+/// Test driver only: production callers must yield to their event loop instead.
+fn resize_to_completion(terminal: &mut Terminal, size: TerminalSize) -> anyhow::Result<()> {
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        terminal.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
+        terminal.try_resize_if_changed(size)?;
+        if terminal.screen().rows() == size.rows.max(1)
+            && terminal.screen().cols() == size.cols.max(2)
+        {
+            return Ok(());
+        }
+        anyhow::ensure!(Instant::now() < deadline, "test resize failed to complete");
+        std::thread::yield_now();
+    }
+}
+
 struct ScriptedReader {
     chunks: std::collections::VecDeque<Vec<u8>>,
 }
@@ -2541,6 +2557,21 @@ fn configuration_group_failure_resumes_every_paused_reader_without_losing_bytes(
             readers.push(blocked_rx);
             terminals.push(terminal);
         }
+        let leases = terminals
+            .iter_mut()
+            .map(|terminal| terminal.begin_configuration_resize().unwrap())
+            .collect::<Vec<_>>();
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            for terminal in &mut terminals {
+                terminal.drain_pty();
+            }
+            if leases.iter().all(|lease| lease.is_ready().unwrap()) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
         let transactions = terminals
             .iter_mut()
             .map(|terminal| {
@@ -2697,7 +2728,7 @@ fn barrier_resize_preserves_single_narrow_review_and_copy_without_duplication() 
         .recv_timeout(std::time::Duration::from_secs(1))
         .expect("reader should block after publishing the old-geometry chunk");
 
-    assert!(terminal.resize_if_changed(TerminalSize { rows: 6, cols: 6 }));
+    resize_to_completion(&mut terminal, TerminalSize { rows: 6, cols: 6 }).unwrap();
     wait_for_pty_bytes(&mut terminal, &wake_rx);
     scroll_to_review_seam(&mut terminal, "L12:");
     let copied = select_visible_viewport(&mut terminal, 91);
@@ -2765,14 +2796,25 @@ fn barrier_timeout_preserves_geometry_and_late_ack_cannot_block_retry() {
         .recv_timeout(std::time::Duration::from_secs(1))
         .expect("reader should enter its blocking read");
 
-    let error = terminal
-        .try_resize_if_changed(TerminalSize { rows: 2, cols: 4 })
-        .expect_err("the first barrier should time out");
+    assert!(
+        !terminal
+            .try_resize_if_changed(TerminalSize { rows: 2, cols: 4 })
+            .unwrap()
+    );
+    let deadline = Instant::now() + std::time::Duration::from_secs(1);
+    let error = loop {
+        terminal.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
+        if let Err(error) = terminal.try_resize_if_changed(TerminalSize { rows: 2, cols: 4 }) {
+            break error;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    };
     assert!(error.to_string().contains("timed out"));
     assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 8));
 
     allow_interrupt.store(true, std::sync::atomic::Ordering::Release);
-    assert!(terminal.resize_if_changed(TerminalSize { rows: 2, cols: 4 }));
+    resize_to_completion(&mut terminal, TerminalSize { rows: 2, cols: 4 }).unwrap();
     wait_for_pty_bytes(&mut terminal, &wake_rx);
     assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 4));
     assert!(terminal.snapshot().cells.iter().any(|cell| cell.ch == 'a'));
@@ -2813,7 +2855,12 @@ fn barrier_interrupt_failure_preserves_geometry_and_resumes_late_reader() {
     assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 8));
 
     interrupt_tx.send(()).unwrap();
-    wait_for_pty_bytes(&mut terminal, &wake_rx);
+    let deadline = Instant::now() + std::time::Duration::from_secs(1);
+    while !terminal.snapshot().cells.iter().any(|cell| cell.ch == 'r') {
+        assert!(Instant::now() < deadline);
+        let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(5));
+        terminal.drain_pty();
+    }
     assert!(terminal.snapshot().cells.iter().any(|cell| cell.ch == 'r'));
 }
 
@@ -2863,9 +2910,7 @@ fn live_conpty_rapid_resize_preserves_history_and_prompt() {
     );
     // Narrowing unused capacity must not move text or the input row.
     for cols in [79, 70, 64, 80] {
-        terminal
-            .try_resize_if_changed(TerminalSize { rows: 24, cols })
-            .unwrap();
+        resize_to_completion(&mut terminal, TerminalSize { rows: 24, cols }).unwrap();
         assert_eq!(
             (terminal.screen().cursor_y(), terminal.screen().cursor_x()),
             (20, 6),
@@ -2882,9 +2927,7 @@ fn live_conpty_rapid_resize_preserves_history_and_prompt() {
     }
     for _ in 0..5 {
         for (rows, cols) in [(24, 30), (24, 12), (29, 50), (20, 8), (24, 80)] {
-            terminal
-                .try_resize_if_changed(TerminalSize { rows, cols })
-                .unwrap();
+            resize_to_completion(&mut terminal, TerminalSize { rows, cols }).unwrap();
             let deadline = Instant::now() + std::time::Duration::from_millis(30);
             while Instant::now() < deadline {
                 let _ = wake_rx.recv_timeout(std::time::Duration::from_millis(5));
@@ -2991,9 +3034,7 @@ fn live_conpty_alt_resize_restores_primary_input_position() {
         terminal.drain_pty();
     }
     for cols in [5, 2, 9, 12] {
-        terminal
-            .try_resize_if_changed(TerminalSize { rows: 3, cols })
-            .unwrap();
+        resize_to_completion(&mut terminal, TerminalSize { rows: 3, cols }).unwrap();
     }
     terminal.io.write_pty(b"\r").unwrap();
     let deadline = Instant::now() + std::time::Duration::from_secs(3);
@@ -3026,6 +3067,90 @@ fn live_conpty_alt_resize_restores_primary_input_position() {
 
 #[cfg(windows)]
 #[test]
+#[ignore = "requires installed nvim.exe and real ConPTY; run explicitly"]
+fn live_nvim_async_resize_keeps_alternate_app_responsive() {
+    fn wait_until(
+        terminal: &mut Terminal,
+        wake: &std::sync::mpsc::Receiver<()>,
+        predicate: impl Fn(&Terminal) -> bool,
+    ) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            terminal.drain_pty();
+            if predicate(terminal) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "nvim did not respond: {:?}",
+                terminal.snapshot()
+            );
+            assert!(
+                !terminal.is_session_closed(),
+                "nvim exited before the interaction completed"
+            );
+            let _ = wake.recv_timeout(std::time::Duration::from_millis(10));
+        }
+    }
+    let command = harbor_pty::ShellCommand::new(
+        Some("nvim.exe".to_owned()),
+        vec![
+            "--clean".into(),
+            "-n".into(),
+            "-i".into(),
+            "NONE".into(),
+            "-c".into(),
+            "call setline(1, 'HARBOR_NVIM_BUFFER')".into(),
+        ],
+    );
+    let endpoints = harbor_pty::PtyEndpoints::spawn_shell(
+        harbor_pty::TerminalSize { rows: 24, cols: 80 },
+        &command,
+    )
+    .expect("dedicated nvim PTY");
+    assert_eq!(
+        endpoints.shell_name().to_ascii_lowercase(),
+        "nvim",
+        "do not count fallback shell as nvim"
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut terminal = Terminal::new_headless(24, 80)
+        .start_session_from_endpoints(endpoints, move || tx.send(()).is_ok())
+        .unwrap();
+    let visible = |terminal: &Terminal| {
+        (0..terminal.screen().rows())
+            .map(|row| terminal.row_text(row))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    wait_until(&mut terminal, &rx, |terminal| {
+        terminal.is_alt_screen() && visible(terminal).contains("HARBOR_NVIM_BUFFER")
+    });
+    for (index, (rows, cols)) in [(20, 60), (25, 90), (15, 40), (24, 80)]
+        .into_iter()
+        .enumerate()
+    {
+        resize_to_completion(&mut terminal, TerminalSize { rows, cols }).unwrap();
+        let marker = format!("NVIM_RESIZED_{index}");
+        terminal
+            .write_pty(format!("\x1b:echo '{marker}'\r").as_bytes())
+            .unwrap();
+        wait_until(&mut terminal, &rx, |terminal| {
+            visible(terminal).contains(&marker)
+        });
+        assert!(terminal.is_alt_screen());
+        assert!(visible(&terminal).contains("HARBOR_NVIM_BUFFER"));
+    }
+    terminal.write_pty(b"\x1b:q!\r").unwrap();
+    // Leaving the alternate screen proves nvim processed quit. ConPTY's output
+    // pipe can remain open while its owner is alive; EOF is not the app-exit handshake.
+    wait_until(&mut terminal, &rx, |terminal| !terminal.is_alt_screen());
+    assert!(!terminal.resize_pending());
+    drop(terminal); // Platform shutdown owns cancellation of the remaining blocked read.
+}
+
+#[cfg(windows)]
+#[test]
 fn live_conpty_resize_barrier_resumes_output() {
     let size = harbor_pty::TerminalSize { rows: 4, cols: 40 };
     let endpoints =
@@ -3039,7 +3164,7 @@ fn live_conpty_resize_barrier_resumes_output() {
     });
 
     let started = Instant::now();
-    assert!(terminal.resize_if_changed(TerminalSize { rows: 5, cols: 32 }));
+    resize_to_completion(&mut terminal, TerminalSize { rows: 5, cols: 32 }).unwrap();
     assert!(
         started.elapsed() < std::time::Duration::from_secs(2),
         "ConPTY should acknowledge the resize barrier within its bound"

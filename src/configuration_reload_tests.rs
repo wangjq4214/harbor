@@ -112,6 +112,27 @@ impl Fixture {
             &self.clipboard,
             candidate,
             |settings, bindings| {
+                let acquisition = if settings.font != self.policy.font_settings
+                    || self.policy.geometry_recovery_pending
+                {
+                    Some(ConfigurationAcquisition::begin(&self.tabs)?)
+                } else {
+                    None
+                };
+                // Test driver only: the application yields between these polls.
+                if let Some(acquisition) = &acquisition {
+                    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+                    while !acquisition.poll(&self.tabs)? {
+                        for (id, _, _) in self.tabs.configuration_targets() {
+                            self.tabs.process_output(id);
+                        }
+                        anyhow::ensure!(
+                            Instant::now() < deadline,
+                            "configuration acquisition deadline"
+                        );
+                        std::thread::yield_now();
+                    }
+                }
                 let warnings = self.policy.apply(
                     &mut self.tabs,
                     &self.ui,
@@ -602,6 +623,100 @@ impl Fixture {
         for (_, terminal, _) in self.tabs.configuration_targets() {
             terminal.lock().unwrap().write_pty(b"continue\r").unwrap();
         }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn asynchronous_group_ack_skew_keeps_ui_locks_and_accepted_generation_available() {
+    let mut f = Fixture::new();
+    f.attach_native_children();
+    let candidate = f.candidate();
+    let accepted = f.accepted.clone();
+    let old_metrics = f.policy.metrics;
+    let acquisition = ConfigurationAcquisition::begin(&f.tabs).unwrap();
+    // No consumer has dispatched the second member's ACK, even if its reader
+    // has already queued it. Observe first-member readiness separately.
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    while !acquisition.members[0].2.is_ready().unwrap() {
+        acquisition.members[0].1.lock().unwrap().drain_pty();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!(!acquisition.members[1].2.is_ready().unwrap());
+    for (_, terminal, bridge) in f.tabs.configuration_targets() {
+        let terminal = terminal
+            .try_lock()
+            .expect("group acquisition must not retain engine locks");
+        assert_eq!(
+            (terminal.screen().rows(), terminal.screen().cols()),
+            (10, 40)
+        );
+        assert_eq!(
+            *bridge.renderer().unwrap().lock().unwrap().metrics(),
+            old_metrics
+        );
+    }
+    f.assert_reload_binding('r'); // Real Runtime event dispatch while the group is pending.
+    assert_eq!(f.accepted, accepted);
+    assert_eq!(f.policy.font_settings, accepted.font);
+    while !acquisition.poll(&f.tabs).unwrap() {
+        for (id, _, _) in f.tabs.configuration_targets() {
+            f.tabs.process_output(id);
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    crate::shell::accept_configuration(
+        &mut f.accepted,
+        &f.clipboard,
+        candidate.clone(),
+        |settings, bindings| {
+            let warnings = f.policy.apply(
+                &mut f.tabs,
+                &f.ui,
+                TerminalGpuAccess::new(&f.device, &f.queue, wgpu::TextureFormat::Rgba8Unorm),
+                settings,
+                1.0,
+                (640, 320),
+                |_, _| Ok(()),
+            )?;
+            f.ui.publish_keybindings(bindings);
+            Ok(warnings)
+        },
+    )
+    .unwrap();
+    drop(acquisition);
+    assert_eq!(f.accepted, candidate);
+    f.native_input();
+    f.wait_for_native_markers("RESUMED");
+}
+
+#[cfg(windows)]
+#[test]
+fn asynchronous_group_membership_change_rejects_and_releases_surviving_reader() {
+    let mut f = Fixture::new();
+    f.attach_native_children();
+    let accepted = f.accepted.clone();
+    let acquisition = ConfigurationAcquisition::begin(&f.tabs).unwrap();
+    let removed = acquisition.members[1].0;
+    f.tabs.close(removed);
+    let error = acquisition.poll(&f.tabs).unwrap_err();
+    assert!(error.to_string().contains("membership changed"));
+    drop(acquisition); // Cancellation owns no Terminal lock and resumes surviving readers.
+    assert_eq!(f.accepted, accepted);
+    let terminal = f.tabs.active_terminal().unwrap();
+    terminal.lock().unwrap().write_pty(b"continue\r").unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let mut terminal = terminal.lock().unwrap();
+        terminal.drain_pty();
+        if retained_text(&terminal).contains("RESUMED0") {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        drop(terminal);
+        std::thread::yield_now();
     }
 }
 

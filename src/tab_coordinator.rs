@@ -440,6 +440,50 @@ impl TerminalTabFactory {
     }
 }
 
+/// Owns cancellation, never Terminal mutex guards, across event-loop turns.
+pub(crate) struct ConfigurationAcquisition {
+    members: Vec<(
+        TabId,
+        Arc<Mutex<Terminal>>,
+        harbor_terminal::ConfigurationBarrier,
+    )>,
+}
+
+impl ConfigurationAcquisition {
+    fn begin(tabs: &TabManager) -> anyhow::Result<Self> {
+        let mut members = Vec::new();
+        for (id, terminal, _) in tabs.configuration_targets() {
+            let lease = terminal
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session {id}: terminal lock unavailable"))?
+                .begin_configuration_resize()
+                .with_context(|| format!("session {id}: reader barrier acquisition"))?;
+            members.push((id, terminal, lease));
+        }
+        Ok(Self { members })
+    }
+
+    pub(crate) fn poll(&self, tabs: &TabManager) -> anyhow::Result<bool> {
+        let targets = tabs.configuration_targets();
+        anyhow::ensure!(
+            targets.len() == self.members.len()
+                && targets
+                    .iter()
+                    .zip(&self.members)
+                    .all(|((id, terminal, _), (old_id, old, _))| id == old_id
+                        && Arc::ptr_eq(terminal, old)),
+            "terminal membership changed during configuration acquisition"
+        );
+        let mut ready = true;
+        for (id, _, lease) in &self.members {
+            ready &= lease
+                .is_ready()
+                .with_context(|| format!("session {id}: reader barrier"))?;
+        }
+        Ok(ready)
+    }
+}
+
 /// Coordinator managing Host-owned terminal tab models and their declarative UI projection.
 pub(crate) struct TabCoordinator {
     tabs: TabManager,
@@ -448,6 +492,53 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
+    pub(crate) fn acquire_configuration(
+        &self,
+        settings: &harbor_config::Settings,
+    ) -> anyhow::Result<Option<ConfigurationAcquisition>> {
+        if settings.font != self.factory.configuration.font_settings
+            || self.factory.configuration.geometry_recovery_pending
+        {
+            ConfigurationAcquisition::begin(&self.tabs).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn configuration_ready(
+        &self,
+        acquisition: &ConfigurationAcquisition,
+    ) -> anyhow::Result<bool> {
+        acquisition.poll(&self.tabs)
+    }
+
+    /// Return work to the existing output-event path so OSC events, unread flags,
+    /// clipboard authorization and presentation notifications are not bypassed.
+    pub(crate) fn pending_resize_tabs(&self) -> Vec<TabId> {
+        self.tabs
+            .configuration_targets()
+            .into_iter()
+            .filter_map(|(id, terminal, _)| {
+                terminal
+                    .lock()
+                    .is_ok_and(|terminal| terminal.resize_pending())
+                    .then_some(id)
+            })
+            .collect()
+    }
+
+    pub(crate) fn resize_deadline(&self) -> Option<std::time::Instant> {
+        self.tabs
+            .configuration_targets()
+            .into_iter()
+            .filter_map(|(_, terminal, _)| {
+                terminal
+                    .lock()
+                    .ok()
+                    .and_then(|terminal| terminal.resize_deadline())
+            })
+            .min()
+    }
     pub(crate) fn apply_configuration(
         &mut self,
         settings: &harbor_config::Settings,

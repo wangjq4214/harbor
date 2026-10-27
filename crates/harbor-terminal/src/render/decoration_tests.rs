@@ -29,7 +29,9 @@ fn snapshot(stream: &str, rows: usize, cols: usize) -> TerminalSnapshot {
 
 fn rects(vertices: &[ColoredVertex]) -> Vec<(f32, f32, f32, f32)> {
     vertices
-        .chunks_exact(6)
+        .as_chunks::<6>()
+        .0
+        .iter()
         .filter(|v| v[0].color[3] != 0.0)
         .map(|v| {
             let xs: Vec<_> = v.iter().map(|v| (v.position[0] + 1.0) * 128.0).collect();
@@ -538,7 +540,7 @@ fn conceal_suppresses_all_decoration_and_overline_uses_effective_foreground() {
         4,
         "spaces and wide continuation each have one slot"
     );
-    for (col, slot) in overline.chunks_exact(6).enumerate() {
+    for (col, slot) in overline.as_chunks::<6>().0.iter().enumerate() {
         let shape = rects(slot);
         let (left, top, right, bottom) = shape[0];
         assert!((left - col as f32 * 16.0).abs() < 0.001);
@@ -704,7 +706,7 @@ fn gpu_conceal_overline_readback_dirty_removal_and_reprojection() {
         decoration.prepare_with_dirty(gpu, &snap, &[], &view);
         let retained = raster(&device, &queue, &decoration);
         assert!(
-            retained.chunks_exact(4).any(|p| p == [0, 255, 0, 255]),
+            retained.as_chunks::<4>().0.contains(&[0, 255, 0, 255]),
             "visible indexed overline must use the updated active palette"
         );
         let mut full =
@@ -752,7 +754,7 @@ fn gpu_conceal_overline_readback_dirty_removal_and_reprojection() {
     text_layer.prepare_preedit(gpu, None, &visible, &view);
     let pixels = raster_draw(&device, &queue, |pass| text_layer.draw(pass));
     assert!(
-        pixels.chunks_exact(4).any(|p| p[3] != 0),
+        pixels.as_chunks::<4>().0.iter().any(|p| p[3] != 0),
         "reveal can populate an initially empty atlas"
     );
     text_screen.clear_dirty();

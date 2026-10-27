@@ -583,8 +583,10 @@ mod tests {
         let clear = super::super::text::sequence_tests::read_draw(&device, &queue, |_| {});
         assert_ne!(pixels, clear, "missing glyph cannot be invisible");
         for (i, (actual, expected)) in pixels
-            .chunks_exact(4)
-            .zip(clear.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(clear.as_chunks::<4>().0.iter())
             .enumerate()
         {
             let (x, y) = (i % 256, i / 256);

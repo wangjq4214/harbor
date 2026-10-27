@@ -282,8 +282,10 @@ fn search_button_hover_pixels_are_visible_local_and_revert_at_multiple_dpi() {
                 let hovered = render(&device, &queue, &mut runtime, viewport.clone(), format);
                 let mut changed = 0;
                 for (index, (before, after)) in baseline
-                    .chunks_exact(4)
-                    .zip(hovered.chunks_exact(4))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(hovered.as_chunks::<4>().0.iter())
                     .enumerate()
                 {
                     let x = (index as u32 % viewport.physical_size.0) as f32 / scale;
@@ -389,8 +391,10 @@ fn notification_material_pixels_are_local_rounded_and_retained_at_multiple_dpi()
             let actual = render(&device, &queue, &mut runtime, viewport.clone(), format);
             let mut changed_inside = 0;
             for (index, (before, after)) in background
-                .chunks_exact(4)
-                .zip(actual.chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(actual.as_chunks::<4>().0.iter())
                 .enumerate()
             {
                 let x = (index as u32 % viewport.physical_size.0) as f32 / scale;

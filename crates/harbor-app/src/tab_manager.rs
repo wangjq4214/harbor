@@ -548,6 +548,8 @@ impl TabManager {
                             "failed to resize terminal"
                         );
                     }
+                    all_succeeded &= terminal.screen().rows() == size.rows.max(1)
+                        && terminal.screen().cols() == size.cols.max(2);
                 }
                 Err(_) => {
                     all_succeeded = false;

@@ -169,10 +169,18 @@ fn native_monochrome_honors_foreground_and_alpha() {
     assert_ne!(tile.image_formats, 0);
     assert!(
         tile.rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|p| p[1] == 0 && p[2] == 0 && p[0] == p[3] && p[3] <= 128)
     );
-    assert!(tile.rgba.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 128));
+    assert!(
+        tile.rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[3] > 0 && p[3] < 128)
+    );
     let mut green = r.clone();
     green.foreground = [0, 255, 0, 128];
     let g = s.present_sequence(&green);

@@ -37,7 +37,7 @@ fn covers(vertices: &[ColoredVertex], view: &RenderViewport, x: f64, y: f64) -> 
         x / f64::from(view.surface_size.0) * 2.0 - 1.0,
         1.0 - y / f64::from(view.surface_size.1) * 2.0,
     ];
-    vertices.chunks_exact(3).any(|tri| {
+    vertices.as_chunks::<3>().0.iter().any(|tri| {
         if tri[0].color[3] == 0.0 {
             return false;
         }
@@ -458,8 +458,10 @@ fn gpu_repertoire_sharp_pixels_and_fractional_horizontal_vertical_junction_joins
     let pixels = rebuilt_pixels(gpu, &pipeline, &snap, &view, Palette::default());
     assert!(
         pixels
-            .chunks_exact(4)
-            .all(|p| p == [0, 0, 0, 0] || p == [255, 0, 0, 255]),
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| *p == [0, 0, 0, 0] || *p == [255, 0, 0, 255]),
         "hard edged, exact high contrast color"
     );
     for i in 0..128 {
@@ -824,7 +826,9 @@ fn gpu_box_scalar_suppression_suffix_preedit_and_font_resource_replacement() {
     text.prepare_preedit(gpu, Some(&preedit), &snap, &view);
     assert!(
         raster(&device, &queue, |p| text.draw(p))
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[3] != 0),
         "preedit retains font path"
     );
@@ -840,7 +844,9 @@ fn gpu_box_scalar_suppression_suffix_preedit_and_font_resource_replacement() {
     text.prepare_preedit(gpu, None, &suffix, &view);
     assert!(
         raster(&device, &queue, |p| text.draw(p))
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[3] != 0),
         "combining suffix still paints"
     );
@@ -849,7 +855,9 @@ fn gpu_box_scalar_suppression_suffix_preedit_and_font_resource_replacement() {
     text.prepare_preedit(gpu, None, &ordinary, &view);
     assert!(
         raster(&device, &queue, |p| text.draw(p))
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[3] != 0),
         "ordinary glyph still paints"
     );

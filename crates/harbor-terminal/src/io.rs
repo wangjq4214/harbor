@@ -6,7 +6,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
+        mpsc::{self, Receiver, Sender, TryRecvError},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -30,6 +30,10 @@ const PTY_DRAIN_EVENT_BUDGET: usize = 16;
 const RESIZE_BARRIER_TIMEOUT: Duration = Duration::from_secs(2);
 const BARRIER_INTERRUPT_RETRY: Duration = Duration::from_millis(10);
 
+#[cfg(test)]
+#[path = "async_resize_tests.rs"]
+mod async_resize_tests;
+
 type ReaderInterrupt = Arc<dyn Fn(&JoinHandle<()>) -> anyhow::Result<()> + Send + Sync + 'static>;
 type Wake = Arc<Mutex<dyn Fn() -> bool + Send>>;
 #[derive(Debug)]
@@ -51,15 +55,70 @@ enum ReaderCommandStatus {
     Disconnected,
 }
 
+#[derive(Debug)]
+enum BarrierStatus {
+    Waiting,
+    Ready,
+    Failed(String),
+    Released,
+}
+
+/// An owned, non-borrowing cancellation lease for application-coordinated acquisition.
+/// Dropping it releases the reader even without reacquiring the Terminal lock.
+pub struct ConfigurationBarrier {
+    release: Option<ResizeBarrier>,
+}
+
+impl ConfigurationBarrier {
+    /// ACK readiness is not configuration acceptance. The host must continue
+    /// draining/ticking the terminal and coordinate every member before commit.
+    pub fn is_ready(&self) -> anyhow::Result<bool> {
+        self.release
+            .as_ref()
+            .map_or(Ok(true), ResizeBarrier::is_ready)
+    }
+}
+
 pub(crate) struct ResizeBarrier {
     commands: Sender<ReaderCommand>,
     epoch: u64,
+    status: Arc<Mutex<BarrierStatus>>,
+}
+
+impl ResizeBarrier {
+    fn is_ready(&self) -> anyhow::Result<bool> {
+        match &*self.status.lock().unwrap_or_else(|e| e.into_inner()) {
+            BarrierStatus::Waiting => Ok(false),
+            BarrierStatus::Ready => Ok(true),
+            BarrierStatus::Failed(error) => Err(anyhow::anyhow!("{error}")),
+            BarrierStatus::Released => anyhow::bail!("PTY resize barrier was cancelled"),
+        }
+    }
+
+    fn lease(&self) -> Self {
+        Self {
+            commands: self.commands.clone(),
+            epoch: self.epoch,
+            status: Arc::clone(&self.status),
+        }
+    }
 }
 
 impl Drop for ResizeBarrier {
     fn drop(&mut self) {
+        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(*status, BarrierStatus::Failed(_)) {
+            *status = BarrierStatus::Released;
+        }
         let _ = self.commands.send(ReaderCommand::Resume(self.epoch));
     }
+}
+
+struct PendingBarrier {
+    barrier: ResizeBarrier,
+    deadline: Instant,
+    retry: Instant,
+    configuration: bool,
 }
 // ── TerminalPty ───────────────────────────────────────────────────────
 
@@ -291,6 +350,8 @@ fn service_reader_commands(
 /// GPU-independent PTY session adapter: owns the endpoints, reader, resize
 /// coordination, and teardown. The logical I/O state below owns VT parsing.
 struct TerminalSession {
+    // Drop the barrier (Resume) before platform shutdown joins the reader.
+    barrier: Option<PendingBarrier>,
     pty: Option<TerminalPty>,
     closed_observed: bool,
 }
@@ -298,6 +359,7 @@ struct TerminalSession {
 impl TerminalSession {
     fn headless() -> Self {
         Self {
+            barrier: None,
             pty: None,
             closed_observed: false,
         }
@@ -305,6 +367,7 @@ impl TerminalSession {
 
     fn with_pty(pty: TerminalPty) -> Self {
         Self {
+            barrier: None,
             pty: Some(pty),
             closed_observed: false,
         }
@@ -342,107 +405,138 @@ impl TerminalSession {
             }
         }
     }
-    /// Pause with an epoch-qualified acknowledgement, streaming every chunk under old geometry.
-    /// The callback receives the session so ordinary protocol replies use the same PTY writer.
-    fn acquire_resize_barrier(
-        &mut self,
-        mut process_bytes: impl FnMut(&mut Self, &[u8]),
-    ) -> (bool, anyhow::Result<Option<ResizeBarrier>>) {
+    fn request_resize_barrier(&mut self, configuration: bool, now: Instant) -> anyhow::Result<()> {
+        if self.barrier.as_ref().is_some_and(|pending| {
+            matches!(
+                *pending
+                    .barrier
+                    .status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+                BarrierStatus::Released | BarrierStatus::Failed(_)
+            )
+        }) {
+            self.barrier = None;
+        }
+        if self.barrier.is_some() {
+            return Ok(());
+        }
         let Some(pty) = self.pty.as_mut() else {
-            return (false, Ok(None));
+            return Ok(());
         };
-        if pty.control.is_none() && pty.test_interrupt.is_none() {
-            return (
-                false,
-                Err(anyhow::anyhow!(
-                    "cannot resize a terminal with an active reader but no interrupt capability"
-                )),
-            );
-        }
+        anyhow::ensure!(
+            pty.control.is_some() || pty.test_interrupt.is_some(),
+            "cannot resize a terminal with an active reader but no interrupt capability"
+        );
         let epoch = pty.next_barrier_epoch;
-        let Some(next_epoch) = epoch.checked_add(1) else {
-            return (
-                false,
-                Err(anyhow::anyhow!("PTY resize barrier epoch exhausted")),
-            );
+        pty.next_barrier_epoch = epoch
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("PTY resize barrier epoch exhausted"))?;
+        let barrier = ResizeBarrier {
+            commands: pty.commands.clone(),
+            epoch,
+            status: Arc::new(Mutex::new(BarrierStatus::Waiting)),
         };
-        pty.next_barrier_epoch = next_epoch;
-        let commands = pty.commands.clone();
-        if commands.send(ReaderCommand::Barrier(epoch)).is_err() {
-            return (
-                false,
-                Err(anyhow::anyhow!(
-                    "terminal reader stopped before resize barrier"
-                )),
-            );
+        barrier
+            .commands
+            .send(ReaderCommand::Barrier(epoch))
+            .map_err(|_| anyhow::anyhow!("terminal reader stopped before resize barrier"))?;
+        self.barrier = Some(PendingBarrier {
+            barrier,
+            deadline: now + pty.barrier_timeout,
+            retry: now + BARRIER_INTERRUPT_RETRY,
+            configuration,
+        });
+        if let Err(error) = self.interrupt_reader_for_barrier() {
+            self.fail_resize_barrier(error.to_string());
+            return Err(error);
         }
-        let barrier = ResizeBarrier { commands, epoch };
-        let deadline = Instant::now() + pty.barrier_timeout;
-        let mut acquisition = self.interrupt_reader_for_barrier();
-        let mut acknowledged = false;
-        let mut disconnected = false;
-        while acquisition.is_ok() && !acknowledged {
-            let now = Instant::now();
-            if now >= deadline {
-                acquisition = Err(anyhow::anyhow!(
-                    "timed out waiting for PTY resize barrier {epoch}"
-                ));
-                break;
-            }
-            let wait = deadline
-                .saturating_duration_since(now)
-                .min(BARRIER_INTERRUPT_RETRY);
-            let event = self
-                .pty
-                .as_ref()
-                .expect("active PTY during barrier")
-                .output
-                .recv_timeout(wait);
-            match event {
-                Ok(ReaderEvent::Bytes(bytes)) => process_bytes(self, &bytes),
-                Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
-                    acknowledged = true;
-                    if let Some(pty) = self.pty.as_ref() {
-                        pty.wake_pending.store(false, Ordering::Release);
-                    }
-                }
-                Ok(ReaderEvent::BarrierAck(_)) => {}
-                Err(RecvTimeoutError::Timeout) => {
-                    acquisition = self.interrupt_reader_for_barrier();
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    disconnected = true;
-                    acquisition = Err(anyhow::anyhow!(
-                        "terminal reader stopped before resize barrier {epoch}"
-                    ));
-                }
-            }
-        }
+        Ok(())
+    }
 
-        // Close the wake/queue race on both success and failure. A final
-        // pre-barrier chunk must remain parseable against the old grid.
-        if let Some(pty) = self.pty.as_ref() {
-            pty.wake_pending.store(false, Ordering::Release);
+    fn fail_resize_barrier(&mut self, error: String) {
+        if let Some(pending) = self.barrier.as_ref() {
+            *pending
+                .barrier
+                .status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = BarrierStatus::Failed(error);
+            let _ = pending
+                .barrier
+                .commands
+                .send(ReaderCommand::Resume(pending.barrier.epoch));
         }
-        while let Some(pty) = self.pty.as_ref() {
-            let event = pty.output.try_recv();
-            match event {
-                Ok(ReaderEvent::Bytes(bytes)) => process_bytes(self, &bytes),
-                Ok(ReaderEvent::BarrierAck(ack_epoch)) if ack_epoch == epoch => {
-                    acknowledged = true;
-                }
-                Ok(ReaderEvent::BarrierAck(_)) => {}
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
+    }
+
+    fn advance_resize_barrier(&mut self, now: Instant) {
+        let Some(pending) = self.barrier.as_ref() else {
+            return;
+        };
+        if !matches!(
+            *pending
+                .barrier
+                .status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            BarrierStatus::Waiting
+        ) {
+            return;
+        }
+        if now >= pending.deadline {
+            self.fail_resize_barrier(format!(
+                "timed out waiting for PTY resize barrier {}",
+                pending.barrier.epoch
+            ));
+        } else if now >= pending.retry {
+            if let Err(error) = self.interrupt_reader_for_barrier() {
+                self.fail_resize_barrier(error.to_string());
+            } else if let Some(pending) = self.barrier.as_mut() {
+                pending.retry = now + BARRIER_INTERRUPT_RETRY;
             }
         }
-        if acquisition.is_ok() {
-            debug_assert!(acknowledged);
+    }
+
+    fn acknowledge_resize_barrier(&mut self, epoch: u64) {
+        if let Some(pending) = self.barrier.as_ref()
+            && pending.barrier.epoch == epoch
+        {
+            let mut status = pending
+                .barrier
+                .status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if matches!(*status, BarrierStatus::Waiting) {
+                *status = BarrierStatus::Ready;
+            }
         }
-        (disconnected, acquisition.map(|()| Some(barrier)))
+    }
+
+    fn resize_barrier_ready(&self) -> anyhow::Result<bool> {
+        self.barrier
+            .as_ref()
+            .map_or(Ok(self.pty.is_none()), |pending| pending.barrier.is_ready())
+    }
+
+    fn resize_deadline(&self) -> Option<Instant> {
+        self.barrier.as_ref().and_then(|pending| {
+            matches!(
+                *pending
+                    .barrier
+                    .status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+                BarrierStatus::Waiting
+            )
+            .then_some(pending.retry.min(pending.deadline))
+        })
+    }
+
+    fn take_resize_barrier(&mut self) -> anyhow::Result<Option<ResizeBarrier>> {
+        anyhow::ensure!(
+            self.resize_barrier_ready()?,
+            "PTY resize pending: acquire and poll the reader barrier first"
+        );
+        Ok(self.barrier.take().map(|pending| pending.barrier))
     }
 
     fn interrupt_reader_for_barrier(&self) -> anyhow::Result<()> {
@@ -682,6 +776,7 @@ impl TerminalIo {
 
     /// Parses at most one budget of ordered reader events on the logical thread.
     pub(crate) fn drain(&mut self, screen: &mut Screen, pointer: &mut PointerInteraction) -> bool {
+        self.session.advance_resize_barrier(Instant::now());
         let mut consumed_bytes = false;
         for _ in 0..PTY_DRAIN_EVENT_BUDGET {
             match self.session.next_event() {
@@ -689,7 +784,9 @@ impl TerminalIo {
                     consumed_bytes = true;
                     self.process_reader_bytes(screen, pointer, &bytes);
                 }
-                Ok(Some(ReaderEvent::BarrierAck(_))) => {}
+                Ok(Some(ReaderEvent::BarrierAck(epoch))) => {
+                    self.session.acknowledge_resize_barrier(epoch);
+                }
                 Ok(None) => return consumed_bytes,
                 Err(_) => {
                     self.observe_reader_disconnect(screen);
@@ -707,28 +804,53 @@ impl TerminalIo {
         consumed_bytes
     }
 
-    /// Parses all pre-barrier chunks against the old geometry, even on failure.
-    pub(crate) fn acquire_resize_barrier(
-        &mut self,
-        screen: &mut Screen,
-        pointer: &mut PointerInteraction,
-    ) -> anyhow::Result<Option<ResizeBarrier>> {
-        let parser = &mut self.parser;
-        let suppress_scroll_snap = &mut self.suppress_scroll_snap;
-        let (disconnected, result) = self.session.acquire_resize_barrier(|session, bytes| {
-            Self::process_reader_bytes_with(
-                parser,
-                suppress_scroll_snap,
-                session,
-                screen,
-                pointer,
-                bytes,
-            );
-        });
-        if disconnected {
-            self.observe_reader_disconnect(screen);
+    pub(crate) fn request_resize_barrier(&mut self, now: Instant) -> anyhow::Result<()> {
+        self.session.request_resize_barrier(false, now)
+    }
+
+    pub(crate) fn begin_configuration_barrier(&mut self) -> anyhow::Result<ConfigurationBarrier> {
+        self.session.barrier = None;
+        if self.is_session_closed() {
+            return Ok(ConfigurationBarrier { release: None });
         }
-        result
+        self.session.request_resize_barrier(true, Instant::now())?;
+        Ok(ConfigurationBarrier {
+            release: self
+                .session
+                .barrier
+                .as_ref()
+                .map(|pending| pending.barrier.lease()),
+        })
+    }
+
+    pub(crate) fn configuration_barrier_active(&self) -> bool {
+        self.session.barrier.as_ref().is_some_and(|pending| {
+            pending.configuration
+                && !matches!(
+                    *pending
+                        .barrier
+                        .status
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()),
+                    BarrierStatus::Released | BarrierStatus::Failed(_)
+                )
+        })
+    }
+
+    pub(crate) fn resize_barrier_ready(&self) -> anyhow::Result<bool> {
+        self.session.resize_barrier_ready()
+    }
+
+    pub(crate) fn take_resize_barrier(&mut self) -> anyhow::Result<Option<ResizeBarrier>> {
+        self.session.take_resize_barrier()
+    }
+
+    pub(crate) fn cancel_resize_barrier(&mut self) {
+        self.session.barrier = None;
+    }
+
+    pub(crate) fn resize_deadline(&self) -> Option<Instant> {
+        self.session.resize_deadline()
     }
 
     fn process_reader_bytes(
@@ -767,6 +889,8 @@ impl TerminalIo {
     }
 
     fn observe_reader_disconnect(&mut self, screen: &mut Screen) {
+        self.session
+            .fail_resize_barrier("terminal reader stopped before resize commit".to_owned());
         if self.session.observe_disconnect() {
             self.parser.close_session();
             screen.clear_synchronized_output();
@@ -1120,29 +1244,45 @@ mod tests {
             let mut screen = Screen::new(3, 20);
             let mut pointer = PointerInteraction::default();
             let deadline = Instant::now() + Duration::from_secs(10);
-            let (disconnected, result) = session.acquire_resize_barrier(|session, bytes| {
-                assert_eq!(screen.cols(), 20, "callback must use pre-resize geometry");
-                TerminalIo::process_reader_bytes_with(
-                    &mut parser,
-                    &mut suppress_scroll_snap,
-                    session,
-                    &mut screen,
-                    &mut pointer,
-                    bytes,
-                );
-                assert!(format!("{parser:?}").matches("ClipboardWrite(").count() <= 1);
-                let count = processed.fetch_add(1, Ordering::SeqCst) + 1;
-                // Keep the queue full deterministically, including in the final try_recv loop.
-                let required = (count + PTY_QUEUE_CAPACITY).min(CHUNKS);
-                while published.load(Ordering::SeqCst) < required {
-                    assert!(Instant::now() < deadline, "producer failed to refill");
-                    std::thread::yield_now();
+            let result = session.request_resize_barrier(false, Instant::now());
+            loop {
+                assert!(Instant::now() < deadline);
+                match session.next_event() {
+                    Ok(Some(ReaderEvent::Bytes(bytes))) => {
+                        assert_eq!(screen.cols(), 20, "callback must use pre-resize geometry");
+                        TerminalIo::process_reader_bytes_with(
+                            &mut parser,
+                            &mut suppress_scroll_snap,
+                            &mut session,
+                            &mut screen,
+                            &mut pointer,
+                            &bytes,
+                        );
+                        assert!(format!("{parser:?}").matches("ClipboardWrite(").count() <= 1);
+                        let count = processed.fetch_add(1, Ordering::SeqCst) + 1;
+                        // Keep the queue full deterministically, including in the final try_recv loop.
+                        let required = (count + PTY_QUEUE_CAPACITY).min(CHUNKS);
+                        while published.load(Ordering::SeqCst) < required {
+                            assert!(Instant::now() < deadline, "producer failed to refill");
+                            std::thread::yield_now();
+                        }
+                        if count == CHUNKS {
+                            all_queued_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        }
+                    }
+                    Ok(Some(ReaderEvent::BarrierAck(epoch))) => {
+                        session.acknowledge_resize_barrier(epoch)
+                    }
+                    Ok(None)
+                        if processed.load(Ordering::SeqCst) == CHUNKS
+                            && (interrupt_failure || session.resize_barrier_ready().unwrap()) =>
+                    {
+                        break;
+                    }
+                    Err(_) if interrupt_failure => break,
+                    _ => std::thread::yield_now(),
                 }
-                if count == CHUNKS {
-                    all_queued_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                }
-            });
-            assert!(!disconnected);
+            }
             assert_eq!(processed.load(Ordering::SeqCst), CHUNKS);
             assert!(
                 (PTY_QUEUE_CAPACITY + 1..=PTY_QUEUE_CAPACITY + 2)
@@ -1170,7 +1310,8 @@ mod tests {
             if interrupt_failure {
                 assert!(result.is_err());
             } else {
-                let barrier = result.unwrap().unwrap();
+                result.unwrap();
+                let barrier = session.take_resize_barrier().unwrap().unwrap();
                 assert_eq!(barrier.epoch, 7);
                 assert!(
                     !session

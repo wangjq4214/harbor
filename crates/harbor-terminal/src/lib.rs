@@ -88,6 +88,7 @@ use revision::Revisioned;
 pub use snapshot::SnapshotCells;
 use std::sync::Arc;
 
+pub use io::ConfigurationBarrier;
 /// GPU-independent terminal state, input, and PTY session.
 pub struct Terminal {
     /// Screen (primary buffer; alt screen handled via `saved_primary`).
@@ -116,6 +117,7 @@ pub struct Terminal {
     /// Invalidates acknowledgements read before a renderer projection was lost.
     projection_epoch: u64,
     presentation_revision: u64,
+    pending_resize: Option<TerminalSize>,
 }
 
 impl Terminal {
@@ -200,6 +202,7 @@ impl Terminal {
             update_needs_full: true,
             projection_epoch: 0,
             presentation_revision: 0,
+            pending_resize: None,
         }
     }
 
@@ -313,6 +316,9 @@ impl Terminal {
             demand.redraw_now |= deadline <= now;
             demand.deadline = Some(demand.deadline.map_or(deadline, |d| d.min(deadline)));
         }
+        if let Some(deadline) = self.resize_deadline() {
+            demand.deadline = Some(demand.deadline.map_or(deadline, |d| d.min(deadline)));
+        }
         demand
     }
 
@@ -378,8 +384,30 @@ impl Terminal {
     /// Parses a bounded batch of reader-thread output in FIFO order.
     /// Returns whether any bytes were parsed; additional output may remain queued.
     pub fn drain_pty(&mut self) -> bool {
-        self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer))
+        let parsed = self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
+        if let Err(error) = self.finish_pending_resize() {
+            tracing::error!(%error, "asynchronous terminal resize failed");
+        }
+        parsed
     }
+
+    /// Drives pending reader acquisition without waiting, including for hidden sessions.
+    /// Hosts must schedule this deadline even when ordinary presentation is suppressed.
+    pub fn resize_deadline(&self) -> Option<Instant> {
+        self.io.resize_deadline()
+    }
+
+    /// Begin application-coordinated acquisition without retaining a Terminal borrow.
+    /// Keep the returned lease until every group member is ready and committed/rejected.
+    pub fn begin_configuration_resize(&mut self) -> anyhow::Result<ConfigurationBarrier> {
+        self.pending_resize = None;
+        self.io.begin_configuration_barrier()
+    }
+    /// Whether host output handling should drive resize progress even without a draw.
+    pub fn resize_pending(&self) -> bool {
+        self.pending_resize.is_some() || self.io.configuration_barrier_active()
+    }
+
     /// Whether reader EOF/disconnection is observed or the reader has already finished.
     /// Checks reader completion even before UI output draining. Headless terminals remain open.
     pub fn is_session_closed(&self) -> bool {
@@ -721,31 +749,66 @@ impl Terminal {
         }
     }
 
-    /// Resizes the PTY and terminal grid atomically from the caller's perspective.
-    ///
-    /// Preparation is detached; PTY success is followed only by infallible ownership moves.
+    /// Requests the latest grid dimensions. Returns true only when a change commits;
+    /// false also covers a pending reader ACK. Drive drain_pty/frame_demand and
+    /// resize_deadline until completion. No Terminal lock is retained across calls.
     pub fn try_resize_if_changed(&mut self, new_size: TerminalSize) -> anyhow::Result<bool> {
         let normalized = TerminalSize {
             rows: new_size.rows.max(1),
             cols: new_size.cols.max(2),
         };
-        let barrier = if normalized
-            != (TerminalSize {
+        // The application owns geometry while coordinating a font/configuration group.
+        // Its next allocation pass recomputes ordinary targets under accepted metrics.
+        if self.io.configuration_barrier_active() {
+            return Ok(false);
+        }
+        if normalized
+            == (TerminalSize {
                 rows: self.screen.rows(),
                 cols: self.screen.cols(),
-            }) {
-            self.ingest_and_blink(|io, screen, pointer| io.acquire_resize_barrier(screen, pointer))?
-        } else {
-            None
+            })
+        {
+            self.pending_resize = None;
+            self.io.cancel_resize_barrier();
+            return Ok(false);
+        }
+        if self.pending_resize.is_none() {
+            self.io.request_resize_barrier(Instant::now())?;
+        }
+        self.pending_resize = Some(normalized);
+        self.finish_pending_resize()
+    }
+
+    fn finish_pending_resize(&mut self) -> anyhow::Result<bool> {
+        if self.io.configuration_barrier_active() {
+            return Ok(false);
+        }
+        let Some(size) = self.pending_resize else {
+            return Ok(false);
         };
+        match self.io.resize_barrier_ready() {
+            Ok(false) => return Ok(false),
+            Err(error) => {
+                self.pending_resize = None;
+                self.io.cancel_resize_barrier();
+                return Err(error);
+            }
+            Ok(true) => {}
+        }
+        let barrier = self.io.take_resize_barrier()?;
+        self.pending_resize = None;
         let result = Self::try_resize_transaction(
             &mut self.screen,
             &mut self.pointer,
             &mut self.io,
-            normalized,
+            size,
             |io, size| io.resize_pty(size),
         );
         drop(barrier);
+        if matches!(result, Ok(true)) {
+            // Geometry requires presentation, but is not child output/unread text.
+            self.pending_ordinary_present = true;
+        }
         result
     }
 

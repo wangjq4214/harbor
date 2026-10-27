@@ -4050,7 +4050,7 @@ fn backdrop_material_rim_responds_to_normals_and_tone_preserves_transparent_alph
                     at(&rim, 4.0, 16.0)
                 );
             }
-            for pixel in rim.chunks_exact(4) {
+            for pixel in rim.as_chunks::<4>().0 {
                 assert!(
                     pixel[..3].iter().all(|c| *c <= pixel[3]),
                     "premultiplied rim"

@@ -211,11 +211,12 @@ impl LiveCmd {
     }
 
     fn resize(&mut self, rows: usize, cols: usize) {
-        assert!(
-            self.terminal
-                .try_resize_if_changed(TerminalSize { rows, cols })
-                .expect("live resize barrier")
-        );
+        self.terminal
+            .try_resize_if_changed(TerminalSize { rows, cols })
+            .expect("nonblocking live resize request");
+        self.wait_for("asynchronous resize commit", |terminal| {
+            terminal.screen().rows() == rows && terminal.screen().cols() == cols
+        });
         self.quiesce("ConPTY resize repaint");
     }
 

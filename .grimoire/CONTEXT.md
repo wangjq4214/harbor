@@ -498,13 +498,13 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Definition:** Harbor normalizes terminal, model, and PTY geometry to at least two columns so every retained width-two glyph has a valid physical projection without replacement or hidden overflow storage; row count remains at least one.
 
 ### Transactional Terminal Resize
-- **Definition:** Acquire PTY Resize Barrier, parse preceding chunks under old geometry, prepare all buffers/mappings, resize PTY, then commit by allocation-free infallible swap. Bounded acquisition/preparation/PTY failures retain prior geometry, resume the reader and permit retry. See [ADR 0043](./adr/0043-acknowledged-pty-resize-barrier.md).
+- **Definition:** Acquire PTY Resize Barrier, parse preceding chunks under old geometry, prepare all buffers/mappings, resize PTY, then commit by allocation-free infallible swap. The selected event-driven acquisition must not block UI or retain a Terminal lock while waiting; continuous requests coalesce to the latest target. Acquisition/preparation/PTY failures release the reader and retain prior geometry where rollback succeeds; incomplete rollback enters explicit fault recovery. Font-driven multi-terminal resize preserves application-wide configuration atomicity. [ADR 0043](./adr/0043-acknowledged-pty-resize-barrier.md) records the ordering contract; [ADR 0095](./adr/0095-event-driven-resize-barrier-and-shared-reader-dispatch.md) records the selected asynchronous direction, not implementation completion.
 - **Synonyms:** prepared resize, resize transaction
 - **Relationships:**
   - belongs to Screen Resize
 
 ### PTY Resize Barrier
-- **Definition:** Epoch-qualified reader acknowledgement after publishing every completed pre-acknowledgement read exactly once, followed by a pause until explicit resume. Acquisition is bounded; all paths resume the reader. It orders reader-observed chunks, not child-generation time for unread OS-pipe bytes.
+- **Definition:** Epoch-qualified reader acknowledgement after publishing every completed pre-acknowledgement read exactly once, followed by a pause until explicit resume. Acquisition is bounded; all paths release the reader. Normal PTY drain and resize coordination share ordered event dispatch so drain cannot swallow an ACK needed by resize. Pre-ACK bytes use old geometry; post-ACK bytes after a successful resize use committed new geometry. It orders reader-observed chunks, not child-generation time for unread OS-pipe bytes. Event-driven waiting without UI blocking or long-held Terminal locks is the selected direction in [ADR 0095](./adr/0095-event-driven-resize-barrier-and-shared-reader-dispatch.md).
 - **Synonyms:** acknowledged reader barrier, resize output barrier
 - **Relationships:**
   - belongs to Transactional Terminal Resize

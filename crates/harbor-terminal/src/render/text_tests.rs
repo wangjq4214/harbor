@@ -358,8 +358,10 @@ fn dpi_transitions_preserve_physical_metrics_and_scalar_pixels() {
 fn assert_pixels_equal(actual: &[u8], expected: &[u8], scale: f32) {
     assert_eq!(actual.len(), expected.len());
     let differences: Vec<_> = actual
-        .chunks_exact(4)
-        .zip(expected.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(expected.as_chunks::<4>().0.iter())
         .enumerate()
         .filter(|(_, (actual, expected))| actual != expected)
         .collect();
