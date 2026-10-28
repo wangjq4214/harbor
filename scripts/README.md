@@ -1,8 +1,8 @@
 # Development Scripts
 
 Scripts are grouped by purpose, not by language or platform. Commands below run
-from the repository root unless noted otherwise. Existing script names and flags
-are unchanged; use the categorized paths instead of the former flat paths.
+from the repository root unless noted otherwise. Automated script tests live in
+`tests/`; manual terminal rendering samples live in `terminal/manual_rendering.*`.
 
 | Directory | Purpose | Entry points |
 | --- | --- | --- |
@@ -11,7 +11,7 @@ are unchanged; use the categorized paths instead of the former flat paths.
 | [`docs/`](docs/) | Check Markdown language/links/fragments and compile/run public-guide Rust examples | `check_docs.py`, `check_examples.py` |
 | [`profiling/`](profiling/) | Analyze DHAT allocation reports | `dhat_analyze.py`, `dhat_drill.py` |
 | [`terminal/`](terminal/) | Interactive terminal probes and synthetic workloads | See the fixture list below |
-| [`tests/`](tests/) | Automated tests of the scripts themselves | Python unit tests and `test_package_windows.ps1` |
+| [`tests/`](tests/) | Automated tests of the scripts themselves | Python unit tests, `test_sample_process.ps1` and `test_package_windows.ps1` |
 
 ## Common Commands
 
@@ -35,6 +35,7 @@ python scripts/profiling/dhat_drill.py dhat-heap.json render_frame
 
 # Test scripts without launching Harbor or accessing the clipboard.
 python -B -m unittest discover -s scripts/tests -v
+pwsh -NoProfile -File scripts/tests/test_sample_process.ps1
 powershell.exe -NoProfile -File scripts/tests/test_package_windows.ps1
 powershell.exe -NoProfile -STA -File scripts/terminal/test_osc52_manual.ps1 -SelfTest
 ```
@@ -47,6 +48,8 @@ The documentation checker covers tracked and nonignored untracked Markdown, incl
 
 The example checker generates an isolated package/cache under `target/` and runs public widget/terminal Rustdoc examples; native `no_run` snippets compile only.
 
+For Rust/resource test categories and CI entry points, see the [testing guide](../docs/developer/testing.md).
+
 ## Terminal Fixtures
 
 These are **not a batch test suite**. Most run inside a disposable Harbor tab;
@@ -57,6 +60,7 @@ A fixture completing does not establish visual or end-to-end acceptance.
 
 | Area | Scripts / guidance |
 | --- | --- |
+| Manual rendering | `terminal/manual_rendering.sh`, `terminal/manual_rendering.ps1`, `terminal/manual_rendering.cmd`; visual inspection only, not automatic E2E acceptance |
 | Capability negotiation | `terminal/verify_capabilities.py` (POSIX tty in WSL/SSH); live ConPTY host and usage below |
 | Resize and reflow | `terminal/resize_reflow_workload.ps1` |
 | Unicode and emoji | `terminal/verify_unicode_windows.ps1`, `terminal/verify_color_emoji_windows.ps1` |

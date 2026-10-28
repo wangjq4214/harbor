@@ -29,9 +29,32 @@ run-release:
 check:
     cargo check --workspace --all-targets
 
-# Run the complete workspace test suite.
+# Run default (no GPU/PTY/desktop) tests and the renderer-free terminal contract.
 test:
-    cargo test --workspace
+    cargo test --locked --workspace
+    cargo test --locked -p harbor-terminal --no-default-features
+
+# Source ownership guards, separate from behavioral cases (also included in test).
+test-architecture:
+    cargo test --locked --workspace architecture::
+
+# Required offscreen GPU tests; select a backend with HARBOR_TEST_GPU.
+test-gpu:
+    cargo test --locked --workspace gpu:: -- --ignored --test-threads=1
+
+# Real ConPTY child processes; restore the pinned runtime first.
+[windows]
+test-pty:
+    cargo test --locked --workspace pty:: -- --ignored --test-threads=1
+
+# Opt-in desktop, installed-font and external-application acceptance.
+[windows]
+test-native filter="native::":
+    cargo test --locked --workspace "{{ filter }}" -- --ignored --test-threads=1 --nocapture
+
+# Opt-in release measurements, not correctness gates.
+test-perf:
+    cargo test --locked -p harbor-terminal --release perf:: -- --ignored --test-threads=1 --nocapture
 
 # Test one crate, optionally filtering by test name: just test-crate harbor-parser parse.
 test-crate crate filter="":
@@ -40,6 +63,11 @@ test-crate crate filter="":
 # Run Python script unit tests without launching Harbor or touching the clipboard.
 script-test:
     python -B -m unittest discover -s scripts/tests -v
+
+# Smoke-test the Windows process sampler itself, not Harbor.
+[windows]
+sampler-test:
+    pwsh -NoProfile -File scripts/tests/test_sample_process.ps1
 
 # Run packaging rejection tests (no install or release payload required).
 [windows]
@@ -111,8 +139,9 @@ hmr-test: hmr-build
     cargo test -p harbor-widget --features hmr
     cargo test -p harbor --features widget-hot-reload
 
-# Run ordinary and hot-reload verification.
-qa-all: qa hmr-test
+# Run automated resource suites and hot-reload verification; no desktop/manual fixtures.
+[windows]
+qa-all: qa test-gpu test-pty script-test sampler-test hmr-test
 
 # Remove Cargo build artifacts.
 clean:

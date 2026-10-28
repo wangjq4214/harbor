@@ -1,6 +1,6 @@
 # Dependency-free Windows smoke checks; samples this test process, NOT Harbor.
 $ErrorActionPreference = 'Stop'
-$script = Join-Path $PSScriptRoot 'sample_process.ps1'
+$script = Join-Path $PSScriptRoot '../profiling/sample_process.ps1'
 $samples = @(& $script -TargetPid $PID -DurationSeconds 1 -IntervalMs 100 -Phase sampler-test)
 if ($samples.Count -lt 2) { throw 'Missing samples' }
 if ($null -ne $samples[0].cpu_machine_percent) { throw 'First CPU delta must be unknown' }

@@ -52,10 +52,21 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      - name: Run workspace tests
+      - name: Run default workspace tests
+        run: cargo test --locked --workspace
+
+      - name: Test renderer-free terminal core
+        run: cargo test --locked -p harbor-terminal --no-default-features
+
+      - name: Run required offscreen GPU tests
         env:
           HARBOR_TEST_GPU: dx12-warp
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace gpu:: -- --ignored --test-threads=1
+
+      - name: Run real ConPTY integration tests
+        env:
+          HARBOR_TEST_GPU: dx12-warp
+        run: cargo test --locked --workspace pty:: -- --ignored --test-threads=1
 
       - name: Set up Python for documentation tools
         uses: actions/setup-python@v5
@@ -64,6 +75,9 @@ jobs:
 
       - name: Test documentation and helper scripts
         run: python -B -m unittest discover -s scripts/tests -v
+
+      - name: Test Windows process sampler
+        run: pwsh -NoProfile -File scripts/tests/test_sample_process.ps1
 
       - name: Check documentation
         run: python scripts/docs/check_docs.py

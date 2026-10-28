@@ -4,6 +4,8 @@
 
 Use headless runtime tests for state, reconciliation, layout and routed events. Use a native host to check clipboard/IME, font metrics, DPI and presentation.
 
+For repository-wide commands and GPU/native categories, see the [developer testing guide](../developer/testing.md).
+
 ## A small deterministic test
 
 This independent Rust example demonstrates explicit subscription and pull semantics. It records builds as test instrumentation, not as a pattern for business side effects in production build functions.

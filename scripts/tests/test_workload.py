@@ -1,10 +1,12 @@
-"""Run with python -m unittest discover -s scripts/profiling -p 'test_*.py'."""
+"""Profiling input unit tests; included by scripts/tests discovery."""
 
 import hashlib
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "profiling"))
 
 import workload
 

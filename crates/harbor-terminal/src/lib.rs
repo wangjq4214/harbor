@@ -1,3 +1,7 @@
+#[cfg(all(test, feature = "renderer"))]
+#[path = "../../../tests/support/gpu.rs"]
+mod test_gpu;
+
 #[cfg(test)]
 mod clipboard_attachment_tests;
 mod configuration;

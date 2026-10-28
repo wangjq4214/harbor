@@ -1,6 +1,10 @@
-"""Characterize bounded reductions without changing retained Unicode policy."""
+"""Profiling input unit tests; included by scripts/tests discovery."""
 
+import sys
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "profiling"))
 
 from unicode_diagnosis_input import CASES, generate
 from workload import rows

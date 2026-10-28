@@ -1,4 +1,6 @@
-﻿#Requires -Version 5.1
+﻿# Manual rendering fixture: run inside a disposable Harbor tab and inspect visually.
+# Completion is not automated visual or end-to-end acceptance.
+#Requires -Version 5.1
 [CmdletBinding()]
 param(
     [ValidatePattern('^[A-Qa-q]$')]
@@ -178,7 +180,7 @@ if (Should-Run Q) {
 
 Write-Line
 Write-Line "${CSI}1;32m╔═══════════════════════════════════════════════╗"
-Write-Line '║        harbor end-to-end test script complete          ║'
+Write-Line '║        Harbor manual rendering fixture complete          ║'
 Write-Line '║  All selected sections ran; visually verify the terminal output     ║'
 Write-Line "╚═══════════════════════════════════════════════╝${CSI}0m"
 Write-Line ("  Time: {0:yyyy-MM-dd HH:mm:ss}" -f (Get-Date))

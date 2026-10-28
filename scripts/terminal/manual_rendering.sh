@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  harbor_e2e_test.sh  —  End-to-end visual regression test script
+#  manual_rendering.sh  —  Manual rendering fixture (not an automated regression test)
 #  Purpose: Run inside the harbor terminal emulator to verify rendering section
 #           by section.
-#  Usage:   bash harbor_e2e_test.sh [SECTION]
+#  Usage:   bash manual_rendering.sh [SECTION]
 #           Omit the argument to run all sections; pass a section letter (A-Q)
 #           to run only that section.
 # =============================================================================
@@ -849,7 +849,7 @@ run_section Q && {
 printf "\n"
 printf "${CSI}1;32m"
 printf "╔══════════════════════════════════════════════════╗\n"
-printf "║      harbor end-to-end test script complete      ║\n"
+printf "║      Harbor manual rendering fixture complete      ║\n"
 printf "║                                                  ║\n"
 printf "║  All sections passed: terminal rendering OK      ║\n"
 printf "╚══════════════════════════════════════════════════╝\n"
