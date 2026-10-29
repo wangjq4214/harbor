@@ -216,7 +216,7 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
             }
         }
         let replies = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut session = TerminalSession::with_pty(TerminalPty {
+        let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
             output,
             commands,
             writer: Box::new(Writer(Arc::clone(&replies))),
@@ -232,27 +232,23 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
                 Ok(())
             })),
             barrier_timeout: Duration::from_secs(5),
-        });
-        let mut parser = TerminalParser::default();
-        let mut suppress_scroll_snap = false;
+        }));
         let mut screen = Screen::new(3, 20);
         let mut pointer = PointerInteraction::default();
         let deadline = Instant::now() + Duration::from_secs(10);
-        let result = session.request_resize_barrier(false, Instant::now());
+        let result = io.session.request_resize_barrier(false, Instant::now());
         loop {
             assert!(Instant::now() < deadline);
-            match session.next_event() {
+            match io.session.next_event() {
                 Ok(Some(ReaderEvent::Bytes(bytes))) => {
                     assert_eq!(screen.cols(), 20, "callback must use pre-resize geometry");
-                    TerminalIo::process_reader_bytes_with(
-                        &mut parser,
-                        &mut suppress_scroll_snap,
-                        &mut session,
-                        &mut screen,
-                        &mut pointer,
-                        &bytes,
+                    io.process_reader_bytes(&mut screen, &mut pointer, &bytes);
+                    assert!(
+                        format!("{:?}", io.parser)
+                            .matches("ClipboardWrite(")
+                            .count()
+                            <= 1
                     );
-                    assert!(format!("{parser:?}").matches("ClipboardWrite(").count() <= 1);
                     let count = processed.fetch_add(1, Ordering::SeqCst) + 1;
                     // Keep the queue full deterministically, including in the final try_recv loop.
                     let required = (count + PTY_QUEUE_CAPACITY).min(CHUNKS);
@@ -265,11 +261,11 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
                     }
                 }
                 Ok(Some(ReaderEvent::BarrierAck(epoch))) => {
-                    session.acknowledge_resize_barrier(epoch)
+                    io.session.acknowledge_resize_barrier(epoch)
                 }
                 Ok(None)
                     if processed.load(Ordering::SeqCst) == CHUNKS
-                        && (interrupt_failure || session.resize_barrier_ready().unwrap()) =>
+                        && (interrupt_failure || io.session.resize_barrier_ready().unwrap()) =>
                 {
                     break;
                 }
@@ -282,7 +278,7 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
             (PTY_QUEUE_CAPACITY + 1..=PTY_QUEUE_CAPACITY + 2)
                 .contains(&high_water.load(Ordering::SeqCst))
         );
-        let events = parser.drain_output_events();
+        let events = io.drain_output_events();
         assert_eq!(events.len(), 2);
         assert!(
             matches!(&events[0], crate::TerminalOutputEvent::ClipboardWrite(write) if write.as_str().len() == 3066)
@@ -294,7 +290,7 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
         assert_eq!(screen.row_text(1).chars().nth(19), Some('X'));
         assert_eq!(*replies.lock().unwrap(), b"\x1b[2;20R");
         assert!(
-            !session
+            !io.session
                 .pty
                 .as_ref()
                 .unwrap()
@@ -305,10 +301,10 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
             assert!(result.is_err());
         } else {
             result.unwrap();
-            let barrier = session.take_resize_barrier().unwrap().unwrap();
+            let barrier = io.session.take_resize_barrier().unwrap().unwrap();
             assert_eq!(barrier.epoch, 7);
             assert!(
-                !session
+                !io.session
                     .pty
                     .as_ref()
                     .unwrap()
@@ -319,7 +315,7 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
             );
             drop(barrier);
         }
-        session
+        io.session
             .pty
             .as_mut()
             .unwrap()
@@ -590,6 +586,197 @@ fn reader_spawn_failure_releases_unstarted_endpoints() {
     assert!(result.is_err());
     dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(writer_drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn empty_reader_chunk_drains_pending_replies_without_snapping_review() {
+    struct Writer(Arc<Mutex<Vec<u8>>>);
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let (tx, output) = mpsc::sync_channel(2);
+    let (commands, _command_rx) = mpsc::channel();
+    let replies = Arc::new(Mutex::new(Vec::new()));
+    let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
+        output,
+        commands,
+        writer: Box::new(Writer(Arc::clone(&replies))),
+        reader: None,
+        control: None,
+        wake_pending: Arc::new(AtomicBool::new(true)),
+        wake: Arc::new(Mutex::new(|| true)),
+        next_barrier_epoch: 1,
+        test_interrupt: None,
+        barrier_timeout: RESIZE_BARRIER_TIMEOUT,
+    }));
+    let mut screen = Screen::new(2, 8);
+    let mut pointer = PointerInteraction::new();
+    io.feed_pty_output(&mut screen, &mut pointer, b"one\r\ntwo\r\nthree\r\nfour");
+    io.feed_pty_output(&mut screen, &mut pointer, b"\x1b[1;2H\x1b[6n");
+    screen.scroll_up(2);
+    let review_offset = screen.view_offset();
+    assert!(review_offset > 0);
+    io.feed_pty_output_snapped(&mut screen, &mut pointer, b"");
+    assert_eq!(screen.view_offset(), review_offset);
+    assert!(replies.lock().unwrap().is_empty());
+
+    tx.send(ReaderEvent::Bytes(Vec::new())).unwrap();
+    assert!(io.drain(&mut screen, &mut pointer));
+    assert_eq!(screen.view_offset(), review_offset);
+    assert_eq!(*replies.lock().unwrap(), b"\x1b[1;2R");
+    assert!(!io.drain(&mut screen, &mut pointer));
+    assert_eq!(*replies.lock().unwrap(), b"\x1b[1;2R");
+
+    // A query split across chunks and an alt-screen exit retain reply order.
+    tx.send(ReaderEvent::Bytes(b"\x1b[?47h\x1b[2;3H\x1b[6".to_vec()))
+        .unwrap();
+    assert!(io.drain(&mut screen, &mut pointer));
+    assert!(screen.is_alt());
+    assert_eq!(*replies.lock().unwrap(), b"\x1b[1;2R");
+    tx.send(ReaderEvent::Bytes(b"n\x1b[?47l\x1b[6n".to_vec()))
+        .unwrap();
+    assert!(io.drain(&mut screen, &mut pointer));
+    assert!(!screen.is_alt());
+    assert_eq!(*replies.lock().unwrap(), b"\x1b[1;2R\x1b[2;3R\x1b[1;2R");
+    assert!(!io.drain(&mut screen, &mut pointer));
+}
+
+#[test]
+fn selection_is_reconciled_before_a_mid_chunk_alt_swap_and_releases_capture() {
+    use crate::{
+        RenderViewport, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    };
+    let mut io = TerminalIo::new_headless();
+    let mut screen = Screen::new(2, 10);
+    let mut pointer = PointerInteraction::new();
+    pointer.set_viewport(RenderViewport::with_padding(10.0, 20.0, 0.0));
+    io.feed_pty_output(&mut screen, &mut pointer, b"abcdef");
+    let event =
+        |x, phase| TerminalPointerEvent::new((x, 1.0), phase, TerminalPointerButton::Left, 7);
+    let now = Instant::now();
+    pointer.handle_pointer(&mut screen, event(21.0, TerminalPointerPhase::Down), now);
+    pointer.handle_pointer(&mut screen, event(41.0, TerminalPointerPhase::Move), now);
+
+    io.feed_pty_output(
+        &mut screen,
+        &mut pointer,
+        b"\x1b[1;1H\x1b[4hX\x1b[4l\x1b[?47hALT",
+    );
+    assert!(screen.is_alt());
+    assert!(screen.row_text(0).starts_with("ALT"));
+    let released = pointer.handle_pointer(&mut screen, event(41.0, TerminalPointerPhase::Up), now);
+    assert_eq!(released.release_pointer, Some(7));
+    io.feed_pty_output(&mut screen, &mut pointer, b"\x1b[?47l");
+    assert_eq!(
+        pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 0,
+            start_col: 3,
+            end_row: 0,
+            end_col: 5,
+        })
+    );
+}
+
+#[test]
+fn alternate_selection_restores_for_47_and_clears_for_1047_and_1049() {
+    use crate::{
+        RenderViewport, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
+    };
+    for clear_entry in [b"\x1b[?1047h".as_slice(), b"\x1b[?1049h".as_slice()] {
+        let mut io = TerminalIo::new_headless();
+        let mut screen = Screen::new(2, 20);
+        let mut pointer = PointerInteraction::new();
+        pointer.set_viewport(RenderViewport::with_padding(10.0, 20.0, 0.0));
+        let event = |x, phase, id| {
+            TerminalPointerEvent::new((x, 1.0), phase, TerminalPointerButton::Left, id)
+        };
+        let now = Instant::now();
+        io.feed_pty_output(&mut screen, &mut pointer, b"primary content");
+        pointer.handle_pointer(&mut screen, event(11.0, TerminalPointerPhase::Down, 1), now);
+        pointer.handle_pointer(&mut screen, event(41.0, TerminalPointerPhase::Move, 1), now);
+        pointer.handle_pointer(&mut screen, event(41.0, TerminalPointerPhase::Up, 1), now);
+        let primary = pointer.bounds();
+        assert!(primary.is_some());
+
+        io.feed_pty_output(&mut screen, &mut pointer, b"\x1b[?47halt content");
+        pointer.handle_pointer(&mut screen, event(1.0, TerminalPointerPhase::Down, 2), now);
+        pointer.handle_pointer(&mut screen, event(61.0, TerminalPointerPhase::Move, 2), now);
+        let alternate = pointer.bounds();
+        assert!(alternate.is_some());
+        assert_ne!(alternate, primary);
+        io.feed_pty_output(&mut screen, &mut pointer, b"\x1b[?47l");
+        assert_eq!(pointer.bounds(), primary);
+        let released =
+            pointer.handle_pointer(&mut screen, event(61.0, TerminalPointerPhase::Up, 2), now);
+        assert_eq!(released.release_pointer, Some(2));
+
+        io.feed_pty_output(&mut screen, &mut pointer, b"\x1b[?47h");
+        assert_eq!(pointer.bounds(), alternate);
+        assert!(screen.row_text(0).starts_with("alt content"));
+        io.feed_pty_output(&mut screen, &mut pointer, b"\x1b[?47l");
+        io.feed_pty_output(&mut screen, &mut pointer, clear_entry);
+        assert_eq!(pointer.bounds(), None);
+        assert!(screen.row_text(0).trim().is_empty());
+        io.feed_pty_output(&mut screen, &mut pointer, b"\x1b[?47l");
+        assert_eq!(pointer.bounds(), primary);
+        io.feed_pty_output(&mut screen, &mut pointer, b"\x1b[?47h");
+        assert_eq!(pointer.bounds(), None);
+        assert!(screen.row_text(0).trim().is_empty());
+    }
+}
+
+#[test]
+fn local_pointer_suppresses_snap_until_review_and_capture_end() {
+    use crate::{
+        RenderViewport, TerminalEvent, TerminalPointerButton, TerminalPointerEvent,
+        TerminalPointerPhase,
+    };
+    let mut terminal = crate::Terminal::new_headless(3, 12);
+    terminal
+        .pointer
+        .set_viewport(RenderViewport::with_padding(10.0, 20.0, 0.0));
+    for _ in 0..8 {
+        terminal.put_bytes(b"line\r\n");
+    }
+    terminal.scroll_viewport_up(2);
+    let review = terminal.screen().view_offset();
+    assert!(review > 0);
+    let event = |phase| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (1.0, 1.0),
+            phase,
+            TerminalPointerButton::Left,
+            7,
+        ))
+    };
+    let pressed = terminal
+        .handle_event_with_outcome(event(TerminalPointerPhase::Down))
+        .unwrap();
+    assert_eq!(pressed.capture_pointer, Some(7));
+    terminal.process_output(b"X");
+    assert_eq!(terminal.screen().view_offset(), review);
+    let released = terminal
+        .handle_event_with_outcome(event(TerminalPointerPhase::Up))
+        .unwrap();
+    assert_eq!(released.release_pointer, Some(7));
+    terminal.process_output(b"Y");
+    assert_eq!(terminal.screen().view_offset(), review);
+
+    terminal.scroll_viewport_to_bottom();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move))
+        .unwrap();
+    terminal.scroll_viewport_up(2);
+    terminal.process_output(b"Z");
+    assert_eq!(terminal.screen().view_offset(), 0);
 }
 
 fn assert_resize_output_matches_parser(chunks: &[&[u8]], sizes: &[usize]) {

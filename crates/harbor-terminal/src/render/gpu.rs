@@ -200,7 +200,6 @@ pub struct TerminalGpuAccess<'frame> {
     device: &'frame wgpu::Device,
     queue: &'frame wgpu::Queue,
     format: wgpu::TextureFormat,
-    upload_policy: UploadPolicy,
 }
 
 impl<'frame> TerminalGpuAccess<'frame> {
@@ -213,7 +212,6 @@ impl<'frame> TerminalGpuAccess<'frame> {
             device,
             queue,
             format,
-            upload_policy: UploadPolicy::default(),
         }
     }
 
@@ -237,8 +235,7 @@ impl<'frame> TerminalGpuAccess<'frame> {
         dirty_ranges: &[DirtyRange],
         force_full: bool,
     ) -> UploadPlan {
-        self.upload_policy
-            .decide(rows, cols, bytes_per_cell, dirty_ranges, force_full)
+        UploadPolicy::default().decide(rows, cols, bytes_per_cell, dirty_ranges, force_full)
     }
 
     pub fn write_buffer(self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {

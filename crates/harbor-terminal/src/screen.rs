@@ -131,7 +131,7 @@ pub struct Screen {
 #[derive(Debug)]
 struct EditAnchorCapture {
     anchor: ContentAnchor,
-    cells: Vec<Cell>,
+    atom_count: usize,
     affected_atoms: usize,
     shifted_atoms: usize,
     dropped_atoms: Option<(usize, usize)>,
@@ -156,6 +156,7 @@ struct RectangularSelectionProjection {
 #[derive(Debug)]
 struct RoleBuffers {
     normal: NormalBuf,
+    projection: ContentProjection,
     cursor: CursorEngine,
     review_anchor: Option<ContentAnchor>,
     rectangular_selection: Option<RectangularSelectionProjection>,
@@ -166,7 +167,6 @@ pub(crate) struct PreparedScreenResize {
     history_limits: harbor_config::HistoryLimits,
     immediate_saved_primary: Vec<PreparedScreenResize>,
     normal: NormalBuf,
-    anchor_mutations: AnchorMutationBatch,
     review_anchor: Option<ContentAnchor>,
     cursor: CursorEngine,
     pen_state: PenState,
@@ -749,7 +749,7 @@ impl Screen {
         let projection = self.content_projection().ok()?;
         let position = self.live_cursor_position();
         let anchor = projection.to_anchor(position, Affinity::Before)?;
-        let cells = projection.line_cells(anchor.line_id)?;
+        let atom_count = projection.line_atom_count(anchor.line_id)?;
         let affected_atoms = projection.atom_count_in_cell_range(
             anchor.line_id,
             position.generation,
@@ -768,11 +768,29 @@ impl Screen {
         });
         Some(EditAnchorCapture {
             anchor,
-            cells,
+            atom_count,
             affected_atoms,
             shifted_atoms,
             dropped_atoms,
         })
+    }
+
+    fn capture_insertion_anchor(&self, requested: usize) -> (usize, Option<EditAnchorCapture>) {
+        let requested_col = self.cursor.cursor.x;
+        let (left, right) = if self.cursor.margins.enabled {
+            (self.cursor.margins.left, self.cursor.margins.right)
+        } else {
+            (0, self.normal.cols().saturating_sub(1))
+        };
+        let base = CellOps::wide_range(&self.normal, self.cursor.cursor.y, requested_col)
+            .map_or(requested_col, |(base, _)| base);
+        let actual = if requested_col >= left && requested_col <= right {
+            requested.min(right - base + 1)
+        } else {
+            0
+        };
+        let dropped = (actual > 0).then_some((right + 1 - actual, right.saturating_add(1)));
+        (actual, self.capture_edit_anchor(actual, dropped))
     }
 
     fn record_insertion_delta(
@@ -816,7 +834,7 @@ impl Screen {
     fn record_deletion_delta(&mut self, before: Option<EditAnchorCapture>) {
         let Some(EditAnchorCapture {
             anchor,
-            cells: before_cells,
+            atom_count: before_count,
             affected_atoms,
             ..
         }) = before
@@ -828,12 +846,12 @@ impl Screen {
                 .push(AnchorMutation::InvalidateLine(anchor.line_id));
             return;
         };
-        let Some(after_cells) = after.line_cells(anchor.line_id) else {
+        let Some(after_count) = after.line_atom_count(anchor.line_id) else {
             self.anchor_mutations
                 .push(AnchorMutation::InvalidateLine(anchor.line_id));
             return;
         };
-        let removed = affected_atoms.min(before_cells.len().saturating_sub(anchor.offset.0));
+        let removed = affected_atoms.min(before_count.saturating_sub(anchor.offset.0));
         if removed > 0 {
             self.anchor_mutations.push(AnchorMutation::Delete {
                 line_id: anchor.line_id,
@@ -841,8 +859,8 @@ impl Screen {
                 end: LogicalAtomOffset(anchor.offset.0 + removed),
             });
         }
-        let retained_after_delete = before_cells.len().saturating_sub(removed);
-        let inserted_tail = after_cells.len().saturating_sub(retained_after_delete);
+        let retained_after_delete = before_count.saturating_sub(removed);
+        let inserted_tail = after_count.saturating_sub(retained_after_delete);
         if inserted_tail > 0 {
             self.anchor_mutations.push(AnchorMutation::Insert {
                 line_id: anchor.line_id,
@@ -1154,29 +1172,32 @@ impl Screen {
         let sync = *self.synchronized_output;
         let focus_reporting = self.focus_reporting;
         let default_colors = *self.default_colors;
-        // Save the primary screen (cells + scrollback + cursor + pen + modes),
-        // carrying its parked alternate buffer along to the fresh screen.
-        let mut alternate = Self::with_palette_and_history(
-            rows,
-            cols,
-            Palette::default(),
-            harbor_config::HistoryLimits {
-                max_rows: 0,
-                max_bytes: 0,
-            },
-        );
-        alternate.history_limits = self.history_limits;
+        // A non-clearing entry can install the parked buffer directly.
+        let parked = if clear { None } else { self.parked_alt.take() };
+        let restoring_parked = parked.is_some();
+        let alternate = match parked {
+            Some(alt) => *alt,
+            None => {
+                let mut alternate = Self::with_palette_and_history(
+                    rows,
+                    cols,
+                    Palette::default(),
+                    harbor_config::HistoryLimits {
+                        max_rows: 0,
+                        max_bytes: 0,
+                    },
+                );
+                alternate.history_limits = self.history_limits;
+                alternate
+            }
+        };
         let mut primary = std::mem::replace(self, alternate);
-        let parked = primary.parked_alt.take();
-        // Install the alternate screen: clear it, or restore the persistent one.
-        if clear {
-            // Parked contents (if any) are dropped — `?1047`/`?1049` clear on entry.
-        } else if let Some(alt) = parked {
-            *self = *alt;
+        // Keep any cleared parked buffer alive until the transition completes.
+        let _discarded_parked = primary.parked_alt.take();
+        if restoring_parked {
             self.mark_all_dirty();
         }
-        // Save the primary after the install block: a restored parked buffer
-        // carries `saved_primary = None`, so assigning first would be clobbered.
+        // The installed alternate has no saved primary until this assignment.
         self.default_colors = default_colors.into();
         self.saved_primary = Some(Box::new(primary));
         self.replies = replies;
@@ -1203,15 +1224,10 @@ impl Screen {
             primary.commit_resize(prepared);
         }
         if let Some(primary) = self.saved_primary.take() {
-            // Preserve the alternate-screen contents for a later `?47` re-entry.
-            let rows = self.rows();
-            let cols = self.cols();
-            let mut alt = std::mem::replace(self, Self::new(rows, cols));
-            // Drop the nested primary copy so parked alt stays a leaf buffer.
-            alt.saved_primary = None;
+            // Taking the saved primary leaves the parked alternate as a leaf.
+            let mut alt = std::mem::replace(self, *primary);
             alt.default_colors = default_colors.into();
 
-            *self = *primary;
             self.default_colors = default_colors.into();
             // Park the alternate buffer after the primary is back, since the
             // saved primary carries an empty `parked_alt` slot.
@@ -1270,6 +1286,7 @@ impl Screen {
     ) -> Result<PreparedScreenResize, PreparationError> {
         let RoleBuffers {
             mut normal,
+            projection,
             cursor,
             review_anchor,
             rectangular_selection,
@@ -1297,7 +1314,6 @@ impl Screen {
         );
         reachable.extend(pen_state.hyperlink_ids());
         let hyperlinks = self.hyperlinks.prepare_retained(&reachable)?;
-        let projection = ContentProjection::build(&normal)?;
 
         let mut immediate_saved_primary = Vec::new();
         let mut saved_primary = Vec::new();
@@ -1364,7 +1380,6 @@ impl Screen {
             history_limits: limits,
             immediate_saved_primary,
             normal,
-            anchor_mutations: AnchorMutationBatch::default(),
             review_anchor,
             cursor,
             pen_state,
@@ -1418,6 +1433,7 @@ impl Screen {
             };
             return Ok(RoleBuffers {
                 normal,
+                projection,
                 cursor: (*self.cursor).clone(),
                 review_anchor,
                 rectangular_selection: None,
@@ -1472,6 +1488,7 @@ impl Screen {
         };
         Ok(RoleBuffers {
             normal,
+            projection,
             cursor,
             review_anchor,
             rectangular_selection: None,
@@ -1544,6 +1561,7 @@ impl Screen {
         }
         Ok(RoleBuffers {
             normal,
+            projection,
             cursor,
             review_anchor: None,
             rectangular_selection,
@@ -1555,7 +1573,6 @@ impl Screen {
             history_limits,
             mut immediate_saved_primary,
             normal,
-            anchor_mutations,
             review_anchor,
             cursor,
             pen_state,
@@ -1568,7 +1585,7 @@ impl Screen {
         } = prepared;
         self.normal = normal.into();
         self.history_limits = history_limits;
-        self.anchor_mutations = anchor_mutations;
+        self.anchor_mutations = AnchorMutationBatch::default();
         self.review_anchor = review_anchor;
         self.cursor = cursor.into();
         self.pen_state = pen_state;
@@ -1845,22 +1862,7 @@ impl Screen {
     // ── insert / delete ────────────────────────────────────────────────
 
     pub fn insert_chars(&mut self, n: usize) {
-        let requested = n.max(1);
-        let requested_col = self.cursor.cursor.x;
-        let (left, right) = if self.cursor.margins.enabled {
-            (self.cursor.margins.left, self.cursor.margins.right)
-        } else {
-            (0, self.normal.cols().saturating_sub(1))
-        };
-        let base = CellOps::wide_range(&self.normal, self.cursor.cursor.y, requested_col)
-            .map_or(requested_col, |(base, _)| base);
-        let actual = if requested_col >= left && requested_col <= right {
-            requested.min(right - base + 1)
-        } else {
-            0
-        };
-        let dropped_cells = (actual > 0).then_some((right + 1 - actual, right.saturating_add(1)));
-        let before = self.capture_edit_anchor(actual, dropped_cells);
+        let (actual, before) = self.capture_insertion_anchor(n.max(1));
         let inserted_is_meaningful =
             actual > 0 && NormalBuf::fill_is_meaningful(self.pen_state.erase_cell());
         let Screen {
@@ -2062,21 +2064,7 @@ impl Screen {
             && width > 0
             && !wide_wraps
         {
-            let requested_col = self.cursor.cursor.x;
-            let (left, right) = if self.cursor.margins.enabled {
-                (self.cursor.margins.left, self.cursor.margins.right)
-            } else {
-                (0, self.normal.cols().saturating_sub(1))
-            };
-            let base = CellOps::wide_range(&self.normal, self.cursor.cursor.y, requested_col)
-                .map_or(requested_col, |(base, _)| base);
-            let actual = if requested_col >= left && requested_col <= right {
-                width.min(right - base + 1)
-            } else {
-                0
-            };
-            let dropped = (actual > 0).then_some((right + 1 - actual, right.saturating_add(1)));
-            self.capture_edit_anchor(actual, dropped)
+            self.capture_insertion_anchor(width).1
         } else {
             None
         };

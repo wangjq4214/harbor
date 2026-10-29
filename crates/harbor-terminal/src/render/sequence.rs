@@ -1,6 +1,6 @@
 //! Whole-unit terminal projection, fitted geometry and lazy GPU composition.
 use super::{
-    color_atlas::{COLOR_ATLAS_SIDE, COLOR_CACHE_ENTRIES, ColorAtlas},
+    color_atlas::{COLOR_ATLAS_SIDE, ColorAtlas},
     gpu::{self, ColoredVertex, TerminalGpuAccess, TexturedVertex, VertexBuffer},
     text::glyph_color_with_palette,
 };
@@ -26,9 +26,14 @@ pub(super) fn emoji_candidate(cell: &Cell) -> bool {
     if cell.suffix.is_empty() {
         classify_unit(first, PresentationIntent::Auto) == UnitKind::Emoji
     } else {
-        // Classify without copying potentially over-limit retained sources.
+        // Classification depends on the lead and selector/join/keycap presence.
+        // Inspect the complete suffix without copying an arbitrarily long source.
         let mut source = String::from(first);
-        source.extend(cell.suffix.chars().take(SEQUENCE_MAX_UTF16));
+        for marker in ['\u{fe0e}', '\u{fe0f}', '\u{200d}', '\u{20e3}'] {
+            if cell.suffix.contains(marker) {
+                source.push(marker);
+            }
+        }
         classify_unit(&source, PresentationIntent::Auto) == UnitKind::Emoji
     }
 }
@@ -94,22 +99,99 @@ fn usable_scalar(atlas: &GlyphAtlas, ch: char) -> bool {
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resolved {
+    Tile(TileBounds, u32, u32),
+    Scalar,
+    Missing,
+}
+
+struct Candidate {
+    col: usize,
+    ch: char,
+    width: u8,
+    color: [f32; 4],
+    request: Option<SequenceRequest>,
+    resolved: Option<Resolved>,
+}
+
+impl Candidate {
+    fn same_projection(&self, other: &Self) -> bool {
+        self.col == other.col
+            && self.ch == other.ch
+            && self.width == other.width
+            && self.color == other.color
+            && self.request == other.request
+    }
+}
+
+#[derive(Default)]
+struct SequenceRow {
+    cells: Vec<Candidate>,
+    vertices: Vec<TexturedVertex>,
+    missing: Vec<ColoredVertex>,
+    suppressed: HashSet<usize>,
+    quads: Option<VertexBuffer<TexturedVertex>>,
+    cues: Option<VertexBuffer<ColoredVertex>>,
+}
+
+#[derive(Clone, PartialEq)]
+struct ProjectionKey {
+    rows: usize,
+    cols: usize,
+    viewport: RenderViewport,
+    palette: Palette,
+    scale: f32,
+    generation: harbor_text::PresentationGeneration,
+}
+
 #[derive(Default)]
 pub(super) struct SequenceLayer {
     pub atlas: ColorAtlas,
     pub emoji_cells: HashSet<usize>,
     pub tile_cells: HashSet<usize>,
+    rows: Vec<SequenceRow>,
+    key: Option<ProjectionKey>,
     gpu: Option<ColorGpu>,
     missing: Option<MissingGpu>,
 }
 
-impl SequenceLayer {
-    pub fn atlas_generation_changed(&self, fonts: &FontBook) -> bool {
-        self.atlas
-            .generation_changed(fonts.presentation_generation())
+fn sequence_request(
+    cell: &Cell,
+    fonts: &FontBook,
+    palette: &Palette,
+    scale: f32,
+) -> Option<SequenceRequest> {
+    if cell.ch.len_utf16() + cell.suffix.chars().map(char::len_utf16).sum::<usize>()
+        > SEQUENCE_MAX_UTF16
+    {
+        return None;
     }
+    // Font size is physical pixels; convert to DIP without scaling it twice.
+    let mut request = SequenceRequest::new(
+        cell.raw_text(),
+        FontSize::new(fonts.size() / scale).unwrap(),
+        FontSize::new(96.0 * scale).unwrap(),
+    );
+    request.style = SequenceStyle {
+        bold: cell.attrs.contains(CellAttrs::BOLD),
+        italic: cell.attrs.contains(CellAttrs::ITALIC),
+    };
+    request.foreground = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs)
+        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+    Some(request)
+}
+
+impl SequenceLayer {
+    #[cfg(test)]
+    pub fn atlas_generation_changed(&self, fonts: &FontBook) -> bool {
+        self.key
+            .as_ref()
+            .is_none_or(|k| k.generation != fonts.presentation_generation())
+    }
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    pub fn prepare(
+    fn prepare(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
         fonts: &FontBook,
@@ -119,129 +201,351 @@ impl SequenceLayer {
         palette: &Palette,
         scale: f32,
     ) {
-        self.emoji_cells.clear();
-        self.tile_cells.clear();
-        let mut requests = Vec::new();
-        let mut ids = HashMap::new();
-        let mut cells = Vec::new();
-        for (idx, cell) in snap.cells.iter().enumerate() {
-            if !emoji_candidate(cell) {
+        self.prepare_with_dirty(
+            gpu,
+            fonts,
+            scalar,
+            snap,
+            viewport,
+            palette,
+            scale,
+            &[],
+            true,
+            true,
+        );
+    }
+
+    /// Content damage is borrowed, never consumed. Returns extra scalar suppression damage.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_dirty(
+        &mut self,
+        gpu: TerminalGpuAccess<'_>,
+        fonts: &FontBook,
+        scalar: &GlyphAtlas,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+        palette: &Palette,
+        scale: f32,
+        dirty: &[crate::model::DirtyRange],
+        force_full: bool,
+        scalar_changed: bool,
+    ) -> Vec<crate::model::DirtyRange> {
+        #[cfg(test)]
+        {
+            super::observations::reset_sequence();
+        }
+        let key = ProjectionKey {
+            rows: snap.rows,
+            cols: snap.cols,
+            viewport: *viewport,
+            palette: *palette,
+            scale,
+            generation: fonts.presentation_generation(),
+        };
+        let full = force_full || self.key.as_ref() != Some(&key);
+        if !full && dirty.is_empty() && !scalar_changed {
+            return Vec::new();
+        }
+        if self.rows.len() != snap.rows || self.key.as_ref().is_some_and(|k| k.cols != snap.cols) {
+            self.rows = (0..snap.rows).map(|_| SequenceRow::default()).collect();
+            self.emoji_cells.clear();
+            self.tile_cells.clear();
+        }
+        let mut touched = vec![full; snap.rows];
+        for range in dirty {
+            if range.start_col < range.end_col && range.row < snap.rows {
+                touched[range.row] = true;
+            }
+        }
+        for (row, changed) in touched.iter_mut().enumerate() {
+            if !*changed {
                 continue;
             }
-            self.emoji_cells.insert(idx);
-            let id = if cell.suffix.chars().map(char::len_utf16).sum::<usize>()
-                + cell.ch.len_utf16()
-                <= SEQUENCE_MAX_UTF16
-            {
-                // Terminal font size is physical pixels, as on main. Convert to
-                // DIP for the native request so size * DPI / 96 stays unchanged,
-                // while DPI still participates in cache identity/invalidation.
-                let mut request = SequenceRequest::new(
-                    cell.raw_text(),
-                    FontSize::new(fonts.size() / scale).unwrap(),
-                    FontSize::new(96.0 * scale).unwrap(),
-                );
-                request.style = SequenceStyle {
-                    bold: cell.attrs.contains(CellAttrs::BOLD),
-                    italic: cell.attrs.contains(CellAttrs::ITALIC),
-                };
-                request.foreground =
-                    glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs)
-                        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
-                if let Some(&id) = ids.get(&request) {
-                    Some(id)
-                } else if requests.len() < COLOR_CACHE_ENTRIES {
-                    let id = requests.len();
-                    ids.insert(request.clone(), id);
-                    requests.push(request);
-                    Some(id)
-                } else {
-                    None
+            let retained = &mut self.rows[row];
+            let mut cells = Vec::new();
+            for col in 0..snap.cols {
+                #[cfg(test)]
+                {
+                    super::observations::record_sequence(|work| work.classified_cells += 1);
                 }
-            } else {
-                None
-            };
-            cells.push((idx, id));
+                let cell = snap.cell(row, col);
+                if emoji_candidate(cell) {
+                    cells.push(Candidate {
+                        col,
+                        ch: cell.ch,
+                        width: cell.grid_width(),
+                        color: glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs),
+                        request: sequence_request(cell, fonts, palette, scale),
+                        resolved: None,
+                    });
+                }
+            }
+            let same = cells.len() == retained.cells.len()
+                && cells
+                    .iter()
+                    .zip(&retained.cells)
+                    .all(|(a, b)| a.same_projection(b));
+            *changed = full || !same;
+            if !same {
+                for cell in &retained.cells {
+                    self.emoji_cells.remove(&(row * snap.cols + cell.col));
+                }
+                for cell in &cells {
+                    self.emoji_cells.insert(row * snap.cols + cell.col);
+                }
+                retained.cells = cells;
+            }
         }
-        let changes = self
+        // Pending damage can be replayed before acknowledgement. Identical
+        // candidates keep both resolved dependencies and geometry in that case.
+        if !full && !scalar_changed && !touched.iter().any(|&row| row) {
+            return Vec::new();
+        }
+        // Only retained candidates are visited here, not every snapshot cell. Keep
+        // row-major admission deterministic, including promotion after overflow.
+        let requests = self
+            .rows
+            .iter()
+            .flat_map(|r| &r.cells)
+            .filter_map(|c| c.request.as_ref());
+        let before: HashMap<_, _> = self
             .atlas
-            .sync(&requests, fonts.presentation_generation(), |r| {
-                (*fonts.present_sequence(r)).clone()
-            });
-        let mut vertices = Vec::new();
-        let mut missing = Vec::new();
-        for (idx, id) in cells {
-            let cell = &snap.cells[idx];
-            let (x, y) = viewport.cell_pos(idx / snap.cols, idx % snap.cols);
-            // A wide unit at the final column cannot paint a non-existent neighbor.
-            let width = usize::from(cell.grid_width()).min(snap.cols - idx % snap.cols) as f32
-                * viewport.cell_width;
-            let rect = [x, y, width, viewport.line_height];
-            let placed = id
-                .and_then(|id| self.atlas.entries.get(&requests[id]))
-                .filter(|e| matches!(e.outcome, super::color_atlas::CachedOutcome::Complete(_)))
-                .and_then(|e| e.tile.as_ref().zip(e.placement));
-            if let Some((tile, p)) = placed {
-                let side = COLOR_ATLAS_SIDE as f32;
-                let uv = [
-                    p.x as f32 / side,
-                    p.y as f32 / side,
-                    (p.x + tile.bounds.width) as f32 / side,
-                    (p.y + tile.bounds.height) as f32 / side,
-                ];
-                if let Some(quad) = fitted_quad(
-                    tile.bounds,
-                    uv,
-                    rect,
-                    viewport.surface_dimensions(),
-                    [1.0; 4],
-                ) {
-                    vertices.extend(quad);
+            .entries
+            .iter()
+            .map(|(r, e)| {
+                (
+                    r.clone(),
+                    e.tile
+                        .as_ref()
+                        .zip(e.placement)
+                        .map(|(t, p)| (t.bounds, p.x, p.y)),
+                )
+            })
+            .collect();
+        let changes = self.atlas.sync(requests, key.generation, |r| {
+            (*fonts.present_sequence(r)).clone()
+        });
+        let changed_requests: HashSet<_> = before
+            .keys()
+            .chain(self.atlas.entries.keys())
+            .filter(|r| {
+                let old = before.get(*r).copied().flatten();
+                let new = self
+                    .atlas
+                    .entries
+                    .get(*r)
+                    .and_then(|e| e.tile.as_ref().zip(e.placement))
+                    .map(|(t, p)| (t.bounds, p.x, p.y));
+                old != new
+            })
+            .cloned()
+            .collect();
+        let mut scalar_damage = Vec::new();
+        let mut usability = HashMap::new();
+        for (row, retained) in self.rows.iter_mut().enumerate() {
+            if !touched[row]
+                && !scalar_changed
+                && !retained.cells.iter().any(|c| {
+                    c.request
+                        .as_ref()
+                        .is_some_and(|r| changed_requests.contains(r))
+                })
+            {
+                continue;
+            }
+            if retained.cells.is_empty()
+                && retained.vertices.is_empty()
+                && retained.missing.is_empty()
+            {
+                continue;
+            }
+            let mut rebuild = touched[row];
+            for candidate in &mut retained.cells {
+                let cell = snap.cell(row, candidate.col);
+                let tile = candidate
+                    .request
+                    .as_ref()
+                    .and_then(|r| self.atlas.entries.get(r))
+                    .filter(|e| matches!(e.outcome, super::color_atlas::CachedOutcome::Complete(_)))
+                    .and_then(|e| e.tile.as_ref().zip(e.placement));
+                let resolved = if let Some((tile, p)) = tile {
+                    Resolved::Tile(tile.bounds, p.x, p.y)
+                } else if *usability
+                    .entry(cell.ch)
+                    .or_insert_with(|| usable_scalar(scalar, cell.ch))
+                {
+                    Resolved::Scalar
+                } else {
+                    Resolved::Missing
+                };
+                rebuild |= candidate.resolved != Some(resolved);
+                candidate.resolved = Some(resolved);
+            }
+            if !rebuild {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                super::observations::record_sequence(|work| work.built_rows.push(row));
+            }
+            let old_suppression = std::mem::take(&mut retained.suppressed);
+            for idx in &old_suppression {
+                self.tile_cells.remove(idx);
+            }
+            let mut vertices = Vec::new();
+            let mut missing = Vec::new();
+            for candidate in &retained.cells {
+                let col = candidate.col;
+                let idx = row * snap.cols + col;
+                let cell = snap.cell(row, col);
+                let (x, y) = viewport.cell_pos(row, col);
+                let width = usize::from(cell.grid_width()).min(snap.cols - col) as f32
+                    * viewport.cell_width;
+                let rect = [x, y, width, viewport.line_height];
+                if let Some(Resolved::Tile(bounds, px, py)) = candidate.resolved {
+                    let side = COLOR_ATLAS_SIDE as f32;
+                    let uv = [
+                        px as f32 / side,
+                        py as f32 / side,
+                        (px + bounds.width) as f32 / side,
+                        (py + bounds.height) as f32 / side,
+                    ];
+                    if let Some(quad) =
+                        fitted_quad(bounds, uv, rect, viewport.surface_dimensions(), [1.0; 4])
+                    {
+                        vertices.extend(quad);
+                        self.tile_cells.insert(idx);
+                        retained.suppressed.insert(idx);
+                        continue;
+                    }
+                }
+                // A complete tile which cannot fit retains the previous fallback policy.
+                if candidate.resolved == Some(Resolved::Missing)
+                    || matches!(candidate.resolved, Some(Resolved::Tile(..)))
+                        && !usable_scalar(scalar, cell.ch)
+                {
                     self.tile_cells.insert(idx);
-                    continue;
+                    retained.suppressed.insert(idx);
+                    append_missing_cue(
+                        &mut missing,
+                        rect,
+                        viewport.surface_dimensions(),
+                        glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs),
+                    );
                 }
             }
-            // Unsupported/overflow retains a usable leading pictograph on R8.
-            // Otherwise draw a font-independent hollow missing cue, not invisible text.
-            if !usable_scalar(scalar, cell.ch) {
-                self.tile_cells.insert(idx);
-                append_missing_cue(
-                    &mut missing,
-                    rect,
-                    viewport.surface_dimensions(),
-                    glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs),
-                );
+            // Placement-only changes never invalidate unrelated scalar rows.
+            let suppression_changed = old_suppression
+                .iter()
+                .any(|idx| !self.tile_cells.contains(idx))
+                || retained.cells.iter().any(|c| {
+                    let idx = row * snap.cols + c.col;
+                    self.tile_cells.contains(&idx) && !old_suppression.contains(&idx)
+                });
+            if suppression_changed {
+                scalar_damage.push(crate::model::DirtyRange {
+                    row,
+                    start_col: 0,
+                    end_col: snap.cols,
+                });
             }
+            let tile_bytes =
+                update_row_buffer(gpu, &mut retained.quads, &mut retained.vertices, vertices);
+            let cue_bytes =
+                update_row_buffer(gpu, &mut retained.cues, &mut retained.missing, missing);
+            #[cfg(test)]
+            if tile_bytes + cue_bytes > 0 {
+                super::observations::record_sequence(|work| {
+                    work.writes.push((row, tile_bytes, cue_bytes))
+                });
+            }
+            #[cfg(not(test))]
+            let _ = (tile_bytes, cue_bytes);
         }
-        if !vertices.is_empty() && self.gpu.is_none() {
+        if self.rows.iter().any(|r| !r.vertices.is_empty()) && self.gpu.is_none() {
             self.gpu = Some(ColorGpu::new(gpu));
-        }
-        if let Some(color) = &mut self.gpu {
+            // The texture may have accumulated tiles before its first visible quad.
+            if !self.atlas.pixels.is_empty() {
+                self.gpu.as_ref().unwrap().upload_full(gpu, &self.atlas);
+                #[cfg(test)]
+                {
+                    super::observations::record_sequence(|work| {
+                        work.texture_bytes += self.atlas.pixels.len()
+                    });
+                }
+            }
+        } else if let Some(color) = &self.gpu {
             if changes.full && !self.atlas.pixels.is_empty() {
                 color.upload_full(gpu, &self.atlas);
+                #[cfg(test)]
+                {
+                    super::observations::record_sequence(|work| {
+                        work.texture_bytes += self.atlas.pixels.len()
+                    });
+                }
             } else {
                 for request in &changes.added {
                     color.upload_tile(gpu, &self.atlas, request);
+                    #[cfg(test)]
+                    {
+                        super::observations::record_sequence(|work| {
+                            work.texture_bytes += self.atlas.entries[request]
+                                .tile
+                                .as_ref()
+                                .unwrap()
+                                .rgba
+                                .len();
+                        });
+                    }
                 }
             }
-            color.upload_vertices(gpu, &vertices);
         }
-        if !missing.is_empty() && self.missing.is_none() {
+        if self.rows.iter().any(|r| !r.missing.is_empty()) && self.missing.is_none() {
             self.missing = Some(MissingGpu::new(gpu));
         }
-        if let Some(cue) = &mut self.missing {
-            cue.upload(gpu, &missing);
-        }
+        self.key = Some(key);
+        scalar_damage
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
         if let Some(color) = &self.gpu {
-            color.draw(pass);
+            for row in &self.rows {
+                if let Some(quads) = &row.quads {
+                    quads.draw(pass, &color.pipeline, Some(&color.bind_group));
+                }
+            }
         }
         if let Some(cue) = &self.missing {
-            cue.draw(pass);
+            for row in &self.rows {
+                if let Some(quads) = &row.cues {
+                    quads.draw(pass, &cue.pipeline, None);
+                }
+            }
         }
     }
+}
+
+/// Row-local storage never moves another row's vertices. Empty rows release
+/// capacity so historical maximum sequence density does not accumulate.
+fn update_row_buffer<T: bytemuck::Pod + Default>(
+    gpu: TerminalGpuAccess<'_>,
+    buffer: &mut Option<VertexBuffer<T>>,
+    old: &mut Vec<T>,
+    new: Vec<T>,
+) -> usize {
+    if bytemuck::cast_slice::<T, u8>(old) == bytemuck::cast_slice::<T, u8>(&new) {
+        return 0;
+    }
+    let bytes = std::mem::size_of_val(new.as_slice());
+    if new.is_empty() {
+        *buffer = None;
+    } else {
+        buffer
+            .get_or_insert_with(|| VertexBuffer::new(gpu.device()))
+            .write(gpu, &new);
+    }
+    *old = new;
+    bytes
 }
 
 fn append_missing_cue(
@@ -279,7 +583,6 @@ struct ColorGpu {
     texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     pipeline: wgpu::RenderPipeline,
-    quads: VertexBuffer<TexturedVertex>,
 }
 impl ColorGpu {
     fn new(gpu: TerminalGpuAccess<'_>) -> Self {
@@ -330,7 +633,6 @@ impl ColorGpu {
             texture,
             bind_group,
             pipeline,
-            quads: VertexBuffer::new(device),
         }
     }
     fn upload_full(&self, gpu: TerminalGpuAccess<'_>, atlas: &ColorAtlas) {
@@ -388,17 +690,9 @@ impl ColorGpu {
             },
         );
     }
-    fn upload_vertices(&mut self, gpu: TerminalGpuAccess<'_>, vertices: &[TexturedVertex]) {
-        self.quads.write(gpu, vertices);
-    }
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
-        self.quads
-            .draw(pass, &self.pipeline, Some(&self.bind_group));
-    }
 }
 struct MissingGpu {
     pipeline: wgpu::RenderPipeline,
-    quads: VertexBuffer<ColoredVertex>,
 }
 impl MissingGpu {
     fn new(gpu: TerminalGpuAccess<'_>) -> Self {
@@ -408,14 +702,7 @@ impl MissingGpu {
                 gpu.format(),
                 "emoji missing cue",
             ),
-            quads: VertexBuffer::new(gpu.device()),
         }
-    }
-    fn upload(&mut self, gpu: TerminalGpuAccess<'_>, vertices: &[ColoredVertex]) {
-        self.quads.write(gpu, vertices);
-    }
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
-        self.quads.draw(pass, &self.pipeline, None);
     }
 }
 

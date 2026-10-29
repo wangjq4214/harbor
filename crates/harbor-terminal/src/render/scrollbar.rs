@@ -150,7 +150,7 @@ pub struct Scrollbar {
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     /// Cached upload key including scroll state and viewport geometry.
-    last_upload_key: Option<ScrollbarUploadKey>,
+    last_upload_key: ScrollbarUploadKey,
     /// Whether the thumb is currently visible.
     visible: bool,
 }
@@ -183,7 +183,7 @@ impl Scrollbar {
             vertex_buffer,
             uniform_buffer,
             bind_group,
-            last_upload_key: Some(ScrollbarUploadKey::from_snapshot(snap, viewport)),
+            last_upload_key: ScrollbarUploadKey::from_snapshot(snap, viewport),
             visible: false,
         }
     }
@@ -274,10 +274,10 @@ impl Scrollbar {
         };
         self.visible = snap.scroll_count > 0 && !snap.is_alt;
         let key = ScrollbarUploadKey::from_snapshot(snap, viewport);
-        if self.last_upload_key == Some(key) {
+        if self.last_upload_key == key {
             return;
         }
-        self.last_upload_key = Some(key);
+        self.last_upload_key = key;
 
         let rect = compute_thumb_rect(snap, viewport);
         let vertices = build_vertices(rect, viewport);
@@ -478,5 +478,41 @@ mod tests {
             key,
             ScrollbarUploadKey::from_snapshot(&snap, &different_padding)
         );
+    }
+
+    mod gpu {
+        use super::*;
+
+        #[test]
+        #[ignore = "gpu: run the matching explicit test recipe"]
+        fn cached_scrollbar_reappears_after_hiding() {
+            let (device, queue) = crate::test_gpu::device();
+            let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+            let viewport = full_surface_viewport(800, 600);
+            let mut terminal = Terminal::new_headless(2, 5);
+            terminal.put_str("1\r\n2\r\n3\r\n");
+            let snap = terminal.snapshot();
+            let mut scrollbar = Scrollbar::new(gpu, &snap, &viewport);
+            let initial_key = scrollbar.last_upload_key;
+            assert!(!scrollbar.visible);
+
+            scrollbar.prepare(gpu, Some(&snap), &viewport);
+            assert!(scrollbar.visible);
+            assert_eq!(scrollbar.last_upload_key, initial_key);
+            scrollbar.prepare(gpu, None, &viewport);
+            assert!(!scrollbar.visible);
+            assert_eq!(scrollbar.last_upload_key, initial_key);
+            scrollbar.show();
+            assert!(scrollbar.visible);
+
+            let mut alt = snap.clone();
+            alt.is_alt = true;
+            scrollbar.prepare(gpu, Some(&alt), &viewport);
+            assert!(!scrollbar.visible);
+            assert_ne!(scrollbar.last_upload_key, initial_key);
+            scrollbar.prepare(gpu, Some(&snap), &viewport);
+            assert!(scrollbar.visible);
+            assert_eq!(scrollbar.last_upload_key, initial_key);
+        }
     }
 }

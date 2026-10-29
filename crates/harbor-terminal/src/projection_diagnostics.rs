@@ -28,11 +28,35 @@ impl Drop for BuildTimer {
     }
 }
 
-/// Counts builds for the duration of one ingest and returns the build count.
-fn count_builds(ingest: impl FnOnce()) -> u64 {
+/// Counts projection builds during an operation.
+fn count_builds(operation: impl FnOnce()) -> u64 {
     COUNTERS.with(|state| state.set(Some((0, 0))));
-    ingest();
+    operation();
     COUNTERS.with(|state| state.replace(None).map_or(0, |(calls, _)| calls))
+}
+
+#[test]
+fn history_retrim_reuses_the_prepared_content_projection() {
+    let mut screen = Screen::new(3, 8);
+    screen.write_char('界');
+    let limits = harbor_config::HistoryLimits {
+        max_rows: 16,
+        max_bytes: 1024,
+    };
+    let builds = count_builds(|| {
+        let prepared = screen
+            .prepare_resize_with_history(
+                3,
+                8,
+                crate::primary_reflow::ReflowViewport::PullHistory,
+                limits,
+            )
+            .unwrap();
+        screen.commit_resize(prepared);
+    });
+    assert_eq!(builds, 1);
+    assert_eq!(screen.history_limits(), limits);
+    assert_eq!(screen.cell(0, 0).ch, '界');
 }
 
 #[test]

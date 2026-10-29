@@ -29,3 +29,7 @@ tempfile = { workspace = true }
 [[example]]
 name = "monospace_prepare"
 required-features = ["renderer"]
+
+[[example]]
+name = "sequence_prepare"
+required-features = ["renderer"]

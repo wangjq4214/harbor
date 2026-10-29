@@ -1,58 +1,20 @@
-//! Bounded in-flight DECRQSS request and canonical status-string serialization.
+//! Canonical DECRQSS status-string serialization.
 
-use super::dcs::{Completion, DcsCollector};
 use crate::model::{CellAttrs, CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
 use harbor_config::Color;
-use harbor_parser::Params;
 
 /// Maximum Pt bytes retained for a single DECRQSS request.
-const MAX_PT: usize = 16;
+pub(super) const MAX_PT: usize = 16;
 /// Maximum framed reply bytes allowed for one DECRQSS response.
 const MAX_REPLY: usize = 128;
 
-/// One active DECRQSS request collected across streaming DCS callbacks.
-#[derive(Debug)]
-pub(super) struct DecrqssRequest {
-    collector: DcsCollector,
-}
-
-impl Default for DecrqssRequest {
-    fn default() -> Self {
-        Self {
-            collector: DcsCollector::new(MAX_PT),
-        }
-    }
-}
-
-impl DecrqssRequest {
-    /// Begin collecting when the DCS introducer is exactly `DCS $ q`.
-    pub(super) fn hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {
-        self.collector.hook(params, intermediates, action, b'$');
-    }
-
-    /// Append a payload byte while under the local Pt bound.
-    pub(super) fn put(&mut self, byte: u8) {
-        self.collector.put(byte);
-    }
-
-    /// Complete the request: cancel silently, or queue one success/failure reply.
-    pub(super) fn finish(&mut self, screen: &mut Screen, terminated: bool) {
-        let reply = match self.collector.complete(terminated) {
-            Completion::Silent => return,
-            Completion::Overflow => failure_frame(),
-            Completion::Payload(pt) => serialize_status(screen, &pt)
-                .map(|status| success_frame(&status))
-                .filter(|frame| frame.len() <= MAX_REPLY)
-                .unwrap_or_else(failure_frame),
-        };
-        screen.push_reply(&reply);
-    }
-
-    /// Drop any pending request (e.g. when APC/PM/SOS starts).
-    pub(super) fn cancel(&mut self) {
-        self.collector.cancel();
-    }
+/// Serialize an in-bound request, falling back to the failure frame when needed.
+pub(super) fn build_reply(screen: &Screen, pt: &[u8]) -> Vec<u8> {
+    serialize_status(screen, pt)
+        .map(|status| success_frame(&status))
+        .filter(|frame| frame.len() <= MAX_REPLY)
+        .unwrap_or_else(failure_frame)
 }
 
 fn success_frame(status: &[u8]) -> Vec<u8> {
@@ -63,7 +25,7 @@ fn success_frame(status: &[u8]) -> Vec<u8> {
     frame
 }
 
-fn failure_frame() -> Vec<u8> {
+pub(super) fn failure_frame() -> Vec<u8> {
     b"\x1bP0$r\x1b\\".to_vec()
 }
 
@@ -198,7 +160,9 @@ fn serialize_decsca(screen: &Screen) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::dcs::DcsCollector;
     use crate::screen::Screen;
+    use harbor_parser::Params;
 
     #[test]
     fn serialize_default_sgr_is_reset_only() {
@@ -253,7 +217,7 @@ mod tests {
     #[test]
     fn should_queue_no_reply_when_dcs_hook_is_not_decrqss() {
         // Arrange — wrong final keeps the collector inactive.
-        let mut req = DecrqssRequest::default();
+        let mut req = DcsCollector::default();
         let mut screen = Screen::new(10, 20);
         let params = Params::from(&[None][..]);
 
@@ -269,7 +233,7 @@ mod tests {
     #[test]
     fn should_queue_no_reply_when_finish_sees_unterminated_request() {
         // Arrange
-        let mut req = DecrqssRequest::default();
+        let mut req = DcsCollector::default();
         let mut screen = Screen::new(10, 20);
         let params = Params::from(&[None][..]);
         req.hook(&params, b"$", b'q');
@@ -283,9 +247,24 @@ mod tests {
     }
 
     #[test]
+    fn dcs_shared_decrqss_retains_at_most_sixteen_bytes() {
+        let mut request = DcsCollector::default();
+        let params = Params::from(&[None][..]);
+        request.hook(&params, b"$", b'q');
+        for _ in 0..MAX_PT {
+            request.put(b'm');
+        }
+        assert!(!request.overflow);
+        assert_eq!(request.payload.len(), 16);
+        request.put(b'm');
+        assert!(request.overflow);
+        assert_eq!(request.payload.len(), 16);
+    }
+
+    #[test]
     fn should_queue_failure_reply_when_pt_exceeds_local_bound() {
         // Arrange
-        let mut req = DecrqssRequest::default();
+        let mut req = DcsCollector::default();
         let mut screen = Screen::new(10, 20);
         let params = Params::from(&[None][..]);
         req.hook(&params, b"$", b'q');

@@ -10,6 +10,11 @@ pub(super) fn digit(byte: u8) -> Option<u8> {
     }
 }
 
+/// Decodes two hexadecimal digits into a byte, accepting either case.
+pub(super) fn pair(high: u8, low: u8) -> Option<u8> {
+    Some((digit(high)? << 4) | digit(low)?)
+}
+
 /// Appends the uppercase hex form of `bytes`, two digits per byte.
 pub(super) fn encode_upper(out: &mut Vec<u8>, bytes: &[u8]) {
     const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
@@ -31,6 +36,15 @@ mod tests {
         assert_eq!(digit(b'F'), Some(15));
         assert_eq!(digit(b'g'), None);
         assert_eq!(digit(b'/'), None);
+    }
+
+    #[test]
+    fn decodes_pairs_and_rejects_invalid_nibbles() {
+        assert_eq!(pair(b'0', b'0'), Some(0));
+        assert_eq!(pair(b'a', b'F'), Some(0xaf));
+        assert_eq!(pair(b'F', b'f'), Some(0xff));
+        assert_eq!(pair(b'g', b'0'), None);
+        assert_eq!(pair(b'0', b'/'), None);
     }
 
     #[test]

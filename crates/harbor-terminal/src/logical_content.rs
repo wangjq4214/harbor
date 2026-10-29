@@ -196,11 +196,14 @@ pub(crate) fn decode_lines_active(
     normal: &NormalBuf,
     active_count: usize,
 ) -> Result<Vec<LogicalLine>, DecodeError> {
-    let rows: Vec<_> = normal.retained_rows_bounded(active_count).collect();
+    let last_generation = normal
+        .retained_rows_bounded(active_count)
+        .last()
+        .map_or(0, |row| row.generation);
     let atoms = decode_active(normal, active_count)?;
     let mut lines = Vec::new();
 
-    for (index, row) in rows.iter().enumerate() {
+    for (index, row) in normal.retained_rows_bounded(active_count).enumerate() {
         if index == 0 || !row.metadata.soft_wrapped {
             lines.push(LogicalLine {
                 line_id: row.metadata.logical_line_id,
@@ -265,7 +268,7 @@ pub(crate) fn decode_lines_active(
 
     if !lines.is_empty() && line_index + 1 != lines.len() {
         return Err(DecodeError {
-            generation: rows.last().map_or(0, |row| row.generation),
+            generation: last_generation,
             column: 0,
             kind: DecodeErrorKind::InconsistentLogicalLine,
         });
@@ -337,6 +340,43 @@ mod tests {
 
     fn write(normal: &mut NormalBuf, row: usize, col: usize, cell: Cell) {
         normal.write_meaningful_cell(row, col, cell);
+    }
+
+    #[test]
+    fn bounded_line_decode_handles_empty_prefix_and_later_invalid_rows() {
+        let mut normal = NormalBuf::new(2, 4);
+        write(
+            &mut normal,
+            0,
+            0,
+            Cell {
+                ch: 'x',
+                ..Cell::default()
+            },
+        );
+        write(
+            &mut normal,
+            1,
+            0,
+            Cell {
+                ch: '界',
+                ..Cell::default()
+            },
+        );
+
+        assert!(decode_lines_active(&normal, 0).unwrap().is_empty());
+        let prefix = decode_lines_active(&normal, 1).unwrap();
+        assert_eq!(prefix.len(), 1);
+        assert_eq!(prefix[0].generations, [0]);
+        assert_eq!(prefix[0].glyphs[0].glyph.cell.ch, 'x');
+        assert_eq!(
+            decode_lines_active(&normal, 2).unwrap_err(),
+            DecodeError {
+                generation: 1,
+                column: 0,
+                kind: DecodeErrorKind::MissingWideContinuation,
+            }
+        );
     }
 
     #[test]

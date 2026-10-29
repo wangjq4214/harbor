@@ -670,22 +670,6 @@ impl TerminalIo {
         pointer: &mut PointerInteraction,
         bytes: &[u8],
     ) {
-        Self::feed_parser_bytes(
-            &mut self.parser,
-            &mut self.suppress_scroll_snap,
-            screen,
-            pointer,
-            bytes,
-        );
-    }
-
-    fn feed_parser_bytes(
-        parser: &mut TerminalParser,
-        suppress_scroll_snap: &mut bool,
-        screen: &mut Screen,
-        pointer: &mut PointerInteraction,
-        bytes: &[u8],
-    ) {
         let mut remaining = bytes;
         while !remaining.is_empty() {
             screen.set_external_anchor_interest(pointer.has_selection_state());
@@ -693,7 +677,7 @@ impl TerminalIo {
                 .tracks_content_anchors()
                 .then(|| screen.content_projection().ok())
                 .flatten();
-            let result = parser.put_bytes(screen, remaining);
+            let result = self.parser.put_bytes(screen, remaining);
             remaining = &remaining[result.consumed..];
             if screen.tracks_content_anchors() {
                 match screen.finish_anchor_mutations(before_projection.as_ref()) {
@@ -709,7 +693,7 @@ impl TerminalIo {
                 screen.discard_anchor_mutations();
             }
             if let Some(action) = result.alt_request {
-                *suppress_scroll_snap = false;
+                self.suppress_scroll_snap = false;
                 pointer.apply_alt_transition(screen, action);
             }
         }
@@ -722,30 +706,14 @@ impl TerminalIo {
         pointer: &mut PointerInteraction,
         output: &[u8],
     ) {
-        Self::feed_parser_bytes_snapped(
-            &mut self.parser,
-            &mut self.suppress_scroll_snap,
-            screen,
-            pointer,
-            output,
-        );
-    }
-
-    fn feed_parser_bytes_snapped(
-        parser: &mut TerminalParser,
-        suppress_scroll_snap: &mut bool,
-        screen: &mut Screen,
-        pointer: &mut PointerInteraction,
-        output: &[u8],
-    ) {
         if output.is_empty() {
             tracing::trace!("ignored empty pty output chunk");
             return;
         }
-        if !screen.is_alt() && !*suppress_scroll_snap {
+        if !screen.is_alt() && !self.suppress_scroll_snap {
             screen.scroll_to_bottom();
         }
-        Self::feed_parser_bytes(parser, suppress_scroll_snap, screen, pointer, output);
+        self.feed_pty_output(screen, pointer, output);
     }
     pub(crate) fn drain_output_events(&mut self) -> Vec<crate::TerminalOutputEvent> {
         self.parser.drain_output_events()
@@ -859,30 +827,12 @@ impl TerminalIo {
         pointer: &mut PointerInteraction,
         bytes: &[u8],
     ) {
-        Self::process_reader_bytes_with(
-            &mut self.parser,
-            &mut self.suppress_scroll_snap,
-            &mut self.session,
-            screen,
-            pointer,
-            bytes,
-        );
-    }
-
-    fn process_reader_bytes_with(
-        parser: &mut TerminalParser,
-        suppress_scroll_snap: &mut bool,
-        session: &mut TerminalSession,
-        screen: &mut Screen,
-        pointer: &mut PointerInteraction,
-        bytes: &[u8],
-    ) {
         // Resize does not provide an output-stream boundary. Keep partial sequences
         // and service protocol queries under the current (pre-resize) geometry.
-        Self::feed_parser_bytes_snapped(parser, suppress_scroll_snap, screen, pointer, bytes);
+        self.feed_pty_output_snapped(screen, pointer, bytes);
         let replies = screen.drain_replies();
         if !replies.is_empty()
-            && let Err(error) = session.write_pty(&replies)
+            && let Err(error) = self.session.write_pty(&replies)
         {
             tracing::warn!(error = %error, "failed to write terminal replies to pty");
         }

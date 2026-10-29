@@ -1,4 +1,6 @@
 use super::*;
+#[path = "incremental.rs"]
+mod incremental;
 
 #[test]
 #[ignore = "gpu: run the matching explicit test recipe"]
@@ -57,11 +59,12 @@ fn gpu_color_upload_is_untinted_linear_premultiplied_and_cell_bounded() {
             [0.0, 1.0, 0.0, 1.0],
         )
         .unwrap();
-        let mut color = ColorGpu::new(gpu);
+        let color = ColorGpu::new(gpu);
         color.upload_full(gpu, &atlas);
-        color.upload_vertices(gpu, &quad);
+        let mut quads = VertexBuffer::new(&device);
+        quads.write(gpu, &quad);
         let pixels = crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| {
-            color.draw(pass)
+            quads.draw(pass, &color.pipeline, Some(&color.bind_group))
         });
         let sample = &pixels[(40 * 256 + 30) * 4..(40 * 256 + 30) * 4 + 4];
         assert!(

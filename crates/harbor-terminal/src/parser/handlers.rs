@@ -1,10 +1,9 @@
 //! Screen-backed `VtHandler` adapter — all current execute/dispatch behavior.
 
+use super::dcs::DcsCollector;
 use super::device_attributes::{PRIMARY_REPLY, SECONDARY_REPLY, accepts_default_query};
 use super::mode_query;
 use super::osc::{self, Action};
-use super::status_strings::DecrqssRequest;
-use super::xtgettcap::XtgettcapRequest;
 use super::{osc_color, osc_palette, osc_title, osc7, osc8, osc133};
 use crate::model::{CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
@@ -15,8 +14,7 @@ use harbor_parser::{Params, VtHandler};
 /// Applies recognized VT actions to a `Screen`.
 pub struct ScreenHandler<'a> {
     pub screen: &'a mut Screen,
-    pub decrqss: &'a mut DecrqssRequest,
-    pub xtgettcap: &'a mut XtgettcapRequest,
+    pub dcs: &'a mut DcsCollector,
     pub output_events: &'a mut Vec<TerminalOutputEvent>,
     pub clipboard_delivery: crate::ClipboardDelivery,
 }
@@ -385,23 +383,19 @@ impl VtHandler for ScreenHandler<'_> {
     }
 
     fn dcs_hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {
-        self.decrqss.hook(params, intermediates, action);
-        self.xtgettcap.hook(params, intermediates, action);
+        self.dcs.hook(params, intermediates, action);
     }
 
     fn dcs_put(&mut self, byte: u8) {
-        self.decrqss.put(byte);
-        self.xtgettcap.put(byte);
+        self.dcs.put(byte);
     }
 
     fn dcs_unhook(&mut self, terminated: bool) {
-        self.decrqss.finish(self.screen, terminated);
-        self.xtgettcap.finish(self.screen, terminated);
+        self.dcs.finish(self.screen, terminated);
     }
 
     fn start_string(&mut self, kind: u8) {
-        self.decrqss.cancel();
-        self.xtgettcap.cancel();
+        self.dcs.cancel();
         tracing::trace!("start string family 0x{kind:02x}");
     }
 }

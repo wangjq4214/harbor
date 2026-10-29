@@ -1179,3 +1179,90 @@ fn should_keep_snapshot_non_draining_while_drain_and_snapshot_is_fresh() {
     assert_eq!(cached.cells[0].ch, ' ');
     assert_eq!(fresh.cells[0].ch, 'x');
 }
+
+#[test]
+fn trailing_blank_drag_survives_row_movement_and_a_new_commit() {
+    let mut terminal = Terminal::new_headless(3, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abc");
+    let event = |phase, x, y| {
+        TerminalEvent::Pointer(TerminalPointerEvent::new(
+            (x, y),
+            phase,
+            TerminalPointerButton::Left,
+            91,
+        ))
+    };
+    terminal
+        .handle_event(event(TerminalPointerPhase::Down, 61.0, 1.0))
+        .unwrap();
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 51.0, 1.0))
+        .unwrap();
+
+    terminal.put_bytes(b"\x1b[1;1H\x1b[L");
+    assert_eq!(
+        terminal.pointer.bounds(),
+        Some(crate::SelectionBounds {
+            start_row: 1,
+            start_col: 5,
+            end_row: 1,
+            end_col: 6,
+        })
+    );
+
+    terminal
+        .handle_event(event(TerminalPointerPhase::Move, 71.0, 21.0))
+        .unwrap();
+    let expected = Some(crate::SelectionBounds {
+        start_row: 1,
+        start_col: 6,
+        end_row: 1,
+        end_col: 7,
+    });
+    assert_eq!(terminal.pointer.bounds(), expected);
+    terminal.put_bytes(b"\x1b[3;1HX");
+    assert_eq!(terminal.pointer.bounds(), expected);
+    terminal
+        .handle_event(event(TerminalPointerPhase::Up, 71.0, 21.0))
+        .unwrap();
+    assert_eq!(terminal.pointer.bounds(), expected);
+}
+
+#[test]
+fn unchanged_selection_reconciliation_still_invalidates_update_provenance() {
+    let mut terminal = Terminal::new_headless(1, 10);
+    terminal
+        .pointer
+        .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
+    terminal.put_str("abcdefgh");
+    for (phase, x) in [
+        (TerminalPointerPhase::Down, 11.0),
+        (TerminalPointerPhase::Move, 41.0),
+        (TerminalPointerPhase::Up, 41.0),
+    ] {
+        terminal
+            .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+                (x, 1.0),
+                phase,
+                TerminalPointerButton::Left,
+                92,
+            )))
+            .unwrap();
+    }
+    let now = std::time::Instant::now();
+    let update = terminal.read_update(now);
+    let screen_revision = terminal.screen.mutation_revisions();
+    let projection = terminal.screen.content_projection().unwrap();
+
+    assert!(!terminal.pointer.reconcile_selection(
+        &crate::content_anchor::AnchorMutationBatch::default(),
+        &projection,
+    ));
+    assert_eq!(terminal.pointer.bounds(), update.selection);
+    assert_eq!(terminal.screen.mutation_revisions(), screen_revision);
+    assert!(!terminal.acknowledge_update(&update));
+    assert!(terminal.acknowledge_update(&terminal.read_update(now)));
+}

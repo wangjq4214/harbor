@@ -829,3 +829,203 @@ fn conpty_live_and_saved_cursor_floors_survive_styled_tail_clipping() {
     assert_eq!(projected.position.col, 3);
     assert!(!projected.pending_wrap);
 }
+
+#[test]
+fn empty_line_anchors_distinguish_evicted_and_retained_rows() {
+    let normal = NormalBuf::new_for_test(3, 4, 0);
+    let prepared = PreparedPrimaryResize::prepare_geometry(&normal, 1, 2).unwrap();
+
+    assert_eq!(prepared.dropped_rows(), 2);
+    assert_eq!(prepared.normal().history_start(), 3);
+    for generation in 0..3 {
+        for affinity in [Affinity::Before, Affinity::After] {
+            let anchor = prepared
+                .source_anchor(GenPos::new(generation, 3), affinity)
+                .unwrap();
+            let expected = (generation == 2).then_some(GenPos::new(3, 1));
+            assert_eq!(prepared.project_selection(anchor), expected);
+            assert_eq!(
+                prepared.project_cursor(anchor),
+                expected.map(|position| ProjectedInsertion {
+                    position,
+                    pending_wrap: false,
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn conpty_empty_live_boundary_survives_history_eviction() {
+    let mut normal = NormalBuf::new_for_test(3, 4, 1);
+    for (col, ch) in "abcd".chars().enumerate() {
+        write(
+            &mut normal,
+            0,
+            col,
+            Cell {
+                ch,
+                ..Cell::default()
+            },
+        );
+        write(&mut normal, 1, col, Cell::default());
+    }
+    normal.continue_logical_line(1, normal.live_row_metadata(0), 4);
+    write(
+        &mut normal,
+        2,
+        0,
+        Cell {
+            ch: '>',
+            ..Cell::default()
+        },
+    );
+    normal.scroll_up_full_screen(1, Cell::default());
+
+    let prepared = prepare_conpty(&normal, 2, &[]);
+    assert_eq!(prepared.dropped_rows(), 1);
+    assert_eq!(prepared.normal().history_start(), 4);
+    assert_eq!(prepared.normal().scroll_count(), 1);
+
+    let rows: Vec<_> = prepared.normal().retained_rows().collect();
+    assert_eq!(rows.len(), 4);
+    assert!(rows[0].metadata.head_truncated);
+    assert_eq!((rows[0].cells[0].ch, rows[0].cells[1].ch), ('c', 'd'));
+    assert_eq!(rows[1].metadata.meaningful_extent, 0);
+    assert!(rows[1].metadata.soft_wrapped);
+    assert_eq!(rows[2].cells[0].ch, '>');
+
+    let evicted = prepared
+        .source_anchor(GenPos::new(0, 0), Affinity::Before)
+        .unwrap();
+    let retained = prepared
+        .source_anchor(GenPos::new(0, 2), Affinity::Before)
+        .unwrap();
+    let live_boundary = prepared
+        .source_anchor(GenPos::new(1, 3), Affinity::After)
+        .unwrap();
+    assert_eq!(prepared.project_selection(evicted), None);
+    assert_eq!(
+        prepared.project_selection(retained),
+        Some(GenPos::new(4, 0))
+    );
+    assert_eq!(
+        prepared.project_selection(live_boundary),
+        Some(GenPos::new(5, 1))
+    );
+}
+
+#[test]
+fn cursor_floor_preserves_each_viewports_distinct_tail_policy() {
+    for styled in [false, true] {
+        let mut normal = NormalBuf::new_for_test(3, 8, 4);
+        write(
+            &mut normal,
+            0,
+            0,
+            Cell {
+                ch: 'x',
+                ..Cell::default()
+            },
+        );
+        for col in 1..8 {
+            write(
+                &mut normal,
+                0,
+                col,
+                if styled {
+                    overlined_blank()
+                } else {
+                    Cell::default()
+                },
+            );
+        }
+        write(
+            &mut normal,
+            1,
+            0,
+            Cell {
+                ch: '>',
+                ..Cell::default()
+            },
+        );
+        let projection = ContentProjection::build(&normal).unwrap();
+        let saved = projection.cursor_anchor(GenPos::new(0, 5), false).unwrap();
+        let cursors = [
+            CursorRetention::Position(GenPos::new(0, 2)),
+            CursorRetention::Anchor(saved),
+        ];
+        for viewport in [ReflowViewport::PullHistory, ReflowViewport::PreserveLiveTop] {
+            for retain_cursors in [false, true] {
+                let retained_cursors = if retain_cursors { &cursors[..] } else { &[] };
+                let prepared = PreparedPrimaryResize::prepare_geometry_with_viewport(
+                    &normal,
+                    3,
+                    3,
+                    None,
+                    viewport,
+                    retained_cursors,
+                )
+                .unwrap();
+                let marker_row = prepared
+                    .rows()
+                    .iter()
+                    .position(|row| row.cells[0].ch == '>')
+                    .unwrap();
+                let expected = match (styled, viewport, retain_cursors) {
+                    (true, ReflowViewport::PullHistory, _) => 3,
+                    (_, _, true) => 2,
+                    _ => 1,
+                };
+                assert_eq!(
+                    marker_row, expected,
+                    "{styled:?} {viewport:?} {retain_cursors:?}"
+                );
+                if retain_cursors {
+                    assert_eq!(
+                        prepared.project_cursor(saved),
+                        Some(ProjectedInsertion {
+                            position: GenPos::new(4, 2),
+                            pending_wrap: false,
+                        })
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn eviction_checks_overflow_and_marks_empty_row_ranges_unretained() {
+    let normal = NormalBuf::new_for_test(1, 2, 0);
+    let mut prepared = PreparedPrimaryResize::prepare_geometry(&normal, 1, 2).unwrap();
+    let mut rows = vec![
+        ReflowedRow::blank(
+            2,
+            normal.live_row_metadata(0).logical_line_id,
+            0,
+            0,
+            false,
+            false,
+        )
+        .unwrap(),
+    ];
+    let line = prepared.lines.values_mut().next().unwrap();
+    line.first_row = usize::MAX;
+    line.row_count = 1;
+    assert_eq!(
+        evict_history_overflow(&mut rows, &mut prepared.lines, 1, normal.history_limits()),
+        Err(PreparationError::ArithmeticOverflow)
+    );
+
+    prepared.lines.values_mut().next().unwrap().row_count = 0;
+    assert_eq!(
+        evict_history_overflow(&mut rows, &mut prepared.lines, 1, normal.history_limits()),
+        Ok(0)
+    );
+    let anchor = prepared
+        .source_anchor(GenPos::new(0, 0), Affinity::Before)
+        .unwrap();
+    assert_eq!(prepared.project_selection(anchor), None);
+    assert_eq!(prepared.project_cursor(anchor), None);
+}

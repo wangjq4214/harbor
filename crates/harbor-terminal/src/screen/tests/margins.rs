@@ -527,3 +527,173 @@ fn vertical_operations_scroll_only_within_horizontal_margins() {
     assert_eq!(screen.normal.cell(0, 1).ch, ' ');
     assert_eq!(screen.normal.cell(1, 1).ch, 'A');
 }
+
+#[test]
+fn margin_shifts_reject_each_wide_crossing_and_keep_damage_and_wrap_effects() {
+    // The glyph at either boundary must reject the entire shift, even when the
+    // cursor is elsewhere. One-column margins exercise both checks on one cell.
+    for (left, right, cursor, base) in [(2, 5, 3, 1), (2, 5, 3, 5), (3, 3, 3, 2), (3, 3, 3, 3)] {
+        for insert in [true, false] {
+            let mut screen = Screen::new(2, 8);
+            for ch in "abcdefgh".chars() {
+                screen.write_char(ch);
+            }
+            screen.cursor.modes.pending_wrap = false;
+            screen.cursor.cursor.x = base;
+            screen.write_char('中');
+            screen.cursor.margins.enabled = true;
+            screen.cursor.margins.left = left;
+            screen.cursor.margins.right = right;
+            screen.cursor.cursor.x = cursor;
+            screen.cursor.modes.pending_wrap = true;
+            screen.cursor.last_clamped_write = true;
+            screen.set_external_anchor_interest(true);
+            screen.discard_anchor_mutations();
+            assert!(screen.capture_edit_anchor(1, None).is_some());
+            let before = screen_cells(&screen);
+            screen.clear_dirty();
+
+            if insert {
+                screen.insert_chars(1);
+            } else {
+                screen.delete_chars(1);
+            }
+
+            let context = format!("insert={insert}, margins={left}..={right}, base={base}");
+            assert_eq!(screen_cells(&screen), before, "{context}");
+            assert_eq!(screen.cursor.cursor.x, cursor, "{context}");
+            assert!(!screen.cursor.modes.pending_wrap, "{context}");
+            assert!(!screen.cursor.last_clamped_write, "{context}");
+            assert_eq!(screen.anchor_mutations.iter().count(), 0, "{context}");
+            let damage: Vec<_> = screen
+                .dirty_ranges()
+                .iter()
+                .map(|range| (range.row, range.start_col, range.end_col))
+                .collect();
+            assert_eq!(damage, vec![(0, cursor - 1, right + 1)], "{context}");
+            assert_wide_cell_invariant(&screen);
+        }
+    }
+}
+
+#[test]
+fn margin_shifts_allow_interior_wide_pairs_and_preserve_exterior_cells() {
+    for insert in [true, false] {
+        let mut screen = Screen::new(2, 9);
+        for ch in "abcdefghi".chars() {
+            screen.write_char(ch);
+        }
+        screen.cursor.modes.pending_wrap = false;
+        screen.cursor.cursor.x = 3;
+        screen.write_char('中');
+        screen.cursor.margins.enabled = true;
+        screen.cursor.margins.left = 2;
+        screen.cursor.margins.right = 6;
+        screen.cursor.cursor.x = 2;
+        screen.cursor.modes.pending_wrap = true;
+        screen.cursor.last_clamped_write = true;
+        let before = screen_cells(&screen);
+        let mut expected = before.clone();
+        if insert {
+            expected[2] = Cell::default();
+            expected[3..7].clone_from_slice(&before[2..6]);
+        } else {
+            expected[2..6].clone_from_slice(&before[3..7]);
+            expected[6] = Cell::default();
+        }
+        screen.clear_dirty();
+
+        if insert {
+            screen.insert_chars(1);
+        } else {
+            screen.delete_chars(1);
+        }
+
+        assert_eq!(screen_cells(&screen), expected, "insert={insert}");
+        assert!(!screen.cursor.modes.pending_wrap, "insert={insert}");
+        assert!(!screen.cursor.last_clamped_write, "insert={insert}");
+        let damage: Vec<_> = screen
+            .dirty_ranges()
+            .iter()
+            .map(|range| (range.row, range.start_col, range.end_col))
+            .collect();
+        assert_eq!(damage, vec![(0, 1, 7)], "insert={insert}");
+        assert_wide_cell_invariant(&screen);
+    }
+}
+
+#[test]
+fn margin_shifts_allow_one_column_without_a_crossing() {
+    for insert in [true, false] {
+        let mut screen = Screen::new(1, 7);
+        for ch in "abcdefg".chars() {
+            screen.write_char(ch);
+        }
+        screen.cursor.margins.enabled = true;
+        screen.cursor.margins.left = 3;
+        screen.cursor.margins.right = 3;
+        screen.cursor.cursor.x = 3;
+        screen.cursor.modes.pending_wrap = true;
+        screen.cursor.last_clamped_write = true;
+        let mut expected = screen_cells(&screen);
+        expected[3] = Cell::default();
+        screen.clear_dirty();
+
+        if insert {
+            screen.insert_chars(0);
+        } else {
+            screen.delete_chars(0);
+        }
+
+        assert_eq!(screen_cells(&screen), expected, "insert={insert}");
+        assert!(!screen.cursor.modes.pending_wrap, "insert={insert}");
+        assert!(!screen.cursor.last_clamped_write, "insert={insert}");
+        let damage: Vec<_> = screen
+            .dirty_ranges()
+            .iter()
+            .map(|range| (range.row, range.start_col, range.end_col))
+            .collect();
+        assert_eq!(damage, vec![(0, 2, 4)], "insert={insert}");
+    }
+}
+
+#[test]
+fn margin_shifts_reject_an_outside_cursor_with_original_damage_and_wrap_effects() {
+    for (cursor, damage) in [(1, vec![(0, 0, 6)]), (6, vec![(0, 5, 6)]), (7, vec![])] {
+        for insert in [true, false] {
+            let mut screen = Screen::new(1, 8);
+            for ch in "abcdefgh".chars() {
+                screen.write_char(ch);
+            }
+            screen.cursor.margins.enabled = true;
+            screen.cursor.margins.left = 2;
+            screen.cursor.margins.right = 5;
+            screen.cursor.cursor.x = cursor;
+            screen.cursor.modes.pending_wrap = true;
+            screen.cursor.last_clamped_write = true;
+            let before = screen_cells(&screen);
+            screen.clear_dirty();
+
+            if insert {
+                screen.insert_chars(1);
+            } else {
+                screen.delete_chars(1);
+            }
+
+            assert_eq!(
+                screen_cells(&screen),
+                before,
+                "insert={insert}, cursor={cursor}"
+            );
+            assert_eq!(screen.cursor.cursor.x, cursor);
+            assert!(!screen.cursor.modes.pending_wrap);
+            assert!(!screen.cursor.last_clamped_write);
+            let actual_damage: Vec<_> = screen
+                .dirty_ranges()
+                .iter()
+                .map(|range| (range.row, range.start_col, range.end_col))
+                .collect();
+            assert_eq!(actual_damage, damage, "insert={insert}, cursor={cursor}");
+        }
+    }
+}

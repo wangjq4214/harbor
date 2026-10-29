@@ -637,6 +637,7 @@ fn cancellation_after_read_and_during_scan_has_finite_work_and_releases_resource
     let result = job.into_results();
     assert_eq!(result.status(), SearchStatus::Cancelled);
     assert!(result.ranges().is_empty());
+    assert_eq!(result.ranges.capacity(), 0);
     assert!(gate.accept(&t, result).is_err());
     // Cross-thread ownership needs no Terminal/Screen access in the worker token.
     let mut job = gate.start(&t, "a", retained(2), tiny()).unwrap();

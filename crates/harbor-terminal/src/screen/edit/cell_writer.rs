@@ -91,10 +91,13 @@ impl CellWriter {
         if !base.can_extend_text(ch) {
             return None;
         }
-        (base.grid_width() == 1
+        Self::promotes_width(base, ch).then_some((row, col))
+    }
+
+    fn promotes_width(base: &crate::Cell, ch: char) -> bool {
+        base.grid_width() == 1
             && ((ch == '\u{fe0f}' && Self::is_emoji(base.ch))
-                || (base.suffix.ends_with('\u{200d}') && Self::is_emoji(ch))))
-        .then_some((row, col))
+                || (base.suffix.ends_with('\u{200d}') && Self::is_emoji(ch)))
     }
 
     /// The lead cell a mark or sequence member can extend at the insertion boundary.
@@ -128,8 +131,7 @@ impl CellWriter {
                 normal.discard_text_extension(row, base_col, ch);
                 return false;
             }
-            let promote = Self::promotion_base(normal, cursor, ch).is_some();
-            if promote {
+            if Self::promotes_width(normal.cell(row, base_col), ch) {
                 if !Self::promote_unit(pen_state, normal, cursor, row, base_col) {
                     // Preserve source text even when DECAWM is disabled at the margin.
                     normal.mutate_cell_semantics(row, base_col, |cell| cell.suffix.push(ch));
@@ -222,14 +224,11 @@ impl CellWriter {
             Self::commit_cell(pen_state, normal, cursor, cell.ch, 2, (left, right));
             cell.width = 2;
             normal.write_meaningful_cell(cursor.cursor.y, cursor.cursor.x, cell.clone());
-            let mut trailing = cell;
-            trailing.ch = ' ';
-            trailing.suffix.clear();
-            trailing.text_overflow = Default::default();
-            trailing.width = 0;
-            trailing.isolated_mark = false;
-            trailing.wide_continuation = true;
-            normal.write_meaningful_cell(cursor.cursor.y, cursor.cursor.x + 1, trailing);
+            normal.write_meaningful_cell(
+                cursor.cursor.y,
+                cursor.cursor.x + 1,
+                crate::Cell::wide_continuation_of(&cell),
+            );
             Self::advance_cursor(cursor, 2, right);
         } else {
             if CellOps::wide_range(normal, row, col + 1)

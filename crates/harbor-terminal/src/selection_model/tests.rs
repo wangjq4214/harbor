@@ -681,3 +681,257 @@ fn test_selection_model_states() {
     assert!(model.has_selection());
     assert!(!model.is_range_empty());
 }
+
+fn anchor_test_screen() -> Screen {
+    let mut screen = Screen::new(2, 10);
+    for ch in "abcdefgh".chars() {
+        screen.write_char(ch);
+    }
+    screen
+}
+
+#[test]
+fn uncommitted_press_and_drag_discard_previous_anchors_even_for_a_noop_drag() {
+    let screen = anchor_test_screen();
+    let snapshot = screen.terminal_snapshot();
+    let projection = screen.content_projection().unwrap();
+    let mutations = AnchorMutationBatch::default();
+    let now = Instant::now();
+
+    for action in 0..3 {
+        let mut model = SelectionModel::new();
+        model.press((0, 1), now, &snapshot);
+        assert!(model.drag_to((0, 4), &snapshot));
+        assert!(model.commit_anchors(&projection));
+
+        match action {
+            0 => {
+                model.press((0, 7), now, &snapshot);
+            }
+            1 => assert!(model.drag_to((0, 5), &snapshot)),
+            _ => assert!(!model.drag_to((0, 4), &snapshot)),
+        }
+        let uncommitted_bounds = model.bounds();
+        let (prepared, invalidated) = model.prepared_against(|_| {
+            panic!("an uncommitted range must not use the old content anchors")
+        });
+        assert!(invalidated);
+        assert!(!prepared.has_selection());
+        assert!(!prepared.is_dragging());
+        assert_eq!(model.bounds(), uncommitted_bounds);
+        assert!(model.is_dragging());
+
+        assert!(model.reconcile_anchors(&mutations, &projection));
+        assert!(!model.has_selection());
+        assert!(!model.is_dragging());
+        assert!(!model.reconcile_anchors(&mutations, &projection));
+    }
+}
+
+#[test]
+fn committed_endpoints_retain_affinity_for_both_drag_directions_and_a_click() {
+    let screen = anchor_test_screen();
+    let snapshot = screen.terminal_snapshot();
+    let projection = screen.content_projection().unwrap();
+    let now = Instant::now();
+    let cases = [
+        (
+            GenPos::new(0, 1),
+            GenPos::new(0, 4),
+            Affinity::Before,
+            Affinity::After,
+        ),
+        (
+            GenPos::new(0, 4),
+            GenPos::new(0, 1),
+            Affinity::After,
+            Affinity::Before,
+        ),
+        (
+            GenPos::new(0, 3),
+            GenPos::new(0, 3),
+            Affinity::Before,
+            Affinity::Before,
+        ),
+    ];
+
+    for (start, end, start_affinity, end_affinity) in cases {
+        let mut model = SelectionModel::new();
+        model.press(start, now, &snapshot);
+        model.drag_to(end, &snapshot);
+        assert!(model.commit_anchors(&projection));
+        let observed = std::cell::RefCell::new(Vec::new());
+        let (prepared, invalidated) = model.prepared_against(|anchor| {
+            observed.borrow_mut().push(anchor);
+            Some((projection.resolve_selection(anchor).unwrap(), anchor))
+        });
+
+        assert!(!invalidated);
+        assert_eq!(prepared.range, model.range);
+        assert_eq!(
+            observed.into_inner(),
+            vec![
+                projection.to_anchor(start, start_affinity).unwrap(),
+                projection.to_anchor(end, end_affinity).unwrap(),
+            ]
+        );
+    }
+}
+
+#[test]
+fn resize_preparation_refreshes_both_endpoints_and_failure_leaves_original_intact() {
+    let screen = anchor_test_screen();
+    let snapshot = screen.terminal_snapshot();
+    let projection = screen.content_projection().unwrap();
+    let mut model = SelectionModel::new();
+    model.press((0, 1), Instant::now(), &snapshot);
+    model.drag_to((0, 4), &snapshot);
+    assert!(model.commit_anchors(&projection));
+    let original = model.range;
+    let mapped = [GenPos::new(0, 5), GenPos::new(0, 6)];
+    let calls = std::cell::Cell::new(0);
+    let (mut prepared, invalidated) = model.prepared_against(|anchor| {
+        let index = calls.get();
+        calls.set(index + 1);
+        let position = mapped[index];
+        Some((
+            position,
+            projection.to_anchor(position, anchor.affinity).unwrap(),
+        ))
+    });
+    assert!(!invalidated);
+    assert_eq!(calls.get(), 2);
+    assert_eq!(
+        prepared.range,
+        Some(SelectionRange::new(mapped[0], mapped[1]))
+    );
+    assert_eq!(model.range, original);
+    assert!(!prepared.reconcile_anchors(&AnchorMutationBatch::default(), &projection));
+    assert_eq!(
+        prepared.range,
+        Some(SelectionRange::new(mapped[0], mapped[1]))
+    );
+
+    for failed_endpoint in 0..2 {
+        let calls = std::cell::Cell::new(0);
+        let (prepared, invalidated) = model.prepared_against(|anchor| {
+            let index = calls.get();
+            calls.set(index + 1);
+            (index != failed_endpoint)
+                .then(|| (projection.resolve_selection(anchor).unwrap(), anchor))
+        });
+        assert!(invalidated);
+        assert_eq!(calls.get(), failed_endpoint + 1);
+        assert!(!prepared.has_selection());
+        assert!(!prepared.is_dragging());
+        assert_eq!(model.range, original);
+    }
+    assert!(!model.reconcile_anchors(&AnchorMutationBatch::default(), &projection));
+    assert_eq!(model.range, original);
+}
+
+#[test]
+fn losing_either_logical_line_invalidates_the_whole_drag() {
+    use crate::content_anchor::AnchorMutation;
+
+    let screen = anchor_test_screen();
+    let snapshot = screen.terminal_snapshot();
+    let projection = screen.content_projection().unwrap();
+    let positions = [GenPos::new(0, 1), GenPos::new(1, 4)];
+    let line_ids =
+        positions.map(|pos| projection.to_anchor(pos, Affinity::Before).unwrap().line_id);
+    assert_ne!(line_ids[0], line_ids[1]);
+
+    for line_id in line_ids {
+        let mut model = SelectionModel::new();
+        model.press(positions[0], Instant::now(), &snapshot);
+        model.drag_to(positions[1], &snapshot);
+        assert!(model.commit_anchors(&projection));
+        let mut mutations = AnchorMutationBatch::default();
+        mutations.push(AnchorMutation::InvalidateLine(line_id));
+        assert!(model.reconcile_anchors(&mutations, &projection));
+        assert!(!model.has_selection());
+        assert!(!model.is_dragging());
+        assert_eq!(model.release(), SelectionOutcome::None);
+    }
+}
+
+#[test]
+fn anchored_release_and_failed_commit_preserve_clear_semantics() {
+    let screen = anchor_test_screen();
+    let snapshot = screen.terminal_snapshot();
+    let projection = screen.content_projection().unwrap();
+    let mutations = AnchorMutationBatch::default();
+    let now = Instant::now();
+    let mut model = SelectionModel::new();
+
+    assert!(!model.is_range_empty());
+    assert_eq!(model.release(), SelectionOutcome::None);
+    model.press((0, 1), now, &snapshot);
+    assert!(model.commit_anchors(&projection));
+    assert!(model.is_range_empty());
+    assert_eq!(model.release(), SelectionOutcome::DragEnded);
+    assert!(!model.has_selection());
+    assert!(!model.reconcile_anchors(&mutations, &projection));
+
+    model.press((0, 2), now, &snapshot);
+    model.drag_to((0, 4), &snapshot);
+    assert!(model.commit_anchors(&projection));
+    assert_eq!(model.release(), SelectionOutcome::DragEnded);
+    assert!(model.has_selection());
+    assert!(!model.reconcile_anchors(&mutations, &projection));
+    assert!(model.on_key_press());
+    assert!(!model.has_selection());
+    assert!(!model.reconcile_anchors(&mutations, &projection));
+
+    for invalid_start in [true, false] {
+        model.press(if invalid_start { (99, 1) } else { (0, 1) }, now, &snapshot);
+        if !invalid_start {
+            model.drag_to((99, 1), &snapshot);
+        }
+        assert!(!model.commit_anchors(&projection));
+        assert!(!model.has_selection());
+        assert!(!model.is_dragging());
+    }
+}
+
+#[test]
+fn reconciliation_preserves_trailing_blanks_and_reports_only_physical_changes() {
+    use crate::content_anchor::AnchorMutation;
+
+    let mut screen = Screen::new(2, 10);
+    for ch in "abc".chars() {
+        screen.write_char(ch);
+    }
+    let snapshot = screen.terminal_snapshot();
+    let projection = screen.content_projection().unwrap();
+    let line_id = projection
+        .to_anchor(GenPos::new(0, 0), Affinity::Before)
+        .unwrap()
+        .line_id;
+    let other_line_id = projection
+        .to_anchor(GenPos::new(1, 0), Affinity::Before)
+        .unwrap()
+        .line_id;
+    assert_ne!(line_id, other_line_id);
+
+    let mut blanks = SelectionModel::new();
+    blanks.press((0, 6), Instant::now(), &snapshot);
+    blanks.drag_to((0, 5), &snapshot);
+    assert!(blanks.commit_anchors(&projection));
+    let original = blanks.range;
+    let mut unrelated = AnchorMutationBatch::default();
+    unrelated.push(AnchorMutation::ReprojectLine(other_line_id));
+    assert!(!blanks.reconcile_anchors(&unrelated, &projection));
+    assert_eq!(blanks.range, original);
+
+    let mut letters = SelectionModel::new();
+    letters.press((0, 0), Instant::now(), &snapshot);
+    letters.drag_to((0, 2), &snapshot);
+    assert!(letters.commit_anchors(&projection));
+    let original = letters.range;
+    let mut same_line = AnchorMutationBatch::default();
+    same_line.push(AnchorMutation::ReprojectLine(line_id));
+    assert!(!letters.reconcile_anchors(&same_line, &projection));
+    assert_eq!(letters.range, original);
+}
