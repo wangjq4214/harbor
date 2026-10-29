@@ -257,6 +257,7 @@ pub struct Text {
     gpu_atlas: GpuGlyphAtlas,
     vertex_buffer: wgpu::Buffer,
     overlay: VertexBuffer<TexturedVertex>,
+    staging: Vec<TexturedVertex>,
     dirty: bool,
     rows: usize,
     cols: usize,
@@ -357,6 +358,7 @@ impl Text {
             gpu_atlas,
             overlay: VertexBuffer::new(gpu.device()),
             vertex_buffer,
+            staging: Vec::new(),
             dirty: true,
             rows,
             cols,
@@ -377,8 +379,10 @@ impl Text {
             true,
             true,
         );
-        let verts = layer.build_all_vertices(snap, viewport);
+        let mut verts = std::mem::take(&mut layer.staging);
+        layer.append_all_vertices(snap, viewport, &mut verts);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+        layer.staging = verts;
         layer.dirty = false;
 
         Ok(layer)
@@ -424,31 +428,27 @@ impl Text {
         chars
     }
 
-    fn build_row_vertices(
-        &self,
-        row: usize,
-        snap: &TerminalSnapshot,
-        viewport: &RenderViewport,
-    ) -> Vec<TexturedVertex> {
-        self.build_range_vertices(
-            &DirtyRange {
-                row,
-                start_col: 0,
-                end_col: snap.cols,
-            },
-            snap,
-            viewport,
-        )
-    }
-
+    #[cfg(test)]
     fn build_range_vertices(
         &self,
         range: &DirtyRange,
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
     ) -> Vec<TexturedVertex> {
-        let (surf_w, surf_h) = viewport.surface_dimensions();
         let mut verts = Vec::with_capacity((range.end_col - range.start_col) * 6);
+        self.append_range_vertices(range, snap, viewport, &mut verts);
+        verts
+    }
+
+    fn append_range_vertices(
+        &self,
+        range: &DirtyRange,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+        verts: &mut Vec<TexturedVertex>,
+    ) {
+        let (surf_w, surf_h) = viewport.surface_dimensions();
+        verts.reserve((range.end_col - range.start_col) * 6);
         for col in range.start_col..range.end_col {
             let cell = snap.cell(range.row, col);
             let idx = range.row * snap.cols + col;
@@ -581,18 +581,37 @@ impl Text {
                 6,
             ));
         }
-        verts
     }
 
+    fn append_all_vertices(
+        &self,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+        verts: &mut Vec<TexturedVertex>,
+    ) {
+        verts.reserve(snap.rows * snap.cols * 6);
+        for row in 0..snap.rows {
+            self.append_range_vertices(
+                &DirtyRange {
+                    row,
+                    start_col: 0,
+                    end_col: snap.cols,
+                },
+                snap,
+                viewport,
+                verts,
+            );
+        }
+    }
+
+    #[cfg(test)]
     fn build_all_vertices(
         &self,
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
     ) -> Vec<TexturedVertex> {
         let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
-        for row in 0..snap.rows {
-            verts.extend(self.build_row_vertices(row, snap, viewport));
-        }
+        self.append_all_vertices(snap, viewport, &mut verts);
         verts
     }
 
@@ -799,11 +818,13 @@ impl Text {
             return;
         }
 
+        let mut verts = std::mem::take(&mut self.staging);
+        verts.clear();
         if resized || plan.mode == UploadMode::Full {
             if !resized {
                 tracing::trace!("rebuilding text draw batch (full)");
             }
-            let verts = self.build_all_vertices(snap, viewport);
+            self.append_all_vertices(snap, viewport, &mut verts);
             if resized {
                 debug_assert_eq!(plan.mode, UploadMode::Full);
             }
@@ -819,24 +840,26 @@ impl Text {
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
             for range in dirty_ranges {
-                let range_verts = self.build_range_vertices(range, snap, viewport);
+                verts.clear();
+                self.append_range_vertices(range, snap, viewport, &mut verts);
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<TexturedVertex>();
                 gpu.write_buffer(
                     &self.vertex_buffer,
                     offset as u64,
-                    bytemuck::cast_slice(&range_verts),
+                    bytemuck::cast_slice(&verts),
                 );
                 #[cfg(test)]
                 {
                     super::observations::record_text_upload(
                         offset,
-                        std::mem::size_of_val(range_verts.as_slice()),
+                        std::mem::size_of_val(verts.as_slice()),
                     );
                 }
             }
         }
+        self.staging = verts;
         self.dirty = false;
     }
 

@@ -482,6 +482,7 @@ pub(super) struct BoxDrawing {
     viewport: Option<RenderViewport>,
     palette: Palette,
     dirty: bool,
+    staging: gpu::ColoredSlotStaging,
 }
 
 impl BoxDrawing {
@@ -499,6 +500,7 @@ impl BoxDrawing {
             viewport: None,
             palette,
             dirty: true,
+            staging: gpu::ColoredSlotStaging::default(),
         }
     }
 
@@ -549,6 +551,7 @@ impl BoxDrawing {
                 mapped_at_creation: false,
             });
             self.capacity = count;
+            self.staging.reset(count / BOX_VERTICES_PER_CELL);
         }
         if plan.mode == UploadMode::Full {
             // Write one row at a time; CPU staging is bounded by one row, not the
@@ -568,7 +571,7 @@ impl BoxDrawing {
     }
 
     fn upload_range(
-        &self,
+        &mut self,
         gpu: TerminalGpuAccess<'_>,
         snap: &TerminalSnapshot,
         view: &RenderViewport,
@@ -576,26 +579,26 @@ impl BoxDrawing {
         start: usize,
         end: usize,
     ) {
-        let mut vertices = Vec::with_capacity((end - start) * BOX_VERTICES_PER_CELL);
-        for col in start..end {
-            vertices.extend_from_slice(&cell_vertices(
-                snap.cell(row, col),
-                view,
-                &self.palette,
-                row,
-                col,
-            ));
-        }
-        if !vertices.is_empty() {
-            let offset = (row * snap.cols + start)
-                * BOX_VERTICES_PER_CELL
-                * std::mem::size_of::<ColoredVertex>();
-            debug_assert!(
-                offset as u64 + std::mem::size_of_val(vertices.as_slice()) as u64
-                    <= self.buffer.size()
-            );
-            gpu.write_buffer(&self.buffer, offset as u64, bytemuck::cast_slice(&vertices));
-        }
+        self.staging.upload(
+            gpu,
+            &self.buffer,
+            row * snap.cols + start..row * snap.cols + end,
+            |index| {
+                let cell = snap.cell(row, index % snap.cols);
+                is_box_drawing(cell.ch)
+                    && !cell.wide_continuation
+                    && !cell.attrs.contains(CellAttrs::CONCEAL)
+            },
+            |index| {
+                cell_vertices(
+                    snap.cell(row, index % snap.cols),
+                    view,
+                    &self.palette,
+                    row,
+                    index % snap.cols,
+                )
+            },
+        );
     }
 
     pub(super) fn draw(&self, pass: &mut wgpu::RenderPass) {

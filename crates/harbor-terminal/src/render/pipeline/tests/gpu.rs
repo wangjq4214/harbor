@@ -218,12 +218,16 @@ fn gpu_snapped_output_uploads_follow_engine_damage() {
                     * std::mem::size_of::<ColoredVertex>()
                     + 12 * std::mem::size_of::<ColoredVertex>(),
             ];
-            for (actual, per_cell) in actual.into_iter().zip(cell_bytes) {
+            for (layer, (actual, per_cell)) in actual.into_iter().zip(cell_bytes).enumerate() {
                 let plan = UploadPolicy::default().decide(rows, cols, per_cell, &ranges, false);
-                let expected = match plan.mode {
-                    UploadMode::None => 0,
-                    UploadMode::Incremental => plan.dirty_bytes,
-                    UploadMode::Full => plan.full_bytes,
+                let expected = if layer == 1 || layer == 3 {
+                    0 // No previous or current box/decoration geometry in this ASCII fixture.
+                } else {
+                    match plan.mode {
+                        UploadMode::None => 0,
+                        UploadMode::Incremental => plan.dirty_bytes,
+                        UploadMode::Full => plan.full_bytes,
+                    }
                 };
                 assert_eq!(actual, expected, "grid={cols}x{rows} mode={mode}");
             }
@@ -281,5 +285,169 @@ fn gpu_snapped_local_edits_match_fresh_full_projection() {
         let differences = actual.iter().zip(&expected).filter(|(a, b)| a != b).count();
         assert_eq!(differences, 0, "rendered bytes differ after {bytes:?}");
         assert!(terminal.acknowledge_update(&update));
+    }
+}
+
+/// Paired before/after payload measurement, through the real per-layer queue writes.
+#[test]
+#[ignore = "gpu: run explicitly for vertex-staging performance evidence"]
+fn gpu_vertex_staging_payloads() {
+    use crate::render::observations::buffer_write_bytes;
+    let (device, queue) = crate::test_gpu::device();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    for (rows, cols) in [(24, 80), (50, 160)] {
+        let fonts = harbor_text::load_system_fonts(&harbor_config::FontSettings {
+            family: Some("Consolas".into()),
+            size: 16.0,
+        })
+        .unwrap();
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let mut terminal = Terminal::new_headless(rows, cols);
+        for row in 1..=rows {
+            terminal.put_str(&format!("\x1b[{row};1H{}", "xy".repeat(cols / 2)));
+        }
+        let initial = terminal.read_update(Instant::now());
+        let mut renderer =
+            TerminalRenderPipeline::new(gpu, (1800, 1400), fonts, metrics, &initial).unwrap();
+        assert!(renderer.prepare(gpu, &initial, false));
+        assert!(terminal.acknowledge_update(&initial));
+        for mode in [
+            "ascii_full",
+            "ascii_edit",
+            "ascii_scroll",
+            "mixed_full",
+            "clear_full",
+            "cleared_full",
+        ] {
+            match mode {
+                "ascii_full" | "cleared_full" => terminal.invalidate_update(),
+                "ascii_edit" => terminal.process_output(b"\x1b[1;1Hy"),
+                "ascii_scroll" => terminal.process_output(b"\x1b[999;1H\r\nxy"),
+                "mixed_full" => {
+                    for row in 1..=rows {
+                        terminal.put_str(&format!(
+                            "\x1b[{row};1H\x1b[41;4:3;9;53m{}",
+                            "┼".repeat(cols)
+                        ));
+                    }
+                    terminal.put_str("\x1b[0m");
+                    terminal.invalidate_update();
+                }
+                "clear_full" => terminal.process_output(b"\x1b[0m\x1b[2J"),
+                _ => unreachable!(),
+            }
+            let update = terminal.read_update(Instant::now());
+            let ranges = update_dirty_ranges(&update);
+            let snap = &update.snapshot;
+            let viewport = renderer.viewport();
+            let tint = update.appearance.clear_rgba(update.backdrop_available);
+            let actual = [
+                buffer_write_bytes(|| {
+                    renderer
+                        .background
+                        .prepare_with_dirty(gpu, snap, &ranges, &viewport, tint)
+                }),
+                buffer_write_bytes(|| {
+                    renderer
+                        .boxes
+                        .prepare_with_dirty(gpu, snap, &ranges, &viewport)
+                }),
+                buffer_write_bytes(|| {
+                    renderer
+                        .text
+                        .prepare_with_dirty(gpu, snap, &ranges, &viewport, None)
+                }),
+                buffer_write_bytes(|| {
+                    renderer
+                        .decoration
+                        .prepare_with_dirty(gpu, snap, &ranges, &viewport)
+                }),
+            ];
+            println!(
+                "grid={cols}x{rows} mode={mode} bg_box_text_decoration_bytes={actual:?} total={}",
+                actual.iter().sum::<usize>()
+            );
+            assert!(actual.iter().sum::<usize>() <= rows * cols * 6672);
+            if matches!(
+                mode,
+                "ascii_full" | "ascii_edit" | "ascii_scroll" | "cleared_full"
+            ) {
+                assert_eq!(
+                    (actual[1], actual[3]),
+                    (0, 0),
+                    "empty slots need no writes: {mode}"
+                );
+            } else {
+                assert_eq!(actual[1], rows * cols * 3744, "{mode}");
+                assert_eq!(actual[3], rows * cols * 2592, "{mode}");
+            }
+            assert!(terminal.acknowledge_update(&update));
+            queue.submit([]);
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        }
+    }
+}
+
+#[test]
+#[ignore = "gpu: sparse slot clearing and capacity reuse pixel readback"]
+fn gpu_sparse_slots_clear_hidden_tail_after_shrink_and_regrow() {
+    use crate::render::{observations::buffer_write_bytes, text::sequence_tests::read_draw};
+    let (device, queue) = crate::test_gpu::device();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let fonts = || {
+        harbor_text::load_system_fonts(&harbor_config::FontSettings {
+            family: Some("Consolas".into()),
+            size: 16.0,
+        })
+        .unwrap()
+    };
+    let metrics = TextMetrics::from_font_metrics(fonts().font_metrics());
+    let mut terminal = Terminal::new_headless(4, 16);
+    terminal.put_str("\x1b[?1049h\x1b[4;12H\x1b[41;4:3;9;53m┼┼┼\x1b[0m");
+    let first = terminal.read_update(Instant::now());
+    let mut renderer =
+        TerminalRenderPipeline::new(gpu, (256, 128), fonts(), metrics, &first).unwrap();
+    assert!(renderer.prepare(gpu, &first, false));
+    assert!(terminal.acknowledge_update(&first));
+    // Rectangular alternate-screen resize discards the last rows. The GPU allocation
+    // retains their old nonzero slots while the current grid is smaller.
+    for (rows, cols) in [(2, 16), (4, 8), (4, 16), (5, 20), (4, 16)] {
+        terminal.resize_if_changed(crate::TerminalSize { rows, cols });
+        terminal.process_output(b"\x1b[0m\x1b[2J");
+        let update = terminal.read_update(Instant::now());
+        assert!(renderer.prepare(gpu, &update, false));
+        let mut fresh =
+            TerminalRenderPipeline::new(gpu, (256, 128), fonts(), metrics, &update).unwrap();
+        assert!(fresh.prepare(gpu, &update, false));
+        assert_eq!(
+            read_draw(&device, &queue, |p| renderer.draw(p)),
+            read_draw(&device, &queue, |p| fresh.draw(p)),
+            "old geometry after resize to {cols}x{rows}"
+        );
+        assert!(terminal.acknowledge_update(&update));
+        terminal.invalidate_update();
+        let empty = terminal.read_update(Instant::now());
+        let view = renderer.viewport();
+        renderer.boxes.invalidate_projection();
+        assert_eq!(
+            buffer_write_bytes(|| renderer.boxes.prepare_with_dirty(
+                gpu,
+                &empty.snapshot,
+                &[],
+                &view
+            )),
+            0
+        );
+        renderer.decoration.invalidate_projection();
+        assert_eq!(
+            buffer_write_bytes(|| renderer.decoration.prepare_with_dirty(
+                gpu,
+                &empty.snapshot,
+                &[],
+                &view
+            )),
+            0
+        );
+        assert!(terminal.acknowledge_update(&empty));
     }
 }
