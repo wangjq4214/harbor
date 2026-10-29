@@ -61,12 +61,12 @@ jobs:
       - name: Run required offscreen GPU tests
         env:
           HARBOR_TEST_GPU: dx12-warp
-        run: cargo test --locked --workspace gpu:: -- --ignored --test-threads=1
+        run: 'cargo test --locked --workspace gpu:: -- --ignored --test-threads=1'
 
       - name: Run real ConPTY integration tests
         env:
           HARBOR_TEST_GPU: dx12-warp
-        run: cargo test --locked --workspace pty:: -- --ignored --test-threads=1
+        run: 'cargo test --locked --workspace pty:: -- --ignored --test-threads=1'
 
       - name: Set up Python for documentation tools
         uses: actions/setup-python@v5
