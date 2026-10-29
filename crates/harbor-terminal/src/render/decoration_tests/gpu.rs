@@ -574,3 +574,287 @@ fn t0002_gpu_retained_edits_stride_projection_and_invalid_recovery_match_full() 
         "PASS: T0002 decoration GPU dirty replay, stride/capacity, viewport identity, invalid ranges/targets and retained recovery"
     );
 }
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn gpu_decoration_drawability_survives_invalidation_and_recovers_from_rejection() {
+    let (device, queue) = crate::test_gpu::device();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let pipeline = Arc::new(crate::render::gpu::create_colored_quad_pipeline(
+        &device,
+        gpu.format(),
+        "decoration drawability transitions",
+    ));
+    let view = RenderViewport::with_surface(16.0, 24.0, (256, 192), (256, 192));
+    let snap = snapshot("\x1b[4:3;9;53;31mA B", 2, 4);
+    let mut palette = Palette::default();
+    let fresh = |snap: &TerminalSnapshot, palette: Palette| {
+        Decoration::new(gpu, pipeline.clone(), (256, 192), snap, metrics(), palette)
+    };
+    let mut layer = fresh(&snap, palette);
+    let original = raster(&device, &queue, &layer);
+    assert!(original.iter().any(|&v| v != 0));
+    assert!(!layer.is_dirty());
+
+    // Invalidating or changing palette marks a future rebuild, but the last
+    // successful projection is still drawable until a preparation is rejected.
+    layer.invalidate_projection();
+    assert!(layer.is_dirty());
+    assert_eq!(raster(&device, &queue, &layer), original);
+    palette.normal[1] = harbor_config::Rgba::from_rgb8(0, 255, 0);
+    layer.set_palette(palette);
+    layer.prepare(gpu, None, &view);
+    assert!(layer.is_dirty());
+    assert_eq!(raster(&device, &queue, &layer), original);
+    layer.prepare_with_dirty(gpu, &snap, &[], &view);
+    let recolored = raster(&device, &queue, &layer);
+    assert_ne!(recolored, original);
+    assert_eq!(recolored, raster(&device, &queue, &fresh(&snap, palette)));
+    assert!(!layer.is_dirty());
+
+    let retained = (
+        layer.underline_buffer.clone(),
+        layer.strikethrough_buffer.clone(),
+        layer.overline_buffer.clone(),
+    );
+    let invalid_view = RenderViewport {
+        line_height: f32::NAN,
+        ..view
+    };
+    layer.prepare_with_dirty(gpu, &snap, &[], &invalid_view);
+    assert!(layer.is_dirty());
+    assert!(raster(&device, &queue, &layer).iter().all(|&v| v == 0));
+    layer.prepare(gpu, None, &view);
+    layer.invalidate_projection();
+    layer.set_palette(palette);
+    assert!(layer.is_dirty());
+    assert!(raster(&device, &queue, &layer).iter().all(|&v| v == 0));
+    layer.prepare_with_dirty(gpu, &snap, &[], &view);
+    assert!(!layer.is_dirty());
+    assert_eq!(raster(&device, &queue, &layer), recolored);
+    assert_eq!(layer.underline_buffer, retained.0);
+    assert_eq!(layer.strikethrough_buffer, retained.1);
+    assert_eq!(layer.overline_buffer, retained.2);
+
+    // Empty and malformed snapshots also reject drawing without throwing away
+    // retained buffers; a no-damage valid retry must rebuild and recover.
+    let mut invalid = snap.clone();
+    for (rows, cols) in [(0, 4), (2, 0), (usize::MAX, 2), (3, 4)] {
+        invalid.rows = rows;
+        invalid.cols = cols;
+        layer.prepare_with_dirty(gpu, &invalid, &[], &view);
+        assert!(layer.is_dirty(), "rejected {rows}x{cols}");
+        assert!(raster(&device, &queue, &layer).iter().all(|&v| v == 0));
+        layer.prepare_with_dirty(gpu, &snap, &[], &view);
+        assert!(!layer.is_dirty());
+        assert_eq!(raster(&device, &queue, &layer), recolored);
+        assert_eq!(layer.underline_buffer, retained.0);
+    }
+    invalid.rows = 0;
+    let mut initially_invalid = fresh(&invalid, palette);
+    assert!(initially_invalid.is_dirty());
+    assert!(
+        raster(&device, &queue, &initially_invalid)
+            .iter()
+            .all(|&v| v == 0)
+    );
+    initially_invalid.prepare_with_dirty(gpu, &snap, &[], &view);
+    assert!(!initially_invalid.is_dirty());
+    assert_eq!(raster(&device, &queue, &initially_invalid), recolored);
+
+    let invalid_metrics = TextMetrics {
+        underline_thickness: 0.0,
+        ..metrics()
+    };
+    let mut invalid_font = Decoration::new(
+        gpu,
+        pipeline.clone(),
+        (256, 192),
+        &snap,
+        invalid_metrics,
+        palette,
+    );
+    invalid_font.prepare_with_dirty(gpu, &snap, &[], &view);
+    assert!(invalid_font.is_dirty());
+    assert!(
+        raster(&device, &queue, &invalid_font)
+            .iter()
+            .all(|&v| v == 0)
+    );
+}
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn gpu_background_initial_resize_and_retained_rebuild_match_initialized_reference() {
+    use crate::render::Background;
+
+    let (device, queue) = crate::test_gpu::device();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let pipeline = Arc::new(crate::render::gpu::create_colored_quad_pipeline(
+        &device,
+        gpu.format(),
+        "background initialized reference",
+    ));
+    let view = RenderViewport::with_surface(16.0, 24.0, (256, 192), (256, 192));
+    let tint = [0.2, 0.3, 0.4, 0.5];
+    let mut palette = Palette::default();
+    palette.normal[1] = harbor_config::Rgba::from_rgb8(255, 0, 0);
+    let reference = |snap: &TerminalSnapshot, palette: &Palette| {
+        let vertices: Vec<_> = (0..snap.rows)
+            .flat_map(|row| {
+                Background::build_background_row_vertices_with_palette(row, snap, &view, palette)
+            })
+            .collect();
+        let full_rect = Background::build_full_rect_vertices(&view, tint);
+        let cell_buffer = crate::render::gpu::create_colored_vertex_buffer(&device, &vertices);
+        let rect_buffer = crate::render::gpu::create_colored_vertex_buffer(&device, &full_rect);
+        raster_draw(&device, &queue, |pass| {
+            pass.set_pipeline(&pipeline);
+            pass.set_vertex_buffer(0, rect_buffer.slice(..));
+            pass.draw(0..6, 0..1);
+            pass.set_vertex_buffer(0, cell_buffer.slice(..));
+            if !vertices.is_empty() {
+                pass.draw(0..vertices.len() as u32, 0..1);
+            }
+        })
+    };
+    let initial = snapshot("\x1b[41mA\x1b[0m B\x1b[7mC", 2, 4);
+    let mut layer = Background::new(
+        gpu,
+        pipeline.clone(),
+        (256, 192),
+        &initial,
+        16.0,
+        24.0,
+        tint,
+        palette,
+    );
+    let original = raster_draw(&device, &queue, |pass| layer.draw(pass));
+    assert_eq!(original, reference(&initial, &palette));
+    assert!(original.as_chunks::<4>().0.contains(&[255, 0, 0, 255]));
+
+    layer.invalidate_projection();
+    palette.normal[1] = harbor_config::Rgba::from_rgb8(0, 255, 0);
+    layer.set_palette(palette);
+    layer.prepare(gpu, None, &view, tint);
+    assert!(layer.is_dirty());
+    assert_eq!(
+        raster_draw(&device, &queue, |pass| layer.draw(pass)),
+        original
+    );
+    layer.prepare_with_dirty(gpu, &initial, &[], &view, tint);
+    assert!(!layer.is_dirty());
+    assert_eq!(
+        raster_draw(&device, &queue, |pass| layer.draw(pass)),
+        reference(&initial, &palette)
+    );
+
+    for (rows, cols) in [(4, 7), (2, 2), (3, 5), (1, 3)] {
+        let snap = snapshot("\x1b[41mA\x1b[0m \x1b[44mB", rows, cols);
+        layer.prepare_with_dirty(gpu, &snap, &[], &view, tint);
+        let pixels = raster_draw(&device, &queue, |pass| layer.draw(pass));
+        assert_eq!(pixels, reference(&snap, &palette), "retained {rows}x{cols}");
+        let fresh = Background::new(
+            gpu,
+            pipeline.clone(),
+            (256, 192),
+            &snap,
+            16.0,
+            24.0,
+            tint,
+            palette,
+        );
+        assert_eq!(
+            pixels,
+            raster_draw(&device, &queue, |pass| fresh.draw(pass))
+        );
+    }
+
+    let mut empty = initial.clone();
+    empty.rows = 0;
+    layer.prepare_with_dirty(gpu, &empty, &[], &view, tint);
+    assert_eq!(
+        raster_draw(&device, &queue, |pass| layer.draw(pass)),
+        reference(&empty, &palette)
+    );
+    let empty_fresh = Background::new(
+        gpu,
+        pipeline.clone(),
+        (256, 192),
+        &empty,
+        16.0,
+        24.0,
+        tint,
+        palette,
+    );
+    assert_eq!(
+        raster_draw(&device, &queue, |pass| empty_fresh.draw(pass)),
+        reference(&empty, &palette)
+    );
+    layer.prepare_with_dirty(gpu, &initial, &[], &view, tint);
+    assert_eq!(
+        raster_draw(&device, &queue, |pass| layer.draw(pass)),
+        reference(&initial, &palette)
+    );
+}
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn gpu_background_oversize_initialized_buffer_has_distinct_scoped_failure() {
+    use crate::render::Background;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("explicit GPU test requires an available adapter");
+    let limits = wgpu::Limits {
+        max_buffer_size: 4096,
+        ..Default::default()
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: limits,
+        ..Default::default()
+    }))
+    .expect("explicit GPU test requires a usable device");
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let pipeline = Arc::new(crate::render::gpu::create_colored_quad_pipeline(
+        &device,
+        gpu.format(),
+        "background scoped size failure",
+    ));
+    let snap = snapshot("\x1b[41mA", 1, 32);
+    let size = (snap.rows * snap.cols * 6 * std::mem::size_of::<ColoredVertex>()) as u64;
+    assert!(size > device.limits().max_buffer_size);
+
+    // Background's public constructor does not preflight this limit. The old
+    // initialized helper maps immediately; a sized allocation does not, even
+    // though both report the same validation failure to the enclosing scope.
+    let initialized_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let initialized = catch_unwind(AssertUnwindSafe(|| {
+        Background::new(
+            gpu,
+            pipeline,
+            (256, 192),
+            &snap,
+            16.0,
+            24.0,
+            [0.0; 4],
+            Palette::default(),
+        )
+    }));
+    assert!(pollster::block_on(initialized_scope.pop()).is_some());
+    assert!(initialized.is_err());
+
+    let sized_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let sized = catch_unwind(AssertUnwindSafe(|| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("terminal vertex buffer"),
+            size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }));
+    assert!(pollster::block_on(sized_scope.pop()).is_some());
+    assert!(sized.is_ok());
+}

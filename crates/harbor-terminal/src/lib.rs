@@ -577,9 +577,6 @@ impl Terminal {
         outcome = self
             .pointer
             .handle_pointer(&mut self.screen, pointer, Instant::now());
-        if outcome.capture_pointer.is_some() || outcome.redraw {
-            self.io.set_suppress_scroll_snap(true);
-        }
         if !self.pointer.has_active_pointer() && self.screen.view_offset() == 0 {
             self.io.set_suppress_scroll_snap(false);
         }

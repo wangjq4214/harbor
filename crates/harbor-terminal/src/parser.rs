@@ -30,10 +30,9 @@ mod tests;
 use crate::TerminalOutputEvent;
 use crate::model::AltScreenAction;
 use crate::screen::Screen;
+use dcs::DcsCollector;
 use handlers::ScreenHandler;
 use harbor_parser::Parser;
-use status_strings::DecrqssRequest;
-use xtgettcap::XtgettcapRequest;
 
 /// Streaming terminal parser.
 ///
@@ -42,8 +41,7 @@ use xtgettcap::XtgettcapRequest;
 #[derive(Debug, Default)]
 pub struct TerminalParser {
     inner: Parser,
-    decrqss: DecrqssRequest,
-    xtgettcap: XtgettcapRequest,
+    dcs: DcsCollector,
     output_events: Vec<TerminalOutputEvent>,
     clipboard_delivery: crate::ClipboardDelivery,
 }
@@ -67,8 +65,7 @@ impl TerminalParser {
             self.inner.advance(
                 &mut ScreenHandler {
                     screen,
-                    decrqss: &mut self.decrqss,
-                    xtgettcap: &mut self.xtgettcap,
+                    dcs: &mut self.dcs,
                     output_events: &mut self.output_events,
                     clipboard_delivery: self.clipboard_delivery,
                 },
@@ -104,8 +101,7 @@ impl TerminalParser {
         self.set_clipboard_delivery(crate::ClipboardDelivery::Discard);
         // A closed tab may stay visible; release partial wire data and its capacity too.
         self.inner = Parser::default();
-        self.decrqss.cancel();
-        self.xtgettcap.cancel();
+        self.dcs.cancel();
     }
 
     pub(crate) fn clipboard_delivery(&self) -> crate::ClipboardDelivery {

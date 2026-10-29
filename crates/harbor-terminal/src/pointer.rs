@@ -49,11 +49,15 @@ pub(crate) struct PreparedPointerResize {
 }
 impl PreparedPointerResize {
     pub(crate) fn bounds(&self) -> Option<SelectionBounds> {
-        if self.selection.is_range_empty() {
-            None
-        } else {
-            self.selection.bounds()
-        }
+        visible_selection_bounds(&self.selection)
+    }
+}
+
+fn visible_selection_bounds(selection: &SelectionModel) -> Option<SelectionBounds> {
+    if selection.is_range_empty() {
+        None
+    } else {
+        selection.bounds()
     }
 }
 
@@ -134,10 +138,7 @@ impl PointerInteraction {
         match action {
             AltScreenAction::Enter { clear } if !screen.is_alt() => {
                 self.cancel_active_for_buffer_transition();
-                let alternate = if clear {
-                    self.parked_alt_selection = None;
-                    SelectionModel::new()
-                } else if screen.has_parked_alt() {
+                let alternate = if !clear && screen.has_parked_alt() {
                     self.parked_alt_selection.take().unwrap_or_default()
                 } else {
                     self.parked_alt_selection = None;
@@ -289,11 +290,7 @@ impl PointerInteraction {
     }
 
     pub fn bounds(&self) -> Option<SelectionBounds> {
-        if self.selection.is_range_empty() {
-            None
-        } else {
-            self.selection.bounds()
-        }
+        visible_selection_bounds(&self.selection)
     }
 
     pub fn has_non_empty_selection(&self) -> bool {
@@ -461,8 +458,7 @@ impl PointerInteraction {
                     // A first press creates only an empty anchor and must not
                     // paint a cell; a prior visible selection still needs to
                     // be cleared immediately.
-                    redraw: outcome != SelectionOutcome::None
-                        && (was_visible != is_visible || is_visible),
+                    redraw: outcome != SelectionOutcome::None && (was_visible || is_visible),
                     capture_pointer: Some(event.pointer_id),
                     ..TerminalEventOutcome::default()
                 }
@@ -664,6 +660,126 @@ mod tests {
         pointer_id: u64,
     ) -> TerminalPointerEvent {
         TerminalPointerEvent::new(position, phase, TerminalPointerButton::Left, pointer_id)
+    }
+
+    #[test]
+    fn visible_bounds_preserve_zero_width_and_resize_provenance() {
+        let mut screen = Screen::new(2, 10);
+        for ch in "abcdefghij".chars() {
+            screen.write_char(ch);
+        }
+        let mut pointer = PointerInteraction::new();
+        pointer.set_viewport(viewport());
+        let prepared_screen = screen.prepare_resize(2, 10).unwrap();
+        let initial_revision = pointer.mutation_revision();
+        assert_eq!(pointer.bounds(), None);
+        assert_eq!(pointer.prepare_resize(&prepared_screen).bounds(), None);
+        assert_eq!(pointer.mutation_revision(), initial_revision);
+
+        let now = Instant::now();
+        let pressed = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((11.0, 1.0), TerminalPointerPhase::Down, 7),
+            now,
+        );
+        assert!(!pressed.redraw);
+        assert_eq!(pressed.capture_pointer, Some(7));
+        let click_revision = pointer.mutation_revision();
+        assert!(
+            pointer.selection.bounds().is_some(),
+            "the model exposes zero-width bounds"
+        );
+        assert_eq!(pointer.bounds(), None);
+        assert_eq!(pointer.prepare_resize(&prepared_screen).bounds(), None);
+        assert_eq!(pointer.mutation_revision(), click_revision);
+
+        let dragged = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((41.0, 1.0), TerminalPointerPhase::Move, 7),
+            now,
+        );
+        assert!(dragged.redraw);
+        let expected = Some(SelectionBounds {
+            start_row: 0,
+            start_col: 1,
+            end_row: 0,
+            end_col: 4,
+        });
+        let drag_revision = pointer.mutation_revision();
+        let prepared_pointer = pointer.prepare_resize(&prepared_screen);
+        assert_eq!(pointer.bounds(), expected);
+        let resized = prepared_pointer.bounds().unwrap();
+        assert_eq!((resized.start_col, resized.end_col), (1, 4));
+        assert_eq!(resized.start_row, resized.end_row);
+        assert_eq!(pointer.mutation_revision(), drag_revision);
+        screen.commit_resize(prepared_screen);
+        pointer.commit_resize(prepared_pointer);
+        assert_eq!(pointer.bounds(), Some(resized));
+        assert_ne!(pointer.mutation_revision(), drag_revision);
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((41.0, 1.0), TerminalPointerPhase::Up, 7),
+            now,
+        );
+
+        // Replacing a visible selection with a click must redraw; a subsequent
+        // double-click must redraw again when the new selection becomes visible.
+        let later = now + std::time::Duration::from_secs(1);
+        let click = pointer_event((61.0, 1.0), TerminalPointerPhase::Down, 8);
+        let replaced = pointer.handle_pointer(&mut screen, click, later);
+        assert!(replaced.redraw);
+        assert_eq!(pointer.bounds(), None);
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((61.0, 1.0), TerminalPointerPhase::Up, 8),
+            later,
+        );
+        let selected = pointer.handle_pointer(&mut screen, click, later);
+        assert!(selected.redraw);
+        assert!(pointer.bounds().is_some());
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((61.0, 1.0), TerminalPointerPhase::Up, 8),
+            later,
+        );
+        let reselected = pointer.handle_pointer(&mut screen, click, later);
+        assert!(reselected.redraw);
+        assert!(pointer.bounds().is_some());
+    }
+
+    #[test]
+    fn alternate_entry_discards_orphaned_selection_without_losing_release_or_vt_capture() {
+        let mut screen = Screen::new(2, 10);
+        for ch in "abcdefghij".chars() {
+            screen.write_char(ch);
+        }
+        let mut pointer = PointerInteraction::new();
+        pointer.set_viewport(viewport());
+        let now = Instant::now();
+        let down = pointer_event((11.0, 1.0), TerminalPointerPhase::Down, 7);
+        pointer.handle_pointer(&mut screen, down, now);
+        pointer.handle_pointer(
+            &mut screen,
+            pointer_event((41.0, 1.0), TerminalPointerPhase::Move, 7),
+            now,
+        );
+        pointer.parked_alt_selection = Some((*pointer.selection).clone());
+        pointer.prepare_mouse_event(down);
+        pointer.begin_vt_capture(99);
+        assert!(!screen.has_parked_alt());
+
+        pointer.apply_alt_transition(&mut screen, AltScreenAction::Enter { clear: false });
+        assert!(screen.is_alt());
+        assert_eq!(pointer.bounds(), None);
+        assert!(pointer.parked_alt_selection.is_none());
+        assert_eq!(pointer.mouse_buttons, 0);
+        assert!(pointer.end_vt_capture(99));
+        let released = pointer.handle_pointer(
+            &mut screen,
+            pointer_event((41.0, 1.0), TerminalPointerPhase::Up, 7),
+            now,
+        );
+        assert_eq!(released.release_pointer, Some(7));
     }
 
     #[test]

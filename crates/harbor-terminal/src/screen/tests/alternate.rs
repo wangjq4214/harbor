@@ -304,8 +304,8 @@ fn alt_screen_repeated_cycles_keep_parking_alt_contents() {
 
 #[test]
 fn alt_screen_reentry_marks_all_dirty() {
-    // The parked-restore install path (`*self = *alt`) must mark the whole
-    // screen dirty, mirroring `alt_screen_exit_marks_all_dirty` for the exit.
+    // The parked-restore path must mark the whole screen dirty, mirroring
+    // `alt_screen_exit_marks_all_dirty` for the exit.
     let mut screen = Screen::new(3, 10);
     screen.enter_alt(false);
     screen.cell_mut(0, 0).ch = 'A';
@@ -343,6 +343,179 @@ fn alt_screen_reentry_cycle_preserves_pending_replies() {
     screen.exit_alt();
 
     assert_eq!(screen.drain_replies(), b"abcd");
+}
+
+#[test]
+fn alt_screen_park_restore_keeps_snapshot_rows_and_advances_damage_revisions() {
+    let mut screen = Screen::new(2, 8);
+    screen.write_char('P');
+    let primary_snapshot = screen.terminal_snapshot();
+    let primary_generation = screen.normal.content_generation();
+    let primary_revision = screen.normal.stamp();
+
+    screen.enter_alt(false);
+    assert_ne!(screen.normal.stamp(), primary_revision);
+    screen.write_char('A');
+    let alternate_snapshot = screen.terminal_snapshot();
+    let alternate_generation = screen.normal.content_generation();
+    screen.clear_dirty();
+    let alternate_revision = screen.normal.stamp();
+
+    screen.exit_alt();
+    let primary_after_exit = screen.normal.stamp();
+    assert_eq!(screen.normal.content_generation(), primary_generation);
+    assert_ne!(primary_after_exit, primary_revision);
+    let parked = screen.parked_alt.as_deref().unwrap();
+    assert!(parked.saved_primary.is_none());
+    assert!(parked.parked_alt.is_none());
+    assert_eq!(parked.normal.stamp(), alternate_revision);
+    assert_eq!(
+        primary_snapshot
+            .cells
+            .shared_rows_with(&screen.terminal_snapshot().cells),
+        2
+    );
+
+    let before_reentry = screen.mutation_revisions();
+    screen.enter_alt(false);
+    let after_reentry = screen.mutation_revisions();
+    assert!(
+        screen
+            .saved_primary
+            .as_deref()
+            .unwrap()
+            .parked_alt
+            .is_none()
+    );
+    assert_eq!(screen.normal.content_generation(), alternate_generation);
+    assert_ne!(screen.normal.stamp(), alternate_revision);
+    assert_ne!(before_reentry[2], after_reentry[2]); // session colors
+    assert_ne!(before_reentry[3], after_reentry[3]); // synchronized output
+    assert_eq!(
+        alternate_snapshot
+            .cells
+            .shared_rows_with(&screen.terminal_snapshot().cells),
+        2
+    );
+    assert_eq!(screen.cell(0, 0).ch, 'A');
+
+    screen.exit_alt();
+    let after_second_exit = screen.mutation_revisions();
+    assert_ne!(screen.normal.stamp(), primary_after_exit);
+    assert_ne!(after_reentry[2], after_second_exit[2]);
+    assert_ne!(after_reentry[3], after_second_exit[3]);
+    assert_eq!(screen.cell(0, 0).ch, 'P');
+    screen.enter_alt(true);
+    assert_ne!(screen.normal.content_generation(), alternate_generation);
+    assert_eq!(screen.cell(0, 0).ch, ' ');
+    // The cleared buffer's already-issued snapshot still owns its rows.
+    assert_eq!(alternate_snapshot.cells[0].ch, 'A');
+    screen.exit_alt();
+    screen.enter_alt(false);
+    assert_eq!(screen.cell(0, 0).ch, ' ');
+}
+
+#[test]
+fn alt_screen_exit_reconciles_saved_cursor_before_parking() {
+    let mut screen = Screen::new(1, 10);
+    screen.enter_alt(false);
+    for ch in "abcdef".chars() {
+        screen.write_char(ch);
+    }
+    screen.finish_anchor_mutations(None).unwrap();
+    screen.cursor.cursor.x = 4;
+    screen.save_cursor();
+
+    screen.cursor.cursor.x = 1;
+    screen.cursor.modes.insert = true;
+    screen.write_char('X');
+    screen.exit_alt();
+    screen.enter_alt(false);
+    screen.restore_cursor();
+
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (5, 0));
+}
+
+#[test]
+fn alt_screen_reentry_commits_deferred_primary_resize_before_parking() {
+    let mut screen = Screen::new(3, 12);
+    screen.write_char('P');
+    screen.enter_alt(false);
+    screen.write_char('A');
+    screen.exit_alt();
+    screen.enter_alt(false);
+
+    for cols in [5, 8] {
+        let prepared = screen
+            .prepare_resize_with_viewport(3, cols, ReflowViewport::PreserveLiveTop)
+            .unwrap();
+        screen.commit_resize(prepared);
+        assert_eq!(screen.saved_primary.as_ref().unwrap().cols(), 12);
+        assert_eq!(screen.cell(0, 0).ch, 'A');
+    }
+
+    screen.exit_alt();
+    assert_eq!((screen.rows(), screen.cols()), (3, 8));
+    assert_eq!(screen.cell(0, 0).ch, 'P');
+    assert!(screen.deferred_primary_resize.is_empty());
+    let parked = screen.parked_alt.as_deref().unwrap();
+    assert_eq!((parked.rows(), parked.cols()), (3, 8));
+    assert!(parked.saved_primary.is_none());
+    assert!(parked.deferred_primary_resize.is_empty());
+
+    screen.enter_alt(false);
+    assert_eq!((screen.rows(), screen.cols()), (3, 8));
+    assert_eq!(screen.cell(0, 0).ch, 'A');
+    screen.exit_alt();
+    assert_eq!(screen.cell(0, 0).ch, 'P');
+}
+
+#[test]
+fn alt_screen_reentry_uses_current_session_state_not_parked_state() {
+    let mut screen = Screen::new(2, 8);
+    screen.set_default_color_rgb(DefaultColorSlot::Foreground, [0x12, 0x34, 0x56]);
+    screen.set_indexed_color_rgb(200, [0x23, 0x45, 0x67]);
+    screen.set_private_mode(1004, true);
+    assert!(screen.observe_focus(crate::TerminalFocusEvent::Gained));
+    screen.set_private_mode(2026, true);
+    screen.push_reply(b"p");
+    let initial_palette = screen.active_palette();
+
+    screen.enter_alt(false);
+    assert_eq!(screen.active_palette(), initial_palette);
+    screen.set_default_color_rgb(DefaultColorSlot::Foreground, [0x34, 0x56, 0x78]);
+    screen.set_indexed_color_rgb(200, [0x45, 0x67, 0x89]);
+    assert!(screen.observe_focus(crate::TerminalFocusEvent::Lost));
+    screen.set_private_mode(2026, true);
+    screen.push_reply(b"a");
+    let alternate_palette = screen.active_palette();
+
+    screen.exit_alt();
+    assert_eq!(screen.active_palette(), alternate_palette);
+    assert!(!screen.observe_focus(crate::TerminalFocusEvent::Lost));
+    assert!(!screen.ordinary_present_eligible());
+    screen.set_default_color_rgb(DefaultColorSlot::Foreground, [0x56, 0x78, 0x9a]);
+    screen.set_indexed_color_rgb(200, [0x67, 0x89, 0xab]);
+    assert!(screen.observe_focus(crate::TerminalFocusEvent::Gained));
+    screen.set_private_mode(2026, false);
+    screen.push_reply(b"q");
+    let current_palette = screen.active_palette();
+
+    screen.enter_alt(false);
+    assert_eq!(screen.active_palette(), current_palette);
+    assert_eq!(screen.mode_status(true, 1004), ModeStatus::Set);
+    assert!(!screen.observe_focus(crate::TerminalFocusEvent::Gained));
+    assert!(screen.observe_focus(crate::TerminalFocusEvent::Lost));
+    assert!(!screen.ordinary_present_eligible());
+    screen.set_private_mode(2026, false);
+    assert!(screen.ordinary_present_eligible());
+    screen.push_reply(b"r");
+
+    screen.exit_alt();
+    assert_eq!(screen.active_palette(), current_palette);
+    assert!(!screen.observe_focus(crate::TerminalFocusEvent::Lost));
+    assert!(screen.ordinary_present_eligible());
+    assert_eq!(screen.drain_replies(), b"paqr");
 }
 
 #[test]

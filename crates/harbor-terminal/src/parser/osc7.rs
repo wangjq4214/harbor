@@ -100,10 +100,9 @@ fn strict_percent_decode(raw: &[u8]) -> Option<Vec<u8>> {
     let mut index = 0;
     while index < raw.len() {
         let byte = if raw[index] == b'%' {
-            let high = hex::digit(*raw.get(index + 1)?)?;
-            let low = hex::digit(*raw.get(index + 2)?)?;
+            let byte = hex::pair(*raw.get(index + 1)?, *raw.get(index + 2)?)?;
             index += 3;
-            (high << 4) | low
+            byte
         } else {
             let byte = raw[index];
             if !is_raw_path_byte(byte) {
@@ -146,6 +145,10 @@ mod tests {
             parse(b"file:///hello%20%E4%B8%96%E7%95%8C%2520"),
             Some(metadata(None, "/hello 世界%20"))
         );
+        assert_eq!(
+            parse(b"file://build%2dhost/tmp%3Fv%23frag"),
+            Some(metadata(Some("build%2dhost"), "/tmp?v#frag"))
+        );
     }
 
     #[test]
@@ -167,6 +170,8 @@ mod tests {
             b"http:///tmp".as_slice(),
             b"file://host".as_slice(),
             b"file://bad%host/tmp".as_slice(),
+            b"file://bad%2z/tmp".as_slice(),
+            b"file://bad%/tmp".as_slice(),
             b"file://bad\\host/tmp".as_slice(),
             b"file://user@host/tmp".as_slice(),
             b"file://host:22/tmp".as_slice(),

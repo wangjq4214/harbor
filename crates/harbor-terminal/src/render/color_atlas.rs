@@ -49,9 +49,9 @@ pub(super) struct AtlasChanges {
 }
 
 impl ColorAtlas {
-    pub fn sync(
+    pub fn sync<'a>(
         &mut self,
-        requests: &[SequenceRequest],
+        requests: impl IntoIterator<Item = &'a SequenceRequest>,
         generation: PresentationGeneration,
         mut present: impl FnMut(&SequenceRequest) -> SequencePresentation,
     ) -> AtlasChanges {
@@ -62,11 +62,15 @@ impl ColorAtlas {
             self.generation = Some(generation);
             changes.full = true;
         }
+        // Skip already-admitted duplicates before recounting long UTF-16 sources.
+        // Only valid requests enter this set, which is bounded by the admission cap.
         let mut seen = HashSet::new();
         let active: Vec<_> = requests
-            .iter()
+            .into_iter()
             .filter(|r| {
-                r.source.encode_utf16().count() <= SEQUENCE_MAX_UTF16 && seen.insert((*r).clone())
+                !seen.contains(r)
+                    && r.source.encode_utf16().count() <= SEQUENCE_MAX_UTF16
+                    && seen.insert(*r)
             })
             .take(COLOR_CACHE_ENTRIES)
             .cloned()
@@ -256,6 +260,59 @@ mod tests {
             },
         }
     }
+    #[test]
+    fn admission_keeps_first_128_distinct_valid_requests_in_order() {
+        let mut at_limit = request(1000);
+        at_limit.source = format!("😀{}", "a".repeat(SEQUENCE_MAX_UTF16 - 2));
+        assert_eq!(at_limit.source.encode_utf16().count(), SEQUENCE_MAX_UTF16);
+        let mut different_foreground = at_limit.clone();
+        different_foreground.foreground = [1, 2, 3, 4];
+        let mut over_limit = at_limit.clone();
+        over_limit.source.push('a');
+        let mut over_limit_astral = at_limit.clone();
+        over_limit_astral.source.push('💻');
+
+        let mut requests = vec![
+            over_limit.clone(),
+            at_limit.clone(),
+            at_limit.clone(),
+            different_foreground.clone(),
+            over_limit_astral.clone(),
+        ];
+        let mut expected = vec![at_limit.clone(), different_foreground];
+        for n in 0..COLOR_CACHE_ENTRIES - 2 {
+            let request = request(n);
+            requests.push(request.clone());
+            requests.push(request.clone());
+            expected.push(request);
+        }
+        let excluded = request(COLOR_CACHE_ENTRIES);
+        requests.push(excluded.clone());
+
+        let mut atlas = ColorAtlas::default();
+        let mut presented = Vec::new();
+        let mut examined = 0;
+        atlas.sync(
+            requests.iter().inspect(|_| examined += 1),
+            generation(),
+            |r| {
+                presented.push(r.clone());
+                SequencePresentation {
+                    generation: generation(),
+                    outcome: SequenceOutcome::Unsupported(UnsupportedReason::MissingGlyph),
+                }
+            },
+        );
+        assert_eq!(presented, expected);
+        // The duplicate and 129th distinct request after the cutoff stay unvisited.
+        assert_eq!(examined, requests.len() - 2);
+        assert_eq!(atlas.entries.len(), COLOR_CACHE_ENTRIES);
+        assert!(!atlas.entries.contains_key(&over_limit));
+        assert!(!atlas.entries.contains_key(&over_limit_astral));
+        assert!(!atlas.entries.contains_key(&excluded));
+        atlas.sync(&requests, generation(), |_| panic!("warm hit"));
+    }
+
     #[test]
     fn lazy_warm_negative_and_generation_cache() {
         let mut a = ColorAtlas::default();

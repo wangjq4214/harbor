@@ -490,3 +490,195 @@ fn wide_glyph_wrap_rebases_the_continuation_after_partial_region_scroll() {
     assert_eq!(wrapped.logical_line_id, prior.logical_line_id);
     assert_narrow_reflow_prepares(&screen);
 }
+
+fn shift_chars_for_boundary_test(screen: &mut Screen, insert: bool) -> bool {
+    let Screen {
+        pen_state,
+        normal,
+        cursor,
+        ..
+    } = screen;
+    if insert {
+        CellOps::insert_chars(pen_state, normal, cursor, 1)
+    } else {
+        CellOps::delete_chars(pen_state, normal, cursor, 1)
+    }
+}
+
+#[test]
+fn boundary_shift_characterizes_malformed_wide_fragments() {
+    for insert in [true, false] {
+        // Orphan halves at both boundaries do not constitute crossings and are
+        // normalized within the margins when the shift is accepted.
+        let mut screen = Screen::new(1, 8);
+        for (col, ch) in "abcdefgh".chars().enumerate() {
+            screen.cell_mut(0, col).ch = ch;
+        }
+        screen.cursor.margins.enabled = true;
+        screen.cursor.margins.left = 2;
+        screen.cursor.margins.right = 5;
+        screen.cursor.cursor.x = 3;
+        screen.cell_mut(0, 2).wide_continuation = true;
+        screen.cell_mut(0, 2).width = 0;
+        screen.cell_mut(0, 5).ch = '中';
+        screen.cell_mut(0, 5).width = 2;
+        let before = screen_cells(&screen);
+        screen.cursor.modes.pending_wrap = true;
+        screen.clear_dirty();
+
+        assert!(shift_chars_for_boundary_test(&mut screen, insert));
+        assert_eq!(screen.cell(0, 2), &Cell::default());
+        if !insert {
+            assert_eq!(screen.cell(0, 4), &Cell::default());
+        }
+        for col in [0, 1, 6, 7] {
+            assert_eq!(
+                screen.cell(0, col),
+                &before[col],
+                "insert={insert}, col={col}"
+            );
+        }
+        assert!(!screen.cursor.modes.pending_wrap);
+        let damage: Vec<_> = screen
+            .dirty_ranges()
+            .iter()
+            .map(|range| (range.row, range.start_col, range.end_col))
+            .collect();
+        assert_eq!(damage, vec![(0, 2, 6)]);
+
+        // A malformed outside base that is also a continuation is still
+        // recognized by the inside continuation and rejects a left crossing.
+        let mut screen = Screen::new(1, 8);
+        screen.cursor.margins.enabled = true;
+        screen.cursor.margins.left = 2;
+        screen.cursor.margins.right = 5;
+        screen.cursor.cursor.x = 3;
+        screen.cell_mut(0, 1).width = 2;
+        screen.cell_mut(0, 1).wide_continuation = true;
+        screen.cell_mut(0, 2).width = 0;
+        screen.cell_mut(0, 2).wide_continuation = true;
+        let before = screen_cells(&screen);
+        assert!(!shift_chars_for_boundary_test(&mut screen, insert));
+        assert_eq!(screen_cells(&screen), before);
+
+        // Conversely, a right-boundary cell marked as both a base and a
+        // continuation is interpreted as a continuation first. An outside
+        // continuation can see it as a base, but the original in-margin scan
+        // does not inspect that outside cell and therefore accepts this shift.
+        let mut screen = Screen::new(1, 8);
+        screen.cursor.margins.enabled = true;
+        screen.cursor.margins.left = 2;
+        screen.cursor.margins.right = 5;
+        screen.cursor.cursor.x = 3;
+        screen.cell_mut(0, 5).width = 2;
+        screen.cell_mut(0, 5).wide_continuation = true;
+        screen.cell_mut(0, 6).width = 0;
+        screen.cell_mut(0, 6).wide_continuation = true;
+        assert_eq!(CellOps::wide_range(&screen.normal, 0, 5), None);
+        assert_eq!(CellOps::wide_range(&screen.normal, 0, 6), Some((5, 6)));
+        let outside = screen.cell(0, 6).clone();
+        assert!(shift_chars_for_boundary_test(&mut screen, insert));
+        assert_eq!(screen.cell(0, 6), &outside);
+    }
+}
+
+#[test]
+fn boundary_shift_matches_original_scan_for_valid_and_malformed_cells() {
+    // Include explicit and legacy wide bases, ordinary and malformed
+    // continuations, and a cell that is simultaneously a base and a continuation.
+    let cells = [
+        Cell {
+            ch: 'x',
+            ..Cell::default()
+        },
+        Cell {
+            ch: '中',
+            ..Cell::default()
+        },
+        Cell {
+            ch: 'x',
+            width: 2,
+            ..Cell::default()
+        },
+        Cell {
+            width: 0,
+            wide_continuation: true,
+            ..Cell::default()
+        },
+        Cell {
+            width: 1,
+            wide_continuation: true,
+            ..Cell::default()
+        },
+        Cell {
+            width: 2,
+            wide_continuation: true,
+            ..Cell::default()
+        },
+    ];
+    let mut screen = Screen::new(1, 5);
+    screen.cursor.margins.enabled = true;
+    for pattern in 0..cells.len().pow(5) {
+        let mut indices = [0; 5];
+        let mut remaining = pattern;
+        for index in &mut indices {
+            *index = remaining % cells.len();
+            remaining /= cells.len();
+        }
+        for left in 0..5 {
+            for right in left..5 {
+                for insert in [true, false] {
+                    for (col, &index) in indices.iter().enumerate() {
+                        *screen.cell_mut(0, col) = cells[index].clone();
+                    }
+                    screen.cursor.margins.left = left;
+                    screen.cursor.margins.right = right;
+                    screen.cursor.cursor.x = (left + right) / 2;
+                    let crossing = (left..=right).any(|col| {
+                        CellOps::wide_range(&screen.normal, 0, col).is_some_and(
+                            |(base, continuation)| {
+                                (base < left || continuation > right)
+                                    && base < right + 1
+                                    && continuation >= left
+                            },
+                        )
+                    });
+
+                    let accepted = shift_chars_for_boundary_test(&mut screen, insert);
+                    assert_eq!(
+                        accepted, !crossing,
+                        "pattern={indices:?}, margins={left}..={right}, insert={insert}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn boundary_shift_accepts_fragments_on_a_single_column_screen() {
+    for enabled in [true, false] {
+        for insert in [true, false] {
+            for (width, continuation) in [(1, false), (2, false), (0, true), (2, true)] {
+                let mut screen = Screen::new(1, 1);
+                screen.cursor.margins.enabled = enabled;
+                screen.cell_mut(0, 0).width = width;
+                screen.cell_mut(0, 0).wide_continuation = continuation;
+                screen.cursor.modes.pending_wrap = true;
+                screen.cursor.last_clamped_write = true;
+                screen.clear_dirty();
+
+                assert!(shift_chars_for_boundary_test(&mut screen, insert));
+                assert_eq!(screen.cell(0, 0), &Cell::default());
+                assert!(!screen.cursor.modes.pending_wrap);
+                assert!(!screen.cursor.last_clamped_write);
+                let damage: Vec<_> = screen
+                    .dirty_ranges()
+                    .iter()
+                    .map(|range| (range.row, range.start_col, range.end_col))
+                    .collect();
+                assert_eq!(damage, vec![(0, 0, 1)]);
+            }
+        }
+    }
+}

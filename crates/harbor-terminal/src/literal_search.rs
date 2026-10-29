@@ -367,8 +367,7 @@ impl SearchJob {
         self.results.status = status;
         self.scan = None;
         if matches!(status, SearchStatus::Cancelled | SearchStatus::Stale) {
-            self.results.ranges.clear();
-            self.results.ranges.shrink_to_fit();
+            self.results.ranges = Vec::new();
         }
         status
     }

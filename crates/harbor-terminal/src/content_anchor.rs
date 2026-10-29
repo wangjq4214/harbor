@@ -245,7 +245,6 @@ impl AnchorMutation {
 struct ProjectedAtom {
     offset: LogicalAtomOffset,
     source_span: SourceSpan,
-    cell: crate::screen::Cell,
 }
 
 #[derive(Clone, Debug)]
@@ -292,14 +291,13 @@ impl ContentProjection {
                 line_id,
                 atom_offset,
                 source_span,
-                glyph,
+                ..
             } = atom
                 && let Some(index) = line_indices.get(&line_id).copied()
                 && let Some(line) = lines.get_mut(index)
             {
                 line.atoms.push(ProjectedAtom {
                     offset: atom_offset,
-                    cell: glyph.cell,
                     source_span,
                 });
             }
@@ -447,14 +445,8 @@ impl ContentProjection {
         })
     }
 
-    pub(crate) fn line_cells(&self, line_id: LogicalLineId) -> Option<Vec<crate::screen::Cell>> {
-        Some(
-            self.line(line_id)?
-                .atoms
-                .iter()
-                .map(|atom| atom.cell.clone())
-                .collect(),
-        )
+    pub(crate) fn line_atom_count(&self, line_id: LogicalLineId) -> Option<usize> {
+        Some(self.line(line_id)?.atoms.len())
     }
 
     pub(crate) fn atom_count_in_cell_range(
@@ -690,6 +682,7 @@ mod tests {
             .unwrap();
         assert_eq!(lead.line_id, continuation.line_id);
         assert_eq!(lead.offset, continuation.offset);
+        assert_eq!(projection.line_atom_count(lead.line_id), Some(1));
         assert_eq!(projection.resolve_selection(lead), Some(GenPos::new(0, 0)));
         assert_eq!(
             projection.resolve_selection(continuation),
@@ -704,6 +697,7 @@ mod tests {
             .unwrap();
         assert_eq!(blank_start.offset, LogicalAtomOffset(0));
         assert_eq!(blank_end.offset, LogicalAtomOffset(0));
+        assert_eq!(projection.line_atom_count(blank_start.line_id), Some(0));
         assert_eq!(
             projection.resolve_selection(blank_start),
             Some(GenPos::new(1, 0))

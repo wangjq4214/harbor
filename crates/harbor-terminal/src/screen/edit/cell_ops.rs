@@ -90,19 +90,11 @@ impl CellOps {
         }
     }
 
-    fn has_boundary_wide(
-        normal: &NormalBuf,
-        row: usize,
-        start: usize,
-        end: usize,
-        left: usize,
-        right: usize,
-    ) -> bool {
-        (start..end).any(|col| {
-            Self::wide_range(normal, row, col).is_some_and(|(base, continuation)| {
-                (base < left || continuation > right) && base < end && continuation >= start
-            })
-        })
+    /// Only an endpoint can be the in-margin half of a crossing two-cell range.
+    fn has_boundary_wide(normal: &NormalBuf, row: usize, left: usize, right: usize) -> bool {
+        Self::wide_range(normal, row, left).is_some_and(|(base, _)| base < left)
+            || Self::wide_range(normal, row, right)
+                .is_some_and(|(_, continuation)| continuation > right)
     }
 
     fn erase_row_range(
@@ -486,7 +478,7 @@ impl CellOps {
         if n == 0 {
             return false;
         }
-        if Self::has_boundary_wide(normal, cursor.cursor.y, left, right + 1, left, right) {
+        if Self::has_boundary_wide(normal, cursor.cursor.y, left, right) {
             return false;
         }
         let ring_row = normal.display_to_ring(cursor.cursor.y);
@@ -527,7 +519,7 @@ impl CellOps {
         if n == 0 {
             return false;
         }
-        if Self::has_boundary_wide(normal, cursor.cursor.y, left, right + 1, left, right) {
+        if Self::has_boundary_wide(normal, cursor.cursor.y, left, right) {
             return false;
         }
         let (delete_start, delete_end) =

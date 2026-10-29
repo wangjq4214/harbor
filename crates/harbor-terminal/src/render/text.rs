@@ -213,6 +213,15 @@ impl GpuGlyphAtlas {
 // Whole emoji units use SequenceLayer; ordinary text and bounded leading-glyph
 // fallback retain the scalar R8 atlas. Model source/assigned width stay authoritative.
 
+/// Suffix scalars painted as overlays and therefore needed in the scalar atlas.
+fn suffix_paint_chars(suffix: &str) -> impl Iterator<Item = char> + '_ {
+    suffix.chars().filter(|&ch| {
+        ch != '\u{200d}'
+            && !is_selector(ch)
+            && unicode_width::UnicodeWidthChar::width(ch) == Some(0)
+    })
+}
+
 /// Scalars needed by both the initial atlas and incremental dirty uploads.
 fn paint_chars(cell: &Cell) -> Vec<char> {
     if cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
@@ -225,11 +234,7 @@ fn paint_chars(cell: &Cell) -> Vec<char> {
     if cell.ch != ' ' && !super::box_drawing::is_box_drawing(cell.ch) {
         chars.push(cell.ch);
     }
-    chars.extend(cell.suffix.chars().filter(|&ch| {
-        ch != '\u{200d}'
-            && !is_selector(ch)
-            && unicode_width::UnicodeWidthChar::width(ch) == Some(0)
-    }));
+    chars.extend(suffix_paint_chars(&cell.suffix));
     chars
 }
 
@@ -659,15 +664,8 @@ impl Text {
                         false,
                     );
                 }
-                for mark in cell
-                    .suffix
-                    .chars()
-                    .filter(|&ch| {
-                        ch != '\u{200d}'
-                            && !is_selector(ch)
-                            && unicode_width::UnicodeWidthChar::width(ch) == Some(0)
-                    })
-                    .chain(cell.isolated_mark.then_some(cell.ch))
+                for mark in
+                    suffix_paint_chars(&cell.suffix).chain(cell.isolated_mark.then_some(cell.ch))
                 {
                     append_overlay_glyph(
                         &self.atlas,
@@ -788,18 +786,6 @@ impl Text {
                 drop(old_buffer);
                 self.vertex_buffer = gpu::create_vertex_buffer_sized(gpu.device(), new_cap);
             }
-            let plan = gpu.upload_plan(snap.rows, snap.cols, bytes_per_cell, dirty_ranges, true);
-            let verts = self.build_all_vertices(snap, viewport);
-            debug_assert_eq!(plan.mode, UploadMode::Full);
-            gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
-            #[cfg(test)]
-            {
-                super::observations::record_text_upload(0, std::mem::size_of_val(verts.as_slice()));
-            }
-            self.rows = snap.rows;
-            self.cols = snap.cols;
-            self.dirty = false;
-            return;
         }
 
         let plan = gpu.upload_plan(
@@ -807,19 +793,28 @@ impl Text {
             snap.cols,
             bytes_per_cell,
             dirty_ranges,
-            self.dirty,
+            resized || self.dirty,
         );
-        if plan.mode == UploadMode::None {
+        if !resized && plan.mode == UploadMode::None {
             return;
         }
 
-        if plan.mode == UploadMode::Full {
-            tracing::trace!("rebuilding text draw batch (full)");
+        if resized || plan.mode == UploadMode::Full {
+            if !resized {
+                tracing::trace!("rebuilding text draw batch (full)");
+            }
             let verts = self.build_all_vertices(snap, viewport);
+            if resized {
+                debug_assert_eq!(plan.mode, UploadMode::Full);
+            }
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
             #[cfg(test)]
             {
                 super::observations::record_text_upload(0, std::mem::size_of_val(verts.as_slice()));
+            }
+            if resized {
+                self.rows = snap.rows;
+                self.cols = snap.cols;
             }
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
@@ -1025,6 +1020,29 @@ mod tests {
         }
     }
     use harbor_text::{FaceId, FontSize, FontStyle, GlyphId, GlyphKey, RasterizeResult};
+
+    #[test]
+    fn mixed_suffixes_collect_only_paintable_zero_width_scalars() {
+        let mut cell = Cell {
+            ch: 'e',
+            suffix: "\u{301}B\u{fe00}\u{fe0f}\u{200d}中\u{e0100}\u{e01ef}\u{327}\u{7}\u{200b}"
+                .into(),
+            ..Cell::default()
+        };
+        assert_eq!(paint_chars(&cell), ['e', '\u{301}', '\u{327}', '\u{200b}']);
+
+        cell.ch = '\u{301}';
+        cell.isolated_mark = true;
+        assert_eq!(
+            paint_chars(&cell),
+            ['\u{25cc}', '\u{301}', '\u{301}', '\u{327}', '\u{200b}']
+        );
+        cell.wide_continuation = true;
+        assert!(paint_chars(&cell).is_empty());
+        cell.wide_continuation = false;
+        cell.attrs.set(CellAttrs::CONCEAL);
+        assert!(paint_chars(&cell).is_empty());
+    }
 
     #[test]
     fn sequence_fallback_rasterizes_base_not_format_or_joined_scalars() {

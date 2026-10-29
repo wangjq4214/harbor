@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::DirtyRange;
+use crate::render::color_atlas::COLOR_CACHE_ENTRIES;
 use crate::render::observations::{sequence_work, text_uploads};
 use crate::render::text::sequence_tests::{read_draw, test_gpu};
 use harbor_text::{CompleteKind, PresentationTile, SequenceOutcome, SequencePresentation};
@@ -410,6 +411,96 @@ fn capacity_release_retries_fallback_on_an_untouched_row() {
         );
         assert_reference(gpu, &fonts, &scalar, &snap, &layer);
     }
+}
+
+#[test]
+#[ignore = "Windows native fonts; run explicitly"]
+fn sequence_request_rejects_only_sources_above_the_utf16_limit() {
+    let fonts = fonts();
+    let palette = Palette::default();
+    let source = format!("😀{}", "\u{301}".repeat(SEQUENCE_MAX_UTF16 - 2));
+    let at_limit = cell(&source);
+    assert!(emoji_candidate(&at_limit));
+    assert_eq!(
+        sequence_request(&at_limit, &fonts, &palette, 1.0)
+            .unwrap()
+            .source,
+        source
+    );
+    let above_limit = cell(&format!("{source}\u{301}"));
+    assert!(emoji_candidate(&above_limit));
+    assert!(sequence_request(&above_limit, &fonts, &palette, 1.0).is_none());
+}
+
+#[test]
+#[ignore = "Windows native fonts and GPU; run explicitly"]
+fn duplicates_and_oversize_do_not_block_row_major_promotion() {
+    let (device, queue) = test_gpu();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let fonts = fonts();
+    let scalar = GlyphAtlas::new();
+    let palette = Palette::default();
+    let source = format!("😀{}", "\u{301}".repeat(SEQUENCE_MAX_UTF16 - 2));
+    let oversized = format!("{source}\u{301}");
+    let mut snap = blank(3, 160);
+    for col in 0..32 {
+        snap.cells[col] = cell(&source);
+    }
+    snap.cells[32] = cell(&oversized);
+    for col in 33..160 {
+        snap.cells[col] = cell("😀");
+        snap.cells[col].fg = harbor_config::Color::Rgb((col - 33) as u8, 0, 0);
+    }
+    snap.cells[160] = cell(&source);
+    snap.cells[161] = cell("👩‍💻");
+
+    let accepted: Vec<_> = std::iter::once(&snap.cells[0])
+        .chain((33..160).map(|col| &snap.cells[col]))
+        .map(|c| sequence_request(c, &fonts, &palette, 1.0).unwrap())
+        .collect();
+    let later = sequence_request(&snap.cells[161], &fonts, &palette, 1.0).unwrap();
+    assert_eq!(accepted.len(), COLOR_CACHE_ENTRIES);
+    let mut layer = SequenceLayer::default();
+    layer
+        .atlas
+        .sync(&accepted, fonts.presentation_generation(), |_| {
+            tile(&fonts, 8)
+        });
+    layer.prepare(gpu, &fonts, &scalar, &snap, &viewport(), &palette, 1.0);
+    assert_eq!(layer.atlas.entries.len(), COLOR_CACHE_ENTRIES);
+    assert!(accepted.iter().all(|r| layer.atlas.entries.contains_key(r)));
+    assert!(!layer.atlas.entries.contains_key(&later));
+    assert!(layer.rows[0].cells[32].request.is_none());
+    assert!(matches!(
+        layer.rows[1].cells[0].resolved,
+        Some(Resolved::Tile(..))
+    ));
+    assert_eq!(layer.rows[1].cells[1].resolved, Some(Resolved::Missing));
+
+    let revision = layer.atlas.revision;
+    snap.cells[33] = Cell::default();
+    layer.prepare_with_dirty(
+        gpu,
+        &fonts,
+        &scalar,
+        &snap,
+        &viewport(),
+        &palette,
+        1.0,
+        &dirty(0, 160),
+        false,
+        false,
+    );
+    assert_eq!(layer.atlas.entries.len(), COLOR_CACHE_ENTRIES);
+    assert!(!layer.atlas.entries.contains_key(&accepted[1]));
+    assert!(layer.atlas.entries.contains_key(&later));
+    assert!(layer.atlas.revision > revision);
+    assert!(sequence_work().built_rows.contains(&1));
+    assert!(matches!(
+        layer.rows[1].cells[1].resolved,
+        Some(Resolved::Tile(..))
+    ));
+    assert_reference(gpu, &fonts, &scalar, &snap, &layer);
 }
 
 #[test]

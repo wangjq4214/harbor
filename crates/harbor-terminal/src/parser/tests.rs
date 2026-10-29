@@ -159,6 +159,10 @@ fn selector_promotes_at_right_edge_without_splitting_or_losing_style() {
     assert_eq!(screen.cell(1, 0).grid_width(), 2);
     assert!(screen.cell(1, 1).wide_continuation);
     assert_eq!(screen.cell(1, 0).fg, crate::Color::Named(1));
+    assert_eq!(
+        screen.cell(1, 1),
+        &crate::Cell::wide_continuation_of(screen.cell(1, 0))
+    );
     feed(&mut parser, &mut screen, b"Z");
     assert_eq!(screen.cell(1, 2).raw_text(), "Z");
     assert_eq!(
@@ -1885,6 +1889,206 @@ fn xtgettcap_embedded_escape_does_not_start_a_new_dcs() {
     // Assert — the embedded escape bytes become payload; garbled hex yields one
     // failure frame and no DECRQSS reply.
     assert_eq!(reply, XTGETTCAP_FAILURE_REPLY);
+}
+
+// Characterize the interaction of both DCS families before sharing their state.
+#[test]
+fn dcs_shared_c1_sequence_framing_across_families() {
+    let mut parser = TerminalParser::default();
+    let mut screen = Screen::new(3, 5);
+    parser.set_c1_enabled(true);
+    for (request, expected) in [
+        (b"\x1bP$qm\x1b\\".as_slice(), b"\x1bP1$r0m\x1b\\".as_slice()),
+        (
+            b"\x90+q7878;524742;7979\x9c",
+            b"\x1bP1+r524742=382F382F38\x1b\\",
+        ),
+        (
+            b"\x1bP+q544E\x1b\\",
+            b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\",
+        ),
+    ] {
+        feed(&mut parser, &mut screen, request);
+        assert_eq!(screen.drain_replies(), expected);
+    }
+}
+
+#[test]
+fn dcs_shared_alternating_fragmented_families_and_bounds() {
+    let mut stream = b"\x1bP$qm\x1b\\".to_vec();
+    stream.extend_from_slice(b"\x90+q7878;524742;7979\x9c");
+    stream.extend_from_slice(b"\x1bP$q");
+    stream.extend(std::iter::repeat_n(b'm', 17));
+    stream.extend_from_slice(b"\x1b\\");
+    stream.extend_from_slice(b"\x1bP+q544E");
+    stream.extend(std::iter::repeat_n(b';', 252)); // exactly 256 Pt bytes
+    stream.extend_from_slice(b"\x1b\\");
+    stream.extend_from_slice(b"\x1bP+q544E");
+    stream.extend(std::iter::repeat_n(b';', 253)); // one byte over the bound
+    stream.extend_from_slice(b"\x1b\\");
+    stream.extend_from_slice(b"\x1bP$qm\x18\x1bP+q544E\x1a\x1bP$qm\x1b\\");
+
+    let expected = [
+        b"\x1bP1$r0m\x1b\\".as_slice(),
+        b"\x1bP1+r524742=382F382F38\x1b\\",
+        b"\x1bP0$r\x1b\\",
+        b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\",
+        b"\x1bP0+r\x1b\\",
+        b"\x1bP1$r0m\x1b\\",
+    ]
+    .concat();
+
+    for split in 0..=stream.len() {
+        let mut screen = Screen::new(3, 5);
+        let mut parser = TerminalParser::default();
+        parser.set_c1_enabled(true);
+        feed(&mut parser, &mut screen, &stream[..split]);
+        feed(&mut parser, &mut screen, &stream[split..]);
+        assert_eq!(screen.drain_replies(), expected, "split at {split}");
+    }
+    for chunk in [1, 2, 3, 7, 16] {
+        let mut screen = Screen::new(3, 5);
+        let mut parser = TerminalParser::default();
+        parser.set_c1_enabled(true);
+        for part in stream.chunks(chunk) {
+            feed(&mut parser, &mut screen, part);
+        }
+        assert_eq!(screen.drain_replies(), expected, "chunk size {chunk}");
+    }
+}
+
+#[test]
+fn dcs_shared_hook_predicate_preserves_subparams_and_private_markers() {
+    // DCS callbacks receive only params/intermediates/final: an empty first
+    // subparameter passes even with further subparameters, and private markers
+    // are not passed through by the core parser. Preserve that behavior.
+    for (params, accepted) in [
+        ("", true),
+        (":", true),
+        (":1", true),
+        ("::2", true),
+        ("?", true),
+        (">:1", true),
+        ("0", false),
+        ("1", false),
+        ("0:1", false),
+        (";", false),
+        ("?0", false),
+    ] {
+        for (intro, payload, success) in [
+            (b'$', b"m".as_slice(), b"\x1bP1$r0m\x1b\\".as_slice()),
+            (
+                b'+',
+                b"524742".as_slice(),
+                b"\x1bP1+r524742=382F382F38\x1b\\".as_slice(),
+            ),
+        ] {
+            let mut query = b"\x1bP".to_vec();
+            query.extend_from_slice(params.as_bytes());
+            query.extend_from_slice(&[intro, b'q']);
+            query.extend_from_slice(payload);
+            query.extend_from_slice(b"\x1b\\");
+            let expected = if accepted { success } else { b"" };
+            assert_eq!(
+                replies_for(&query),
+                expected,
+                "params {params:?}, intro {intro:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dcs_shared_rehook_cancellation_and_string_start_replace_prior_state() {
+    use harbor_parser::VtHandler;
+
+    let mut screen = Screen::new(3, 5);
+    let mut parser = TerminalParser::default();
+    let mut handler = ScreenHandler {
+        screen: &mut screen,
+        dcs: &mut parser.dcs,
+        output_events: &mut parser.output_events,
+        clipboard_delivery: parser.clipboard_delivery,
+    };
+    let params = Params::from(&[None][..]);
+
+    // Re-hooking after overflow changes family and clears both payload and overflow.
+    handler.dcs_hook(&params, b"$", b'q');
+    for _ in 0..17 {
+        handler.dcs_put(b'm');
+    }
+    handler.dcs_hook(&params, b"+", b'q');
+    for &byte in b"544E" {
+        handler.dcs_put(byte);
+    }
+    handler.dcs_unhook(true);
+    assert_eq!(
+        handler.screen.drain_replies(),
+        b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\"
+    );
+
+    handler.dcs_hook(&params, b"+", b'q');
+    for _ in 0..257 {
+        handler.dcs_put(b'5');
+    }
+    handler.dcs_hook(&params, b"$", b'q');
+    handler.dcs_put(b'm');
+    handler.dcs_unhook(true);
+    assert_eq!(handler.screen.drain_replies(), b"\x1bP1$r0m\x1b\\");
+
+    // A nonmatching hook, or each string-family start, cancels an active query.
+    handler.dcs_hook(&params, b"$", b'q');
+    handler.dcs_put(b'm');
+    handler.dcs_hook(&params, b"!", b'q');
+    handler.dcs_unhook(true);
+    assert!(handler.screen.drain_replies().is_empty());
+    for (intro, payload) in [(b'$', b"m".as_slice()), (b'+', b"544E".as_slice())] {
+        for kind in *b"_^X" {
+            handler.dcs_hook(&params, &[intro], b'q');
+            for &byte in payload {
+                handler.dcs_put(byte);
+            }
+            handler.start_string(kind);
+            handler.dcs_put(b'x');
+            handler.dcs_unhook(true);
+            assert!(
+                handler.screen.drain_replies().is_empty(),
+                "intro {intro:?}, kind {kind:?}"
+            );
+        }
+    }
+    handler.dcs_hook(&params, b"+", b'q');
+    for &byte in b"544E" {
+        handler.dcs_put(byte);
+    }
+    handler.dcs_unhook(false);
+    handler.dcs_unhook(true);
+    assert!(handler.screen.drain_replies().is_empty());
+}
+
+#[test]
+fn dcs_shared_close_session_discards_partial_requests() {
+    for (partial, next, expected) in [
+        (
+            b"\x1bP$qm".as_slice(),
+            b"\x1bP+q524742\x1b\\".as_slice(),
+            b"\x1bP1+r524742=382F382F38\x1b\\".as_slice(),
+        ),
+        (
+            b"\x1bP+q544E".as_slice(),
+            b"\x1bP$qm\x1b\\".as_slice(),
+            b"\x1bP1$r0m\x1b\\".as_slice(),
+        ),
+    ] {
+        let mut screen = Screen::new(3, 5);
+        let mut parser = TerminalParser::default();
+        feed(&mut parser, &mut screen, partial);
+        parser.close_session();
+        feed(&mut parser, &mut screen, b"\x1b\\");
+        assert!(screen.drain_replies().is_empty());
+        feed(&mut parser, &mut screen, next);
+        assert_eq!(screen.drain_replies(), expected);
+    }
 }
 
 // ── DECRQM / DECRPM (CSI Ps $ p / CSI Ps ; Ps $ y) ─────────────────────

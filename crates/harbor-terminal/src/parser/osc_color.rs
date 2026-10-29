@@ -33,9 +33,9 @@ pub(super) fn parse_color(payload: &[u8]) -> Option<[u8; 3]> {
             return None;
         }
         return Some([
-            parse_byte(&hex[0..2])?,
-            parse_byte(&hex[2..4])?,
-            parse_byte(&hex[4..6])?,
+            hex::pair(hex[0], hex[1])?,
+            hex::pair(hex[2], hex[3])?,
+            hex::pair(hex[4], hex[5])?,
         ]);
     }
 
@@ -47,12 +47,6 @@ pub(super) fn parse_color(payload: &[u8]) -> Option<[u8; 3]> {
         parse_component(parts.next()?)?,
     ];
     parts.next().is_none().then_some(rgb)
-}
-
-fn parse_byte(digits: &[u8]) -> Option<u8> {
-    let high = hex::digit(*digits.first()?)?;
-    let low = hex::digit(*digits.get(1)?)?;
-    Some((high << 4) | low)
 }
 
 fn parse_component(digits: &[u8]) -> Option<u8> {

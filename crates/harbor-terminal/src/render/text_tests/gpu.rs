@@ -13,10 +13,36 @@ fn cached_resize_preserves_atlas_and_matches_fresh_with_preedit() {
     layer.prepare_with_dirty(gpu, &first.snapshot, &[], &viewport, Some(&preedit));
     let pixels = layer.atlas.pixels().to_vec();
     let glyph = *layer.atlas.glyph_by_char('A').unwrap();
-    for (rows, cols) in [(8, 8), (3, 12), (4, 16), (2, 8)] {
+    let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
+    let mut previous_cells = layer.rows * layer.cols;
+    let mut previous_buffer = layer.vertex_buffer.clone();
+    for (rows, cols, capacity) in [
+        (8, 8, 64),
+        (3, 12, 64),
+        (4, 16, 64),
+        (2, 8, 64),
+        (5, 20, 100),
+    ] {
         engine.resize(rows, cols);
         let update = engine.read_update(Instant::now());
         layer.prepare_with_dirty(gpu, &update.snapshot, &[], &viewport, Some(&preedit));
+        assert_eq!(
+            crate::render::observations::text_uploads(),
+            [(0, rows * cols * bytes_per_cell)]
+        );
+        assert_eq!((layer.rows, layer.cols), (rows, cols));
+        assert_eq!(
+            layer.vertex_buffer.size(),
+            (capacity * bytes_per_cell) as u64
+        );
+        if rows * cols > previous_cells {
+            assert_ne!(layer.vertex_buffer, previous_buffer);
+        } else {
+            assert_eq!(layer.vertex_buffer, previous_buffer);
+        }
+        previous_cells = rows * cols;
+        previous_buffer = layer.vertex_buffer.clone();
+        assert!(!layer.is_dirty());
         layer.prepare_preedit(gpu, Some(&preedit), &update.snapshot, &viewport);
         assert_eq!(layer.atlas.pixels(), pixels);
         let now = layer.atlas.glyph_by_char('A').unwrap();
@@ -29,6 +55,8 @@ fn cached_resize_preserves_atlas_and_matches_fresh_with_preedit() {
             read_draw(&device, &queue, |p| fresh.draw(p)),
             "mismatch at {rows}x{cols}"
         );
+        layer.prepare_with_dirty(gpu, &update.snapshot, &[], &viewport, Some(&preedit));
+        assert!(crate::render::observations::text_uploads().is_empty());
     }
 }
 
@@ -67,6 +95,230 @@ fn resize_discovers_history_suffixes_and_preedit_without_damage() {
         read_draw(&device, &queue, |p| layer.draw(p)),
         read_draw(&device, &queue, |p| fresh.draw(p))
     );
+}
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn scalar_uploads_preserve_incremental_full_and_noop_plans() {
+    use crate::render::observations::text_uploads;
+
+    let (device, queue) = test_gpu();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut engine = Terminal::new_headless(4, 16);
+    engine.put_str("AB\r\nAB\r\nAB");
+    let mut snap = (*engine.read_update(Instant::now()).snapshot).clone();
+    let (mut layer, viewport) = text(gpu, &snap);
+    let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
+    let assert_fresh = |layer: &Text, snap: &TerminalSnapshot| {
+        let (fresh, _) = text(gpu, snap);
+        assert_eq!(
+            read_draw(&device, &queue, |p| layer.draw(p)),
+            read_draw(&device, &queue, |p| fresh.draw(p))
+        );
+    };
+
+    layer.prepare_with_dirty(gpu, &snap, &[], &viewport, None);
+    assert!(text_uploads().is_empty());
+    snap.cells[2 * 16 + 5].ch = 'A';
+    snap.cells[2 * 16 + 6].ch = 'B';
+    snap.cells[16 + 3].ch = 'Z';
+    assert!(layer.atlas.glyph_by_char('Z').is_none());
+    let local = [
+        DirtyRange {
+            row: 2,
+            start_col: 5,
+            end_col: 7,
+        },
+        DirtyRange {
+            row: 1,
+            start_col: 3,
+            end_col: 4,
+        },
+    ];
+    layer.prepare_with_dirty(gpu, &snap, &local, &viewport, None);
+    assert_eq!(
+        text_uploads(),
+        [
+            ((2 * 16 + 5) * bytes_per_cell, 2 * bytes_per_cell),
+            ((16 + 3) * bytes_per_cell, bytes_per_cell)
+        ]
+    );
+    assert!(layer.atlas.glyph_by_char('Z').is_some());
+    assert_fresh(&layer, &snap);
+
+    snap.cells[3 * 16 + 2].ch = 'A';
+    layer.invalidate_projection();
+    layer.prepare_with_dirty(gpu, &snap, &[], &viewport, None);
+    assert_eq!(text_uploads(), [(0, 4 * 16 * bytes_per_cell)]);
+    assert!(!layer.is_dirty());
+    assert_fresh(&layer, &snap);
+    layer.prepare_with_dirty(gpu, &snap, &[], &viewport, None);
+    assert!(text_uploads().is_empty());
+
+    snap.cells[2].ch = 'B';
+    let broad = [
+        DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: 16,
+        },
+        DirtyRange {
+            row: 1,
+            start_col: 0,
+            end_col: 16,
+        },
+    ];
+    layer.prepare_with_dirty(gpu, &snap, &broad, &viewport, None);
+    assert_eq!(text_uploads(), [(0, 4 * 16 * bytes_per_cell)]);
+    assert_fresh(&layer, &snap);
+}
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn scalar_repack_invalidates_all_vertex_uvs_even_for_local_damage() {
+    let (device, queue) = test_gpu();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut engine = Terminal::new_headless(4, 16);
+    engine.put_str("AB\r\nBA");
+    let snap = engine.read_update(Instant::now()).snapshot;
+    let (mut layer, viewport) = text(gpu, &snap);
+    let before = read_draw(&device, &queue, |p| layer.draw(p));
+    let old_positions: Vec<_> = ['A', 'B']
+        .iter()
+        .map(|&ch| {
+            let glyph = layer.atlas.glyph_by_char(ch).unwrap();
+            (glyph.atlas_x, glyph.atlas_y)
+        })
+        .collect();
+
+    // Rebuild real atlas placements, then inject the same invalidation result
+    // that pressure-driven eviction supplies to the renderer.
+    layer.atlas.rebuild(
+        &layer.fonts,
+        &[
+            'A', 'B', 'Á', 'g', 'm', 'Q', 'j', 'M', 'W', 'x', '~', 'Å', 'É', '中',
+        ],
+    );
+    let new_positions: Vec<_> = ['A', 'B']
+        .iter()
+        .map(|&ch| {
+            let glyph = layer.atlas.glyph_by_char(ch).unwrap();
+            (glyph.atlas_x, glyph.atlas_y)
+        })
+        .collect();
+    assert_ne!(old_positions, new_positions);
+    let key = layer.atlas.glyph_by_char('A').unwrap().key;
+    layer.apply_rasterize_result(
+        gpu,
+        harbor_text::RasterizeResult {
+            new_keys: vec![key],
+            evicted: true,
+        },
+    );
+    assert!(layer.is_dirty());
+    layer.prepare_with_dirty(
+        gpu,
+        &snap,
+        &[DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: 1,
+        }],
+        &viewport,
+        None,
+    );
+    assert_eq!(
+        crate::render::observations::text_uploads(),
+        [(0, 4 * 16 * 6 * std::mem::size_of::<TexturedVertex>())]
+    );
+    assert!(!layer.is_dirty());
+    assert_eq!(read_draw(&device, &queue, |p| layer.draw(p)), before);
+}
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn mixed_suffix_overlays_match_filtered_marks_and_skip_hidden_cells() {
+    let (device, queue) = test_gpu();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut snap = (*Terminal::new_headless(2, 8)
+        .read_update(Instant::now())
+        .snapshot)
+        .clone();
+    let mixed = "\u{301}B\u{fe0f}\u{200d}中\u{e0100}\u{327}\u{7}";
+    snap.cells[0].ch = 'e';
+    snap.cells[0].suffix = mixed.into();
+    snap.cells[1].ch = '\u{301}';
+    snap.cells[1].isolated_mark = true;
+    snap.cells[1].suffix = "\u{327}B\u{fe0e}\u{200d}".into();
+    snap.cells[2] = snap.cells[1].clone();
+    snap.cells[2].attrs.set(CellAttrs::CONCEAL);
+    snap.cells[3] = snap.cells[1].clone();
+    snap.cells[3].wide_continuation = true;
+    // Seed the atlas with nonzero-width suffix scalars.
+    snap.cells[4].ch = 'B';
+    snap.cells[5].ch = '中';
+    let (mut layer, viewport) = text(gpu, &snap);
+    let spacing_glyph = layer.atlas.glyph_by_char('B').unwrap();
+    assert!(spacing_glyph.width > 0 && spacing_glyph.height > 0);
+    assert!(!layer.sequences.tile_cells.contains(&0));
+    assert!(!layer.sequences.tile_cells.contains(&1));
+    layer.prepare_preedit(gpu, None, &snap, &viewport);
+    let count = layer.overlay.count();
+    assert!(count > 0);
+    let mixed_pixels = read_draw(&device, &queue, |p| layer.draw(p));
+
+    let mut expected = Vec::new();
+    for (col, glyphs) in [
+        (0, &[('\u{301}', true), ('\u{327}', true)][..]),
+        (
+            1,
+            &[('\u{25cc}', false), ('\u{327}', true), ('\u{301}', true)][..],
+        ),
+    ] {
+        let cell = snap.cell(0, col);
+        let (x, y) = viewport.cell_pos(0, col);
+        let view = OverlayCell {
+            x,
+            baseline: y + layer.metrics.ascent.ceil(),
+            color: glyph_color_with_palette(&layer.palette, cell.fg, cell.bg, cell.attrs),
+            surface: viewport.surface_dimensions(),
+            width: cell.grid_width(),
+        };
+        for &(ch, center) in glyphs {
+            append_overlay_glyph(
+                &layer.atlas,
+                &layer.metrics,
+                &mut expected,
+                ch,
+                &view,
+                center,
+            );
+        }
+    }
+    assert_eq!(count as usize, expected.len());
+    let reference_buffer = crate::render::gpu::create_vertex_buffer(&device, &expected);
+    let reference = read_draw(&device, &queue, |pass| {
+        pass.set_pipeline(&layer.pipeline);
+        pass.set_bind_group(0, &layer.gpu_atlas.bind_group, &[]);
+        pass.set_vertex_buffer(0, layer.vertex_buffer.slice(..));
+        pass.draw(0..(snap.rows * snap.cols * 6) as u32, 0..1);
+        layer.sequences.draw(pass);
+        pass.set_pipeline(&layer.pipeline);
+        pass.set_bind_group(0, &layer.gpu_atlas.bind_group, &[]);
+        pass.set_vertex_buffer(0, reference_buffer.slice(..));
+        pass.draw(0..expected.len() as u32, 0..1);
+    });
+    assert_eq!(mixed_pixels, reference);
+
+    snap.cells[0].suffix = "\u{301}\u{327}".into();
+    snap.cells[1].suffix = "\u{327}".into();
+    snap.cells[2].suffix.clear();
+    snap.cells[2].isolated_mark = false;
+    snap.cells[3].suffix.clear();
+    snap.cells[3].isolated_mark = false;
+    layer.prepare_preedit(gpu, None, &snap, &viewport);
+    assert_eq!(layer.overlay.count(), count);
+    assert_eq!(read_draw(&device, &queue, |p| layer.draw(p)), mixed_pixels);
 }
 
 #[test]

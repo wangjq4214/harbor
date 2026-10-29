@@ -361,8 +361,8 @@ pub struct Decoration {
     metrics: TextMetrics,
     palette: Palette,
     dirty: bool,
+    // Retain a valid projection through invalidation, but not a rejected preparation.
     viewport: Option<RenderViewport>,
-    drawable: bool,
     capacity: usize,
 }
 
@@ -402,7 +402,6 @@ impl Decoration {
             palette,
             dirty: true,
             viewport: None,
-            drawable: false,
             capacity: 0,
         };
         layer.prepare_with_dirty(gpu, snap, &[], &viewport);
@@ -427,7 +426,7 @@ impl Decoration {
     ) {
         let count = slot_count(snap, gpu.device().limits().max_buffer_size);
         if !valid_metrics(&self.metrics) || !viewport.is_drawable() || count.is_none() {
-            self.drawable = false;
+            self.viewport = None;
             self.dirty = true;
             return;
         }
@@ -526,7 +525,6 @@ impl Decoration {
         self.cols = snap.cols;
         self.dirty = false;
         self.viewport = Some(*viewport);
-        self.drawable = true;
     }
 
     pub fn prepare(
@@ -541,7 +539,7 @@ impl Decoration {
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
-        if !self.drawable {
+        if self.viewport.is_none() {
             return;
         }
         pass.set_pipeline(&self.pipeline);

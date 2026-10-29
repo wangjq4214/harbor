@@ -6,13 +6,10 @@
 //!
 //! Numeric capabilities use hex-encoded decimal values, not name-only booleans.
 
-use super::dcs::{Completion, DcsCollector};
 use super::hex;
-use crate::screen::Screen;
-use harbor_parser::Params;
 
 /// Maximum Pt bytes retained for a single XTGETTCAP request.
-const MAX_PT: usize = 256;
+pub(super) const MAX_PT: usize = 256;
 /// Maximum framed reply bytes allowed for one XTGETTCAP response.
 const MAX_REPLY: usize = 256;
 
@@ -45,51 +42,10 @@ fn lookup(name: &[u8]) -> Option<CapabilityValue> {
     }
 }
 
-/// One active XTGETTCAP request collected across streaming DCS callbacks.
-#[derive(Debug)]
-pub(super) struct XtgettcapRequest {
-    collector: DcsCollector,
-}
-
-impl Default for XtgettcapRequest {
-    fn default() -> Self {
-        Self {
-            collector: DcsCollector::new(MAX_PT),
-        }
-    }
-}
-
-impl XtgettcapRequest {
-    /// Begin collecting when the DCS introducer is exactly `DCS + q`.
-    pub(super) fn hook(&mut self, params: &Params, intermediates: &[u8], action: u8) {
-        self.collector.hook(params, intermediates, action, b'+');
-    }
-
-    /// Append a payload byte while under the local Pt bound.
-    pub(super) fn put(&mut self, byte: u8) {
-        self.collector.put(byte);
-    }
-
-    /// Complete the request: cancel silently, or queue one success/failure reply.
-    pub(super) fn finish(&mut self, screen: &mut Screen, terminated: bool) {
-        let reply = match self.collector.complete(terminated) {
-            Completion::Silent => return,
-            Completion::Overflow => failure_frame(),
-            Completion::Payload(pt) => build_reply(&pt),
-        };
-        screen.push_reply(&reply);
-    }
-
-    /// Drop any pending request (e.g. when APC/PM/SOS starts).
-    pub(super) fn cancel(&mut self) {
-        self.collector.cancel();
-    }
-}
-
 /// Decodes the semicolon-separated hex names, resolves each against the
 /// registry, and frames the reply. An empty or unmatched query yields the
 /// empty failure frame.
-fn build_reply(pt: &[u8]) -> Vec<u8> {
+pub(super) fn build_reply(pt: &[u8]) -> Vec<u8> {
     const PREFIX: &[u8] = b"\x1bP1+r";
     let mut frame = PREFIX.to_vec();
     for segment in pt.split(|&byte| byte == b';') {
@@ -127,7 +83,7 @@ fn build_reply(pt: &[u8]) -> Vec<u8> {
     frame
 }
 
-fn failure_frame() -> Vec<u8> {
+pub(super) fn failure_frame() -> Vec<u8> {
     b"\x1bP0+r\x1b\\".to_vec()
 }
 
@@ -139,9 +95,7 @@ fn hex_decode(input: &[u8]) -> Option<Vec<u8>> {
     }
     let mut out = Vec::with_capacity(input.len() / 2);
     for pair in input.as_chunks::<2>().0 {
-        let hi = hex::digit(pair[0])?;
-        let lo = hex::digit(pair[1])?;
-        out.push(hi << 4 | lo);
+        out.push(hex::pair(pair[0], pair[1])?);
     }
     Some(out)
 }
@@ -149,10 +103,13 @@ fn hex_decode(input: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::dcs::{DcsCollector, RequestKind};
+    use crate::screen::Screen;
+    use harbor_parser::Params;
 
-    fn hooked() -> XtgettcapRequest {
+    fn hooked() -> DcsCollector {
         let params = Params::from(&[None][..]);
-        let mut request = XtgettcapRequest::default();
+        let mut request = DcsCollector::default();
         request.hook(&params, b"+", b'q');
         request
     }
@@ -212,25 +169,20 @@ mod tests {
         let empty = Params::from(&[None][..]);
         let with_param = Params::from(&[Some(1)][..]);
 
-        let mut request = XtgettcapRequest::default();
+        let mut request = DcsCollector::default();
         request.hook(&empty, b"+", b'q');
-        assert!(request.collector.active);
+        assert_eq!(request.kind, Some(RequestKind::Xtgettcap));
 
         request.hook(&empty, b"$", b'q');
-        assert!(
-            !request.collector.active,
-            "DECRQSS introducer must not activate"
+        assert_eq!(
+            request.kind,
+            Some(RequestKind::Decrqss),
+            "DECRQSS introducer must not activate XTGETTCAP"
         );
         request.hook(&empty, b"+", b'p');
-        assert!(
-            !request.collector.active,
-            "wrong final byte must not activate"
-        );
+        assert_eq!(request.kind, None, "wrong final byte must not activate");
         request.hook(&with_param, b"+", b'q');
-        assert!(
-            !request.collector.active,
-            "parameterized DCS must not activate"
-        );
+        assert_eq!(request.kind, None, "parameterized DCS must not activate");
     }
 
     #[test]
@@ -239,8 +191,8 @@ mod tests {
         for _ in 0..=MAX_PT {
             request.put(b'x');
         }
-        assert!(request.collector.overflow);
-        assert_eq!(request.collector.payload.len(), MAX_PT);
+        assert!(request.overflow);
+        assert_eq!(request.payload.len(), MAX_PT);
     }
 
     #[test]
@@ -334,7 +286,7 @@ mod tests {
     #[test]
     fn should_ignore_payload_bytes_when_no_request_is_active() {
         // Arrange — a default collector that never saw a DCS hook.
-        let mut request = XtgettcapRequest::default();
+        let mut request = DcsCollector::default();
 
         // Act — stray payload bytes, then a terminated finish.
         request.put(b'5');
@@ -344,7 +296,7 @@ mod tests {
 
         // Assert — nothing was retained and no reply is queued.
         assert_eq!(screen.drain_replies(), Vec::<u8>::new());
-        assert!(!request.collector.active);
+        assert_eq!(request.kind, None);
     }
 
     #[test]
@@ -356,19 +308,15 @@ mod tests {
         for _ in 0..MAX_PT {
             request.put(b'x');
         }
-        let at_bound_overflow = request.collector.overflow;
-        let retained_at_bound = request.collector.payload.len();
+        let at_bound_overflow = request.overflow;
+        let retained_at_bound = request.payload.len();
         request.put(b'x');
 
         // Assert — the bound is inclusive up to MAX_PT, then retention caps.
         assert!(!at_bound_overflow, "exactly MAX_PT bytes must not overflow");
         assert_eq!(retained_at_bound, MAX_PT);
-        assert!(request.collector.overflow);
-        assert_eq!(
-            request.collector.payload.len(),
-            MAX_PT,
-            "retained bytes stay capped"
-        );
+        assert!(request.overflow);
+        assert_eq!(request.payload.len(), MAX_PT, "retained bytes stay capped");
     }
 
     #[test]

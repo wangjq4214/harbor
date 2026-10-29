@@ -1,6 +1,6 @@
 //! Whole-unit terminal projection, fitted geometry and lazy GPU composition.
 use super::{
-    color_atlas::{COLOR_ATLAS_SIDE, COLOR_CACHE_ENTRIES, ColorAtlas},
+    color_atlas::{COLOR_ATLAS_SIDE, ColorAtlas},
     gpu::{self, ColoredVertex, TerminalGpuAccess, TexturedVertex, VertexBuffer},
     text::glyph_color_with_palette,
 };
@@ -303,16 +303,11 @@ impl SequenceLayer {
         }
         // Only retained candidates are visited here, not every snapshot cell. Keep
         // row-major admission deterministic, including promotion after overflow.
-        let mut seen = HashSet::new();
-        let requests: Vec<_> = self
+        let requests = self
             .rows
             .iter()
             .flat_map(|r| &r.cells)
-            .filter_map(|c| c.request.as_ref())
-            .filter(|r| seen.insert((*r).clone()))
-            .take(COLOR_CACHE_ENTRIES)
-            .cloned()
-            .collect();
+            .filter_map(|c| c.request.as_ref());
         let before: HashMap<_, _> = self
             .atlas
             .entries
@@ -327,7 +322,7 @@ impl SequenceLayer {
                 )
             })
             .collect();
-        let changes = self.atlas.sync(&requests, key.generation, |r| {
+        let changes = self.atlas.sync(requests, key.generation, |r| {
             (*fonts.present_sequence(r)).clone()
         });
         let changed_requests: HashSet<_> = before

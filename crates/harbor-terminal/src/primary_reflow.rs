@@ -93,8 +93,8 @@ impl ReflowedRow {
 struct ReflowedAtom {
     atom_offset: LogicalAtomOffset,
     source_span: SourceSpan,
-    source_position: ReflowPosition,
-    position: Option<ReflowPosition>,
+    // Coordinates before history eviction; retained coordinates are derived on projection.
+    position: ReflowPosition,
     end_col: usize,
 }
 
@@ -108,12 +108,18 @@ pub(crate) enum CursorRetention {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ReflowedLine {
     source_generations: Vec<u64>,
+    // Packed-row range before eviction, retained-row range afterward. A zero
+    // count means the line was completely evicted, including empty lines.
     first_row: usize,
     row_count: usize,
-    retained_first_row: Option<usize>,
-    retained_row_count: usize,
     atom_start: LogicalAtomOffset,
     atoms: Vec<ReflowedAtom>,
+}
+
+impl ReflowedLine {
+    fn retained_first_row(&self) -> Option<usize> {
+        (self.row_count != 0).then_some(self.first_row)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,7 +127,6 @@ pub(crate) struct PreparedPrimaryResize {
     source_cols: usize,
     target_rows: usize,
     cols: usize,
-    rows: Vec<ReflowedRow>,
     lines: HashMap<LogicalLineId, ReflowedLine>,
     normal: NormalBuf,
     dropped_rows: usize,
@@ -264,8 +269,6 @@ impl PreparedPrimaryResize {
                         source_generations,
                         first_row,
                         row_count,
-                        retained_first_row: Some(first_row),
-                        retained_row_count: row_count,
                         atom_start,
                         atoms,
                     },
@@ -292,7 +295,7 @@ impl PreparedPrimaryResize {
                             // No retained live atom: the final row is the empty
                             // boundary row, not the historical start of the line.
                             .map_or(line.first_row + line.row_count - 1, |atom| {
-                                atom.source_position.row
+                                atom.position.row
                             })
                     })
                 })
@@ -328,8 +331,6 @@ impl PreparedPrimaryResize {
                     source_generations: Vec::new(),
                     first_row,
                     row_count: 1,
-                    retained_first_row: Some(first_row),
-                    retained_row_count: 1,
                     atom_start: LogicalAtomOffset(0),
                     atoms: Vec::new(),
                 },
@@ -360,7 +361,6 @@ impl PreparedPrimaryResize {
             source_cols: normal.cols(),
             target_rows,
             cols,
-            rows,
             lines,
             normal: detached,
             dropped_rows,
@@ -368,7 +368,9 @@ impl PreparedPrimaryResize {
             saved_cursor: PreparedProjection::Absent,
             review: PreparedProjection::Absent,
         };
-        prepared.validate()?;
+        // Keep validation after detached-ring construction so preparation errors
+        // retain their original precedence, then discard the temporary packed rows.
+        prepared.validate(&rows)?;
         Ok(prepared)
     }
 
@@ -378,8 +380,8 @@ impl PreparedPrimaryResize {
     }
 
     #[cfg(test)]
-    pub(crate) fn rows(&self) -> &[ReflowedRow] {
-        &self.rows
+    pub(crate) fn rows(&self) -> Vec<crate::normal_buf::RetainedRow<'_>> {
+        self.normal.retained_rows().collect()
     }
 
     #[cfg(test)]
@@ -455,7 +457,7 @@ impl PreparedPrimaryResize {
     pub(crate) fn project_selection(&self, anchor: ContentAnchor) -> Option<GenPos> {
         let line = self.lines.get(&anchor.line_id)?;
         if line.atoms.is_empty() {
-            let row = line.retained_first_row?;
+            let row = line.retained_first_row()?;
             return self.final_gen_pos(ReflowPosition {
                 row,
                 col: anchor
@@ -471,14 +473,14 @@ impl PreparedPrimaryResize {
                 .iter()
                 .find(|atom| atom.atom_offset.0 == previous_offset)
             {
-                let position = atom.position?;
+                let position = self.retained_atom_position(atom)?;
                 return self.final_gen_pos(ReflowPosition {
                     row: position.row,
                     col: atom.end_col,
                 });
             }
             return line
-                .retained_first_row
+                .retained_first_row()
                 .and_then(|row| self.final_gen_pos(ReflowPosition { row, col: 0 }));
         }
         if let Some(atom) = line
@@ -486,7 +488,7 @@ impl PreparedPrimaryResize {
             .iter()
             .find(|atom| atom.atom_offset == anchor.offset)
         {
-            let position = atom.position?;
+            let position = self.retained_atom_position(atom)?;
             return self.final_gen_pos(match anchor.affinity {
                 Affinity::Before => position,
                 Affinity::After => ReflowPosition {
@@ -503,15 +505,15 @@ impl PreparedPrimaryResize {
             .atoms
             .iter()
             .rev()
-            .find(|atom| atom.position.is_some())?;
-        let position = atom.position?;
+            .find(|atom| atom.position.row >= self.dropped_rows)?;
+        let position = self.retained_atom_position(atom)?;
         self.final_gen_pos(match anchor.affinity {
             Affinity::Before => ReflowPosition {
                 row: position.row,
                 col: atom.end_col,
             },
             Affinity::After => ReflowPosition {
-                row: line.retained_first_row? + line.retained_row_count.saturating_sub(1),
+                row: line.retained_first_row()? + line.row_count.saturating_sub(1),
                 col: self.cols.saturating_sub(1),
             },
         })
@@ -521,7 +523,7 @@ impl PreparedPrimaryResize {
         let line = self.lines.get(&anchor.line_id)?;
         if line.atoms.is_empty() {
             let position = self.final_gen_pos(ReflowPosition {
-                row: line.retained_first_row?,
+                row: line.retained_first_row()?,
                 col: anchor
                     .projection_hint_col()
                     .unwrap_or(0)
@@ -539,10 +541,10 @@ impl PreparedPrimaryResize {
                 .iter()
                 .find(|atom| atom.atom_offset.0 == previous_offset)
             {
-                return self.insertion_after(*atom);
+                return self.insertion_after(atom);
             }
             let position = self.final_gen_pos(ReflowPosition {
-                row: line.retained_first_row?,
+                row: line.retained_first_row()?,
                 col: 0,
             })?;
             return Some(ProjectedInsertion {
@@ -557,10 +559,10 @@ impl PreparedPrimaryResize {
         {
             return match anchor.affinity {
                 Affinity::Before => Some(ProjectedInsertion {
-                    position: self.final_gen_pos(atom.position?)?,
+                    position: self.final_gen_pos(self.retained_atom_position(atom)?)?,
                     pending_wrap: false,
                 }),
-                Affinity::After => self.insertion_after(*atom),
+                Affinity::After => self.insertion_after(atom),
             };
         }
         let end_offset = line.atom_start.0.checked_add(line.atoms.len())?;
@@ -569,8 +571,8 @@ impl PreparedPrimaryResize {
                 .atoms
                 .iter()
                 .rev()
-                .find(|atom| atom.position.is_some())?;
-            let mut insertion = self.insertion_after(*atom)?;
+                .find(|atom| atom.position.row >= self.dropped_rows)?;
+            let mut insertion = self.insertion_after(atom)?;
             // An insertion point beyond the last written atom can be parked in
             // unwritten cells; keep that gap when the target row has room.
             if let Some(hint) = anchor.projection_hint()
@@ -656,7 +658,7 @@ impl PreparedPrimaryResize {
     }
 
     fn final_gen_pos(&self, position: ReflowPosition) -> Option<GenPos> {
-        if position.row >= self.rows.len() || position.col >= self.cols {
+        if position.row >= self.normal.retained_rows().len() || position.col >= self.cols {
             return None;
         }
         let row = u64::try_from(position.row).ok()?;
@@ -666,8 +668,15 @@ impl PreparedPrimaryResize {
         ))
     }
 
-    fn insertion_after(&self, atom: ReflowedAtom) -> Option<ProjectedInsertion> {
-        let position = atom.position?;
+    fn retained_atom_position(&self, atom: &ReflowedAtom) -> Option<ReflowPosition> {
+        Some(ReflowPosition {
+            row: atom.position.row.checked_sub(self.dropped_rows)?,
+            col: atom.position.col,
+        })
+    }
+
+    fn insertion_after(&self, atom: &ReflowedAtom) -> Option<ProjectedInsertion> {
+        let position = self.retained_atom_position(atom)?;
         let insertion_col = atom.end_col.saturating_add(1);
         Some(ProjectedInsertion {
             position: self.final_gen_pos(ReflowPosition {
@@ -678,17 +687,17 @@ impl PreparedPrimaryResize {
         })
     }
 
-    fn validate(&self) -> Result<(), PreparationError> {
+    fn validate(&self, rows: &[ReflowedRow]) -> Result<(), PreparationError> {
         if self.normal.rows() != self.target_rows
             || self.normal.cols() != self.cols
-            || self.normal.scroll_count().checked_add(self.target_rows) != Some(self.rows.len())
+            || self.normal.scroll_count().checked_add(self.target_rows) != Some(rows.len())
         {
             return Err(PreparationError::Invariant(
                 "detached ring placement disagrees with prepared rows",
             ));
         }
         let mut previous: Option<(RowMetadata, usize)> = None;
-        for row in &self.rows {
+        for row in rows {
             if row.cells.len() != self.cols || row.cell_state.len() != self.cols {
                 return Err(PreparationError::Invariant("projected row width mismatch"));
             }
@@ -754,18 +763,6 @@ impl PreparedPrimaryResize {
         }
         Ok(())
     }
-}
-
-/// Only explicit, undecorated spaces at the *logical* end are disposable.
-fn retained_glyph_count(line: &LogicalLine, cursors: &[CursorRetention]) -> usize {
-    let visible_end = line
-        .glyphs
-        .iter()
-        .rposition(|logical| {
-            logical.glyph.cell != Cell::default() || !logical.glyph.cell_state.is_explicit()
-        })
-        .map_or(0, |index| index + 1);
-    visible_end.max(cursor_retained_glyph_count(line, cursors))
 }
 
 fn cursor_retained_glyph_count(line: &LogicalLine, cursors: &[CursorRetention]) -> usize {
@@ -849,17 +846,11 @@ fn evict_history_overflow(
             .ok_or(PreparationError::ArithmeticOverflow)?;
         let retained_start = line.first_row.max(dropped_rows);
         if retained_start < end {
-            line.retained_first_row = Some(retained_start - dropped_rows);
-            line.retained_row_count = end - retained_start;
+            line.first_row = retained_start - dropped_rows;
+            line.row_count = end - retained_start;
         } else {
-            line.retained_first_row = None;
-            line.retained_row_count = 0;
-        }
-        for atom in &mut line.atoms {
-            atom.position = (atom.source_position.row >= dropped_rows).then(|| ReflowPosition {
-                row: atom.source_position.row - dropped_rows,
-                col: atom.source_position.col,
-            });
+            line.first_row = 0;
+            line.row_count = 0;
         }
     }
     Ok(dropped_rows)
@@ -883,7 +874,16 @@ fn pack_line(
         line.head_truncated,
     )?;
     let mut atoms = Vec::new();
-    let retained_count = retained_glyph_count(line, retained_cursors);
+    // Only explicit, undecorated spaces at the *logical* end are disposable.
+    let visible_end = line
+        .glyphs
+        .iter()
+        .rposition(|logical| {
+            logical.glyph.cell != Cell::default() || !logical.glyph.cell_state.is_explicit()
+        })
+        .map_or(0, |index| index + 1);
+    let cursor_floor = cursor_retained_glyph_count(line, retained_cursors);
+    let retained_count = visible_end.max(cursor_floor);
     // The full retained extent still owns the styles we can paint. ConPTY's
     // live geometry ends at text/cursors/already-wrapped prefixes, not styles.
     // History remains fully reflowed and the live-top split remains explicit.
@@ -905,7 +905,7 @@ fn pack_line(
                     || cell.hyperlink.is_some()
             })
             .map_or(0, |index| index + 1);
-        geometry_end.max(cursor_retained_glyph_count(line, retained_cursors))
+        geometry_end.max(cursor_floor)
     });
     // A wrapForced prefix can contain ordinary blanks which the generic
     // retention policy trims. Keep that producer footprint in live reflow too.
@@ -979,8 +979,7 @@ fn pack_line(
         atoms.push(ReflowedAtom {
             atom_offset: logical.atom_offset,
             source_span: logical.source_span,
-            source_position: position,
-            position: Some(position),
+            position,
             end_col: col + width - 1,
         });
     }

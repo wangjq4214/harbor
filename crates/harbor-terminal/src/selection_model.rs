@@ -317,8 +317,7 @@ impl SelectionModel {
         self.stop_auto_scroll();
 
         // Click without drag → clear selection.
-        let is_zero_width = self.range.is_some_and(|sel| sel.anchor == sel.cursor);
-        if is_zero_width {
+        if self.is_range_empty() {
             self.range = None;
             self.anchored_range = None;
         }
