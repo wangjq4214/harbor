@@ -482,7 +482,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - references Logical Line Identity
 
 ### Logical Reflow Atom
-- **Definition:** Temporary shared reflow/copy unit: a complete one-/two-cell glyph with style, hyperlink and meaningful-blank state, or an explicit hard break. Continuations and generated edge padding are projection details, not independent content.
+- **Definition:** Temporary shared reflow/copy unit: a complete one-/two-cell glyph with style, hyperlink and meaningful-blank state, or an explicit hard break. Continuations and generated edge padding are projection details, not independent content. Reflow uses read-only source locations and interpretation/layout metadata in intermediate projections, with one source-cell payload copy into independently owned final storage; this does not require owned intermediate glyph cells or a committed grid referencing the old buffer. See [ADR 0099](./adr/0099-read-only-reflow-projection-and-final-cell-copy.md) for the ownership boundary and scoped verification.
 - **Synonyms:** reflow atom, logical atom stream
 - **Relationships:**
   - contains Meaningful Blank

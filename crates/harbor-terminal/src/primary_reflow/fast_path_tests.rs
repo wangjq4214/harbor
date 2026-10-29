@@ -193,6 +193,16 @@ fn malformed_input_retains_decode_errors_and_does_not_mutate_source() {
                 reference::decode_lines_active(&normal, count)
             );
         }
+        assert_eq!(
+            logical_content::visit(&normal, |_| Ok(())),
+            logical_content::decode(&normal).map(|_| ())
+        );
+        for count in [0, 1, 7, 8] {
+            assert_eq!(
+                logical_content::project_lines_active(&normal, count).map(|_| ()),
+                reference::decode_lines_active(&normal, count).map(|_| ())
+            );
+        }
         let before = normal.clone();
         for viewport in [ReflowViewport::PullHistory, ReflowViewport::PreserveLiveTop] {
             assert_eq!(
@@ -241,9 +251,239 @@ fn malformed_glyphs_cannot_hide_inside_simple_runs() {
         let expected = reference::pack_line(&line, 7, None, &[], &mut expected_rows);
         let mut actual_rows = Vec::new();
         assert_eq!(
-            pack_line(&mut line, 7, None, &[], &mut actual_rows),
+            pack_line(&mut borrow_line(&line), 7, None, &[], &mut actual_rows),
             expected
         );
         assert!(expected.is_err());
+    }
+}
+
+fn borrow_line(line: &LogicalLine) -> LogicalLine<&Cell> {
+    LogicalLine {
+        line_id: line.line_id,
+        head_truncated: line.head_truncated,
+        atom_start: line.atom_start,
+        cell_start: line.cell_start,
+        generations: line.generations.clone(),
+        glyphs: line
+            .glyphs
+            .iter()
+            .map(|logical| crate::logical_content::LogicalLineGlyph {
+                atom_offset: logical.atom_offset,
+                source_span: logical.source_span,
+                glyph: LogicalGlyph {
+                    cell: &logical.glyph.cell,
+                    width: logical.glyph.width,
+                    meaningful_blank: logical.glyph.meaningful_blank,
+                    cell_state: logical.glyph.cell_state,
+                    continuation_state: logical.glyph.continuation_state,
+                },
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn intermediate_projections_borrow_payloads_and_materialize_independent_cells() {
+    use projection::SOURCE_COPIES;
+
+    let normal = mixed_source(&[3, 5, 2, 9, 1, 0, 6, 7], 16, 3);
+    SOURCE_COPIES.set(0);
+    let mut lines =
+        logical_content::project_lines_active(&normal, normal.scroll_count() + normal.rows())
+            .unwrap();
+    let mut rows = Vec::new();
+    for line in &mut lines {
+        for logical in &line.glyphs {
+            let source = normal.retained_row(logical.source_span.generation).unwrap();
+            assert!(std::ptr::eq(
+                logical.glyph.cell,
+                &source.cells[logical.source_span.start_col]
+            ));
+        }
+        pack_line(line, 3, None, &[], &mut rows).unwrap();
+    }
+    assert_eq!(SOURCE_COPIES.get(), 0);
+    let source_count = rows
+        .iter()
+        .flat_map(|row| &row.cells)
+        .filter(|cell| matches!(cell, ProjectedCell::Source(_)))
+        .count();
+    assert!(source_count > 0);
+    let detached = NormalBuf::from_reflowed_rows(
+        &rows,
+        rows.len(),
+        3,
+        harbor_config::HistoryLimits {
+            max_rows: 0,
+            max_bytes: 0,
+        },
+        normal.next_logical_line_id(),
+        normal.newest_generation_exclusive().unwrap(),
+        0,
+    )
+    .unwrap();
+    assert_eq!(SOURCE_COPIES.get(), source_count);
+    let mut suffixes = 0;
+    for (projected, retained) in rows.iter().zip(detached.retained_rows()) {
+        assert_eq!(projected.metadata, retained.metadata);
+        assert_eq!(projected.cell_state, retained.cell_state);
+        assert_eq!(
+            NormalBuf::row_source_bytes(&projected.cells, projected.metadata.meaningful_extent),
+            NormalBuf::row_source_bytes(retained.cells, retained.metadata.meaningful_extent)
+        );
+        for (location, cell) in projected.cells.iter().zip(retained.cells) {
+            match location {
+                ProjectedCell::Source(source) => {
+                    assert_eq!(cell, *source);
+                    if !source.suffix.is_empty() {
+                        suffixes += 1;
+                        assert_ne!(cell.suffix.as_ptr(), source.suffix.as_ptr());
+                    }
+                }
+                ProjectedCell::Continuation(lead) => {
+                    assert_eq!(*cell, Cell::wide_continuation_of(lead))
+                }
+                ProjectedCell::Padding => assert_eq!(*cell, Cell::default()),
+            }
+        }
+    }
+    assert!(suffixes > 0);
+    drop(rows);
+    drop(lines);
+    drop(normal);
+    assert_eq!(
+        detached
+            .retained_rows()
+            .flat_map(|row| row.cells)
+            .filter(|cell| !cell.suffix.is_empty())
+            .count(),
+        suffixes
+    );
+}
+
+#[test]
+fn final_copy_excludes_trimmed_clipped_and_evicted_payloads() {
+    use harbor_config::HistoryLimits;
+    use projection::SOURCE_COPIES;
+
+    for (data, scrolls, rows, cols, viewport, limits) in [
+        (
+            0,
+            0,
+            8,
+            3,
+            ReflowViewport::PullHistory,
+            HistoryLimits {
+                max_rows: 4,
+                max_bytes: 64,
+            },
+        ),
+        (
+            1,
+            0,
+            8,
+            3,
+            ReflowViewport::PreserveLiveTop,
+            HistoryLimits {
+                max_rows: 4,
+                max_bytes: 64,
+            },
+        ),
+        (
+            3,
+            7,
+            2,
+            3,
+            ReflowViewport::PullHistory,
+            HistoryLimits {
+                max_rows: 1,
+                max_bytes: 4,
+            },
+        ),
+        (
+            5,
+            3,
+            2,
+            3,
+            ReflowViewport::PullHistory,
+            HistoryLimits {
+                max_rows: 1,
+                max_bytes: 4,
+            },
+        ),
+    ] {
+        let normal = mixed_source(&[data], 16, scrolls);
+        let source_count: usize = normal
+            .retained_rows()
+            .map(|row| {
+                row.cells[..row.metadata.meaningful_extent]
+                    .iter()
+                    .filter(|cell| !cell.wide_continuation)
+                    .count()
+            })
+            .sum();
+        let expected = reference::prepare_geometry_with_limits(
+            &normal,
+            rows,
+            cols,
+            None,
+            viewport,
+            &[],
+            limits,
+        )
+        .unwrap();
+        SOURCE_COPIES.set(0);
+        let actual = PreparedPrimaryResize::prepare_geometry_with_limits(
+            &normal,
+            rows,
+            cols,
+            None,
+            viewport,
+            &[],
+            limits,
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+        let retained_count: usize = actual
+            .normal()
+            .retained_rows()
+            .map(|row| {
+                row.cells[..row.metadata.meaningful_extent]
+                    .iter()
+                    .filter(|cell| !cell.wide_continuation)
+                    .count()
+            })
+            .sum();
+        assert_eq!(SOURCE_COPIES.get(), retained_count);
+        assert!(retained_count < source_count);
+    }
+}
+
+#[test]
+fn failed_projection_does_not_copy_payloads_or_mutate_source() {
+    use projection::SOURCE_COPIES;
+
+    let mut normal = mixed_source(&[3], 16, 0);
+    for cols in [usize::MAX, 3] {
+        if cols == 3 {
+            normal.cell_mut(7, 3).wide_continuation = true;
+        }
+        let before = normal.clone();
+        SOURCE_COPIES.set(0);
+        assert!(
+            PreparedPrimaryResize::prepare_geometry_with_limits(
+                &normal,
+                8,
+                cols,
+                None,
+                ReflowViewport::PullHistory,
+                &[],
+                normal.history_limits()
+            )
+            .is_err()
+        );
+        assert_eq!(SOURCE_COPIES.get(), 0);
+        assert_eq!(normal, before);
     }
 }

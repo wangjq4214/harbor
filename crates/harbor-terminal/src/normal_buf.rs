@@ -297,11 +297,13 @@ impl NormalBuf {
 
     /// Only retained source cells count: unwritten tail padding and wide continuation
     /// slots have no source bytes. Interior and explicit/styled spaces do count.
-    pub(crate) fn row_source_bytes(cells: &[Cell], extent: usize) -> usize {
+    pub(crate) fn row_source_bytes<C: crate::primary_reflow::ReflowCell>(
+        cells: &[C],
+        extent: usize,
+    ) -> usize {
         cells[..extent]
             .iter()
-            .filter(|cell| !cell.wide_continuation)
-            .map(|cell| cell.ch.len_utf8() + cell.suffix.len())
+            .map(crate::primary_reflow::ReflowCell::source_bytes)
             .sum()
     }
 
@@ -934,8 +936,8 @@ impl NormalBuf {
         Ok(detached)
     }
 
-    pub(crate) fn from_reflowed_rows(
-        retained: &[crate::primary_reflow::ReflowedRow],
+    pub(crate) fn from_reflowed_rows<C: crate::primary_reflow::ReflowCell>(
+        retained: &[crate::primary_reflow::ReflowedRow<C>],
         visible_rows: usize,
         cols: usize,
         limits: HistoryLimits,
@@ -1009,7 +1011,9 @@ impl NormalBuf {
             }
             let ring_row = (first_ring_row + offset) % total_rows;
             let start = ring_row * cols;
-            cells[start..start + cols].clone_from_slice(&row.cells);
+            for (target, source) in cells[start..start + cols].iter_mut().zip(&row.cells) {
+                *target = source.materialize();
+            }
             cell_state[start..start + cols].copy_from_slice(&row.cell_state);
             row_metadata[ring_row] = row.metadata;
         }

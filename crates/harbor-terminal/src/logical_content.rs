@@ -17,8 +17,8 @@ pub(crate) struct SourceSpan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LogicalGlyph {
-    pub(crate) cell: Cell,
+pub(crate) struct LogicalGlyph<C = Cell> {
+    pub(crate) cell: C,
     pub(crate) width: u8,
     pub(crate) meaningful_blank: bool,
     pub(crate) cell_state: CellState,
@@ -26,29 +26,29 @@ pub(crate) struct LogicalGlyph {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LogicalLineGlyph {
+pub(crate) struct LogicalLineGlyph<C = Cell> {
     pub(crate) atom_offset: LogicalAtomOffset,
     pub(crate) source_span: SourceSpan,
-    pub(crate) glyph: LogicalGlyph,
+    pub(crate) glyph: LogicalGlyph<C>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LogicalLine {
+pub(crate) struct LogicalLine<C = Cell> {
     pub(crate) line_id: LogicalLineId,
     pub(crate) head_truncated: bool,
     pub(crate) atom_start: LogicalAtomOffset,
     pub(crate) cell_start: usize,
     pub(crate) generations: Vec<u64>,
-    pub(crate) glyphs: Vec<LogicalLineGlyph>,
+    pub(crate) glyphs: Vec<LogicalLineGlyph<C>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum LogicalAtom {
+pub(crate) enum LogicalAtom<C = Cell> {
     Glyph {
         line_id: LogicalLineId,
         atom_offset: LogicalAtomOffset,
         source_span: SourceSpan,
-        glyph: LogicalGlyph,
+        glyph: LogicalGlyph<C>,
     },
     HardBreak {
         after_generation: u64,
@@ -80,6 +80,19 @@ impl fmt::Display for DecodeError {
     }
 }
 
+/// Visit borrowed content when only positions/metadata are needed.
+pub(crate) fn visit<'a>(
+    normal: &'a NormalBuf,
+    emit: impl FnMut(LogicalAtom<&'a Cell>) -> Result<(), DecodeError>,
+) -> Result<(), DecodeError> {
+    visit_active(
+        normal,
+        normal.scroll_count() + normal.rows(),
+        |cell| cell,
+        emit,
+    )
+}
+
 pub(crate) fn decode(normal: &NormalBuf) -> Result<Vec<LogicalAtom>, DecodeError> {
     decode_active(normal, normal.scroll_count() + normal.rows())
 }
@@ -89,19 +102,20 @@ pub(crate) fn decode_active(
     active_count: usize,
 ) -> Result<Vec<LogicalAtom>, DecodeError> {
     let mut atoms = Vec::new();
-    visit_active(normal, active_count, |atom| {
+    visit_active(normal, active_count, Cell::clone, |atom| {
         atoms.push(atom);
         Ok(())
     })?;
     Ok(atoms)
 }
 
-/// Interpret the source once, emitting directly into the caller's destination.
-/// Reflow need not retain a second history-sized atom vector beside its lines.
-fn visit_active(
-    normal: &NormalBuf,
+/// Share interpretation/validation between owned reads and borrowed reflow.
+/// Only the caller that needs owned payloads clones cells.
+fn visit_active<'a, C>(
+    normal: &'a NormalBuf,
     active_count: usize,
-    mut emit: impl FnMut(LogicalAtom) -> Result<(), DecodeError>,
+    mut map_cell: impl FnMut(&'a Cell) -> C,
+    mut emit: impl FnMut(LogicalAtom<C>) -> Result<(), DecodeError>,
 ) -> Result<(), DecodeError> {
     let mut previous: Option<RetainedRow<'_>> = None;
     let mut atom_offset = 0usize;
@@ -140,7 +154,7 @@ fn visit_active(
             atom_offset = row.metadata.logical_atom_start;
         }
 
-        decode_row(row, &mut atom_offset, &mut emit)?;
+        decode_row(row, &mut atom_offset, &mut map_cell, &mut emit)?;
         previous = Some(row);
     }
 
@@ -168,16 +182,17 @@ pub(crate) fn row_glyph_width(row: RetainedRow<'_>, col: usize) -> Result<u8, De
     }
     Ok(if width == 2 { 2 } else { 1 })
 }
-fn decode_row(
-    row: RetainedRow<'_>,
+fn decode_row<'a, C>(
+    row: RetainedRow<'a>,
     atom_offset: &mut usize,
-    emit: &mut impl FnMut(LogicalAtom) -> Result<(), DecodeError>,
+    map_cell: &mut impl FnMut(&'a Cell) -> C,
+    emit: &mut impl FnMut(LogicalAtom<C>) -> Result<(), DecodeError>,
 ) -> Result<(), DecodeError> {
     let extent = row.metadata.meaningful_extent.min(row.cells.len());
     let mut col = 0;
     while col < extent {
         let width = row_glyph_width(row, col)?;
-        let cell = row.cells[col].clone();
+        let cell = &row.cells[col];
         let meaningful_blank =
             cell.ch == ' ' && cell.suffix.is_empty() && row.cell_state[col].is_meaningful();
         emit(LogicalAtom::Glyph {
@@ -189,7 +204,7 @@ fn decode_row(
                 end_col: col + usize::from(width - 1),
             },
             glyph: LogicalGlyph {
-                cell,
+                cell: map_cell(cell),
                 width,
                 meaningful_blank,
                 cell_state: row.cell_state[col],
@@ -206,10 +221,27 @@ pub(crate) fn decode_lines(normal: &NormalBuf) -> Result<Vec<LogicalLine>, Decod
     decode_lines_active(normal, normal.scroll_count() + normal.rows())
 }
 
+#[cfg(test)]
 pub(crate) fn decode_lines_active(
     normal: &NormalBuf,
     active_count: usize,
 ) -> Result<Vec<LogicalLine>, DecodeError> {
+    decode_lines_with(normal, active_count, Cell::clone)
+}
+
+/// Reflow borrows payloads until final materialization into independent storage.
+pub(crate) fn project_lines_active(
+    normal: &NormalBuf,
+    active_count: usize,
+) -> Result<Vec<LogicalLine<&Cell>>, DecodeError> {
+    decode_lines_with(normal, active_count, |cell| cell)
+}
+
+fn decode_lines_with<'a, C>(
+    normal: &'a NormalBuf,
+    active_count: usize,
+    map_cell: impl FnMut(&'a Cell) -> C,
+) -> Result<Vec<LogicalLine<C>>, DecodeError> {
     let last_generation = normal
         .retained_rows_bounded(active_count)
         .last()
@@ -233,7 +265,7 @@ pub(crate) fn decode_lines_active(
     }
 
     let mut line_index = 0usize;
-    visit_active(normal, active_count, |atom| {
+    visit_active(normal, active_count, map_cell, |atom| {
         match atom {
             LogicalAtom::HardBreak { after_generation } => {
                 line_index = line_index.checked_add(1).ok_or(DecodeError {

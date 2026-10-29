@@ -4,6 +4,7 @@
 //! live viewport according to the producer's history policy, evicts capacity
 //! overflow, and materializes an owned `NormalBuf` in a fresh generation epoch.
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -15,6 +16,12 @@ use crate::logical_content::{
 use crate::normal_buf::{CellState, LogicalLineId, NormalBuf, RowMetadata};
 use crate::screen::Cell;
 use crate::selection_model::GenPos;
+
+mod projection;
+use projection::ProjectedCell;
+pub(crate) use projection::ReflowCell;
+
+type ProjectedRow<'a> = ReflowedRow<ProjectedCell<'a>>;
 
 const MIN_REFLOW_COLS: usize = 2;
 
@@ -49,14 +56,35 @@ pub(crate) enum PreparedProjection<T> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ReflowedRow {
-    pub(crate) cells: Vec<Cell>,
+pub(crate) struct ReflowedRow<C = Cell> {
+    pub(crate) cells: Vec<C>,
     pub(crate) cell_state: Vec<CellState>,
     pub(crate) metadata: RowMetadata,
 }
 
+#[cfg(test)]
 impl ReflowedRow {
     fn blank(
+        cols: usize,
+        line_id: LogicalLineId,
+        logical_start: usize,
+        logical_atom_start: usize,
+        soft_wrapped: bool,
+        head_truncated: bool,
+    ) -> Result<Self, PreparationError> {
+        Self::blank_with(
+            cols,
+            line_id,
+            logical_start,
+            logical_atom_start,
+            soft_wrapped,
+            head_truncated,
+        )
+    }
+}
+
+impl<C: Clone + Default> ReflowedRow<C> {
+    fn blank_with(
         cols: usize,
         line_id: LogicalLineId,
         logical_start: usize,
@@ -68,7 +96,7 @@ impl ReflowedRow {
         cells
             .try_reserve_exact(cols)
             .map_err(|_| PreparationError::AllocationFailed)?;
-        cells.resize(cols, Cell::default());
+        cells.resize(cols, C::default());
         let mut cell_state = Vec::new();
         cell_state
             .try_reserve_exact(cols)
@@ -195,7 +223,7 @@ impl PreparedPrimaryResize {
         let target_rows = requested_rows.max(1);
         let cols = requested_cols.max(MIN_REFLOW_COLS);
         let active_count = normal.active_retained_row_count(cursor_floor);
-        let logical_lines = logical_content::decode_lines_active(normal, active_count)?;
+        let logical_lines = logical_content::project_lines_active(normal, active_count)?;
         // Every full row holds at least floor(cols / 2) complete atoms,
         // even for width-two text. A producer boundary can split one extra row.
         let projected_row_bound = logical_lines
@@ -251,7 +279,7 @@ impl PreparedPrimaryResize {
                     .ok_or(PreparationError::ArithmeticOverflow)?;
                 rows.try_reserve(1)
                     .map_err(|_| PreparationError::AllocationFailed)?;
-                rows.push(ReflowedRow::blank(
+                rows.push(ProjectedRow::blank_with(
                     cols,
                     line.line_id,
                     logical_start,
@@ -329,7 +357,7 @@ impl PreparedPrimaryResize {
                 .checked_add(1)
                 .ok_or(PreparationError::ArithmeticOverflow)?;
             let first_row = rows.len();
-            rows.push(ReflowedRow::blank(cols, line_id, 0, 0, false, false)?);
+            rows.push(ProjectedRow::blank_with(cols, line_id, 0, 0, false, false)?);
             lines.insert(
                 line_id,
                 ReflowedLine {
@@ -374,8 +402,8 @@ impl PreparedPrimaryResize {
             review: PreparedProjection::Absent,
         };
         // Keep validation after detached-ring construction so preparation errors
-        // retain their original precedence, then discard the temporary packed rows.
-        prepared.validate(&rows)?;
+        // retain their original precedence, then discard the read-only projections.
+        prepared.validate(rows.len())?;
         Ok(prepared)
     }
 
@@ -692,17 +720,17 @@ impl PreparedPrimaryResize {
         })
     }
 
-    fn validate(&self, rows: &[ReflowedRow]) -> Result<(), PreparationError> {
+    fn validate(&self, row_count: usize) -> Result<(), PreparationError> {
         if self.normal.rows() != self.target_rows
             || self.normal.cols() != self.cols
-            || self.normal.scroll_count().checked_add(self.target_rows) != Some(rows.len())
+            || self.normal.scroll_count().checked_add(self.target_rows) != Some(row_count)
         {
             return Err(PreparationError::Invariant(
                 "detached ring placement disagrees with prepared rows",
             ));
         }
         let mut previous: Option<(RowMetadata, usize)> = None;
-        for row in rows {
+        for row in self.normal.retained_rows() {
             if row.cells.len() != self.cols || row.cell_state.len() != self.cols {
                 return Err(PreparationError::Invariant("projected row width mismatch"));
             }
@@ -770,7 +798,7 @@ impl PreparedPrimaryResize {
     }
 }
 
-fn cursor_retained_glyph_count(line: &LogicalLine, cursors: &[CursorRetention]) -> usize {
+fn cursor_retained_glyph_count<C>(line: &LogicalLine<C>, cursors: &[CursorRetention]) -> usize {
     // Keep the atom under each cursor as well as its preceding spaces, so a
     // "before" anchor still has an on-grid position after narrowing.
     cursors.iter().fold(0, |end, cursor| {
@@ -803,8 +831,8 @@ fn cursor_retained_glyph_count(line: &LogicalLine, cursors: &[CursorRetention]) 
 ///
 /// Only rows before the live viewport are candidates; a cut that splits a logical
 /// line marks the surviving head truncated instead of dropping the whole line.
-fn evict_history_overflow(
-    rows: &mut Vec<ReflowedRow>,
+fn evict_history_overflow<C: ReflowCell>(
+    rows: &mut Vec<ReflowedRow<C>>,
     lines: &mut HashMap<LogicalLineId, ReflowedLine>,
     target_rows: usize,
     limits: harbor_config::HistoryLimits,
@@ -861,16 +889,16 @@ fn evict_history_overflow(
     Ok(dropped_rows)
 }
 
-fn pack_line(
-    line: &mut LogicalLine,
+fn pack_line<'a>(
+    line: &mut LogicalLine<&'a Cell>,
     cols: usize,
     live_boundary: Option<u64>,
     retained_cursors: &[CursorRetention],
-    output: &mut Vec<ReflowedRow>,
+    output: &mut Vec<ProjectedRow<'a>>,
 ) -> Result<Vec<ReflowedAtom>, PreparationError> {
     let mut logical_start = line.cell_start;
     let mut logical_atom_start = line.atom_start.0;
-    let mut row = ReflowedRow::blank(
+    let mut row = ProjectedRow::blank_with(
         cols,
         line.line_id,
         logical_start,
@@ -884,7 +912,7 @@ fn pack_line(
         .glyphs
         .iter()
         .rposition(|logical| {
-            logical.glyph.cell != Cell::default() || !logical.glyph.cell_state.is_explicit()
+            logical.glyph.cell != &Cell::default() || !logical.glyph.cell_state.is_explicit()
         })
         .map_or(0, |index| index + 1);
     let cursor_floor = cursor_retained_glyph_count(line, retained_cursors);
@@ -956,7 +984,7 @@ fn pack_line(
                 .ok_or(PreparationError::ArithmeticOverflow)?;
             logical_atom_start = logical.atom_offset.0;
             output.push(row);
-            row = ReflowedRow::blank(
+            row = ProjectedRow::blank_with(
                 cols,
                 line.line_id,
                 logical_start,
@@ -993,7 +1021,7 @@ fn pack_line(
                         "non-monotonic logical atom offset",
                     ));
                 }
-                row.cells[col + index] = next.glyph.cell;
+                row.cells[col + index] = ProjectedCell::Source(next.glyph.cell);
                 row.cell_state[col + index] = next.glyph.cell_state;
                 atoms.push(ReflowedAtom {
                     atom_offset: next.atom_offset,
@@ -1012,12 +1040,12 @@ fn pack_line(
         let col = row.metadata.meaningful_extent;
         row.cell_state[col] = glyph.cell_state;
         if width == 2 {
-            row.cells[col + 1] = Cell::wide_continuation_of(&glyph.cell);
+            row.cells[col + 1] = ProjectedCell::Continuation(glyph.cell);
             row.cell_state[col + 1] = glyph
                 .continuation_state
                 .ok_or(PreparationError::Invariant("wide glyph provenance missing"))?;
         }
-        row.cells[col] = logical.glyph.cell;
+        row.cells[col] = ProjectedCell::Source(logical.glyph.cell);
         row.metadata.meaningful_extent = col
             .checked_add(width)
             .ok_or(PreparationError::ArithmeticOverflow)?;
@@ -1040,8 +1068,8 @@ fn pack_line(
 /// ASCII gives a cheap, exact width proof; style is copied without reinterpreting
 /// it. Complex text, protected cells and hyperlink identities stay on the scalar
 /// path. Also retain the scalar validator's blank-provenance check.
-fn is_simple_glyph(glyph: &LogicalGlyph) -> bool {
-    let cell = &glyph.cell;
+fn is_simple_glyph<C: Borrow<Cell>>(glyph: &LogicalGlyph<C>) -> bool {
+    let cell = glyph.cell.borrow();
     glyph.width == 1
         && cell.width == 1
         && cell.ch.is_ascii()
@@ -1053,16 +1081,17 @@ fn is_simple_glyph(glyph: &LogicalGlyph) -> bool {
         && glyph.meaningful_blank == (cell.ch == ' ' && glyph.cell_state.is_meaningful())
 }
 
-fn validate_glyph(glyph: &LogicalGlyph) -> Result<(), PreparationError> {
+fn validate_glyph<C: Borrow<Cell>>(glyph: &LogicalGlyph<C>) -> Result<(), PreparationError> {
+    let cell = glyph.cell.borrow();
     if !matches!(glyph.width, 1 | 2) {
         return Err(PreparationError::Invariant("unsupported glyph width"));
     }
-    if glyph.width != glyph.cell.grid_width() {
+    if glyph.width != cell.grid_width() {
         return Err(PreparationError::Invariant(
             "glyph width disagrees with payload",
         ));
     }
-    if glyph.meaningful_blank != (glyph.cell.ch == ' ' && glyph.cell_state.is_meaningful()) {
+    if glyph.meaningful_blank != (cell.ch == ' ' && glyph.cell_state.is_meaningful()) {
         return Err(PreparationError::Invariant(
             "blank provenance disagrees with payload",
         ));

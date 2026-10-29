@@ -188,7 +188,7 @@ pub(super) fn prepare_geometry_with_limits(
     };
     // Keep validation after detached-ring construction so preparation errors
     // retain their original precedence, then discard the temporary packed rows.
-    prepared.validate(&rows)?;
+    prepared.validate(rows.len())?;
     Ok(prepared)
 }
 
