@@ -172,6 +172,7 @@ fn buffers_reset_resize_erase_and_structural_edits_refresh_in_real_host_path() {
     let terminal = tabs.active_terminal().unwrap();
     terminal.lock().unwrap().put_str("\x1b[?47hneedle");
     terminal.lock().unwrap().resize(4, 4); // saved primary is resized too
+    tabs.advance_resizes();
     tabs.advance_search();
     assert_eq!(published(&tabs), 0);
     complete(&mut tabs);
@@ -190,6 +191,7 @@ fn buffers_reset_resize_erase_and_structural_edits_refresh_in_real_host_path() {
     assert!(tabs.navigate_search(false));
     for size in [(4, 6), (5, 6), (3, 8)] {
         terminal.lock().unwrap().resize(size.0, size.1);
+        tabs.advance_resizes();
         assert!(!tabs.navigate_search(false));
         complete(&mut tabs);
         assert_eq!(published(&tabs), 1);

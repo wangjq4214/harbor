@@ -84,7 +84,7 @@ See `harbor_terminal::read_model` and `harbor_terminal::literal_search` in the g
 | API | Copies/observes | Side effects / obligations |
 | --- | --- | --- |
 | `screen()` | Borrowed live screen | Read-only via `Terminal`; do not retain display coordinates as content identity. |
-| `snapshot()` / `read_update(now)` | Owned visible cell projection; update adds damage, selection, preedit, appearance and scheduling | No PTY drain, event consumption or automatic acknowledgement. A full projection is not a full-history read. |
+| `snapshot()` / `read_update(now)` | Owned, row-shared visible cell projection; update adds damage, selection, preedit, appearance and scheduling | No PTY drain, event consumption or automatic acknowledgement. A full projection is not a full-history read. |
 | `read_content(scope, budget)` | Bounded complete units, owned styles/links and logical boundaries from visible or retained scope | Independent content validity; does not acknowledge renderer damage or consume parser events. |
 
 `drain_pty`, `drain_and_snapshot` and `frame_demand` are different: they can ingest queued output. `drain_output_events` consumes metadata/effect requests once; it is not a snapshot operation.
@@ -95,7 +95,7 @@ See `harbor_terminal::read_model` and `harbor_terminal::literal_search` in the g
 
 1. Initially, and after `invalidate_update`, damage is `FullUpload`.
 2. Otherwise, ranges accumulate relative to the last acknowledged state. Repeated reads and skipped draws do not clear them. A renderer can widen uploads for its own buffer/geometry requirements.
-3. `acknowledge_update(&update)` compares projection epoch, current snapshot, selection, preedit, appearance and backdrop. It rejects stale state and leaves work pending. A successful acknowledgement clears damage/pending redraw and advances the epoch; reusing the old update is not another valid acknowledgement.
+3. `acknowledge_update(&update)` validates the originating session, projection epoch, mutation revisions and the exact shared snapshot identity, with checks for exposed damage/presentation fields. It does not compare grid cells. Relevant intervening mutations invalidate the old update even after A → B → A; mutable owner access may conservatively invalidate an update even when the operation is a no-op. Rejection leaves work pending. A successful acknowledgement clears damage/pending redraw and advances the epoch; reusing the old update is not another valid acknowledgement.
 4. Device/resource loss or uncertainty requires `invalidate_update`, followed by full reconstruction. It is not a content reset.
 
 This is not multi-renderer subscription/fan-out: one consumer cannot acknowledge on behalf of another independent incremental projection. Independent content readers are supported precisely because they do **not** share/consume this renderer baseline. Do not use `clear_screen_dirty` as an observer shortcut.

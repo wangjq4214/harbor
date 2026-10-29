@@ -58,7 +58,7 @@ impl PreparedPointerResize {
 }
 
 pub struct PointerInteraction {
-    selection: SelectionModel,
+    selection: crate::revision::Revisioned<SelectionModel>,
     saved_primary_selection: Option<SelectionModel>,
     parked_alt_selection: Option<SelectionModel>,
     active: Option<ActivePointer>,
@@ -76,9 +76,13 @@ impl Default for PointerInteraction {
 }
 
 impl PointerInteraction {
+    pub(crate) fn mutation_revision(&self) -> crate::revision::Revision {
+        self.selection.stamp()
+    }
+
     pub fn new() -> Self {
         Self {
-            selection: SelectionModel::new(),
+            selection: SelectionModel::new().into(),
             saved_primary_selection: None,
             parked_alt_selection: None,
             active: None,
@@ -117,7 +121,7 @@ impl PointerInteraction {
     }
 
     pub(crate) fn commit_resize(&mut self, prepared: PreparedPointerResize) {
-        self.selection = prepared.selection;
+        self.selection = prepared.selection.into();
         self.saved_primary_selection = prepared.saved_primary_selection;
         self.parked_alt_selection = prepared.parked_alt_selection;
         if prepared.active_invalidated {
@@ -139,14 +143,14 @@ impl PointerInteraction {
                     self.parked_alt_selection = None;
                     SelectionModel::new()
                 };
-                let primary = std::mem::replace(&mut self.selection, alternate);
+                let primary = std::mem::replace(&mut self.selection, alternate.into()).into_inner();
                 self.saved_primary_selection = Some(primary);
                 screen.enter_alt(clear);
             }
             AltScreenAction::Exit if screen.is_alt() => {
                 self.cancel_active_for_buffer_transition();
                 let primary = self.saved_primary_selection.take().unwrap_or_default();
-                let alternate = std::mem::replace(&mut self.selection, primary);
+                let alternate = std::mem::replace(&mut self.selection, primary.into()).into_inner();
                 self.parked_alt_selection = Some(alternate);
                 screen.exit_alt();
                 // ConPTY may have deferred the primary resize until this exit.

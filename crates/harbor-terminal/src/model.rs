@@ -583,7 +583,7 @@ pub fn safe_preview_line(line: &str) -> String {
 pub struct TerminalSnapshot {
     pub rows: usize,
     pub cols: usize,
-    pub cells: Vec<Cell>,
+    pub cells: crate::SnapshotCells,
     pub cursor_x: usize,
     pub cursor_y: usize,
     pub cursor_visible: bool,

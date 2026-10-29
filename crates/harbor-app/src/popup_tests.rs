@@ -1,4 +1,5 @@
 //! Common slot extension and editor-lifetime regressions through the mounted workspace.
+use super::palette_support::*;
 use super::*;
 use crate::popups::Popup;
 use std::{cell::Cell, rc::Rc};

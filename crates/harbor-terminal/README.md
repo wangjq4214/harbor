@@ -122,7 +122,7 @@ Harbor's reference integration is in [`../harbor-app/src/terminal_view.rs`](../h
 ## PTY lifecycle and threading
 
 - `Terminal` owns the PTY reader thread, input writer, and `PtyControl` for the lifetime of a live session.
-- The reader callback should only wake the application; parsing and screen mutation occur when the owning thread drains output.
+- The wake callback must only post a nonblocking application notification and must not re-enter the terminal. It can run on either the reader or the thread draining output. Parsing and screen mutation occur on the owning thread; each ordinary drain handles a bounded batch and schedules another wake when its budget is exhausted.
 - Dropping the terminal tears down its PTY resources. Keep terminal ownership aligned with the tab/session lifecycle.
 - `resize` and `resize_if_changed` update both the PTY and the in-memory grid. Failed PTY resizing leaves the screen geometry unchanged.
 

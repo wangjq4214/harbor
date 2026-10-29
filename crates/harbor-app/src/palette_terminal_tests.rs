@@ -1,4 +1,5 @@
 //! Mounted palette → sole FIFO → Host reduction seams; native windows remain T0003.
+use super::palette_support::*;
 use super::*;
 use crate::command::{CommandCompletion, command_registry, palette_command_supported};
 

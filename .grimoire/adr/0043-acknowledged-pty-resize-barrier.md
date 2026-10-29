@@ -2,6 +2,7 @@
 
 **Status:** Implementing
 **Date:** 2026-09-21
+**Superseded in part by:** [ADR 0095](./0095-event-driven-resize-barrier-and-shared-reader-dispatch.md), replacing synchronous UI-thread barrier acquisition with event-driven ACK waiting without long-held Terminal locks and requiring shared reader-event dispatch. The ordering, epoch and reader-release guarantees below remain applicable.
 
 ## Context
 

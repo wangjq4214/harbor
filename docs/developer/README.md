@@ -9,6 +9,10 @@ Internal development notes for contributors to Harbor. For using Harbor or embed
 - [Terminal sessions](terminal-session.md): engine/session/renderer ownership, resize and shutdown.
 - [Performance profiling](profiling.md): repeatable measurement methods, not historical results.
 
+## Verify changes
+
+- [Testing](testing.md): test ownership, resource categories, commands and CI boundaries.
+
 ## Track the work
 
 - [Progress](progress.md): implemented scope, known gaps and outstanding validation.

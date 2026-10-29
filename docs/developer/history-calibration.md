@@ -4,6 +4,8 @@ This is optional measurement guidance for [Spec 0031 R4–R6](../../.grimoire/sp
 
 **Closure:** [Spec 0031's result summary](../../.grimoire/spec/0031-bounded-history-and-performance-budgets.md#delivery-and-closure-summary) retains the calibration rationale, implemented values and limited Windows outcomes. The owner adopted ADR 0075 and waived remaining measurements/acceptance for closure. Raw issue captures were deleted; this protocol remains optional future guidance, not proof of results or an outstanding task.
 
+Resource categories and standard commands are documented in the [testing guide](testing.md). `just test-perf` runs only release diagnostics, not desktop/font acceptance.
+
 ## Test-only candidates and existing microbenchmarks
 
 From the repository root, build first, then run serially without competing builds, tests or captures:
@@ -61,8 +63,8 @@ Repeat with separate phase labels/files, e.g. `output`, `pre-close`, `post-close
 Sampler checks (this process, **not Harbor evidence**) and workload checks:
 
 ```sh
-pwsh -NoProfile -File scripts/profiling/test_sample_process.ps1
-python -m unittest discover -s scripts/profiling -p 'test_*.py'
+pwsh -NoProfile -File scripts/tests/test_sample_process.ps1
+python -B -m unittest discover -s scripts/tests -v
 ```
 
 ## Required host matrix and phases

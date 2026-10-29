@@ -20,6 +20,10 @@ pub struct ConfigurationResize<'a> {
 }
 
 impl Terminal {
+    /// Prepare a group member after its configuration barrier lease is ready.
+    /// For changed live geometry, first call begin_configuration_resize, drive
+    /// drain_pty and resize_deadline without retaining a lock, and poll the lease.
+    /// This method returns an error rather than waiting for acknowledgement.
     pub fn prepare_configuration_resize(
         &mut self,
         size: TerminalSize,
@@ -28,6 +32,9 @@ impl Terminal {
         self.prepare_configuration_with_history(size, limits)
     }
 
+    /// Detached configuration preparation with the same nonblocking acquisition
+    /// precondition as prepare_configuration_resize. Same-size palette/history
+    /// preparation does not cancel an unrelated ordinary resize.
     pub fn prepare_configuration_with_history(
         &mut self,
         size: TerminalSize,
@@ -43,9 +50,18 @@ impl Terminal {
             cols: self.screen.cols(),
         };
         let pty_required = old != new && !self.io.is_session_closed();
+        // Acquisition is a separate, non-borrowing phase. Never wait while
+        // ConfigurationResize holds exclusive model access or group locks.
         let barrier = if pty_required {
-            self.ingest_and_blink(|io, screen, pointer| io.acquire_resize_barrier(screen, pointer))?
+            anyhow::ensure!(
+                !self.io.has_session() || self.io.configuration_barrier_active(),
+                "PTY resize pending: begin_configuration_resize and poll its lease first"
+            );
+            self.io.take_resize_barrier()?
         } else {
+            if self.io.configuration_barrier_active() {
+                self.io.cancel_resize_barrier();
+            }
             None
         };
         // Pre-prepare compensation geometry under the ACCEPTED budget. A rejected
@@ -92,7 +108,7 @@ impl ConfigurationResize<'_> {
     pub fn update(&self, baseline: Palette) -> TerminalUpdate {
         let mut update = self.terminal.read_update(Instant::now());
         if let Some((screen, pointer)) = &self.prepared {
-            update.snapshot = screen.snapshot(&self.terminal.screen);
+            update.snapshot = screen.snapshot(&self.terminal.screen).into();
             update.selection = pointer.bounds();
         }
         update.appearance =

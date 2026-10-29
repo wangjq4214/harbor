@@ -1,7 +1,9 @@
 //! Integration tests for TextRenderer — construction with a wgpu Device.
 //!
-//! GPU tests require a wgpu Device; they are skipped silently if no adapter
-//! is available.
+//! Explicit GPU cases require a usable device; missing resources are failures.
+
+#[path = "text_renderer/gpu.rs"]
+mod gpu;
 
 use harbor_text::{FaceId, FontSize, FontStyle, GlyphId, GlyphKey};
 use harbor_widget::layout::{Point, Rect, Size};
@@ -15,32 +17,13 @@ use harbor_widget::text::{AtlasGlyph, AtlasUv, TextMetrics, TextRunCache};
 use harbor_widget::widgets::text_label::TextLabel;
 use harbor_widget::{BorderRadius, BoxDecoration, ClipBehavior, DecoratedBox};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 // ── GPU helpers ─────────────────────────────────────────────────────────────
 
-/// Tries to create a wgpu Device + Queue. Returns `None` when no adapter is
-/// available (headless CI, etc.), so GPU tests degrade gracefully.
-fn try_create_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-        apply_limit_buckets: false,
-    }))
-    .ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("test-device"),
-        required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::default(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        trace: wgpu::Trace::Off,
-    }))
-    .ok()
-}
+#[path = "../../../tests/support/gpu.rs"]
+mod test_gpu;
+use test_gpu::device as gpu_device;
 
 /// Creates a tiny 64×64 R8 atlas texture for TextRenderer construction.
 fn create_atlas_texture(device: &wgpu::Device) -> wgpu::Texture {
@@ -121,56 +104,6 @@ fn create_bind_group(
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
-
-/// Tracks whether a GPU test actually ran. If no adapter is available, all
-/// GPU tests are skipped silently.
-static GPU_TESTS_RAN: AtomicBool = AtomicBool::new(false);
-
-#[test]
-fn should_construct_text_renderer_with_valid_device() {
-    let Some((device, _queue)) = try_create_device() else {
-        eprintln!("SKIP: no GPU adapter available for TextRenderer test");
-        return;
-    };
-    GPU_TESTS_RAN.store(true, Ordering::SeqCst);
-
-    let atlas_texture = create_atlas_texture(&device);
-    let atlas_sampler = create_atlas_sampler(&device);
-    let (bind_layout, bind_group) = create_bind_group(&device, &atlas_texture, &atlas_sampler);
-
-    // Act: construct the TextRenderer — should not panic
-    let _renderer = TextRenderer::new(
-        &device,
-        wgpu::TextureFormat::Bgra8Unorm,
-        &bind_layout,
-        &bind_group,
-    );
-
-    // If we get here without panic, the test passes.
-}
-
-#[test]
-fn should_construct_text_renderer_with_rgba8_format() {
-    let Some((device, _queue)) = try_create_device() else {
-        eprintln!("SKIP: no GPU adapter available for TextRenderer test");
-        return;
-    };
-    GPU_TESTS_RAN.store(true, Ordering::SeqCst);
-
-    let atlas_texture = create_atlas_texture(&device);
-    let atlas_sampler = create_atlas_sampler(&device);
-    let (bind_layout, bind_group) = create_bind_group(&device, &atlas_texture, &atlas_sampler);
-
-    // Act: construct with a different common format
-    let _renderer = TextRenderer::new(
-        &device,
-        wgpu::TextureFormat::Rgba8Unorm,
-        &bind_layout,
-        &bind_group,
-    );
-
-    // No panic = pass
-}
 
 fn solid_glyph() -> AtlasGlyph {
     AtlasGlyph {
@@ -398,79 +331,4 @@ fn should_leave_text_items_unclipped_when_policy_is_none() {
         .find(|item| matches!(item.primitive, Primitive::Text { .. }))
         .expect("text primitive");
     assert!(text.clips.is_empty());
-}
-
-#[test]
-fn should_leave_glyph_pixels_unchanged_when_clip_policy_is_none() {
-    // Arrange
-    let Some((device, queue)) = try_create_device() else {
-        eprintln!("SKIP: no GPU adapter available for unclipped text test");
-        return;
-    };
-    GPU_TESTS_RAN.store(true, Ordering::SeqCst);
-    let none_clip = RoundedClip::new(
-        Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)),
-        BorderRadius::all(8.0).unwrap(),
-        ClipBehavior::None,
-    )
-    .unwrap();
-
-    // Act
-    let unclipped = render_text_item(&device, &queue, text_item(Vec::new())).unwrap();
-    let none_policy = render_text_item(&device, &queue, text_item(vec![none_clip])).unwrap();
-
-    // Assert
-    assert_eq!(unclipped, none_policy);
-    assert_eq!(bgra(&unclipped, 0, 0)[2], 255);
-    assert_eq!(bgra(&unclipped, 16, 16)[2], 255);
-}
-
-#[test]
-fn should_clip_glyph_pixels_outside_rounded_corner_when_hard_edge_is_active() {
-    // Arrange
-    let Some((device, queue)) = try_create_device() else {
-        eprintln!("SKIP: no GPU adapter available for clipped text test");
-        return;
-    };
-    GPU_TESTS_RAN.store(true, Ordering::SeqCst);
-    let clip = RoundedClip::new(
-        Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)),
-        BorderRadius::all(8.0).unwrap(),
-        ClipBehavior::HardEdge,
-    )
-    .unwrap();
-
-    // Act
-    let pixels = render_text_item(&device, &queue, text_item(vec![clip])).unwrap();
-
-    // Assert
-    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
-    assert_eq!(bgra(&pixels, 16, 16)[2], 255);
-}
-
-#[test]
-fn should_keep_straight_edge_glyph_pixels_when_clip_is_rounded_not_aabb() {
-    // Arrange
-    let Some((device, queue)) = try_create_device() else {
-        eprintln!("SKIP: no GPU adapter available for rounded-not-scissor text test");
-        return;
-    };
-    GPU_TESTS_RAN.store(true, Ordering::SeqCst);
-    let clip = RoundedClip::new(
-        Rect::from_min_size(Point::ZERO, Size::new(32.0, 32.0)),
-        BorderRadius::all(8.0).unwrap(),
-        ClipBehavior::HardEdge,
-    )
-    .unwrap();
-
-    // Act
-    let pixels = render_text_item(&device, &queue, text_item(vec![clip])).unwrap();
-
-    // Assert
-    assert_eq!(bgra(&pixels, 0, 0), [0, 0, 0, 0]);
-    assert!(
-        bgra(&pixels, 16, 0)[2] > 200,
-        "straight top edge must remain; an inscribed scissor would drop it: {:?}",
-        bgra(&pixels, 16, 0)
-    );
 }

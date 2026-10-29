@@ -1,3 +1,7 @@
+#[cfg(all(test, feature = "renderer"))]
+#[path = "../../../tests/support/gpu.rs"]
+mod test_gpu;
+
 #[cfg(test)]
 mod clipboard_attachment_tests;
 mod configuration;
@@ -80,7 +84,15 @@ pub use types::{
     TerminalPointerPhase, WorkingDirectoryMetadata,
 };
 pub use update::TerminalUpdate;
+mod revision;
+mod snapshot;
+#[cfg(test)]
+mod update_tests;
+use revision::Revisioned;
+pub use snapshot::SnapshotCells;
+use std::sync::Arc;
 
+pub use io::ConfigurationBarrier;
 /// GPU-independent terminal state, input, and PTY session.
 pub struct Terminal {
     /// Screen (primary buffer; alt screen handled via `saved_primary`).
@@ -100,7 +112,7 @@ pub struct Terminal {
     preedit: Option<Preedit>,
     /// Set when ingest returns synchronized output to eligible; consumed by `frame_demand`.
     /// GPU-independent cursor blink and redraw timing.
-    blink: CursorBlinkState,
+    blink: Revisioned<CursorBlinkState>,
     pending_ordinary_present: bool,
     /// Redraw for transient preedit changes, retained until preparation or acknowledgement.
     pending_preedit_redraw: bool,
@@ -108,6 +120,10 @@ pub struct Terminal {
     update_needs_full: bool,
     /// Invalidates acknowledgements read before a renderer projection was lost.
     projection_epoch: u64,
+    presentation_revision: u64,
+    pending_resize: Option<TerminalSize>,
+    /// Application-owned admission prevents drains/draws from doing an unbounded tab sweep.
+    host_driven_resize: bool,
 }
 
 impl Terminal {
@@ -118,6 +134,8 @@ impl Terminal {
     ///
     /// Construct fallible GPU resources first: if they fail, the intact endpoint
     /// bundle is dropped using its unstarted-session shutdown protocol.
+    /// `wake` must only post a nonblocking host notification, without re-entering
+    /// the terminal. It can run on the reader or the thread draining output.
     pub fn start_session_from_endpoints(
         self,
         endpoints: PtyEndpoints,
@@ -134,7 +152,7 @@ impl Terminal {
         // Carry it over before the newly queued PTY bytes are ever parsed.
         io.set_clipboard_delivery(self.io.clipboard_delivery());
         self.io = io;
-        self.blink = CursorBlinkState::new(Instant::now());
+        self.blink = CursorBlinkState::new(Instant::now()).into();
         self
     }
 
@@ -184,15 +202,20 @@ impl Terminal {
             appearance,
             backdrop_available: false,
             preedit: None,
-            blink: CursorBlinkState::new(Instant::now()),
+            blink: CursorBlinkState::new(Instant::now()).into(),
             pending_ordinary_present: false,
             pending_preedit_redraw: false,
             update_needs_full: true,
             projection_epoch: 0,
+            presentation_revision: 0,
+            pending_resize: None,
+            host_driven_resize: false,
         }
     }
 
     /// Creates a headless Terminal with test PTY endpoints (no GPU).
+    /// The nonblocking, non-reentrant `wake` callback may run on the reader
+    /// or the thread draining output.
     pub fn new_headless_with_io<R, W>(
         rows: usize,
         cols: usize,
@@ -227,7 +250,10 @@ impl Terminal {
     /// Set once at startup; the background layer rebuilds when the resolved
     /// tint changes on the next prepare.
     pub fn set_backdrop_available(&mut self, available: bool) {
-        self.backdrop_available = available;
+        if self.backdrop_available != available {
+            self.advance_presentation_revision();
+            self.backdrop_available = available;
+        }
     }
 
     /// Advances the GPU-independent engine for a live host draw. A failed PTY resize
@@ -241,7 +267,9 @@ impl Terminal {
         let viewport = RenderViewport::from_target(target, metrics);
         self.pointer.set_viewport(viewport);
         self.pointer.set_input_scale(target.scale_factor);
-        let grid_changed = self.resize_if_changed(viewport.compute_grid_size());
+        // Managed terminals take geometry intent only from their allocation owner.
+        let grid_changed =
+            !self.host_driven_resize && self.resize_if_changed(viewport.compute_grid_size());
         self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
         let _ = self.pointer.tick(&mut self.screen, now);
         (viewport, grid_changed)
@@ -295,6 +323,9 @@ impl Terminal {
         };
         if let Some(deadline) = self.pointer.auto_scroll_deadline() {
             demand.redraw_now |= deadline <= now;
+            demand.deadline = Some(demand.deadline.map_or(deadline, |d| d.min(deadline)));
+        }
+        if let Some(deadline) = self.resize_deadline() {
             demand.deadline = Some(demand.deadline.map_or(deadline, |d| d.min(deadline)));
         }
         demand
@@ -359,10 +390,35 @@ impl Terminal {
         });
     }
 
-    /// Drains all reader-thread output in FIFO order into the terminal parser.
+    /// Parses a bounded batch of reader-thread output in FIFO order.
+    /// Returns whether any bytes were parsed; additional output may remain queued.
     pub fn drain_pty(&mut self) -> bool {
-        self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer))
+        let parsed = self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
+        if !self.host_driven_resize
+            && let Err(error) = self.finish_pending_resize()
+        {
+            tracing::error!(%error, "asynchronous terminal resize failed");
+        }
+        parsed
     }
+
+    /// Drives pending reader acquisition without waiting, including for hidden sessions.
+    /// Hosts must schedule this deadline even when ordinary presentation is suppressed.
+    pub fn resize_deadline(&self) -> Option<Instant> {
+        self.io.resize_deadline()
+    }
+
+    /// Begin application-coordinated acquisition without retaining a Terminal borrow.
+    /// Keep the returned lease until every group member is ready and committed/rejected.
+    pub fn begin_configuration_resize(&mut self) -> anyhow::Result<ConfigurationBarrier> {
+        self.pending_resize = None;
+        self.io.begin_configuration_barrier()
+    }
+    /// Whether host output handling should drive resize progress even without a draw.
+    pub fn resize_pending(&self) -> bool {
+        self.pending_resize.is_some() || self.io.configuration_barrier_active()
+    }
+
     /// Whether reader EOF/disconnection is observed or the reader has already finished.
     /// Checks reader completion even before UI output draining. Headless terminals remain open.
     pub fn is_session_closed(&self) -> bool {
@@ -410,6 +466,9 @@ impl Terminal {
                     }
                     outcome.redraw = self.preedit.as_ref() != Some(next);
                     self.pending_preedit_redraw |= outcome.redraw;
+                    if outcome.redraw {
+                        self.advance_presentation_revision();
+                    }
                     self.preedit = Some(next.clone());
                 }
                 return Ok(outcome);
@@ -549,13 +608,20 @@ impl Terminal {
     /// The first projection and projections after `invalidate_update` require a full upload.
     /// Call `acknowledge_update` only once the renderer has prepared this exact state.
     pub fn read_update(&self, now: Instant) -> TerminalUpdate {
-        let snapshot = self.snapshot();
+        let snapshot = Arc::new(self.snapshot());
         let damage = if self.update_needs_full {
             UpdateDamage::FullUpload
         } else {
             UpdateDamage::Ranges(snapshot.dirty_ranges.clone())
         };
         TerminalUpdate {
+            acknowledgement: update::Acknowledgement {
+                snapshot: snapshot.clone(),
+                revisions: self.mutation_revisions(),
+                session: self.read_session,
+                presentation: self.presentation_revision,
+                damage: damage.clone(),
+            },
             snapshot,
             damage,
             selection: self.pointer.bounds(),
@@ -567,13 +633,18 @@ impl Terminal {
         }
     }
 
-    /// Acknowledge only an update whose content still matches the current engine.
+    /// Acknowledge only an authentic update with current mutation/projection provenance.
+    /// No grid-cell comparison is performed, including for A -> B -> A mutations.
     /// Returns false on intervening changes, so a later read can replay them.
     pub fn acknowledge_update(&mut self, update: &TerminalUpdate) -> bool {
         if self.projection_epoch != update.projection_epoch {
             return false;
         }
-        if self.snapshot() != update.snapshot
+        if update.acknowledgement.session != self.read_session
+            || update.acknowledgement.revisions != self.mutation_revisions()
+            || update.acknowledgement.presentation != self.presentation_revision
+            || !Arc::ptr_eq(&update.acknowledgement.snapshot, &update.snapshot)
+            || update.acknowledgement.damage != update.damage
             || self.pointer.bounds() != update.selection
             || self.preedit != update.preedit
             || TerminalAppearance::from_palette(self.screen.active_palette()) != update.appearance
@@ -590,6 +661,25 @@ impl Terminal {
         true
     }
 
+    fn mutation_revisions(&self) -> [revision::Revision; 6] {
+        let screen = self.screen.mutation_revisions();
+        [
+            screen[0],
+            screen[1],
+            screen[2],
+            screen[3],
+            self.pointer.mutation_revision(),
+            self.blink.stamp(),
+        ]
+    }
+
+    fn advance_presentation_revision(&mut self) {
+        self.presentation_revision = self
+            .presentation_revision
+            .checked_add(1)
+            .expect("terminal presentation revision exhausted");
+    }
+
     /// Request a full reconstruction when a renderer's retained projection is uncertain.
     pub fn invalidate_update(&mut self) {
         self.update_needs_full = true;
@@ -600,6 +690,7 @@ impl Terminal {
     pub fn clear_preedit(&mut self) -> bool {
         let cleared = self.preedit.take().is_some();
         if cleared {
+            self.advance_presentation_revision();
             self.blink.reset(Instant::now());
             self.pending_preedit_redraw = true;
         }
@@ -635,7 +726,7 @@ impl Terminal {
         Some((x, y))
     }
 
-    /// Drains pending PTY output before returning the current terminal snapshot.
+    /// Parses one bounded batch of PTY output before returning the current snapshot.
     pub fn drain_and_snapshot(&mut self) -> TerminalSnapshot {
         self.ingest_and_blink(|io, screen, pointer| io.drain(screen, pointer));
         self.snapshot()
@@ -669,31 +760,100 @@ impl Terminal {
         }
     }
 
-    /// Resizes the PTY and terminal grid atomically from the caller's perspective.
-    ///
-    /// Preparation is detached; PTY success is followed only by infallible ownership moves.
+    /// Requests the latest grid dimensions. Returns true only when a change commits;
+    /// false also covers a pending reader ACK. Drive drain_pty/frame_demand and
+    /// resize_deadline until completion. Host-scheduled engines additionally require
+    /// advance_resize admission. No Terminal lock is retained across calls.
     pub fn try_resize_if_changed(&mut self, new_size: TerminalSize) -> anyhow::Result<bool> {
         let normalized = TerminalSize {
             rows: new_size.rows.max(1),
             cols: new_size.cols.max(2),
         };
-        let barrier = if normalized
-            != (TerminalSize {
+        // The application owns geometry while coordinating a font/configuration group.
+        // Its next allocation pass recomputes ordinary targets under accepted metrics.
+        if self.io.configuration_barrier_active() {
+            return Ok(false);
+        }
+        if normalized
+            == (TerminalSize {
                 rows: self.screen.rows(),
                 cols: self.screen.cols(),
-            }) {
-            self.ingest_and_blink(|io, screen, pointer| io.acquire_resize_barrier(screen, pointer))?
+            })
+        {
+            self.pending_resize = None;
+            self.io.cancel_resize_barrier();
+            return Ok(false);
+        }
+        if self.pending_resize.is_none() {
+            self.io.request_resize_barrier(Instant::now())?;
+        }
+        self.pending_resize = Some(normalized);
+        if self.host_driven_resize {
+            Ok(false)
         } else {
-            None
+            self.finish_pending_resize()
+        }
+    }
+
+    /// Transfer ordinary resize admission to the host. Requests and all automatic
+    /// drain/render paths then leave expensive transactions to advance_resize().
+    /// Standalone engines retain automatic completion by default.
+    pub fn use_host_resize_scheduling(&mut self) {
+        self.host_driven_resize = true;
+    }
+
+    /// Abandon ordinary queued work without taking over a configuration-owned barrier.
+    pub fn cancel_resize(&mut self) {
+        if self.pending_resize.take().is_some() && !self.io.configuration_barrier_active() {
+            self.io.cancel_resize_barrier();
+        }
+    }
+
+    /// Ready ordinary work, including failed acquisition needing cleanup. Merely
+    /// polling this does not consume reader events or take the configuration barrier.
+    pub fn resize_ready(&self) -> bool {
+        self.pending_resize.is_some()
+            && !self.io.configuration_barrier_active()
+            && !matches!(self.io.resize_barrier_ready(), Ok(false))
+    }
+
+    /// Admit at most one ordinary transaction after ordered drain observed its ACK.
+    /// A multi-terminal host must bound calls to this across all of its sessions.
+    /// Errors release the reader and leave geometry unchanged.
+    pub fn advance_resize(&mut self) -> anyhow::Result<bool> {
+        self.finish_pending_resize()
+    }
+
+    fn finish_pending_resize(&mut self) -> anyhow::Result<bool> {
+        if self.io.configuration_barrier_active() {
+            return Ok(false);
+        }
+        let Some(size) = self.pending_resize else {
+            return Ok(false);
         };
+        match self.io.resize_barrier_ready() {
+            Ok(false) => return Ok(false),
+            Err(error) => {
+                self.pending_resize = None;
+                self.io.cancel_resize_barrier();
+                return Err(error);
+            }
+            Ok(true) => {}
+        }
+        let barrier = self.io.take_resize_barrier()?;
+        self.pending_resize = None;
         let result = Self::try_resize_transaction(
             &mut self.screen,
             &mut self.pointer,
             &mut self.io,
-            normalized,
+            size,
             |io, size| io.resize_pty(size),
         );
         drop(barrier);
+        if matches!(result, Ok(true)) {
+            // Geometry requires presentation, but is not child output/unread text.
+            self.pending_ordinary_present = true;
+        }
         result
     }
 

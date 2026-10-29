@@ -3,6 +3,10 @@
     windows_subsystem = "windows"
 )]
 
+#[cfg(test)]
+#[path = "../tests/support/gpu.rs"]
+mod test_gpu;
+
 mod backdrop;
 mod chrome;
 mod clipboard;

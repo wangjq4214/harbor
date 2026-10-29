@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../../tests/support/gpu.rs"]
+mod test_gpu;
+
 pub mod construction;
 pub use construction::{
     AcceptsChildCount, ChildCardinality, ChildConstructionError, Children, ComponentExt,

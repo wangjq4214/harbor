@@ -2,6 +2,9 @@
 //! cargo test -p harbor-terminal --release --test session_baseline -- --ignored --nocapture
 //! This measures synchronous parsing, screen mutation, snapshot construction and frame demand;
 //! it does NOT measure a PTY, renderer, GPU upload, frame presentation or Windows UI latency.
+#[path = "session_baseline/perf.rs"]
+mod perf;
+
 use harbor_terminal::Terminal;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -25,24 +28,4 @@ fn sample(sessions: usize) -> Duration {
     }
     black_box(terminals);
     start.elapsed()
-}
-
-#[test]
-#[ignore = "manual release-mode baseline; no PTY or GPU"]
-fn one_and_eight_session_update_throughput() {
-    for sessions in [1, 8] {
-        black_box(sample(sessions)); // warmup excluded
-        let mut samples: Vec<_> = (0..SAMPLES)
-            .map(|_| sample(sessions).as_secs_f64())
-            .collect();
-        samples.sort_by(f64::total_cmp);
-        println!(
-            "sessions={sessions} steps/session={} updates/sample={} input_bytes/update={} median_seconds={:.6} updates_per_second={:.1} samples_seconds={samples:?}",
-            STEPS_PER_SESSION,
-            sessions * STEPS_PER_SESSION,
-            OUTPUT.len(),
-            samples[SAMPLES / 2],
-            (sessions * STEPS_PER_SESSION) as f64 / samples[SAMPLES / 2],
-        );
-    }
 }

@@ -3,6 +3,46 @@ use harbor_config::BLINK_INTERVAL_MS;
 use std::time::{Duration, Instant};
 
 #[test]
+fn update_acknowledgement_rejects_modified_snapshot_by_identity() {
+    let mut engine = Terminal::new_headless(2, 4);
+    engine.put_str("abcdefghijk");
+    engine.scroll_viewport_to_top();
+    let update = engine.read_update(Instant::now());
+    let mut variants = Vec::new();
+    macro_rules! altered {
+        ($change:expr) => {{
+            let mut changed = update.clone();
+            $change(std::sync::Arc::make_mut(&mut changed.snapshot));
+            variants.push(changed);
+        }};
+    }
+    altered!(|s: &mut crate::TerminalSnapshot| s.rows += 1);
+    altered!(|s: &mut crate::TerminalSnapshot| s.cols += 1);
+    altered!(|s: &mut crate::TerminalSnapshot| s.cells[0].ch = '\0');
+    altered!(|s: &mut crate::TerminalSnapshot| {
+        s.cells = s.cells.iter().take(s.cells.len() - 1).cloned().collect();
+    });
+    altered!(|s: &mut crate::TerminalSnapshot| s.cursor_x += 1);
+    altered!(|s: &mut crate::TerminalSnapshot| s.cursor_y += 1);
+    altered!(|s: &mut crate::TerminalSnapshot| s.cursor_visible = !s.cursor_visible);
+    altered!(|s: &mut crate::TerminalSnapshot| s.cursor_blink = !s.cursor_blink);
+    altered!(|s: &mut crate::TerminalSnapshot| s.scroll_count += 1);
+    altered!(|s: &mut crate::TerminalSnapshot| s.view_offset += 1);
+    altered!(|s: &mut crate::TerminalSnapshot| s.history_start += 1);
+    altered!(|s: &mut crate::TerminalSnapshot| s.wrapped[0] = !s.wrapped[0]);
+    altered!(|s: &mut crate::TerminalSnapshot| {
+        s.wrapped.pop();
+    });
+    altered!(|s: &mut crate::TerminalSnapshot| s.is_alt = !s.is_alt);
+    altered!(|s: &mut crate::TerminalSnapshot| s.dirty_ranges.clear());
+    for changed in variants {
+        assert_ne!(engine.snapshot(), *changed.snapshot);
+        assert!(!engine.acknowledge_update(&changed));
+    }
+    assert!(engine.acknowledge_update(&update));
+}
+
+#[test]
 fn core_update_replays_skipped_output_and_requires_explicit_acknowledgement() {
     let mut engine = Terminal::new_headless(3, 8);
     let now = Instant::now();

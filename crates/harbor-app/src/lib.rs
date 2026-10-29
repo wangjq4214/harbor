@@ -1,5 +1,9 @@
 //! Application models and widget composition shared by the Runtime Host and debug UI library.
 
+#[cfg(test)]
+#[path = "../../../tests/support/gpu.rs"]
+mod test_gpu;
+
 mod appearance;
 pub mod command;
 pub mod confirmation;

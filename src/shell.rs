@@ -54,6 +54,7 @@ impl std::fmt::Display for ConfigurationOperationFailure {
 }
 /// Strict live I/O seam shared by manual and watched reload. Absence is a
 /// non-acceptance outcome; the application transaction is not called at all.
+#[cfg(test)]
 pub(crate) fn reload_configuration_from_path(
     path: Option<&std::path::Path>,
     accepted: &mut harbor_config::Settings,
@@ -69,6 +70,19 @@ pub(crate) fn reload_configuration_from_path(
         Err(error) if error.io_kind == Some(std::io::ErrorKind::NotFound) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
+    apply_loaded_configuration(path, accepted, effective_clipboard, loaded, apply).map(Some)
+}
+
+fn apply_loaded_configuration(
+    path: &std::path::Path,
+    accepted: &mut harbor_config::Settings,
+    effective_clipboard: &harbor_config::ClipboardSettings,
+    loaded: harbor_config::SettingsLoad,
+    apply: impl FnOnce(
+        &harbor_config::Settings,
+        harbor_app::command::ResolvedKeybindings,
+    ) -> anyhow::Result<Vec<String>>,
+) -> anyhow::Result<ConfigurationAcceptance> {
     let mut result = accept_configuration(
         accepted,
         effective_clipboard,
@@ -83,7 +97,7 @@ pub(crate) fn reload_configuration_from_path(
         notices.push(diagnostic.message);
     }
     result.notice = (!notices.is_empty()).then(|| notices.join("; "));
-    Ok(Some(result))
+    Ok(result)
 }
 
 /// Validates and publishes one requested generation on the application thread.
@@ -156,6 +170,15 @@ pub(crate) fn accept_configuration(
     })
 }
 
+/// A parsed but unaccepted candidate with non-borrowing reader acquisitions.
+struct PendingReload {
+    loaded: harbor_config::SettingsLoad,
+    acquisition: Option<crate::tab_coordinator::ConfigurationAcquisition>,
+    automatic: bool,
+    path: std::path::PathBuf,
+    report_palette: bool,
+}
+
 /// Active session resources that exist while the window and renderer are alive.
 pub(crate) struct ActiveSession {
     // Business state drops before the host-owned Runtime/surface/platform/window/GPU stack.
@@ -164,6 +187,7 @@ pub(crate) struct ActiveSession {
     clipboard_window: Option<crate::dialog::ConfirmationWindow>,
     foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor,
     clipboard_epoch: u64,
+    pending_reload: Option<PendingReload>,
     tabs: TabCoordinator,
     workspace_ui: WorkspaceUiController,
     configuration_path: Option<std::path::PathBuf>,
@@ -447,27 +471,118 @@ impl ActiveSession {
     }
 
     fn reload_configuration(&mut self, automatic: bool) -> Option<bool> {
-        use harbor_app::notifications::ConfigurationNoticeSource as Source;
-        let path = &self.configuration_path;
+        // A new document supersedes an unaccepted candidate, not an accepted generation.
+        if let Some(previous) = self.pending_reload.take()
+            && previous.report_palette
+        {
+            self.workspace_ui.report_palette_result(
+                AppCommand::ReloadConfiguration,
+                Err("Rejected: reload superseded"),
+            );
+        }
+        let path = self.configuration_path.clone();
         let path_label = path
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "configuration path unavailable".to_owned());
+        let staged = (|| -> anyhow::Result<Option<PendingReload>> {
+            let path =
+                path.ok_or_else(|| anyhow::anyhow!("could not resolve configuration path"))?;
+            let loaded = match harbor_config::load_candidate_from_path(&path) {
+                Ok(loaded) => loaded,
+                Err(error) if error.io_kind == Some(std::io::ErrorKind::NotFound) => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            harbor_app::command::validate_keybindings(&loaded.settings.keybindings)
+                .map_err(|errors| anyhow::anyhow!("{}", errors.join("; ")))?;
+            let acquisition = self
+                .tabs
+                .acquire_configuration(&loaded.settings)
+                .map_err(|error| error.context(ConfigurationOperationFailure))?;
+            Ok(Some(PendingReload {
+                loaded,
+                acquisition,
+                automatic,
+                path,
+                report_palette: false,
+            }))
+        })();
+        match staged {
+            Ok(Some(pending)) => {
+                self.pending_reload = Some(pending);
+                self.advance_configuration_reload()
+            }
+            Ok(None) => self.report_reload_result(Ok(None), automatic, &path_label),
+            Err(error) => self.report_reload_result(Err(error), automatic, &path_label),
+        }
+    }
+
+    fn advance_configuration_reload(&mut self) -> Option<bool> {
+        let pending = self.pending_reload.take()?;
+        let ready = pending
+            .acquisition
+            .as_ref()
+            .map_or(Ok(true), |acquisition| {
+                self.tabs.configuration_ready(acquisition)
+            });
+        if matches!(ready, Ok(false)) {
+            self.pending_reload = Some(pending);
+            return None;
+        }
+        let PendingReload {
+            loaded,
+            acquisition,
+            automatic,
+            path,
+            report_palette,
+        } = pending;
+        let path_label = path.display().to_string();
         let viewport = self.main_host.viewport().clone();
-        let result = reload_configuration_from_path(
-            path.as_deref(),
-            &mut self.accepted_settings,
-            &self.effective_clipboard,
-            |candidate, bindings| {
-                let warnings = self.tabs.apply_configuration(
-                    candidate,
-                    viewport.scale_factor,
-                    viewport.physical_size,
-                )?;
-                self.workspace_ui.publish_keybindings(bindings);
-                Ok(warnings)
-            },
-        );
+        let result = ready
+            .map_err(|error| error.context(ConfigurationOperationFailure))
+            .and_then(|_| {
+                apply_loaded_configuration(
+                    &path,
+                    &mut self.accepted_settings,
+                    &self.effective_clipboard,
+                    loaded,
+                    |candidate, bindings| {
+                        let warnings = self.tabs.apply_configuration(
+                            candidate,
+                            viewport.scale_factor,
+                            viewport.physical_size,
+                        )?;
+                        self.workspace_ui.publish_keybindings(bindings);
+                        Ok(warnings)
+                    },
+                )
+                .map(Some)
+            });
+        // Release every acquisition even on preparation/PTY/compensation failure.
+        drop(acquisition);
+        let completion = self.report_reload_result(result, automatic, &path_label);
+        if report_palette {
+            self.workspace_ui.report_palette_result(
+                AppCommand::ReloadConfiguration,
+                if completion == Some(true) {
+                    Ok(())
+                } else {
+                    Err("Failed: see configuration reload error")
+                },
+            );
+        }
+        completion
+    }
+
+    fn report_reload_result(
+        &mut self,
+        result: anyhow::Result<Option<ConfigurationAcceptance>>,
+        automatic: bool,
+        path_label: &str,
+    ) -> Option<bool> {
+        use harbor_app::notifications::ConfigurationNoticeSource as Source;
         match result {
             Ok(acceptance) => {
                 self.reload_feedback.clear();
@@ -595,16 +710,20 @@ impl ActiveSession {
                 AppCommand::ReloadConfiguration => {
                     let completion = self.reload_configuration(false);
                     if from_palette {
-                        self.workspace_ui.report_palette_result(
-                            request.command,
-                            match completion {
-                                Some(true) => Ok(()),
-                                Some(false) => Err("Failed: see configuration reload error"),
-                                None => {
-                                    Err("Rejected: configuration file is absent or unavailable")
-                                }
-                            },
-                        );
+                        if let Some(pending) = self.pending_reload.as_mut() {
+                            pending.report_palette = true;
+                        } else {
+                            self.workspace_ui.report_palette_result(
+                                request.command,
+                                match completion {
+                                    Some(true) => Ok(()),
+                                    Some(false) => Err("Failed: see configuration reload error"),
+                                    None => {
+                                        Err("Rejected: configuration file is absent or unavailable")
+                                    }
+                                },
+                            );
+                        }
                         merge_wait(
                             &mut result.wait,
                             self.main_host
@@ -743,36 +862,7 @@ impl ActiveSession {
         match event {
             AppEvent::GpuWake => {} // Persistent Host observation above; no redraw needed.
             AppEvent::TerminalOutputReady(tab_id) => {
-                let outcome = self.tabs.process_output(tab_id);
-                if let Some(request) = outcome.clipboard_write {
-                    self.handle_clipboard_request(event_loop, request);
-                }
-                if outcome.unread_changed || outcome.title_changed {
-                    if outcome.active_title_changed {
-                        self.tabs.sync_ui(self.main_host.window());
-                    } else {
-                        self.tabs.sync_tab_ui(self.main_host.window());
-                    }
-                    merge_wait(
-                        &mut wait,
-                        self.main_host
-                            .invalidate_external(
-                                harbor_widget::effects::ExternalInvalidation::new(),
-                            )
-                            .wait,
-                    );
-                    let allocation_wait = self.sync_terminal_allocation();
-                    merge_wait(&mut wait, allocation_wait);
-                }
-                if outcome.request_active_invalidation
-                    && let Some(invalidation) =
-                        external_invalidation_for_app_event(&AppEvent::TerminalOutputReady(tab_id))
-                {
-                    merge_wait(
-                        &mut wait,
-                        self.main_host.invalidate_external(invalidation).wait,
-                    );
-                }
+                merge_wait(&mut wait, self.process_terminal_output(event_loop, tab_id));
             }
             AppEvent::ConfigurationWatch => {
                 match self
@@ -817,20 +907,86 @@ impl ActiveSession {
         }
     }
 
+    fn process_terminal_output(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        tab_id: harbor_app::tab_manager::TabId,
+    ) -> Option<ControlFlowEffect> {
+        let mut wait = None;
+        let outcome = self.tabs.process_output(tab_id);
+        if let Some(request) = outcome.clipboard_write {
+            self.handle_clipboard_request(event_loop, request);
+        }
+        if outcome.unread_changed || outcome.title_changed {
+            if outcome.active_title_changed {
+                self.tabs.sync_ui(self.main_host.window());
+            } else {
+                self.tabs.sync_tab_ui(self.main_host.window());
+            }
+            merge_wait(
+                &mut wait,
+                self.main_host
+                    .invalidate_external(harbor_widget::effects::ExternalInvalidation::new())
+                    .wait,
+            );
+            let allocation_wait = self.sync_terminal_allocation();
+            merge_wait(&mut wait, allocation_wait);
+        }
+        if outcome.request_active_invalidation
+            && let Some(invalidation) =
+                external_invalidation_for_app_event(&AppEvent::TerminalOutputReady(tab_id))
+        {
+            merge_wait(
+                &mut wait,
+                self.main_host.invalidate_external(invalidation).wait,
+            );
+        }
+        wait
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop, host_deadline: Option<Instant>) {
         if self.stop_for_gpu_fault(event_loop) {
             return;
         }
         self.reconcile_clipboard();
         let now = Instant::now();
+        let mut resize_wait = None;
+        for id in self.tabs.pending_resize_tabs() {
+            merge_wait(
+                &mut resize_wait,
+                self.process_terminal_output(event_loop, id),
+            );
+        }
+        let reload_pending = self.pending_reload.is_some();
+        let _ = self.advance_configuration_reload();
+        if reload_pending && self.pending_reload.is_none() {
+            self.main_host.request_frame();
+        }
         let idle = self.main_host.about_to_wait(now, host_deadline);
         if let Some(fault) = idle.fatal {
             self.exit_gpu_fault(event_loop, fault);
             return;
         }
         let mut combined_flow = idle.wait.unwrap_or(ControlFlowEffect::Wait);
+        if let Some(wait) = resize_wait {
+            combined_flow = combined_flow.arbitrate(wait);
+        }
         if let Some(wait) = self.sync_terminal_allocation() {
             combined_flow = combined_flow.arbitrate(wait);
+        }
+        // Output, scheduling and allocation above only dispatch/submit managed work.
+        // Admit one shared batch here, never a separate batch per callback or tab.
+        let resized = self.tabs.advance_resizes();
+        if resized.active_changed {
+            self.main_host.request_frame();
+        }
+        if resized.ready_remaining {
+            combined_flow = combined_flow.arbitrate(ControlFlowEffect::Poll);
+        }
+        // Allocation can start a new acquisition this turn. Observe its deadline
+        // after submission, even if no reader wake/text/draw follows it.
+        if let Some(deadline) = self.tabs.resize_deadline() {
+            combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
         }
 
         let (search_pending, search_changed) = self.tabs.advance_search();
@@ -1254,6 +1410,7 @@ impl Shell {
             clipboard_window: None,
             foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor::new(),
             clipboard_epoch: 0,
+            pending_reload: None,
             tabs,
             workspace_ui,
             effective_clipboard: settings.clipboard.clone(),
@@ -1298,108 +1455,4 @@ impl Shell {
 #[path = "configuration_notice_tests.rs"]
 mod configuration_notice_tests;
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shared_gpu_exit_cancels_pending_actions_before_exit() {
-        use harbor_widget::winit::{GpuFault, GpuFaultKind};
-        for kind in [
-            GpuFaultKind::OutOfMemory,
-            GpuFaultKind::DeviceLost,
-            GpuFaultKind::Validation,
-            GpuFaultKind::Internal,
-        ] {
-            let gate = Arc::new(AtomicBool::new(true));
-            let mut paste = PasteController::new(gate.clone());
-            let mut clipboard =
-                crate::clipboard::ClipboardPolicy::new(harbor_config::Osc52WritePolicy::Confirm);
-            clipboard.retain(harbor_app::tab_manager::SessionClipboardWrite {
-                source: harbor_app::tab_manager::TabId(7),
-                contents: harbor_terminal::ClipboardWrite::new("never approve".into()).unwrap(),
-            });
-            let mut window = None;
-            let mut exits = 0;
-            apply_gpu_fatal_policy(
-                &GpuFault {
-                    kind,
-                    message: "policy sentinel".into(),
-                },
-                &mut paste,
-                &mut clipboard,
-                &mut window,
-                || {
-                    assert!(!gate.load(std::sync::atomic::Ordering::Acquire));
-                    exits += 1;
-                },
-            );
-            assert_eq!(exits, 1);
-            assert!(!paste.is_active());
-            assert!(
-                clipboard.resolve(true, true).is_none(),
-                "late approval cannot write clipboard"
-            );
-        }
-    }
-
-    #[test]
-    fn presented_frame_shows_only_a_pending_window() {
-        let outcome = HostFrameOutcome::Presented { wait: None };
-        assert_eq!(
-            main_frame_policy(&outcome, true),
-            MainFramePolicy {
-                presented: true,
-                show_window: true,
-                schedule_hidden_retry: false,
-                fatal: false,
-            }
-        );
-        assert!(!main_frame_policy(&outcome, false).show_window);
-    }
-
-    #[test]
-    fn skipped_hidden_frame_retries_without_showing() {
-        let outcome = HostFrameOutcome::Skipped { wait: None };
-        let policy = main_frame_policy(&outcome, true);
-        assert!(!policy.presented);
-        assert!(!policy.show_window);
-        assert!(policy.schedule_hidden_retry);
-        assert!(!policy.fatal);
-    }
-
-    #[test]
-    fn recovery_waits_for_host_and_fatal_is_delegated_to_shell() {
-        let recovery = HostFrameOutcome::RecoveryScheduled { wait: None };
-        assert_eq!(
-            main_frame_policy(&recovery, true),
-            MainFramePolicy::default()
-        );
-
-        let fatal = HostFrameOutcome::Fatal {
-            error: harbor_widget::winit::FrameError::out_of_memory(),
-            wait: None,
-        };
-        assert!(main_frame_policy(&fatal, true).fatal);
-    }
-
-    #[test]
-    fn shell_production_code_owns_only_the_common_native_host() {
-        let production = include_str!("shell.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production section");
-        for legacy in [
-            "WindowSurface",
-            "WinitAdapter",
-            "WinitFrameTarget",
-            "create_transitional_child_runtime",
-            "SurfaceConfiguration",
-        ] {
-            assert!(
-                !production.contains(legacy),
-                "shell production code must not reference legacy host infrastructure: {legacy}"
-            );
-        }
-        assert!(production.contains("main_host: WinitWindowHost"));
-    }
-}
+mod tests;

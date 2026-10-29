@@ -106,6 +106,16 @@ Construct fallible resources before publishing a session. Keep an unstarted `Pty
 
 `TerminalUpdate` owns a complete visible projection plus incremental damage. Its `Ranges` apply relative to the most recently acknowledged state of that engine; it does not maintain per-subscriber cursors. Use one renderer per baseline. Multiple read-only content consumers are fine; independent incremental renderers sharing acknowledgements are not supported.
 
+### Projection ownership and copying
+
+`TerminalUpdate::snapshot` is an `Arc<TerminalSnapshot>`. The snapshot's `cells` is a `SnapshotCells` collection with flat `usize` indexing, `get`, `len`, `is_empty`, `iter` and explicit synthetic mutation support. It is not a contiguous `Vec<Cell>`: use `cells.iter().cloned().collect::<Vec<_>>()` only when a consumer actually requires a flat owned copy. For a logical row, prefer `snapshot.cell(row, col)` or iterate the desired flat indices; arbitrary slice indexing and Vec growth/removal are not provided.
+
+Ordinary engine reads reconcile visible row versions and share unchanged rows, including when older updates remain alive. A changed row copies its cells/suffixes; there is no per-cell sharing claim. The engine caches only its latest visible row directory, not all scrollback. Reads still process row metadata/damage and allocate the small snapshot/update metadata; this is not an O(1) entire-frame guarantee. Initial/resize/reconstruction work may be full.
+
+Keep the exact update and snapshot for acknowledgement. A private shared snapshot reference seals its identity: `Arc::make_mut(&mut update.snapshot)` creates a detached synthetic snapshot and cannot acknowledge the original engine update, even if the resulting contents are equal. Cloning a `TerminalSnapshot` shares its cell rows; synthetic cell mutation uses copy-on-write for the touched row (plus the row directory). Building `SnapshotCells` from a flat Vec creates one storage chunk, so mutating that explicitly materialized chunk can copy all of it.
+
+Validity uses checked mutation revisions, distinct from semantic content-reader revisions and the projection acknowledgement/invalidation epoch. It includes buffer/cursor/colors/synchronized-output, selection/auto-scroll, blink and preedit/backdrop state. Relevant A → B → A changes reject old acknowledgement. Mutable owner access may conservatively invalidate; an empty PTY scheduling poll does not itself mutate the selection owner. No grid equality scan is used to revive an old token.
+
 Here is a complete, compilable-API helper for a **custom projection**, with projection work supplied by the caller. It does not create a renderer or present a frame:
 
 ```rust,no_run

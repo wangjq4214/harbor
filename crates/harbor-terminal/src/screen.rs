@@ -31,6 +31,7 @@ use crate::normal_buf::{CellsIter, LogicalLineId};
 use crate::primary_reflow::{
     CursorRetention, PreparationError, PreparedPrimaryResize, PreparedProjection, ReflowViewport,
 };
+use crate::revision::{Revision, Revisioned};
 use crate::selection_model::GenPos;
 use crate::{DirtyRange, InputModes, NormalBuf};
 use harbor_parser::Params;
@@ -93,7 +94,7 @@ pub struct Screen {
     /// Accepted primary policy, retained even while alternate backing has zero history.
     history_limits: harbor_config::HistoryLimits,
     /// Ring-buffer scrollback storage.
-    normal: NormalBuf,
+    normal: Revisioned<NormalBuf>,
     /// Ordered semantic edits awaiting terminal-owned selection reconciliation.
     anchor_mutations: AnchorMutationBatch,
     /// Canonical top-left retained content while reviewing scrollback.
@@ -102,7 +103,7 @@ pub struct Screen {
     /// reconciliation for the bytes being parsed.
     external_anchor_interest: bool,
     /// Cursor position, scroll region, margins, and terminal modes.
-    cursor: CursorEngine,
+    cursor: Revisioned<CursorEngine>,
     /// Pen state, tab stops, character-set designations, and saved-pen snapshot.
     pen_state: PenState,
     /// OSC 8 values owned by this screen and referenced from cells/pen state.
@@ -123,9 +124,9 @@ pub struct Screen {
     /// Session-owned `?1004` mode and latest observed native-window focus.
     focus_reporting: FocusReporting,
     /// Session-owned `?2026` nesting; preserved across alt-screen swap.
-    synchronized_output: SynchronizedOutput,
+    synchronized_output: Revisioned<SynchronizedOutput>,
     /// Startup and active OSC default and indexed colors, owned by the terminal session.
-    default_colors: DefaultColors,
+    default_colors: Revisioned<DefaultColors>,
 }
 #[derive(Debug)]
 struct EditAnchorCapture {
@@ -184,9 +185,7 @@ impl PreparedScreenResize {
         let mut snapshot = source.terminal_snapshot();
         snapshot.rows = rows;
         snapshot.cols = cols;
-        snapshot.cells = (0..rows)
-            .flat_map(|r| (0..cols).map(move |c| self.normal.cell(r, c).clone()))
-            .collect();
+        snapshot.cells = self.normal.snapshot_cells();
         snapshot.cursor_x = self.cursor.cursor_x();
         snapshot.cursor_y = self.cursor.cursor_y(&self.normal);
         snapshot.scroll_count = self.normal.scroll_count();
@@ -279,11 +278,11 @@ impl Screen {
         let cols = cols.max(1);
         Self {
             history_limits: limits,
-            normal: NormalBuf::with_history_limits(rows, cols, limits),
+            normal: NormalBuf::with_history_limits(rows, cols, limits).into(),
             anchor_mutations: AnchorMutationBatch::default(),
             review_anchor: None,
             external_anchor_interest: false,
-            cursor: CursorEngine::new(rows, cols),
+            cursor: CursorEngine::new(rows, cols).into(),
             pen_state: PenState::new(cols),
             hyperlinks: HyperlinkRegistry::default(),
             alt_request: None,
@@ -292,8 +291,8 @@ impl Screen {
             parked_alt: None,
             replies: Vec::new(),
             focus_reporting: FocusReporting::default(),
-            synchronized_output: SynchronizedOutput::default(),
-            default_colors: DefaultColors::new(palette),
+            synchronized_output: SynchronizedOutput::default().into(),
+            default_colors: DefaultColors::new(palette).into(),
         }
     }
 
@@ -314,7 +313,7 @@ impl Screen {
     }
 
     pub(crate) fn configuration_palette(&self, baseline: Palette) -> Palette {
-        let mut colors = self.default_colors;
+        let mut colors = *self.default_colors;
         colors.advance_baseline(baseline);
         colors.active_palette()
     }
@@ -1009,12 +1008,7 @@ impl Screen {
     pub fn terminal_snapshot(&self) -> crate::model::TerminalSnapshot {
         let rows = self.rows();
         let cols = self.cols();
-        let mut cells = Vec::with_capacity(rows * cols);
-        for r in 0..rows {
-            for c in 0..cols {
-                cells.push(self.cell(r, c).clone());
-            }
-        }
+        let cells = self.normal.snapshot_cells();
         crate::model::TerminalSnapshot {
             rows,
             cols,
@@ -1032,6 +1026,15 @@ impl Screen {
             input_modes: self.input_modes(),
             dirty_ranges: self.dirty_ranges(),
         }
+    }
+    /// State-owner provenance, independent of damage consumption and read-model revisions.
+    pub(crate) fn mutation_revisions(&self) -> [Revision; 4] {
+        [
+            self.normal.stamp(),
+            self.cursor.stamp(),
+            self.default_colors.stamp(),
+            self.synchronized_output.stamp(),
+        ]
     }
 
     pub fn selected_text(&self, bounds: SelectionBounds) -> String {
@@ -1148,9 +1151,9 @@ impl Screen {
         let rows = self.rows();
         let cols = self.cols();
         let replies = std::mem::take(&mut self.replies);
-        let sync = self.synchronized_output;
+        let sync = *self.synchronized_output;
         let focus_reporting = self.focus_reporting;
-        let default_colors = self.default_colors;
+        let default_colors = *self.default_colors;
         // Save the primary screen (cells + scrollback + cursor + pen + modes),
         // carrying its parked alternate buffer along to the fresh screen.
         let mut alternate = Self::with_palette_and_history(
@@ -1174,11 +1177,11 @@ impl Screen {
         }
         // Save the primary after the install block: a restored parked buffer
         // carries `saved_primary = None`, so assigning first would be clobbered.
-        self.default_colors = default_colors;
+        self.default_colors = default_colors.into();
         self.saved_primary = Some(Box::new(primary));
         self.replies = replies;
         self.focus_reporting = focus_reporting;
-        self.synchronized_output = sync;
+        self.synchronized_output = sync.into();
     }
 
     pub fn exit_alt(&mut self) {
@@ -1191,9 +1194,9 @@ impl Screen {
             self.anchor_mutations = AnchorMutationBatch::default();
         }
         let replies = std::mem::take(&mut self.replies);
-        let sync = self.synchronized_output;
+        let sync = *self.synchronized_output;
         let focus_reporting = self.focus_reporting;
-        let default_colors = self.default_colors;
+        let default_colors = *self.default_colors;
         if let Some(prepared) = self.deferred_primary_resize.pop()
             && let Some(primary) = self.saved_primary.as_deref_mut()
         {
@@ -1206,10 +1209,10 @@ impl Screen {
             let mut alt = std::mem::replace(self, Self::new(rows, cols));
             // Drop the nested primary copy so parked alt stays a leaf buffer.
             alt.saved_primary = None;
-            alt.default_colors = default_colors;
+            alt.default_colors = default_colors.into();
 
             *self = *primary;
-            self.default_colors = default_colors;
+            self.default_colors = default_colors.into();
             // Park the alternate buffer after the primary is back, since the
             // saved primary carries an empty `parked_alt` slot.
             self.parked_alt = Some(Box::new(alt));
@@ -1217,7 +1220,7 @@ impl Screen {
         }
         self.replies = replies;
         self.focus_reporting = focus_reporting;
-        self.synchronized_output = sync;
+        self.synchronized_output = sync.into();
         debug_assert!(!self.is_alt(), "not in alt => no primary saved");
     }
 
@@ -1319,7 +1322,7 @@ impl Screen {
                 }
                 let source = immediate_saved_primary
                     .first()
-                    .map_or(&saved.normal, |p| &p.normal);
+                    .map_or(&*saved.normal, |p| &p.normal);
                 deferred_primary_source = Some(ContentProjection::build(source)?);
                 // Deferred geometry must use the already-trimmed source, never resurrect
                 // content evicted by the immediate accepted shrink.
@@ -1415,7 +1418,7 @@ impl Screen {
             };
             return Ok(RoleBuffers {
                 normal,
-                cursor: self.cursor.clone(),
+                cursor: (*self.cursor).clone(),
                 review_anchor,
                 rectangular_selection: None,
             });
@@ -1437,7 +1440,7 @@ impl Screen {
                     .map_err(|_| PreparationError::ArithmeticOverflow)?,
             )
             .ok_or(PreparationError::ArithmeticOverflow)?;
-        let mut cursor = self.cursor.clone();
+        let mut cursor = (*self.cursor).clone();
         cursor.clamp_to_grid(rows, cols);
         let PreparedProjection::Projected(live) = live_cursor else {
             return Err(PreparationError::UnresolvedLiveCursor);
@@ -1524,7 +1527,7 @@ impl Screen {
             cols: copied_cols,
             retained_cells,
         });
-        let mut cursor = self.cursor.clone();
+        let mut cursor = (*self.cursor).clone();
         cursor.clamp_to_grid(rows, cols);
         let live_top = normal.history_start();
         if let Some(saved) = cursor.cursor.saved.as_mut() {
@@ -1563,11 +1566,11 @@ impl Screen {
             deferred_primary_source,
             mut parked_alt,
         } = prepared;
-        self.normal = normal;
+        self.normal = normal.into();
         self.history_limits = history_limits;
         self.anchor_mutations = anchor_mutations;
         self.review_anchor = review_anchor;
-        self.cursor = cursor;
+        self.cursor = cursor.into();
         self.pen_state = pen_state;
         self.hyperlinks = hyperlinks;
 
@@ -2384,7 +2387,7 @@ impl Screen {
         let rows = self.normal.rows();
         let cols = self.normal.cols();
         if self.normal.history_limits() != self.history_limits {
-            self.normal = NormalBuf::with_history_limits(rows, cols, self.history_limits);
+            self.normal = NormalBuf::with_history_limits(rows, cols, self.history_limits).into();
         } else {
             self.normal.reset_all_retained();
         }

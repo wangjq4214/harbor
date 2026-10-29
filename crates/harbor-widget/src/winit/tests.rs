@@ -1,0 +1,1769 @@
+use super::event::modifiers_to_widget;
+use super::presenter::{FrameAcquisition, classify_surface_texture, execute_presented_frame};
+use super::*;
+use crate::effects::ControlFlowEffect;
+use crate::input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, PointerPhase};
+use crate::runtime::Runtime;
+use crate::scene::primitive::{ExternalScheduleDemand, ExternalScheduleFn};
+use crate::widgets::button::Button;
+use crate::widgets::external_surface::ExternalSurface;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use winit::dpi::PhysicalPosition;
+use winit::event::MouseButton;
+use winit::keyboard::NamedKey;
+
+#[test]
+fn presented_frame_operations_are_ordered_and_stop_on_acquire_or_encode_error() {
+    use std::cell::RefCell;
+
+    let order = RefCell::new(Vec::new());
+    let result = execute_presented_frame(
+        || {
+            order.borrow_mut().push("acquire");
+            Ok::<_, &'static str>("texture")
+        },
+        |_| {
+            order.borrow_mut().push("view");
+            "view"
+        },
+        |_| {
+            order.borrow_mut().push("encode");
+            Ok::<_, &'static str>("command")
+        },
+        |_| order.borrow_mut().push("submit"),
+        || order.borrow_mut().push("pre_present_notify"),
+        |_| order.borrow_mut().push("present"),
+    );
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        *order.borrow(),
+        vec![
+            "acquire",
+            "view",
+            "encode",
+            "submit",
+            "pre_present_notify",
+            "present"
+        ]
+    );
+
+    let order = RefCell::new(Vec::new());
+    let result = execute_presented_frame(
+        || {
+            order.borrow_mut().push("acquire");
+            Err::<&str, _>("acquire")
+        },
+        |_| {
+            order.borrow_mut().push("view");
+            "view"
+        },
+        |_| {
+            order.borrow_mut().push("encode");
+            Ok::<_, &'static str>("command")
+        },
+        |_| order.borrow_mut().push("submit"),
+        || order.borrow_mut().push("pre_present_notify"),
+        |_| order.borrow_mut().push("present"),
+    );
+    assert_eq!(result, Err("acquire"));
+    assert_eq!(*order.borrow(), vec!["acquire"]);
+
+    let order = RefCell::new(Vec::new());
+    let result = execute_presented_frame(
+        || {
+            order.borrow_mut().push("acquire");
+            Ok::<_, &'static str>("texture")
+        },
+        |_| {
+            order.borrow_mut().push("view");
+            "view"
+        },
+        |_| {
+            order.borrow_mut().push("encode");
+            Err::<&str, _>("encode")
+        },
+        |_| order.borrow_mut().push("submit"),
+        || order.borrow_mut().push("pre_present_notify"),
+        |_| order.borrow_mut().push("present"),
+    );
+    assert_eq!(result, Err("encode"));
+    assert_eq!(*order.borrow(), vec!["acquire", "view", "encode"]);
+}
+
+#[test]
+fn surface_texture_statuses_share_production_classification() {
+    // wgpu keeps SurfaceTexture construction private, so Success and
+    // Suboptimal cannot be exercised here; the remaining statuses map
+    // through the same classify_surface_texture seam as production.
+    assert!(matches!(
+        classify_surface_texture(wgpu::CurrentSurfaceTexture::Lost),
+        FrameAcquisition::RecoveryRequired
+    ));
+    assert!(matches!(
+        classify_surface_texture(wgpu::CurrentSurfaceTexture::Outdated),
+        FrameAcquisition::RecoveryRequired
+    ));
+    assert!(matches!(
+        classify_surface_texture(wgpu::CurrentSurfaceTexture::Timeout),
+        FrameAcquisition::Skipped
+    ));
+    assert!(matches!(
+        classify_surface_texture(wgpu::CurrentSurfaceTexture::Occluded),
+        FrameAcquisition::Skipped
+    ));
+    assert!(matches!(
+        classify_surface_texture(wgpu::CurrentSurfaceTexture::Validation),
+        FrameAcquisition::Validation
+    ));
+}
+
+#[test]
+fn surface_state_tracks_drawable_transitions_and_recovery_budget() {
+    let mut state = SurfaceState::new(800, 600, 1.0);
+    assert!(state.can_acquire());
+    assert!(state.update(800, 600, 2.0));
+    assert!(state.configuration_dirty());
+    assert!(!state.recovery_attempted());
+    assert!(state.allow_recovery_retry());
+    assert!(!state.allow_recovery_retry());
+    state.reset_recovery_budget();
+    assert!(state.allow_recovery_retry());
+
+    state.update(0, 600, 2.0);
+    assert!(!state.can_acquire());
+    state.reset_recovery_budget();
+    assert!(state.allow_recovery_retry());
+}
+
+#[test]
+fn should_return_false_when_surface_state_update_receives_same_viewport() {
+    // Arrange
+    let mut state = SurfaceState::new(800, 600, 1.0);
+    state.mark_configured();
+
+    // Act
+    let changed = state.update(800, 600, 1.0);
+
+    // Assert
+    assert!(!changed);
+    assert!(!state.configuration_dirty());
+}
+
+#[test]
+fn should_clear_configuration_dirty_when_surface_state_is_marked_configured() {
+    // Arrange
+    let mut state = SurfaceState::new(800, 600, 1.0);
+    assert!(state.configuration_dirty());
+
+    // Act
+    state.mark_configured();
+
+    // Assert
+    assert!(!state.configuration_dirty());
+}
+
+#[test]
+fn should_start_without_configuration_dirty_for_zero_sized_surface() {
+    // Arrange / Act
+    let state = SurfaceState::new(0, 0, 1.0);
+
+    // Assert
+    assert!(!state.configuration_dirty());
+    assert!(!state.can_acquire());
+}
+
+#[test]
+fn should_reset_recovery_budget_when_surface_state_viewport_changes() {
+    // Arrange
+    let mut state = SurfaceState::new(800, 600, 1.0);
+    assert!(state.allow_recovery_retry());
+    assert!(!state.allow_recovery_retry());
+
+    // Act
+    assert!(state.update(1024, 768, 1.0));
+
+    // Assert
+    assert!(state.allow_recovery_retry());
+}
+
+#[test]
+fn should_update_adapter_and_runtime_viewport_when_window_is_resized() {
+    // Arrange
+    use crate::runtime::Runtime;
+    use winit::dpi::PhysicalSize;
+
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+    let resized = WindowEvent::Resized(PhysicalSize::new(1024, 768));
+
+    // Act
+    let outcome = presenter.handle_event(&mut adapter, &mut runtime, &resized);
+
+    // Assert
+    assert!(outcome.is_handled());
+    assert_eq!(presenter.viewport().physical_size, (1024, 768));
+    assert_eq!(
+        runtime.current_viewport().map(|vp| vp.physical_size),
+        Some((1024, 768))
+    );
+    assert!(outcome.effects.request_redraw);
+}
+
+#[test]
+fn should_combine_host_physical_size_when_scale_factor_changes() {
+    // Arrange: DPI change often arrives before Resized; the host supplies
+    // window.inner_size() so logical layout does not use a stale physical.
+    // (WindowEvent::ScaleFactorChanged cannot be constructed outside winit,
+    // so this exercises the same transition the lifecycle handler applies.)
+    use crate::runtime::Runtime;
+
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+    adapter.set_scale_factor(2.0);
+
+    // Act
+    let outcome = presenter.handle_surface_transition(&mut adapter, &mut runtime, 1600, 1200, 2.0);
+
+    // Assert
+    assert!(outcome.is_handled());
+    assert_eq!(presenter.viewport().physical_size, (1600, 1200));
+    assert!((presenter.viewport().scale_factor - 2.0).abs() < f32::EPSILON);
+    assert_eq!(
+        runtime.current_viewport().map(|vp| vp.physical_size),
+        Some((1600, 1200))
+    );
+    assert!(outcome.effects.request_redraw);
+}
+
+#[test]
+fn should_not_request_redraw_when_resize_reports_same_viewport() {
+    // Arrange
+    use crate::runtime::Runtime;
+    use winit::dpi::PhysicalSize;
+
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+    presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(PhysicalSize::new(800, 600)),
+    );
+
+    // Act
+    let outcome = presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(PhysicalSize::new(800, 600)),
+    );
+
+    // Assert
+    assert!(outcome.is_handled());
+    assert!(!outcome.effects.request_redraw);
+}
+
+#[test]
+fn should_mark_surface_non_drawable_when_resized_to_zero_extent() {
+    // Arrange
+    use crate::runtime::Runtime;
+    use winit::dpi::PhysicalSize;
+
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+
+    // Act
+    presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(PhysicalSize::new(0, 600)),
+    );
+
+    // Assert
+    assert!(!presenter.viewport().is_drawable());
+    assert_eq!(
+        runtime.current_viewport().map(|vp| vp.physical_size),
+        Some((0, 600))
+    );
+}
+
+#[test]
+fn should_not_request_redraw_when_resized_to_zero_extent() {
+    // Arrange
+    use crate::runtime::Runtime;
+    use winit::dpi::PhysicalSize;
+
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+
+    // Act
+    let outcome = presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(PhysicalSize::new(0, 600)),
+    );
+
+    // Assert: zero-size suspends acquisition without scheduling a frame.
+    assert!(outcome.is_handled());
+    assert!(!outcome.effects.request_redraw);
+}
+
+#[test]
+fn should_request_redraw_when_restored_from_zero_extent() {
+    // Arrange
+    use crate::runtime::Runtime;
+    use winit::dpi::PhysicalSize;
+
+    let mut presenter = WindowPresenter::new(0, 0, 1.0);
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+    presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(PhysicalSize::new(0, 0)),
+    );
+
+    // Act
+    let outcome = presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(PhysicalSize::new(800, 600)),
+    );
+
+    // Assert
+    assert!(outcome.is_handled());
+    assert!(presenter.viewport().is_drawable());
+    assert!(outcome.effects.request_redraw);
+}
+
+#[test]
+fn should_turn_validation_acquisition_into_fatal_outcome() {
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+
+    let outcome = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::<&str>::Validation,
+        |_| Ok(()),
+    );
+
+    assert!(outcome.is_fatal());
+    assert!(matches!(
+        outcome.fatal_error(),
+        Some(FrameError::Validation(message)) if message.contains("validation")
+    ));
+    assert!(!outcome.effects().request_redraw);
+}
+
+#[test]
+fn should_request_one_recovery_frame_when_acquisition_is_lost() {
+    // Arrange
+    use crate::runtime::Runtime;
+
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut runtime = Runtime::new();
+    let frame_start = RuntimeEffects::default();
+
+    // Act
+    let first = presenter.finish_acquisition(
+        frame_start.clone(),
+        FrameAcquisition::<&str>::RecoveryRequired,
+        |_| Ok(()),
+    );
+    // Host consumes the recovery redraw before the next acquisition attempt.
+    let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+    let second = presenter.finish_acquisition(
+        frame_start,
+        FrameAcquisition::<&str>::RecoveryRequired,
+        |_| Ok(()),
+    );
+
+    // Assert: one internal retry, then surface recovery becomes fatal
+    // instead of silently stalling the window.
+    assert!(first.is_recovery_required());
+    assert!(first.effects().request_redraw);
+    assert!(second.is_fatal());
+    assert!(!second.effects().request_redraw);
+}
+
+#[test]
+fn should_reset_recovery_budget_when_external_invalidation_arrives() {
+    // Arrange
+    use crate::effects::ExternalInvalidation;
+    use crate::runtime::Runtime;
+
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut runtime = Runtime::new();
+    let exhausted = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::<&str>::RecoveryRequired,
+        |_| Ok(()),
+    );
+    assert!(exhausted.effects().request_redraw);
+    let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+    let blocked = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::<&str>::RecoveryRequired,
+        |_| Ok(()),
+    );
+    assert!(blocked.is_fatal());
+    assert!(!blocked.effects().request_redraw);
+
+    // Act: a fresh external wake restores the one-retry budget.
+    let _ = presenter.invalidate_external(&mut runtime, ExternalInvalidation::new());
+    let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+    let retry = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::<&str>::RecoveryRequired,
+        |_| Ok(()),
+    );
+
+    // Assert
+    assert!(retry.is_recovery_required());
+    assert!(retry.effects().request_redraw);
+}
+
+#[test]
+fn should_not_request_recovery_frame_when_acquisition_is_skipped() {
+    // Arrange
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+
+    // Act
+    let outcome = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::<&str>::Skipped,
+        |_| Ok(()),
+    );
+
+    // Assert: timeout/occluded/validation skip without completion or retry.
+    assert!(!outcome.is_presented());
+    assert!(!outcome.is_recovery_required());
+    assert!(!outcome.effects().request_redraw);
+}
+
+#[test]
+fn should_request_recovery_frame_when_presentation_is_suboptimal() {
+    // Arrange
+    use crate::runtime::Runtime;
+
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut runtime = Runtime::new();
+
+    // Act
+    let first = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::Suboptimal("ok"),
+        |_| Ok(()),
+    );
+    let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+    let second = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::Suboptimal("ok"),
+        |_| Ok(()),
+    );
+
+    // Assert
+    assert!(first.is_presented());
+    assert!(first.is_suboptimal());
+    assert!(first.effects().request_redraw);
+    assert!(second.is_presented());
+    assert!(second.is_suboptimal());
+    assert!(!second.effects().request_redraw);
+}
+
+#[test]
+fn should_restore_recovery_budget_after_successful_presentation() {
+    // Arrange
+    use crate::runtime::Runtime;
+
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut runtime = Runtime::new();
+    let exhausted = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::<&str>::RecoveryRequired,
+        |_| Ok(()),
+    );
+    assert!(exhausted.effects().request_redraw);
+    let _ = presenter.redraw_requested(&mut runtime, Instant::now());
+
+    // Act: a successful present resets the one-retry budget.
+    let presented = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::Presented("ok"),
+        |_| Ok(()),
+    );
+    let retry = presenter.finish_acquisition(
+        RuntimeEffects::default(),
+        FrameAcquisition::<&str>::RecoveryRequired,
+        |_| Ok(()),
+    );
+
+    // Assert
+    assert!(presented.is_presented());
+    assert!(retry.is_recovery_required());
+    assert!(retry.effects().request_redraw);
+}
+
+#[test]
+fn acquisition_policy_returns_frame_start_effects_and_completes_only_presented_frames() {
+    use crate::effects::{ControlFlowEffect, CursorEffect, CursorShape};
+    use std::cell::Cell;
+
+    let frame_start = RuntimeEffects {
+        request_redraw: true,
+        control_flow: Some(ControlFlowEffect::wait_until(Instant::now())),
+        cursor: Some(CursorEffect::set_cursor(CursorShape::Pointer)),
+        ..RuntimeEffects::default()
+    };
+
+    // A skipped acquisition returns exactly the frame-start batch and does
+    // not invoke presentation or consume the active continuation.
+    {
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        presenter.fold_effects(RuntimeEffects {
+            control_flow: Some(ControlFlowEffect::poll()),
+            ..RuntimeEffects::default()
+        });
+        let present_count = Cell::new(0);
+        let outcome = presenter.finish_acquisition(
+            frame_start.clone(),
+            FrameAcquisition::<&str>::Skipped,
+            |_| {
+                present_count.set(present_count.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert_eq!(outcome.effects(), &frame_start);
+        assert!(!outcome.is_presented());
+        assert_eq!(present_count.get(), 0);
+
+        let continuation = presenter.frame_completed(Instant::now());
+        assert!(continuation.request_redraw);
+        assert_eq!(continuation.control_flow, Some(ControlFlowEffect::Poll));
+    }
+
+    // RecoveryRequired grants one retry edge; that pending redraw means the
+    // scheduler has already consumed the continuation opportunity.
+    {
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        presenter.fold_effects(RuntimeEffects {
+            control_flow: Some(ControlFlowEffect::poll()),
+            ..RuntimeEffects::default()
+        });
+        let present_count = Cell::new(0);
+        let outcome = presenter.finish_acquisition(
+            RuntimeEffects::default(),
+            FrameAcquisition::<&str>::RecoveryRequired,
+            |_| {
+                present_count.set(present_count.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert!(outcome.is_recovery_required());
+        assert!(outcome.effects().request_redraw);
+        assert_eq!(present_count.get(), 0);
+        assert!(!presenter.frame_completed(Instant::now()).request_redraw);
+    }
+
+    for (acquisition, expected_suboptimal) in [
+        (FrameAcquisition::Presented("success"), false),
+        (FrameAcquisition::Suboptimal("suboptimal"), true),
+    ] {
+        let mut presenter = WindowPresenter::new(800, 600, 1.0);
+        presenter.fold_effects(RuntimeEffects {
+            control_flow: Some(ControlFlowEffect::poll()),
+            ..RuntimeEffects::default()
+        });
+        let present_count = Cell::new(0);
+        let outcome = presenter.finish_acquisition(frame_start.clone(), acquisition, |label| {
+            assert_eq!(
+                label,
+                if expected_suboptimal {
+                    "suboptimal"
+                } else {
+                    "success"
+                }
+            );
+            present_count.set(present_count.get() + 1);
+            Ok(())
+        });
+
+        assert!(outcome.is_presented());
+        assert_eq!(outcome.is_suboptimal(), expected_suboptimal);
+        assert_eq!(present_count.get(), 1);
+        assert!(outcome.effects().request_redraw);
+        assert_eq!(
+            outcome.effects().control_flow,
+            Some(ControlFlowEffect::Poll)
+        );
+        assert_eq!(outcome.effects().cursor, frame_start.cursor);
+    }
+
+    // An execution failure is not a completed presentation, so it keeps
+    // only frame-start effects and leaves completion available to the host.
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    presenter.fold_effects(RuntimeEffects {
+        control_flow: Some(ControlFlowEffect::poll()),
+        ..RuntimeEffects::default()
+    });
+    let failed = presenter.finish_acquisition(
+        frame_start.clone(),
+        FrameAcquisition::Presented("failed"),
+        |_| Err(FrameError::other("encode")),
+    );
+    assert!(failed.is_fatal());
+    assert_eq!(failed.effects(), &frame_start);
+    assert!(presenter.frame_completed(Instant::now()).request_redraw);
+}
+
+#[test]
+fn outcomes_distinguish_supported_noop_and_unsupported_events() {
+    let handled = WinitEventOutcome::handled(RuntimeEffects::default());
+    assert!(handled.handled);
+    assert!(handled.is_handled());
+    assert!(handled.effects.is_noop());
+
+    let unhandled = WinitEventOutcome::unhandled();
+    assert!(!unhandled.handled);
+    assert!(!unhandled.is_handled());
+    assert!(unhandled.effects.is_noop());
+}
+
+#[test]
+fn state_only_events_are_handled_without_dispatch() {
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+    let outcome = adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
+    );
+    assert!(outcome.handled);
+    assert!(outcome.effects.is_noop());
+    assert!(adapter.ime_composing);
+}
+
+#[test]
+fn ime_commit_is_the_only_composition_text_event() {
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+    adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
+    // When IME is enabled but not composing (no preedit), normal characters are forwarded.
+    assert!(
+        keyboard_to_uievent(
+            &Key::Character("a".into()),
+            ElementState::Pressed,
+            KeyLocation::Standard,
+            ModifiersState::empty(),
+            false,
+        )
+        .is_some()
+    );
+
+    // When preedit is active (composing), direct character KeyDown is suppressed.
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::Ime(Ime::Preedit("ni".into(), Some((0, 2)))),
+    );
+    assert!(
+        keyboard_to_uievent(
+            &Key::Character("a".into()),
+            ElementState::Pressed,
+            KeyLocation::Standard,
+            ModifiersState::empty(),
+            adapter.ime_composing,
+        )
+        .is_none()
+    );
+
+    let outcome = adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit("你".into())));
+    assert!(outcome.handled);
+    assert!(!adapter.ime_composing);
+}
+
+#[test]
+fn ime_keeps_shortcuts_navigation_and_numpad_keys_active() {
+    let modifiers = ModifiersState::empty();
+    assert!(
+        keyboard_to_uievent(
+            &Key::Named(NamedKey::ArrowUp),
+            ElementState::Pressed,
+            KeyLocation::Standard,
+            modifiers,
+            true,
+        )
+        .is_some()
+    );
+    assert!(
+        keyboard_to_uievent(
+            &Key::Character("1".into()),
+            ElementState::Pressed,
+            KeyLocation::Numpad,
+            modifiers,
+            true,
+        )
+        .is_some()
+    );
+    assert!(
+        keyboard_to_uievent(
+            &Key::Character("c".into()),
+            ElementState::Pressed,
+            KeyLocation::Standard,
+            ModifiersState::CONTROL,
+            true,
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn ime_enable_clears_preedit_without_suppressing_direct_keys() {
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+    adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
+
+    // Direct ASCII character press (e.g. typing in cmd.exe) without preedit
+    let key_a = keyboard_to_uievent(
+        &Key::Character("a".into()),
+        ElementState::Pressed,
+        KeyLocation::Standard,
+        ModifiersState::empty(),
+        adapter.ime_composing,
+    );
+    assert!(
+        key_a.is_some(),
+        "Character 'a' should not be suppressed when not composing"
+    );
+
+    // Enter key press without preedit
+    let key_enter = keyboard_to_uievent(
+        &Key::Named(NamedKey::Enter),
+        ElementState::Pressed,
+        KeyLocation::Standard,
+        ModifiersState::empty(),
+        adapter.ime_composing,
+    );
+    assert!(key_enter.is_some(), "Enter should never be suppressed");
+
+    // Ctrl+C press
+    let key_ctrl_c = keyboard_to_uievent(
+        &Key::Character("c".into()),
+        ElementState::Pressed,
+        KeyLocation::Standard,
+        ModifiersState::CONTROL,
+        adapter.ime_composing,
+    );
+    assert!(key_ctrl_c.is_some(), "Ctrl+C should never be suppressed");
+}
+
+#[test]
+fn empty_preedit_clears_composing_state_and_restores_character_keydown() {
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+    adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
+
+    // Preedit with text sets composing state
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
+    );
+    assert!(adapter.ime_composing);
+
+    // Winit clearing marked text with empty preedit clears composing state
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::Ime(Ime::Preedit(String::new(), None)),
+    );
+    assert!(!adapter.ime_composing);
+
+    // Direct character KeyDown is restored
+    let key_a = keyboard_to_uievent(
+        &Key::Character("a".into()),
+        ElementState::Pressed,
+        KeyLocation::Standard,
+        ModifiersState::empty(),
+        adapter.ime_composing,
+    );
+    assert!(
+        key_a.is_some(),
+        "Character should not be suppressed after empty preedit clears composition"
+    );
+}
+
+#[test]
+fn keyboard_conversion_preserves_press_release_named_and_numpad_keys() {
+    let down = keyboard_to_uievent(
+        &Key::Named(NamedKey::F5),
+        ElementState::Pressed,
+        KeyLocation::Standard,
+        ModifiersState::SHIFT,
+        false,
+    );
+    assert_eq!(
+        down,
+        Some(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: WidgetKey::F5,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        }))
+    );
+
+    let up = keyboard_to_uievent(
+        &Key::Named(NamedKey::Enter),
+        ElementState::Released,
+        KeyLocation::Numpad,
+        ModifiersState::empty(),
+        false,
+    );
+    assert_eq!(
+        up,
+        Some(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: WidgetKey::NumpadEnter,
+            modifiers: Modifiers::default(),
+        }))
+    );
+}
+
+#[test]
+fn supported_named_keys_and_modifier_bits_are_preserved() {
+    let supported = [
+        (NamedKey::Tab, WidgetKey::Tab),
+        (NamedKey::Enter, WidgetKey::Enter),
+        (NamedKey::Space, WidgetKey::Space),
+        (NamedKey::Escape, WidgetKey::Escape),
+        (NamedKey::Backspace, WidgetKey::Backspace),
+        (NamedKey::Insert, WidgetKey::Insert),
+        (NamedKey::Delete, WidgetKey::Delete),
+        (NamedKey::F1, WidgetKey::F1),
+        (NamedKey::F2, WidgetKey::F2),
+        (NamedKey::F3, WidgetKey::F3),
+        (NamedKey::F4, WidgetKey::F4),
+        (NamedKey::F5, WidgetKey::F5),
+        (NamedKey::F6, WidgetKey::F6),
+        (NamedKey::F7, WidgetKey::F7),
+        (NamedKey::F8, WidgetKey::F8),
+        (NamedKey::F9, WidgetKey::F9),
+        (NamedKey::F10, WidgetKey::F10),
+        (NamedKey::F11, WidgetKey::F11),
+        (NamedKey::F12, WidgetKey::F12),
+        (NamedKey::ArrowUp, WidgetKey::ArrowUp),
+        (NamedKey::ArrowDown, WidgetKey::ArrowDown),
+        (NamedKey::ArrowLeft, WidgetKey::ArrowLeft),
+        (NamedKey::ArrowRight, WidgetKey::ArrowRight),
+        (NamedKey::Home, WidgetKey::Home),
+        (NamedKey::End, WidgetKey::End),
+        (NamedKey::PageUp, WidgetKey::PageUp),
+        (NamedKey::PageDown, WidgetKey::PageDown),
+    ];
+    let modifier_bits = [
+        ModifiersState::empty(),
+        ModifiersState::SHIFT,
+        ModifiersState::CONTROL,
+        ModifiersState::ALT,
+        ModifiersState::SUPER,
+        ModifiersState::SHIFT
+            | ModifiersState::CONTROL
+            | ModifiersState::ALT
+            | ModifiersState::SUPER,
+    ];
+    for (named, expected_key) in supported {
+        for modifiers in modifier_bits {
+            let event = keyboard_to_uievent(
+                &Key::Named(named),
+                ElementState::Pressed,
+                KeyLocation::Standard,
+                modifiers,
+                false,
+            );
+            assert_eq!(
+                event,
+                Some(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key: expected_key,
+                    modifiers: modifiers_to_widget(modifiers),
+                }))
+            );
+        }
+    }
+}
+
+#[test]
+fn character_and_numpad_matrix_preserves_modifier_combinations() {
+    let modifier_bits = [
+        ModifiersState::empty(),
+        ModifiersState::SHIFT,
+        ModifiersState::CONTROL,
+        ModifiersState::ALT,
+        ModifiersState::SUPER,
+        ModifiersState::SHIFT
+            | ModifiersState::CONTROL
+            | ModifiersState::ALT
+            | ModifiersState::SUPER,
+    ];
+    for modifiers in modifier_bits {
+        for (text, expected) in [
+            ("a", WidgetKey::Character('a')),
+            ("é", WidgetKey::Character('é')),
+        ] {
+            assert_eq!(
+                keyboard_to_uievent(
+                    &Key::Character(text.into()),
+                    ElementState::Pressed,
+                    KeyLocation::Standard,
+                    modifiers,
+                    false,
+                ),
+                Some(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key: expected,
+                    modifiers: modifiers_to_widget(modifiers),
+                }))
+            );
+            assert_eq!(
+                keyboard_to_uievent(
+                    &Key::Character(text.into()),
+                    ElementState::Pressed,
+                    KeyLocation::Numpad,
+                    modifiers,
+                    false,
+                ),
+                Some(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key: match expected {
+                        WidgetKey::Character(ch) => WidgetKey::NumpadCharacter(ch),
+                        _ => unreachable!(),
+                    },
+                    modifiers: modifiers_to_widget(modifiers),
+                }))
+            );
+        }
+        assert_eq!(
+            keyboard_to_uievent(
+                &Key::Named(NamedKey::Enter),
+                ElementState::Released,
+                KeyLocation::Numpad,
+                modifiers,
+                false,
+            ),
+            Some(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+                key: WidgetKey::NumpadEnter,
+                modifiers: modifiers_to_widget(modifiers),
+            }))
+        );
+    }
+}
+
+#[test]
+fn mouse_button_mapping_covers_supported_and_unsupported_variants() {
+    assert_eq!(
+        mouse_button(MouseButton::Left),
+        Some((0, PointerButton::Left))
+    );
+    assert_eq!(
+        mouse_button(MouseButton::Right),
+        Some((1, PointerButton::Right))
+    );
+    assert_eq!(
+        mouse_button(MouseButton::Middle),
+        Some((2, PointerButton::Middle))
+    );
+    assert_eq!(mouse_button(MouseButton::Other(8)), None);
+}
+
+#[test]
+fn pointer_positions_are_physical_until_dispatch_and_scale_changes_apply() {
+    let mut adapter = WinitAdapter::new();
+    adapter.set_scale_factor(2.0);
+    let event = WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: PhysicalPosition::new(80.0, 40.0),
+    };
+    let converted = adapter.convert_event(&event).unwrap();
+    assert_eq!(
+        converted,
+        UiEvent::Pointer(PointerEvent::new(
+            Point::new(40.0, 20.0),
+            PointerPhase::Move,
+            PointerButton::Left,
+            0,
+        ))
+    );
+
+    let click = WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    };
+    assert_eq!(
+        adapter.convert_event(&click).unwrap(),
+        UiEvent::Pointer(PointerEvent::new(
+            Point::new(40.0, 20.0),
+            PointerPhase::Down,
+            PointerButton::Left,
+            0,
+        ))
+    );
+}
+
+#[test]
+fn wheel_conversion_preserves_line_and_pixel_payloads() {
+    let mut adapter = WinitAdapter::new();
+    adapter.mouse_position = Point::new(12.0, 18.0);
+
+    let line = adapter
+        .convert_event(&WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(1.5, -2.0),
+            phase: winit::event::TouchPhase::Moved,
+        })
+        .unwrap();
+    assert_eq!(
+        line,
+        UiEvent::Pointer(PointerEvent::new(
+            Point::new(12.0, 18.0),
+            PointerPhase::WheelLine { dx: 1.5, dy: -2.0 },
+            PointerButton::Left,
+            0,
+        ))
+    );
+
+    adapter.set_scale_factor(2.0);
+    let pixel = adapter
+        .convert_event(&WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(3.0, 4.0)),
+            phase: winit::event::TouchPhase::Moved,
+        })
+        .unwrap();
+    assert_eq!(
+        pixel,
+        UiEvent::Pointer(PointerEvent::new(
+            Point::new(6.0, 9.0),
+            PointerPhase::WheelPixel { dx: 1.5, dy: 2.0 },
+            PointerButton::Left,
+            0,
+        ))
+    );
+}
+
+#[test]
+fn touch_conversion_preserves_all_phases_ids_and_scale() {
+    let mut adapter = WinitAdapter::new();
+    adapter.set_scale_factor(2.0);
+    for (source, expected) in [
+        (TouchPhase::Started, PointerPhase::Down),
+        (TouchPhase::Moved, PointerPhase::Move),
+        (TouchPhase::Ended, PointerPhase::Up),
+    ] {
+        let event = WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase: source,
+            location: PhysicalPosition::new(20.0, 10.0),
+            force: None,
+            id: 9,
+        });
+        assert_eq!(
+            adapter.convert_event(&event),
+            Some(UiEvent::Pointer(PointerEvent::new(
+                Point::new(10.0, 5.0),
+                expected,
+                PointerButton::Left,
+                TOUCH_POINTER_ID_BASE | 1,
+            )))
+        );
+    }
+    // A terminal phase releases the contact identity; a later malformed
+    // event for the same source is treated as a new namespaced contact.
+    let cancelled = WindowEvent::Touch(winit::event::Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase: TouchPhase::Cancelled,
+        location: PhysicalPosition::new(20.0, 10.0),
+        force: None,
+        id: 9,
+    });
+    assert_eq!(
+        adapter.convert_event(&cancelled),
+        Some(UiEvent::Pointer(PointerEvent::new(
+            Point::new(10.0, 5.0),
+            PointerPhase::Cancel,
+            PointerButton::Left,
+            TOUCH_POINTER_ID_BASE | 2,
+        )))
+    );
+}
+
+#[test]
+fn touch_contacts_are_namespaced_and_do_not_contaminate_mouse_position() {
+    let mut adapter = WinitAdapter::new();
+    adapter.set_scale_factor(2.0);
+
+    let mouse_move = WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: PhysicalPosition::new(80.0, 40.0),
+    };
+    let touch_zero = WindowEvent::Touch(winit::event::Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase: TouchPhase::Started,
+        location: PhysicalPosition::new(20.0, 10.0),
+        force: None,
+        id: 0,
+    });
+    let touch_one = WindowEvent::Touch(winit::event::Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase: TouchPhase::Started,
+        location: PhysicalPosition::new(40.0, 20.0),
+        force: None,
+        id: 1,
+    });
+    let mouse_down = WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    };
+
+    let mouse = adapter.convert_event(&mouse_move).unwrap();
+    let first_touch = adapter.convert_event(&touch_zero).unwrap();
+    let second_touch = adapter.convert_event(&touch_one).unwrap();
+    let mouse_after_touch = adapter.convert_event(&mouse_down).unwrap();
+
+    let mouse_id = mouse.pointer_id().unwrap();
+    let first_id = first_touch.pointer_id().unwrap();
+    let second_id = second_touch.pointer_id().unwrap();
+    assert_eq!(mouse_id, 0);
+    assert_eq!(first_id, TOUCH_POINTER_ID_BASE | 1);
+    assert_eq!(second_id, TOUCH_POINTER_ID_BASE | 2);
+    assert_ne!(first_id, second_id);
+    assert_ne!(mouse_id, first_id);
+    assert_eq!(
+        mouse_after_touch,
+        UiEvent::Pointer(PointerEvent::new(
+            Point::new(40.0, 20.0),
+            PointerPhase::Down,
+            PointerButton::Left,
+            0,
+        ))
+    );
+
+    // A later move for one touch contact changes only that contact's
+    // position; the physical mouse position remains the click position.
+    let touch_move = WindowEvent::Touch(winit::event::Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase: TouchPhase::Moved,
+        location: PhysicalPosition::new(60.0, 30.0),
+        force: None,
+        id: 0,
+    });
+    adapter.convert_event(&touch_move);
+    assert_eq!(
+        adapter.convert_event(&mouse_down).unwrap().pointer_id(),
+        Some(0)
+    );
+    assert_eq!(
+        adapter.convert_event(&mouse_down).unwrap(),
+        UiEvent::Pointer(PointerEvent::new(
+            Point::new(40.0, 20.0),
+            PointerPhase::Down,
+            PointerButton::Left,
+            0,
+        ))
+    );
+}
+
+#[test]
+fn scale_changes_after_cursor_move_are_applied_to_later_mouse_input() {
+    let mut adapter = WinitAdapter::new();
+    let cursor = WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: PhysicalPosition::new(80.0, 40.0),
+    };
+    adapter.convert_event(&cursor);
+    adapter.set_scale_factor(2.0);
+
+    let wheel = WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: MouseScrollDelta::LineDelta(1.0, 2.0),
+        phase: TouchPhase::Moved,
+    };
+    assert_eq!(
+        adapter.convert_event(&wheel).unwrap(),
+        UiEvent::Pointer(PointerEvent::new(
+            Point::new(40.0, 20.0),
+            PointerPhase::WheelLine { dx: 1.0, dy: 2.0 },
+            PointerButton::Left,
+            0,
+        ))
+    );
+}
+
+#[test]
+fn adapter_dispatches_focus_events_and_forwards_redraw_effects() {
+    let mut runtime = Runtime::new();
+    runtime.set_root(crate::widgets::button::Button::text("OK"));
+    runtime.update(Instant::now());
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: crate::input::event::Key::Tab,
+        modifiers: Default::default(),
+    }));
+    assert!(runtime.input().focus_visible());
+
+    let mut adapter = WinitAdapter::new();
+    let lost = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
+    assert!(lost.handled);
+    assert!(lost.effects.request_redraw);
+    let _ = runtime.update(Instant::now());
+
+    let gained = adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
+    assert!(gained.handled);
+    assert!(gained.effects.request_redraw);
+}
+
+#[test]
+fn unsupported_events_are_unhandled() {
+    let mut adapter = WinitAdapter::new();
+    let mut runtime = Runtime::new();
+    let outcome = adapter.handle_event(&mut runtime, &WindowEvent::RedrawRequested);
+    assert!(!outcome.handled);
+    assert!(outcome.effects.is_noop());
+}
+
+#[test]
+fn focus_loss_clears_window_transient_state() {
+    let mut adapter = WinitAdapter::new();
+    adapter.modifiers = ModifiersState::SHIFT;
+    adapter.ime_composing = true;
+    let mut runtime = Runtime::new();
+    let outcome = adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
+    assert!(outcome.handled);
+    assert_eq!(adapter.modifiers, ModifiersState::empty());
+    assert!(!adapter.ime_composing);
+
+    adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
+    assert!(
+        keyboard_to_uievent(
+            &Key::Character("x".into()),
+            ElementState::Pressed,
+            KeyLocation::Standard,
+            adapter.modifiers,
+            adapter.ime_composing,
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn blocked_widget_events_preserve_native_state_without_cross_generation_release() {
+    let mut adapter = WinitAdapter::new();
+    adapter.observe_blocked_widget_event(&WindowEvent::ModifiersChanged(
+        ModifiersState::CONTROL.into(),
+    ));
+    adapter.observe_blocked_widget_event(&WindowEvent::Ime(Ime::Preedit(
+        "draft".into(),
+        Some((0, 5)),
+    )));
+    adapter.observe_blocked_widget_event(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: PhysicalPosition::new(20.0, 30.0),
+    });
+    adapter.observe_blocked_widget_event(&WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    });
+
+    assert_eq!(adapter.modifiers, ModifiersState::CONTROL);
+    assert!(adapter.ime_composing);
+    assert_eq!(adapter.mouse_position, Point::new(20.0, 30.0));
+    assert!(adapter.quarantine_pointer_event(&WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    }));
+
+    adapter.observe_blocked_widget_event(&WindowEvent::Ime(Ime::Preedit(String::new(), None)));
+    assert!(!adapter.ime_composing);
+}
+
+#[test]
+fn adapters_keep_pointer_state_isolated() {
+    let mut first = WinitAdapter::new();
+    let second = WinitAdapter::new();
+    first.set_scale_factor(2.0);
+    first.mouse_position = Point::new(10.0, 20.0);
+    assert_eq!(second.scale_factor, 1.0);
+    assert_eq!(second.mouse_position, Point::ZERO);
+}
+
+#[test]
+fn adapter_dispatches_pointer_input_directly_to_button() {
+    let clicked = Arc::new(AtomicBool::new(false));
+    let clicked_clone = Arc::clone(&clicked);
+    let mut runtime = Runtime::new();
+    runtime.set_root(Button::text("OK").on_click(move |_| {
+        clicked_clone.store(true, Ordering::SeqCst);
+    }));
+    runtime.update(Instant::now());
+    let mut adapter = WinitAdapter::new();
+
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: PhysicalPosition::new(4.0, 4.0),
+        },
+    );
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+    );
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+    );
+
+    assert!(clicked.load(Ordering::SeqCst));
+}
+
+#[test]
+fn focus_loss_cancels_button_capture_before_later_mouse_up() {
+    let clicked = Arc::new(AtomicBool::new(false));
+    let clicked_clone = Arc::clone(&clicked);
+    let mut runtime = Runtime::new();
+    runtime.set_root(Button::text("OK").on_click(move |_| {
+        clicked_clone.store(true, Ordering::SeqCst);
+    }));
+    runtime.update(Instant::now());
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let mut adapter = WinitAdapter::new();
+
+    let hover = presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: PhysicalPosition::new(4.0, 4.0),
+        },
+    );
+    assert!(hover.effects.request_redraw);
+    presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+    );
+    let focus_loss =
+        presenter.handle_event(&mut adapter, &mut runtime, &WindowEvent::Focused(false));
+    // Hover already owns the outstanding redraw edge; later cancel work coalesces.
+    assert!(!focus_loss.effects.request_redraw);
+    assert!(runtime.input().captor(0).is_none());
+
+    presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: PhysicalPosition::new(500.0, 500.0),
+        },
+    );
+    presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+    );
+    assert!(!clicked.load(Ordering::SeqCst));
+}
+
+#[test]
+fn pointer_leave_and_surface_suspend_cancel_button_capture() {
+    fn press(runtime: &mut Runtime, adapter: &mut WinitAdapter) {
+        adapter.handle_event(
+            runtime,
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: PhysicalPosition::new(4.0, 4.0),
+            },
+        );
+        adapter.handle_event(
+            runtime,
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert!(runtime.input().captor(0).is_some());
+    }
+
+    let mut runtime = Runtime::new();
+    runtime.set_root(Button::text("OK"));
+    runtime.update(Instant::now());
+    let mut adapter = WinitAdapter::with_surface(800, 600, 1.0);
+    press(&mut runtime, &mut adapter);
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::CursorLeft {
+            device_id: winit::event::DeviceId::dummy(),
+        },
+    );
+    assert!(runtime.input().captor(0).is_none());
+
+    adapter.handle_event(
+        &mut runtime,
+        &WindowEvent::CursorEntered {
+            device_id: winit::event::DeviceId::dummy(),
+        },
+    );
+    press(&mut runtime, &mut adapter);
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    presenter.handle_event(
+        &mut adapter,
+        &mut runtime,
+        &WindowEvent::Resized(winit::dpi::PhysicalSize::new(0, 0)),
+    );
+    assert!(runtime.input().captor(0).is_none());
+}
+
+#[test]
+fn should_keep_poll_when_deferred_effects_are_folded() {
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+
+    let effects = presenter.fold_effects(RuntimeEffects {
+        has_deferred_externals: true,
+        control_flow: Some(ControlFlowEffect::Poll),
+        ..RuntimeEffects::default()
+    });
+
+    assert_eq!(effects.control_flow, Some(ControlFlowEffect::Poll));
+    assert!(effects.ordinary_present_eligible);
+    assert!(!effects.request_redraw);
+}
+
+#[test]
+fn should_retain_forced_present_through_deferred_redraw_lifecycle() {
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+        ordinary_present_eligible: false,
+        ..ExternalScheduleDemand::empty()
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(91).schedule_with(schedule));
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let armed = presenter.fold_effects(RuntimeEffects {
+        request_redraw: true,
+        has_deferred_externals: true,
+        force_present: true,
+        ..RuntimeEffects::default()
+    });
+
+    let started = presenter.redraw_requested(&mut runtime, Instant::now());
+    let after_consumption = presenter.redraw_requested(&mut runtime, Instant::now());
+
+    assert!(armed.request_redraw);
+    assert!(started.ordinary_present_eligible);
+    assert!(started.has_deferred_externals);
+    assert!(started.force_present);
+    assert!(!after_consumption.force_present);
+}
+
+#[test]
+fn should_not_invoke_present_when_eligible_acquisition_is_skipped() {
+    // Arrange
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let called = AtomicBool::new(false);
+
+    // Act
+    let outcome = presenter.finish_acquisition(
+        RuntimeEffects::request_redraw(),
+        FrameAcquisition::<&str>::Skipped,
+        |_| {
+            called.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+    );
+
+    // Assert — timeout/occlusion skip still wins when present is allowed.
+    assert!(!called.load(Ordering::SeqCst));
+    assert!(!outcome.is_presented());
+    assert!(!outcome.is_recovery_required());
+    assert!(!outcome.is_fatal());
+}
+
+#[test]
+fn should_invoke_present_when_deferred_effects_are_forced() {
+    // Arrange
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let called = AtomicBool::new(false);
+    let effects = RuntimeEffects {
+        has_deferred_externals: true,
+        force_present: true,
+        request_redraw: true,
+        ..RuntimeEffects::default()
+    };
+
+    // Act
+    let outcome = presenter.finish_acquisition(effects, FrameAcquisition::Presented("ok"), |_| {
+        called.store(true, Ordering::SeqCst);
+        Ok(())
+    });
+
+    // Assert
+    assert!(called.load(Ordering::SeqCst));
+    assert!(outcome.is_presented());
+}
+
+#[test]
+fn should_not_request_redraw_when_about_to_wait_while_ineligible() {
+    use std::time::Duration;
+
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+        redraw_now: true,
+        ordinary_present_eligible: false,
+        ..ExternalScheduleDemand::empty()
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
+    let now = Instant::now();
+    let _ = runtime.update(now);
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+
+    let idle = presenter.about_to_wait(&mut runtime, now, None);
+
+    assert!(idle.ordinary_present_eligible);
+    assert!(idle.has_deferred_externals);
+    assert!(!idle.request_redraw);
+    assert!(!idle.force_present);
+    assert_eq!(
+        idle.control_flow,
+        Some(ControlFlowEffect::WaitUntil(
+            now + Duration::from_millis(100)
+        ))
+    );
+}
+
+#[test]
+fn should_force_commit_when_about_to_wait_after_recovery_interval() {
+    use std::time::Duration;
+
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+        ordinary_present_eligible: false,
+        ..ExternalScheduleDemand::empty()
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
+    let now = Instant::now();
+    let _ = runtime.update(now);
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let _ = presenter.about_to_wait(&mut runtime, now, None);
+
+    let due = presenter.about_to_wait(&mut runtime, now + Duration::from_millis(100), None);
+
+    assert!(due.request_redraw);
+    assert!(due.force_present);
+    assert!(due.has_deferred_externals);
+}
+
+#[test]
+fn should_request_redraw_and_present_when_about_to_wait_after_matching_disable() {
+    // Arrange
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+        redraw_now: true,
+        ordinary_present_eligible: true,
+        ..ExternalScheduleDemand::empty()
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+
+    // Act
+    let idle = presenter.about_to_wait(&mut runtime, Instant::now(), None);
+
+    // Assert
+    assert!(idle.ordinary_present_eligible);
+    assert!(idle.request_redraw);
+}
+
+#[test]
+fn should_keep_present_eligible_when_later_turn_follows_trailing_disables() {
+    // Arrange
+    let eligible = Arc::new(AtomicBool::new(false));
+    let redraw = Arc::new(AtomicBool::new(false));
+    let schedule = {
+        let eligible = Arc::clone(&eligible);
+        let redraw = Arc::clone(&redraw);
+        Arc::new(move |_, _| ExternalScheduleDemand {
+            redraw_now: redraw.load(Ordering::SeqCst),
+            ordinary_present_eligible: eligible.load(Ordering::SeqCst),
+            deadline: None,
+        })
+    };
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
+    let now = Instant::now();
+    let _ = runtime.update(now);
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let deferred = presenter.about_to_wait(&mut runtime, now, None);
+    assert!(deferred.ordinary_present_eligible);
+    assert!(deferred.has_deferred_externals);
+    assert!(!deferred.request_redraw);
+
+    // Act
+    eligible.store(true, Ordering::SeqCst);
+    redraw.store(true, Ordering::SeqCst);
+    let later = presenter.about_to_wait(&mut runtime, now, None);
+
+    // Assert
+    assert!(later.ordinary_present_eligible);
+    assert!(!later.has_deferred_externals);
+    assert!(later.request_redraw);
+}
+
+#[test]
+fn should_keep_poll_when_about_to_wait_while_externals_are_deferred() {
+    use std::time::Duration;
+
+    // Arrange — animation Poll is already folded; the terminal stays ineligible
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+        ordinary_present_eligible: false,
+        ..ExternalScheduleDemand::empty()
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
+    let now = Instant::now();
+    let _ = runtime.update(now);
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let _ = presenter.fold_effects(RuntimeEffects {
+        has_deferred_externals: true,
+        control_flow: Some(ControlFlowEffect::Poll),
+        ..RuntimeEffects::default()
+    });
+
+    // Act
+    let idle = presenter.about_to_wait(&mut runtime, now, None);
+
+    // Assert — recovery WaitUntil must not demote widget Poll
+    assert_eq!(idle.control_flow, Some(ControlFlowEffect::Poll));
+    assert_ne!(
+        idle.control_flow,
+        Some(ControlFlowEffect::WaitUntil(
+            now + Duration::from_millis(100)
+        ))
+    );
+    assert!(idle.ordinary_present_eligible);
+    assert!(idle.has_deferred_externals);
+    assert!(!idle.force_present);
+}
+
+#[test]
+fn should_arm_widget_redraw_when_folding_redraw_while_externals_are_deferred() {
+    // Arrange
+    let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand {
+        ordinary_present_eligible: false,
+        ..ExternalScheduleDemand::empty()
+    });
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
+    let now = Instant::now();
+    let _ = runtime.update(now);
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let _ = presenter.about_to_wait(&mut runtime, now, None);
+
+    // Act — widget dirtiness arrives without a fresh schedule collect
+    let widget = presenter.fold_effects(RuntimeEffects::request_redraw());
+
+    // Assert
+    assert!(widget.request_redraw);
+    assert!(widget.ordinary_present_eligible);
+    assert!(widget.has_deferred_externals);
+}
+
+#[test]
+fn should_cancel_recovery_and_present_when_schedule_becomes_eligible() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    let eligible = Arc::new(AtomicBool::new(false));
+    let redraw = Arc::new(AtomicBool::new(false));
+    let schedule = {
+        let eligible = Arc::clone(&eligible);
+        let redraw = Arc::clone(&redraw);
+        Arc::new(move |_, _| ExternalScheduleDemand {
+            redraw_now: redraw.load(Ordering::SeqCst),
+            ordinary_present_eligible: eligible.load(Ordering::SeqCst),
+            deadline: None,
+        })
+    };
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
+    let now = Instant::now();
+    let _ = runtime.update(now);
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let armed = presenter.about_to_wait(&mut runtime, now, None);
+    assert!(armed.has_deferred_externals);
+    assert_eq!(
+        armed.control_flow,
+        Some(ControlFlowEffect::WaitUntil(
+            now + Duration::from_millis(100)
+        ))
+    );
+
+    eligible.store(true, Ordering::SeqCst);
+    redraw.store(true, Ordering::SeqCst);
+    let released = presenter.about_to_wait(&mut runtime, now, None);
+
+    assert!(released.ordinary_present_eligible);
+    assert!(!released.has_deferred_externals);
+    assert!(!released.force_present);
+    assert!(released.request_redraw);
+    assert_ne!(
+        released.control_flow,
+        Some(ControlFlowEffect::WaitUntil(
+            now + Duration::from_millis(100)
+        ))
+    );
+}
+
+#[test]
+fn should_not_busy_wait_when_schedule_becomes_eligible_while_not_drawable() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let eligible = Arc::new(AtomicBool::new(false));
+    let schedule = {
+        let eligible = Arc::clone(&eligible);
+        Arc::new(move |_, _| ExternalScheduleDemand {
+            ordinary_present_eligible: eligible.load(Ordering::SeqCst),
+            ..ExternalScheduleDemand::empty()
+        })
+    };
+    let mut runtime = Runtime::new();
+    runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
+    let now = Instant::now();
+    let _ = runtime.update(now);
+    let mut presenter = WindowPresenter::new(800, 600, 1.0);
+    let _ = presenter.about_to_wait(&mut runtime, now, None);
+    let _ = presenter.set_drawable(false);
+
+    eligible.store(true, Ordering::SeqCst);
+    let idle = presenter.about_to_wait(&mut runtime, now, None);
+
+    assert!(!idle.has_deferred_externals);
+    assert!(!idle.force_present);
+    assert_ne!(idle.control_flow, Some(ControlFlowEffect::Poll));
+    let restored = presenter.set_drawable(true);
+    assert!(!restored.force_present);
+}
