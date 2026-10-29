@@ -360,7 +360,7 @@ impl Text {
             raster_scale,
         };
 
-        layer.sequences.prepare(
+        layer.sequences.prepare_with_dirty(
             gpu,
             &layer.fonts,
             &layer.atlas,
@@ -368,6 +368,9 @@ impl Text {
             viewport,
             &layer.palette,
             layer.raster_scale,
+            &[],
+            true,
+            true,
         );
         let verts = layer.build_all_vertices(snap, viewport);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
@@ -716,6 +719,10 @@ impl Text {
         viewport: &RenderViewport,
         preedit: Option<&Preedit>,
     ) {
+        #[cfg(test)]
+        {
+            super::observations::reset_text();
+        }
         let resized = snap.rows != self.rows || snap.cols != self.cols;
         let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
 
@@ -737,20 +744,34 @@ impl Text {
                 }
                 active
             });
+        let scalar_changed = result.evicted || !result.new_keys.is_empty();
+        let projection_dirty = self.dirty || resized;
         self.apply_rasterize_result(gpu, result);
+        let extra = self.sequences.prepare_with_dirty(
+            gpu,
+            &self.fonts,
+            &self.atlas,
+            snap,
+            viewport,
+            &self.palette,
+            self.raster_scale,
+            dirty_ranges,
+            projection_dirty,
+            scalar_changed,
+        );
+        let mut combined = dirty_ranges.to_vec();
+        for range in extra {
+            if let Some(existing) = combined.iter_mut().find(|r| r.row == range.row) {
+                existing.start_col = existing.start_col.min(range.start_col);
+                existing.end_col = existing.end_col.max(range.end_col);
+            } else {
+                combined.push(range);
+            }
+        }
+        let dirty_ranges = combined.as_slice();
 
         if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
-            self.sequences.prepare(
-                gpu,
-                &self.fonts,
-                &self.atlas,
-                snap,
-                viewport,
-                &self.palette,
-                self.raster_scale,
-            );
-
             let new_cap = snap
                 .rows
                 .checked_mul(snap.cols)
@@ -771,30 +792,16 @@ impl Text {
             let verts = self.build_all_vertices(snap, viewport);
             debug_assert_eq!(plan.mode, UploadMode::Full);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+            #[cfg(test)]
+            {
+                super::observations::record_text_upload(0, std::mem::size_of_val(verts.as_slice()));
+            }
             self.rows = snap.rows;
             self.cols = snap.cols;
             self.dirty = false;
             return;
         }
 
-        if self.dirty
-            || !dirty_ranges.is_empty()
-            || self.sequences.atlas_generation_changed(&self.fonts)
-        {
-            let had_emoji = !self.sequences.emoji_cells.is_empty();
-            self.sequences.prepare(
-                gpu,
-                &self.fonts,
-                &self.atlas,
-                snap,
-                viewport,
-                &self.palette,
-                self.raster_scale,
-            );
-            // Repack and complete/fallback transitions can affect old placements
-            // outside the current dirty span. Ordinary-only output stays incremental.
-            self.dirty |= had_emoji || !self.sequences.emoji_cells.is_empty();
-        }
         let plan = gpu.upload_plan(
             snap.rows,
             snap.cols,
@@ -810,6 +817,10 @@ impl Text {
             tracing::trace!("rebuilding text draw batch (full)");
             let verts = self.build_all_vertices(snap, viewport);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+            #[cfg(test)]
+            {
+                super::observations::record_text_upload(0, std::mem::size_of_val(verts.as_slice()));
+            }
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
             for range in dirty_ranges {
@@ -822,6 +833,13 @@ impl Text {
                     offset as u64,
                     bytemuck::cast_slice(&range_verts),
                 );
+                #[cfg(test)]
+                {
+                    super::observations::record_text_upload(
+                        offset,
+                        std::mem::size_of_val(range_verts.as_slice()),
+                    );
+                }
             }
         }
         self.dirty = false;

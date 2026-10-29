@@ -34,7 +34,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - belongs to DirectWrite Font Backend
 
 ### Emoji Sequence Presentation
-- **Definition:** DirectWrite whole-unit shaping and Direct2D offscreen tiles feed a separate bounded wgpu color atlas; ordinary text retains its R8 path. Uniform fitting/clipping never changes model-assigned width or copied text. Complete color, complete monochrome and unsupported fallback are distinct outcomes; see [ADR 0054](./adr/0054-color-emoji-offscreen-presentation.md).
+- **Definition:** DirectWrite whole-unit shaping and Direct2D offscreen tiles feed a separate bounded wgpu color atlas; ordinary text retains its R8 path. Uniform fitting/clipping never changes model-assigned width or copied text. Complete color, complete monochrome and unsupported fallback are distinct outcomes; see [ADR 0054](./adr/0054-color-emoji-offscreen-presentation.md). The selected incremental direction retains row/cell presentation and invalidates by content, font/presentation generation and atlas placement changes, rather than forcing full ordinary-text uploads merely because emoji remain visible; see [ADR 0098](./adr/0098-incremental-sequence-presentation.md).
 - **Relationships:**
   - depends on DirectWrite Font Backend
   - references System Font Fallback

@@ -49,9 +49,6 @@ pub(super) struct AtlasChanges {
 }
 
 impl ColorAtlas {
-    pub fn generation_changed(&self, generation: PresentationGeneration) -> bool {
-        self.generation != Some(generation)
-    }
     pub fn sync(
         &mut self,
         requests: &[SequenceRequest],

@@ -3,6 +3,8 @@ mod box_drawing;
 mod color_atlas;
 pub mod cursor;
 mod nerd_icons;
+#[cfg(test)]
+mod observations;
 mod sequence;
 pub use crate::cursor_blink;
 pub mod decoration;
