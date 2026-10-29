@@ -89,6 +89,20 @@ pub(crate) fn decode_active(
     active_count: usize,
 ) -> Result<Vec<LogicalAtom>, DecodeError> {
     let mut atoms = Vec::new();
+    visit_active(normal, active_count, |atom| {
+        atoms.push(atom);
+        Ok(())
+    })?;
+    Ok(atoms)
+}
+
+/// Interpret the source once, emitting directly into the caller's destination.
+/// Reflow need not retain a second history-sized atom vector beside its lines.
+fn visit_active(
+    normal: &NormalBuf,
+    active_count: usize,
+    mut emit: impl FnMut(LogicalAtom) -> Result<(), DecodeError>,
+) -> Result<(), DecodeError> {
     let mut previous: Option<RetainedRow<'_>> = None;
     let mut atom_offset = 0usize;
 
@@ -110,9 +124,9 @@ pub(crate) fn decode_active(
                     });
                 }
             } else {
-                atoms.push(LogicalAtom::HardBreak {
+                emit(LogicalAtom::HardBreak {
                     after_generation: prior.generation,
-                });
+                })?;
                 atom_offset = row.metadata.logical_atom_start;
             }
         } else {
@@ -126,21 +140,21 @@ pub(crate) fn decode_active(
             atom_offset = row.metadata.logical_atom_start;
         }
 
-        decode_row(row, &mut atom_offset, &mut atoms)?;
+        decode_row(row, &mut atom_offset, &mut emit)?;
         previous = Some(row);
     }
 
-    Ok(atoms)
+    Ok(())
 }
 
 /// Shared validation/width for one retained text unit, without copying its suffix.
 pub(crate) fn row_glyph_width(row: RetainedRow<'_>, col: usize) -> Result<u8, DecodeError> {
     let extent = row.metadata.meaningful_extent.min(row.cells.len());
     let cell = &row.cells[col];
+    let width = cell.grid_width();
     let kind = if cell.wide_continuation {
         Some(DecodeErrorKind::OrphanWideContinuation)
-    } else if cell.grid_width() == 2 && (col + 1 >= extent || !row.cells[col + 1].wide_continuation)
-    {
+    } else if width == 2 && (col + 1 >= extent || !row.cells[col + 1].wide_continuation) {
         Some(DecodeErrorKind::MissingWideContinuation)
     } else {
         None
@@ -152,12 +166,12 @@ pub(crate) fn row_glyph_width(row: RetainedRow<'_>, col: usize) -> Result<u8, De
             kind,
         });
     }
-    Ok(if cell.grid_width() == 2 { 2 } else { 1 })
+    Ok(if width == 2 { 2 } else { 1 })
 }
 fn decode_row(
     row: RetainedRow<'_>,
     atom_offset: &mut usize,
-    atoms: &mut Vec<LogicalAtom>,
+    emit: &mut impl FnMut(LogicalAtom) -> Result<(), DecodeError>,
 ) -> Result<(), DecodeError> {
     let extent = row.metadata.meaningful_extent.min(row.cells.len());
     let mut col = 0;
@@ -166,7 +180,7 @@ fn decode_row(
         let cell = row.cells[col].clone();
         let meaningful_blank =
             cell.ch == ' ' && cell.suffix.is_empty() && row.cell_state[col].is_meaningful();
-        atoms.push(LogicalAtom::Glyph {
+        emit(LogicalAtom::Glyph {
             line_id: row.metadata.logical_line_id,
             atom_offset: LogicalAtomOffset(*atom_offset),
             source_span: SourceSpan {
@@ -181,7 +195,7 @@ fn decode_row(
                 cell_state: row.cell_state[col],
                 continuation_state: (width == 2).then(|| row.cell_state[col + 1]),
             },
-        });
+        })?;
         *atom_offset += 1;
         col += usize::from(width);
     }
@@ -200,7 +214,6 @@ pub(crate) fn decode_lines_active(
         .retained_rows_bounded(active_count)
         .last()
         .map_or(0, |row| row.generation);
-    let atoms = decode_active(normal, active_count)?;
     let mut lines = Vec::new();
 
     for (index, row) in normal.retained_rows_bounded(active_count).enumerate() {
@@ -220,7 +233,7 @@ pub(crate) fn decode_lines_active(
     }
 
     let mut line_index = 0usize;
-    for atom in atoms {
+    visit_active(normal, active_count, |atom| {
         match atom {
             LogicalAtom::HardBreak { after_generation } => {
                 line_index = line_index.checked_add(1).ok_or(DecodeError {
@@ -264,7 +277,8 @@ pub(crate) fn decode_lines_active(
                 });
             }
         }
-    }
+        Ok(())
+    })?;
 
     if !lines.is_empty() && line_index + 1 != lines.len() {
         return Err(DecodeError {

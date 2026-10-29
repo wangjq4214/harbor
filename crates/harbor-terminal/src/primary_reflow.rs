@@ -196,10 +196,15 @@ impl PreparedPrimaryResize {
         let cols = requested_cols.max(MIN_REFLOW_COLS);
         let active_count = normal.active_retained_row_count(cursor_floor);
         let logical_lines = logical_content::decode_lines_active(normal, active_count)?;
+        // Every full row holds at least floor(cols / 2) complete atoms,
+        // even for width-two text. A producer boundary can split one extra row.
         let projected_row_bound = logical_lines
             .iter()
             .try_fold(0usize, |total, line| {
-                total.checked_add(line.glyphs.len().max(1))
+                total.checked_add(line.glyphs.len().div_ceil(cols / 2).max(1))
+            })
+            .and_then(|bound| {
+                bound.checked_add(usize::from(viewport == ReflowViewport::PreserveLiveTop))
             })
             .ok_or(PreparationError::ArithmeticOverflow)?;
         let mut rows = Vec::new();
@@ -220,9 +225,9 @@ impl PreparedPrimaryResize {
         let live_boundary =
             (viewport == ReflowViewport::PreserveLiveTop).then_some(source_live_top);
 
-        for line in logical_lines {
+        for mut line in logical_lines {
             let first_row = rows.len();
-            let atoms = pack_line(&line, cols, live_boundary, retained_cursors, &mut rows)?;
+            let atoms = pack_line(&mut line, cols, live_boundary, retained_cursors, &mut rows)?;
             // ConPTY's first live row can belong to a history-spanning logical
             // line with no retained atoms in that row. Keep its empty physical
             // boundary row so history cannot be pulled into the producer viewport.
@@ -857,7 +862,7 @@ fn evict_history_overflow(
 }
 
 fn pack_line(
-    line: &LogicalLine,
+    line: &mut LogicalLine,
     cols: usize,
     live_boundary: Option<u64>,
     retained_cursors: &[CursorRetention],
@@ -914,7 +919,8 @@ fn pack_line(
         .try_reserve_exact(retained_count)
         .map_err(|_| PreparationError::AllocationFailed)?;
 
-    for logical in line.glyphs.iter().take(retained_count) {
+    let mut glyphs = line.glyphs.drain(..retained_count);
+    while let Some(logical) = glyphs.next() {
         let expected_offset = line
             .atom_start
             .0
@@ -960,8 +966,50 @@ fn pack_line(
             )?;
         }
 
+        // Only ordinary single-column scalars participate. The run ends at a
+        // source-row boundary (hence never crosses the ConPTY live boundary),
+        // a target edge, or a complex glyph. Cursor-bearing lines stay scalar.
+        if cursor_floor == 0 && is_simple_glyph(glyph) {
+            let run_len = 1 + glyphs
+                .as_slice()
+                .iter()
+                .take(cols - row.metadata.meaningful_extent - 1)
+                .take_while(|next| {
+                    next.source_span.generation == logical.source_span.generation
+                        && is_simple_glyph(&next.glyph)
+                })
+                .count();
+            let col = row.metadata.meaningful_extent;
+            // Prove the largest offset once before the unchecked inner additions.
+            expected_offset
+                .checked_add(run_len - 1)
+                .ok_or(PreparationError::ArithmeticOverflow)?;
+            for (index, next) in std::iter::once(logical)
+                .chain(glyphs.by_ref().take(run_len - 1))
+                .enumerate()
+            {
+                if next.atom_offset.0 != expected_offset + index {
+                    return Err(PreparationError::Invariant(
+                        "non-monotonic logical atom offset",
+                    ));
+                }
+                row.cells[col + index] = next.glyph.cell;
+                row.cell_state[col + index] = next.glyph.cell_state;
+                atoms.push(ReflowedAtom {
+                    atom_offset: next.atom_offset,
+                    source_span: next.source_span,
+                    position: ReflowPosition {
+                        row: output.len(),
+                        col: col + index,
+                    },
+                    end_col: col + index,
+                });
+            }
+            row.metadata.meaningful_extent += run_len;
+            continue;
+        }
+
         let col = row.metadata.meaningful_extent;
-        row.cells[col] = glyph.cell.clone();
         row.cell_state[col] = glyph.cell_state;
         if width == 2 {
             row.cells[col + 1] = Cell::wide_continuation_of(&glyph.cell);
@@ -969,6 +1017,7 @@ fn pack_line(
                 .continuation_state
                 .ok_or(PreparationError::Invariant("wide glyph provenance missing"))?;
         }
+        row.cells[col] = logical.glyph.cell;
         row.metadata.meaningful_extent = col
             .checked_add(width)
             .ok_or(PreparationError::ArithmeticOverflow)?;
@@ -986,6 +1035,22 @@ fn pack_line(
 
     output.push(row);
     Ok(atoms)
+}
+
+/// ASCII gives a cheap, exact width proof; style is copied without reinterpreting
+/// it. Complex text, protected cells and hyperlink identities stay on the scalar
+/// path. Also retain the scalar validator's blank-provenance check.
+fn is_simple_glyph(glyph: &LogicalGlyph) -> bool {
+    let cell = &glyph.cell;
+    glyph.width == 1
+        && cell.width == 1
+        && cell.ch.is_ascii()
+        && !cell.wide_continuation
+        && !cell.isolated_mark
+        && cell.suffix.is_empty()
+        && !cell.protected
+        && cell.hyperlink.is_none()
+        && glyph.meaningful_blank == (cell.ch == ' ' && glyph.cell_state.is_meaningful())
 }
 
 fn validate_glyph(glyph: &LogicalGlyph) -> Result<(), PreparationError> {
@@ -1042,3 +1107,15 @@ impl Error for PreparationError {}
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod perf;
+
+#[cfg(test)]
+mod reference;
+
+#[cfg(test)]
+mod allocation_probe;
+
+#[cfg(test)]
+mod fast_path_tests;
