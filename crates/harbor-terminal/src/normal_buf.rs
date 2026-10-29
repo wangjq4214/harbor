@@ -1196,8 +1196,11 @@ impl NormalBuf {
 
     /// Snap the viewport back to the live bottom.
     pub fn scroll_to_bottom(&mut self) {
-        self.view_offset = 0;
-        self.mark_all_dirty();
+        // A live viewport has not moved: retain any existing local damage.
+        if self.view_offset != 0 {
+            self.view_offset = 0;
+            self.mark_all_dirty();
+        }
     }
     pub(crate) fn set_view_offset(&mut self, offset: usize) {
         self.view_offset = offset.min(self.scroll_count);

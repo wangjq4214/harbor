@@ -146,3 +146,140 @@ fn gpu_pipeline_prepares_replayed_updates_and_invalidates_projection() {
     }
     queue.submit(Some(encoder.finish()));
 }
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn gpu_snapped_output_uploads_follow_engine_damage() {
+    use crate::render::observations::buffer_write_bytes;
+
+    let (device, queue) = crate::test_gpu::device();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    for (rows, cols) in [(24, 80), (50, 160)] {
+        let fonts = harbor_text::load_system_fonts(&harbor_config::FontSettings {
+            family: Some("Consolas".into()),
+            size: 16.0,
+        })
+        .unwrap();
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let mut terminal = Terminal::new_headless(rows, cols);
+        terminal.put_str("xy");
+        terminal.put_bytes(b"\x1b[1;1H");
+        let initial = terminal.read_update(Instant::now());
+        let mut renderer =
+            TerminalRenderPipeline::new(gpu, (1600, 1200), fonts, metrics, &initial).unwrap();
+        assert!(renderer.prepare(gpu, &initial, false));
+        assert!(terminal.acknowledge_update(&initial));
+        for (mode, bytes) in [
+            ("one_cell", b"\rx".as_slice()),
+            ("control_only", b"\x1b[0m".as_slice()),
+        ] {
+            terminal.process_output(bytes);
+            let update = terminal.read_update(Instant::now());
+            let ranges = update_dirty_ranges(&update);
+            let snap = &update.snapshot;
+            let viewport = renderer.viewport();
+            let tint = update.appearance.clear_rgba(update.backdrop_available);
+            let actual = [
+                buffer_write_bytes(|| {
+                    renderer
+                        .background
+                        .prepare_with_dirty(gpu, snap, &ranges, &viewport, tint)
+                }),
+                buffer_write_bytes(|| {
+                    renderer
+                        .boxes
+                        .prepare_with_dirty(gpu, snap, &ranges, &viewport)
+                }),
+                buffer_write_bytes(|| {
+                    renderer
+                        .text
+                        .prepare_with_dirty(gpu, snap, &ranges, &viewport, None)
+                }),
+                buffer_write_bytes(|| {
+                    renderer
+                        .decoration
+                        .prepare_with_dirty(gpu, snap, &ranges, &viewport)
+                }),
+            ];
+            // Fixed slot layouts; use production geometry builders where constants are private.
+            let cell_bytes = [
+                6 * std::mem::size_of::<ColoredVertex>(),
+                crate::render::box_drawing::BOX_VERTICES_PER_CELL
+                    * std::mem::size_of::<ColoredVertex>(),
+                6 * std::mem::size_of::<TexturedVertex>(),
+                crate::render::decoration::build_underline_vertices(
+                    &metrics,
+                    snap,
+                    &viewport,
+                    &update.appearance.palette(),
+                )
+                .len()
+                    / (rows * cols)
+                    * std::mem::size_of::<ColoredVertex>()
+                    + 12 * std::mem::size_of::<ColoredVertex>(),
+            ];
+            for (actual, per_cell) in actual.into_iter().zip(cell_bytes) {
+                let plan = UploadPolicy::default().decide(rows, cols, per_cell, &ranges, false);
+                let expected = match plan.mode {
+                    UploadMode::None => 0,
+                    UploadMode::Incremental => plan.dirty_bytes,
+                    UploadMode::Full => plan.full_bytes,
+                };
+                assert_eq!(actual, expected, "grid={cols}x{rows} mode={mode}");
+            }
+            println!(
+                "grid={cols}x{rows} mode={mode} actual_buffer_bytes_bg_box_text_decoration={actual:?} total={}",
+                actual.iter().sum::<usize>()
+            );
+            assert!(renderer.prepare(gpu, &update, false));
+            assert!(terminal.acknowledge_update(&update));
+            queue.submit([]);
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        }
+    }
+}
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn gpu_snapped_local_edits_match_fresh_full_projection() {
+    use crate::render::text::sequence_tests::read_draw;
+    let (device, queue) = crate::test_gpu::device();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let fonts = || {
+        harbor_text::load_system_fonts(&harbor_config::FontSettings {
+            family: Some("Consolas".into()),
+            size: 16.0,
+        })
+        .unwrap()
+    };
+    let metrics = TextMetrics::from_font_metrics(fonts().font_metrics());
+    let mut terminal = Terminal::new_headless(4, 16);
+    terminal.put_str("\x1b[41;4m┌─┐ A\x1b[0m\r\nxy中\r\nlast");
+    let initial = terminal.read_update(Instant::now());
+    let mut renderer =
+        TerminalRenderPipeline::new(gpu, (256, 128), fonts(), metrics, &initial).unwrap();
+    assert!(renderer.prepare(gpu, &initial, false));
+    assert!(terminal.acknowledge_update(&initial));
+    for bytes in [
+        "\x1b[1;2H\x1b[0mz",
+        "\x1b[1;2H\x1b[42;4m─",
+        "\x1b[2;4H\x1b[0mx",
+        "\x1b[0m",
+        "\x1b[?1049hALT",
+        "\x1b[?1049l",
+    ] {
+        // A control-only chunk after an edit must not consume pending damage.
+        terminal.process_output(bytes.as_bytes());
+        terminal.process_output(b"\x1b[0m");
+        let update = terminal.read_update(Instant::now());
+        assert!(renderer.prepare(gpu, &update, false));
+        let mut fresh =
+            TerminalRenderPipeline::new(gpu, (256, 128), fonts(), metrics, &update).unwrap();
+        assert!(fresh.prepare(gpu, &update, false));
+        let actual = read_draw(&device, &queue, |pass| renderer.draw(pass));
+        let expected = read_draw(&device, &queue, |pass| fresh.draw(pass));
+        let differences = actual.iter().zip(&expected).filter(|(a, b)| a != b).count();
+        assert_eq!(differences, 0, "rendered bytes differ after {bytes:?}");
+        assert!(terminal.acknowledge_update(&update));
+    }
+}

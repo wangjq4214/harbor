@@ -1,6 +1,93 @@
 use super::*;
 
 #[test]
+fn snapped_reader_output_at_live_bottom_preserves_local_damage() {
+    let mut io = TerminalIo::new_headless();
+    let mut screen = Screen::new(3, 10);
+    let mut pointer = PointerInteraction::new();
+    screen.clear_dirty();
+    io.process_reader_bytes(&mut screen, &mut pointer, b"x");
+    assert_eq!(screen.view_offset(), 0);
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![crate::DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: 2,
+        }]
+    );
+}
+
+#[test]
+fn snapped_reader_control_only_chunks_preserve_existing_damage() {
+    let mut io = TerminalIo::new_headless();
+    let mut screen = Screen::new(3, 10);
+    let mut pointer = PointerInteraction::new();
+    screen.clear_dirty();
+    for bytes in [b"".as_slice(), b"\x1b[0m", b"\x1b[", b"0m"] {
+        io.process_reader_bytes(&mut screen, &mut pointer, bytes);
+        assert!(screen.dirty_ranges().is_empty(), "chunk={bytes:?}");
+    }
+    screen.mark_range_dirty(1, 2, 3);
+    let pending = screen.dirty_ranges();
+    io.process_reader_bytes(&mut screen, &mut pointer, b"\x1b[0m");
+    assert_eq!(
+        screen.dirty_ranges(),
+        pending,
+        "no-op snap must not clear pending damage"
+    );
+}
+
+#[test]
+fn snapped_reader_output_still_invalidates_a_real_viewport_snap() {
+    let mut io = TerminalIo::new_headless();
+    let mut screen = Screen::new(3, 10);
+    let mut pointer = PointerInteraction::new();
+    io.feed_pty_output(&mut screen, &mut pointer, b"a\r\nb\r\nc\r\nd");
+    screen.scroll_up(1);
+    assert_eq!(screen.view_offset(), 1);
+    screen.clear_dirty();
+    io.process_reader_bytes(&mut screen, &mut pointer, b"\x1b[0m");
+    assert_eq!(screen.view_offset(), 0);
+    assert_eq!(
+        screen.dirty_ranges(),
+        (0..3)
+            .map(|row| crate::DirtyRange {
+                row,
+                start_col: 0,
+                end_col: 10,
+            })
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn snapped_reader_respects_review_suppression_and_alt_screen() {
+    let mut io = TerminalIo::new_headless();
+    let mut screen = Screen::new(3, 10);
+    let mut pointer = PointerInteraction::new();
+    io.feed_pty_output(&mut screen, &mut pointer, b"a\r\nb\r\nc\r\nd");
+    screen.scroll_up(1);
+    io.suppress_scroll_snap = true;
+    io.process_reader_bytes(&mut screen, &mut pointer, b"\x1b[0m");
+    assert_eq!(screen.view_offset(), 1);
+    io.feed_pty_output(&mut screen, &mut pointer, b"\x1b[?1049h");
+    assert!(screen.is_alt());
+    assert!(!io.suppress_scroll_snap);
+    screen.clear_dirty();
+    io.process_reader_bytes(&mut screen, &mut pointer, b"x");
+    assert_eq!(
+        screen.dirty_ranges(),
+        vec![crate::DirtyRange {
+            // The ASCII parser conservatively includes the adjacent cell for wide repair.
+            row: 0,
+            start_col: 0,
+            end_col: 2,
+        }]
+    );
+}
+
+#[test]
 fn bounded_drain_rewakes_and_preserves_order_through_synchronized_output_and_eof() {
     let (tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
     let (commands, _command_rx) = mpsc::channel();

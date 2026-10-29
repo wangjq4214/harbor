@@ -15,6 +15,7 @@ pub(super) struct SequenceWork {
 thread_local! {
     static SEQUENCE: RefCell<SequenceWork> = RefCell::default();
     static TEXT_UPLOADS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
+    static BUFFER_WRITE_BYTES: RefCell<Option<usize>> = const { RefCell::new(None) };
 }
 
 pub(super) fn reset_sequence() {
@@ -39,4 +40,22 @@ pub(super) fn record_text_upload(offset: usize, bytes: usize) {
 
 pub(super) fn text_uploads() -> Vec<(usize, usize)> {
     TEXT_UPLOADS.with_borrow(Clone::clone)
+}
+
+pub(super) fn record_buffer_write(bytes: usize) {
+    BUFFER_WRITE_BYTES.with_borrow_mut(|total| {
+        if let Some(total) = total {
+            *total += bytes;
+        }
+    });
+}
+
+/// Capture actual queue.write_buffer payload bytes, only inside this test scope.
+pub(super) fn buffer_write_bytes(action: impl FnOnce()) -> usize {
+    BUFFER_WRITE_BYTES.with_borrow_mut(|total| {
+        assert!(total.is_none(), "nested buffer write capture");
+        *total = Some(0);
+    });
+    action();
+    BUFFER_WRITE_BYTES.with_borrow_mut(|total| total.take().unwrap())
 }

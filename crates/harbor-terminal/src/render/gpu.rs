@@ -239,6 +239,8 @@ impl<'frame> TerminalGpuAccess<'frame> {
     }
 
     pub fn write_buffer(self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
+        #[cfg(test)]
+        super::observations::record_buffer_write(data.len());
         self.queue.write_buffer(buffer, offset, data);
     }
 }
