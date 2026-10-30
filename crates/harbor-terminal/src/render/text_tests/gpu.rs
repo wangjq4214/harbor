@@ -1,3 +1,6 @@
+#[path = "overlay.rs"]
+mod overlay;
+
 use super::*;
 
 #[test]
@@ -263,7 +266,7 @@ fn mixed_suffix_overlays_match_filtered_marks_and_skip_hidden_cells() {
     assert!(!layer.sequences.tile_cells.contains(&0));
     assert!(!layer.sequences.tile_cells.contains(&1));
     layer.prepare_preedit(gpu, None, &snap, &viewport);
-    let count = layer.overlay.count();
+    let count = layer.cell_overlays.count();
     assert!(count > 0);
     let mixed_pixels = read_draw(&device, &queue, |p| layer.draw(p));
 
@@ -316,8 +319,19 @@ fn mixed_suffix_overlays_match_filtered_marks_and_skip_hidden_cells() {
     snap.cells[2].isolated_mark = false;
     snap.cells[3].suffix.clear();
     snap.cells[3].isolated_mark = false;
+    layer.prepare_with_dirty(
+        gpu,
+        &snap,
+        &[DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: 4,
+        }],
+        &viewport,
+        None,
+    );
     layer.prepare_preedit(gpu, None, &snap, &viewport);
-    assert_eq!(layer.overlay.count(), count);
+    assert_eq!(layer.cell_overlays.count(), count);
     assert_eq!(read_draw(&device, &queue, |p| layer.draw(p)), mixed_pixels);
 }
 
@@ -350,7 +364,7 @@ fn ordinary_only_keeps_r8_and_never_shapes_or_allocates_color_resources() {
     assert_eq!(stats.color_atlas_bytes, 0);
     assert_eq!(stats.cached_requests, 0);
     assert!(layer.sequences.emoji_cells.is_empty());
-    assert!(layer.overlay.count() > 0);
+    assert!(layer.cell_overlays.count() + layer.ime_overlay.count() > 0);
 }
 
 #[test]

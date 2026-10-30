@@ -12,6 +12,10 @@ use harbor_config::BACKGROUND;
 use harbor_text::atlas::MAX_ATLAS_SIZE;
 use harbor_text::{FontBook, GlyphAtlas, TextMetrics};
 
+#[path = "text_overlay.rs"]
+mod overlay;
+use overlay::{CellOverlays, ImeOverlay, OverlayView};
+
 const SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -256,7 +260,8 @@ pub struct Text {
     atlas: GlyphAtlas,
     gpu_atlas: GpuGlyphAtlas,
     vertex_buffer: wgpu::Buffer,
-    overlay: VertexBuffer<TexturedVertex>,
+    cell_overlays: CellOverlays,
+    ime_overlay: ImeOverlay,
     staging: Vec<TexturedVertex>,
     dirty: bool,
     rows: usize,
@@ -356,7 +361,8 @@ impl Text {
             pipeline,
             atlas,
             gpu_atlas,
-            overlay: VertexBuffer::new(gpu.device()),
+            cell_overlays: CellOverlays::default(),
+            ime_overlay: ImeOverlay::default(),
             vertex_buffer,
             staging: Vec::new(),
             dirty: true,
@@ -384,6 +390,19 @@ impl Text {
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.staging = verts;
         layer.dirty = false;
+        layer.cell_overlays.prepare(
+            gpu,
+            snap,
+            OverlayView {
+                atlas: &layer.atlas,
+                metrics: &layer.metrics,
+                palette: &layer.palette,
+                viewport,
+            },
+            &layer.sequences.tile_cells,
+            &[],
+            true,
+        );
 
         Ok(layer)
     }
@@ -629,7 +648,8 @@ impl Text {
         )
     }
 
-    /// Rebuilds only the transient IME overlay while sharing the base glyph atlas.
+    /// Prepares only transient IME geometry, sharing the base glyph atlas.
+    /// Cell suffix/isolated-mark overlays are retained by `prepare_with_dirty`.
     pub fn prepare_preedit(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
@@ -637,95 +657,17 @@ impl Text {
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
     ) {
-        let layout = preedit
-            .filter(|preedit| !preedit.is_empty())
-            .map(|preedit| {
-                layout_preedit(
-                    preedit,
-                    (snap.cursor_x, snap.cursor_y),
-                    snap.rows,
-                    snap.cols,
-                )
-            });
-        let (surf_w, surf_h) = viewport.surface_dimensions();
-        let color = glyph_color_with_palette(
-            &self.palette,
-            Color::Default,
-            Color::Default,
-            CellAttrs::default(),
+        self.ime_overlay.prepare(
+            gpu,
+            snap,
+            preedit,
+            OverlayView {
+                atlas: &self.atlas,
+                metrics: &self.metrics,
+                palette: &self.palette,
+                viewport,
+            },
         );
-        let mut vertices = Vec::new();
-        for row in 0..snap.rows {
-            for col in 0..snap.cols {
-                let cell = snap.cell(row, col);
-                if cell.wide_continuation
-                    || cell.attrs.contains(CellAttrs::CONCEAL)
-                    || self.sequences.tile_cells.contains(&(row * snap.cols + col))
-                {
-                    continue;
-                }
-                let (cell_x, cell_y) = viewport.cell_pos(row, col);
-                let baseline = cell_y + self.metrics.ascent.ceil();
-                let cell_view = OverlayCell {
-                    x: cell_x,
-                    baseline,
-                    color: glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs),
-                    surface: (surf_w, surf_h),
-                    width: cell.grid_width(),
-                };
-                if cell.isolated_mark {
-                    append_overlay_glyph(
-                        &self.atlas,
-                        &self.metrics,
-                        &mut vertices,
-                        '\u{25cc}',
-                        &cell_view,
-                        false,
-                    );
-                }
-                for mark in
-                    suffix_paint_chars(&cell.suffix).chain(cell.isolated_mark.then_some(cell.ch))
-                {
-                    append_overlay_glyph(
-                        &self.atlas,
-                        &self.metrics,
-                        &mut vertices,
-                        mark,
-                        &cell_view,
-                        true,
-                    );
-                }
-            }
-        }
-        for positioned in layout.into_iter().flat_map(|layout| layout.glyphs) {
-            let Some(glyph) = self.atlas.glyph_by_char(positioned.ch) else {
-                continue;
-            };
-            if glyph.width == 0 || glyph.height == 0 {
-                continue;
-            }
-            let (cell_x, cell_y) = viewport.cell_pos(positioned.row, positioned.col);
-            let baseline = cell_y + self.metrics.ascent.ceil();
-            let glyph_left = cell_x + glyph.bearing_x as f32;
-            let glyph_bottom = baseline - glyph.bearing_y as f32;
-            let glyph_top = glyph_bottom - glyph.height as f32;
-            let glyph_right = glyph_left + glyph.width as f32;
-            vertices.extend_from_slice(&TexturedVertex::from_pixel_rect(
-                glyph_left,
-                glyph_top,
-                glyph_right,
-                glyph_bottom,
-                glyph.uv.left,
-                glyph.uv.top,
-                glyph.uv.right,
-                glyph.uv.bottom,
-                color,
-                surf_w,
-                surf_h,
-            ));
-        }
-
-        self.overlay.write(gpu, &vertices);
     }
 
     pub fn prepare_with_dirty(
@@ -786,6 +728,21 @@ impl Text {
             }
         }
         let dirty_ranges = combined.as_slice();
+        // Observe atlas/global invalidation before ordinary text clears its dirty
+        // flag or returns early. Suppression damage belongs to cell overlays too.
+        self.cell_overlays.prepare(
+            gpu,
+            snap,
+            OverlayView {
+                atlas: &self.atlas,
+                metrics: &self.metrics,
+                palette: &self.palette,
+                viewport,
+            },
+            &self.sequences.tile_cells,
+            dirty_ranges,
+            resized || self.dirty,
+        );
 
         if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
@@ -884,9 +841,11 @@ impl Text {
             pass.draw(0..vertex_count, 0..1);
         }
         self.sequences.draw(pass);
-        // Transient preedit is above BOTH scalar and complete sequence paint.
-        self.overlay
-            .draw(pass, &self.pipeline, Some(&self.gpu_atlas.bind_group));
+        self.cell_overlays
+            .draw(pass, &self.pipeline, &self.gpu_atlas.bind_group);
+        // IME remains above scalar, sequence and cell-overlay paint.
+        self.ime_overlay
+            .draw(pass, &self.pipeline, &self.gpu_atlas.bind_group);
     }
 }
 
