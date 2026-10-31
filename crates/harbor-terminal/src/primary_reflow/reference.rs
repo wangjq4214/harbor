@@ -165,7 +165,7 @@ pub(super) fn prepare_geometry_with_limits(
     generation_base
         .checked_add(final_generation_count)
         .ok_or(PreparationError::ArithmeticOverflow)?;
-    let detached = NormalBuf::from_reflowed_rows(
+    let detached = NormalBuf::from_prepared_rows(
         &rows,
         target_rows,
         cols,

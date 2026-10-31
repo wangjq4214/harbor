@@ -310,7 +310,7 @@ fn intermediate_projections_borrow_payloads_and_materialize_independent_cells() 
         .filter(|cell| matches!(cell, ProjectedCell::Source(_)))
         .count();
     assert!(source_count > 0);
-    let detached = NormalBuf::from_reflowed_rows(
+    let detached = NormalBuf::from_prepared_rows(
         &rows,
         rows.len(),
         3,

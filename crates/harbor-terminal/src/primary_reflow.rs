@@ -18,8 +18,8 @@ use crate::screen::Cell;
 use crate::selection_model::GenPos;
 
 mod projection;
+use crate::normal_buf::{CellSource as ReflowCell, DetachedRow as ReflowedRow, StorageError};
 use projection::ProjectedCell;
-pub(crate) use projection::ReflowCell;
 
 type ProjectedRow<'a> = ReflowedRow<ProjectedCell<'a>>;
 
@@ -53,13 +53,6 @@ pub(crate) enum PreparedProjection<T> {
     Absent,
     Projected(T),
     Invalid,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ReflowedRow<C = Cell> {
-    pub(crate) cells: Vec<C>,
-    pub(crate) cell_state: Vec<CellState>,
-    pub(crate) metadata: RowMetadata,
 }
 
 #[cfg(test)]
@@ -380,7 +373,7 @@ impl PreparedPrimaryResize {
         generation_base
             .checked_add(final_generation_count)
             .ok_or(PreparationError::ArithmeticOverflow)?;
-        let detached = NormalBuf::from_reflowed_rows(
+        let detached = NormalBuf::from_prepared_rows(
             &rows,
             target_rows,
             cols,
@@ -1106,6 +1099,16 @@ pub(crate) enum PreparationError {
     AllocationFailed,
     Invariant(&'static str),
     UnresolvedLiveCursor,
+}
+
+impl From<StorageError> for PreparationError {
+    fn from(error: StorageError) -> Self {
+        match error {
+            StorageError::ArithmeticOverflow => Self::ArithmeticOverflow,
+            StorageError::AllocationFailed => Self::AllocationFailed,
+            StorageError::Invariant(message) => Self::Invariant(message),
+        }
+    }
 }
 
 impl From<DecodeError> for PreparationError {

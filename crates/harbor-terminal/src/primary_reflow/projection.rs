@@ -2,25 +2,7 @@
 
 use crate::screen::Cell;
 
-/// Shared by read-only primary projections and the owned rectangular/reference rows.
-pub(crate) trait ReflowCell {
-    fn materialize(&self) -> Cell;
-    fn source_bytes(&self) -> usize;
-}
-
-impl ReflowCell for Cell {
-    fn materialize(&self) -> Cell {
-        self.clone()
-    }
-
-    fn source_bytes(&self) -> usize {
-        if self.wide_continuation {
-            0
-        } else {
-            self.ch.len_utf8() + self.suffix.len()
-        }
-    }
-}
+use crate::normal_buf::CellSource as ReflowCell;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum ProjectedCell<'a> {

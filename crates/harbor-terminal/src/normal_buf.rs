@@ -3,6 +3,8 @@ use crate::screen::Cell;
 use harbor_config::HistoryLimits;
 
 mod copy;
+mod preparation;
+pub(crate) use preparation::{CellSource, DetachedRow, StorageError};
 
 /// Stable identity of retained content belonging to one logical terminal line.
 ///
@@ -299,14 +301,8 @@ impl NormalBuf {
 
     /// Only retained source cells count: unwritten tail padding and wide continuation
     /// slots have no source bytes. Interior and explicit/styled spaces do count.
-    pub(crate) fn row_source_bytes<C: crate::primary_reflow::ReflowCell>(
-        cells: &[C],
-        extent: usize,
-    ) -> usize {
-        cells[..extent]
-            .iter()
-            .map(crate::primary_reflow::ReflowCell::source_bytes)
-            .sum()
+    pub(crate) fn row_source_bytes<C: CellSource>(cells: &[C], extent: usize) -> usize {
+        cells[..extent].iter().map(CellSource::source_bytes).sum()
     }
 
     fn ring_source_bytes(&self, row: usize) -> usize {
@@ -359,50 +355,6 @@ impl NormalBuf {
         debug_assert_eq!(self.history_bytes, 0);
         self.view_offset = 0;
         self.mark_all_dirty();
-    }
-
-    /// Detached retention-only rebuild. Geometry and source generations do not change.
-    pub(crate) fn prepare_history_limits(
-        &self,
-        limits: HistoryLimits,
-    ) -> Result<Self, crate::primary_reflow::PreparationError> {
-        use crate::primary_reflow::{PreparationError, ReflowedRow};
-        let mut rows = Vec::new();
-        rows.try_reserve_exact(self.scroll_count + self.visible_rows)
-            .map_err(|_| PreparationError::AllocationFailed)?;
-        for row in self.retained_rows() {
-            rows.push(ReflowedRow {
-                cells: row.cells.to_vec(),
-                cell_state: row.cell_state.to_vec(),
-                metadata: row.metadata,
-            });
-        }
-        let mut dropped = self.scroll_count.saturating_sub(limits.max_rows);
-        let mut bytes: usize = rows[dropped..self.scroll_count]
-            .iter()
-            .map(|row| Self::row_source_bytes(&row.cells, row.metadata.meaningful_extent))
-            .sum();
-        while bytes > limits.max_bytes && dropped < self.scroll_count {
-            bytes -= Self::row_source_bytes(
-                &rows[dropped].cells,
-                rows[dropped].metadata.meaningful_extent,
-            );
-            dropped += 1;
-        }
-        if dropped > 0
-            && rows[dropped - 1].metadata.logical_line_id == rows[dropped].metadata.logical_line_id
-        {
-            rows[dropped].metadata.head_truncated = true;
-        }
-        Self::from_reflowed_rows(
-            &rows[dropped..],
-            self.visible_rows,
-            self.cols,
-            limits,
-            self.next_logical_line_id,
-            self.history_start + dropped as u64,
-            self.view_offset,
-        )
     }
 
     pub(crate) fn fill_is_meaningful(cell: Cell) -> bool {
@@ -806,237 +758,6 @@ impl NormalBuf {
         let retained = self.scroll_count.checked_add(self.visible_rows)?;
         self.history_start
             .checked_add(u64::try_from(retained).ok()?)
-    }
-
-    pub(crate) fn prepare_rectangular_resize(
-        &self,
-        requested_rows: usize,
-        requested_cols: usize,
-    ) -> Result<Self, crate::primary_reflow::PreparationError> {
-        use crate::primary_reflow::{PreparationError, ReflowedRow};
-
-        let rows = requested_rows.max(1);
-        let cols = requested_cols.max(2);
-        let copy_rows = self.visible_rows.min(rows);
-        let copy_cols = self.cols.min(cols);
-        let mut prepared_rows = Vec::new();
-        prepared_rows
-            .try_reserve_exact(rows)
-            .map_err(|_| PreparationError::AllocationFailed)?;
-        let mut next_logical_line_id = self.next_logical_line_id;
-
-        for source in self.retained_rows().skip(self.scroll_count).take(copy_rows) {
-            let mut cells = Vec::new();
-            cells
-                .try_reserve_exact(cols)
-                .map_err(|_| PreparationError::AllocationFailed)?;
-            cells.resize(cols, Cell::default());
-            cells[..copy_cols].clone_from_slice(&source.cells[..copy_cols]);
-
-            let mut cell_state = Vec::new();
-            cell_state
-                .try_reserve_exact(cols)
-                .map_err(|_| PreparationError::AllocationFailed)?;
-            cell_state.resize(cols, CellState::default());
-            cell_state[..copy_cols].copy_from_slice(&source.cell_state[..copy_cols]);
-            Self::normalize_wide_row(&mut cells, &mut cell_state);
-
-            let mut metadata = source.metadata;
-            metadata.meaningful_extent = cell_state
-                .iter()
-                .rposition(|state| state.is_meaningful())
-                .map_or(0, |col| col + 1);
-            prepared_rows.push(ReflowedRow {
-                cells,
-                cell_state,
-                metadata,
-            });
-        }
-
-        while prepared_rows.len() < rows {
-            let line_id = LogicalLineId(next_logical_line_id);
-            next_logical_line_id = next_logical_line_id
-                .checked_add(1)
-                .ok_or(PreparationError::ArithmeticOverflow)?;
-            let mut cells = Vec::new();
-            cells
-                .try_reserve_exact(cols)
-                .map_err(|_| PreparationError::AllocationFailed)?;
-            cells.resize(cols, Cell::default());
-            let mut cell_state = Vec::new();
-            cell_state
-                .try_reserve_exact(cols)
-                .map_err(|_| PreparationError::AllocationFailed)?;
-            cell_state.resize(cols, CellState::default());
-            prepared_rows.push(ReflowedRow {
-                cells,
-                cell_state,
-                metadata: RowMetadata {
-                    logical_line_id: line_id,
-                    logical_start: 0,
-                    logical_atom_start: 0,
-                    meaningful_extent: 0,
-                    soft_wrapped: false,
-                    head_truncated: false,
-                },
-            });
-        }
-
-        let mut previous: Option<(RowMetadata, usize)> = None;
-        for row in &mut prepared_rows {
-            let atom_count = row.cells[..row.metadata.meaningful_extent]
-                .iter()
-                .filter(|cell| !cell.wide_continuation)
-                .count();
-            if row.metadata.soft_wrapped {
-                if let Some((prior, prior_atom_count)) = previous
-                    && row.metadata.logical_line_id == prior.logical_line_id
-                {
-                    row.metadata.logical_start = prior
-                        .logical_start
-                        .checked_add(prior.meaningful_extent)
-                        .ok_or(PreparationError::ArithmeticOverflow)?;
-                    row.metadata.logical_atom_start = prior
-                        .logical_atom_start
-                        .checked_add(prior_atom_count)
-                        .ok_or(PreparationError::ArithmeticOverflow)?;
-                } else {
-                    row.metadata.head_truncated = true;
-                }
-            }
-            previous = Some((row.metadata, atom_count));
-        }
-
-        let history_start = self
-            .newest_generation_exclusive()
-            .ok_or(PreparationError::ArithmeticOverflow)?;
-        let mut detached = Self::from_reflowed_rows(
-            &prepared_rows,
-            rows,
-            cols,
-            HistoryLimits {
-                max_rows: 0,
-                max_bytes: 0,
-            },
-            next_logical_line_id,
-            history_start,
-            0,
-        )?;
-        detached.mark_all_dirty();
-        Ok(detached)
-    }
-
-    pub(crate) fn from_reflowed_rows<C: crate::primary_reflow::ReflowCell>(
-        retained: &[crate::primary_reflow::ReflowedRow<C>],
-        visible_rows: usize,
-        cols: usize,
-        limits: HistoryLimits,
-        mut next_logical_line_id: u64,
-        history_start: u64,
-        view_offset: usize,
-    ) -> Result<Self, crate::primary_reflow::PreparationError> {
-        use crate::primary_reflow::PreparationError;
-        let max_scrollback = limits.max_rows;
-
-        let total_rows = max_scrollback
-            .checked_add(visible_rows)
-            .ok_or(PreparationError::ArithmeticOverflow)?;
-        if visible_rows == 0
-            || cols == 0
-            || retained.len() < visible_rows
-            || retained.len() > total_rows
-        {
-            return Err(PreparationError::Invariant(
-                "invalid detached ring dimensions",
-            ));
-        }
-        let cell_count = total_rows
-            .checked_mul(cols)
-            .ok_or(PreparationError::ArithmeticOverflow)?;
-        let retained_generation_count =
-            u64::try_from(retained.len()).map_err(|_| PreparationError::ArithmeticOverflow)?;
-        history_start
-            .checked_add(retained_generation_count)
-            .ok_or(PreparationError::ArithmeticOverflow)?;
-        let mut cells = Vec::new();
-        cells
-            .try_reserve_exact(cell_count)
-            .map_err(|_| PreparationError::AllocationFailed)?;
-        cells.resize(cell_count, Cell::default());
-        let mut cell_state = Vec::new();
-        cell_state
-            .try_reserve_exact(cell_count)
-            .map_err(|_| PreparationError::AllocationFailed)?;
-        cell_state.resize(cell_count, CellState::default());
-
-        let mut row_metadata = Vec::new();
-        row_metadata
-            .try_reserve_exact(total_rows)
-            .map_err(|_| PreparationError::AllocationFailed)?;
-        for _ in 0..total_rows {
-            let id = LogicalLineId(next_logical_line_id);
-            next_logical_line_id = next_logical_line_id
-                .checked_add(1)
-                .ok_or(PreparationError::ArithmeticOverflow)?;
-            row_metadata.push(RowMetadata {
-                logical_line_id: id,
-                logical_start: 0,
-                logical_atom_start: 0,
-                meaningful_extent: 0,
-                soft_wrapped: false,
-                head_truncated: false,
-            });
-        }
-
-        let scroll_count = retained.len() - visible_rows;
-        let visible_start = max_scrollback;
-        let first_ring_row = visible_start
-            .checked_add(total_rows)
-            .and_then(|value| value.checked_sub(scroll_count))
-            .ok_or(PreparationError::ArithmeticOverflow)?
-            % total_rows;
-        for (offset, row) in retained.iter().enumerate() {
-            if row.cells.len() != cols || row.cell_state.len() != cols {
-                return Err(PreparationError::Invariant("detached row width mismatch"));
-            }
-            let ring_row = (first_ring_row + offset) % total_rows;
-            let start = ring_row * cols;
-            for (target, source) in cells[start..start + cols].iter_mut().zip(&row.cells) {
-                *target = source.materialize();
-            }
-            cell_state[start..start + cols].copy_from_slice(&row.cell_state);
-            row_metadata[ring_row] = row.metadata;
-        }
-
-        let mut row_versions = Vec::new();
-        row_versions
-            .try_reserve_exact(total_rows)
-            .map_err(|_| PreparationError::AllocationFailed)?;
-        row_versions.resize(total_rows, 0);
-        Ok(Self {
-            snapshot_cache: Default::default(),
-            cells,
-            cell_state,
-            row_metadata,
-            content_generation: crate::read_model::fresh_identity(),
-            content_revision: 0,
-            row_versions,
-            next_logical_line_id,
-            total_rows,
-            visible_rows,
-            cols,
-            visible_start,
-            scroll_count,
-            view_offset: view_offset.min(scroll_count),
-            damage_tracker: DamageTracker::new(visible_rows, cols),
-            max_scrollback,
-            max_history_bytes: limits.max_bytes,
-            history_bytes: retained[..scroll_count]
-                .iter()
-                .map(|row| Self::row_source_bytes(&row.cells, row.metadata.meaningful_extent))
-                .sum(),
-            history_start,
-        })
     }
 
     /// Returns an iterator over all visible cells as `(display_row, col, ch)`.
