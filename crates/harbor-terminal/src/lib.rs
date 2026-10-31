@@ -13,6 +13,8 @@ pub mod cursor_blink;
 mod damage;
 #[cfg(test)]
 mod engine_tests;
+#[cfg(test)]
+mod hot_path_tests;
 mod input;
 #[cfg(test)]
 mod text_admission_tests;
@@ -121,6 +123,7 @@ pub struct Terminal {
     /// Invalidates acknowledgements read before a renderer projection was lost.
     projection_epoch: u64,
     presentation_revision: u64,
+    cached_snapshot: std::cell::RefCell<update::SnapshotCache>,
     pending_resize: Option<TerminalSize>,
     /// Application-owned admission prevents drains/draws from doing an unbounded tab sweep.
     host_driven_resize: bool,
@@ -210,6 +213,7 @@ impl Terminal {
             presentation_revision: 0,
             pending_resize: None,
             host_driven_resize: false,
+            cached_snapshot: Default::default(),
         }
     }
 
@@ -605,7 +609,7 @@ impl Terminal {
     /// The first projection and projections after `invalidate_update` require a full upload.
     /// Call `acknowledge_update` only once the renderer has prepared this exact state.
     pub fn read_update(&self, now: Instant) -> TerminalUpdate {
-        let snapshot = Arc::new(self.snapshot());
+        let snapshot = self.cached_snapshot.borrow_mut().project(&self.screen);
         let damage = if self.update_needs_full {
             UpdateDamage::FullUpload
         } else {
@@ -617,7 +621,7 @@ impl Terminal {
                 revisions: self.mutation_revisions(),
                 session: self.read_session,
                 presentation: self.presentation_revision,
-                damage: damage.clone(),
+                full_upload: self.update_needs_full,
             },
             snapshot,
             damage,
@@ -641,7 +645,7 @@ impl Terminal {
             || update.acknowledgement.revisions != self.mutation_revisions()
             || update.acknowledgement.presentation != self.presentation_revision
             || !Arc::ptr_eq(&update.acknowledgement.snapshot, &update.snapshot)
-            || update.acknowledgement.damage != update.damage
+            || !update.acknowledgement.matches_damage(&update.damage)
             || self.pointer.bounds() != update.selection
             || self.preedit != update.preedit
             || TerminalAppearance::from_palette(self.screen.active_palette()) != update.appearance

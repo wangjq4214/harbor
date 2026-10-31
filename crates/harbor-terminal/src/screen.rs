@@ -1024,7 +1024,25 @@ impl Screen {
     }
 
     pub fn terminal_snapshot(&self) -> crate::model::TerminalSnapshot {
+        self.snapshot_with_storage(Vec::new(), Vec::new())
+    }
+
+    /// Only a uniquely owned cached snapshot may lend its vectors for reuse.
+    pub(crate) fn refresh_terminal_snapshot(&self, snapshot: &mut crate::model::TerminalSnapshot) {
+        let wrapped = std::mem::take(&mut snapshot.wrapped);
+        let damage = std::mem::take(&mut snapshot.dirty_ranges);
+        *snapshot = self.snapshot_with_storage(wrapped, damage);
+    }
+
+    fn snapshot_with_storage(
+        &self,
+        mut wrapped: Vec<bool>,
+        mut dirty_ranges: Vec<DirtyRange>,
+    ) -> crate::model::TerminalSnapshot {
         let rows = self.rows();
+        wrapped.clear();
+        wrapped.extend((0..rows).map(|row| self.is_wrapped(row)));
+        self.normal.dirty_ranges_into(&mut dirty_ranges);
         let cols = self.cols();
         let cells = self.normal.snapshot_cells();
         crate::model::TerminalSnapshot {
@@ -1039,10 +1057,10 @@ impl Screen {
             scroll_count: self.scroll_count(),
             view_offset: self.view_offset(),
             history_start: self.history_start(),
-            wrapped: (0..rows).map(|row| self.is_wrapped(row)).collect(),
+            wrapped,
             is_alt: self.is_alt(),
             input_modes: self.input_modes(),
-            dirty_ranges: self.dirty_ranges(),
+            dirty_ranges,
         }
     }
     /// State-owner provenance, independent of damage consumption and read-model revisions.

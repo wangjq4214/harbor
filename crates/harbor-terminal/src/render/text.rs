@@ -263,6 +263,7 @@ pub struct Text {
     cell_overlays: CellOverlays,
     ime_overlay: ImeOverlay,
     staging: Vec<TexturedVertex>,
+    combined_damage: Vec<DirtyRange>,
     dirty: bool,
     rows: usize,
     cols: usize,
@@ -365,6 +366,7 @@ impl Text {
             ime_overlay: ImeOverlay::default(),
             vertex_buffer,
             staging: Vec::new(),
+            combined_damage: Vec::new(),
             dirty: true,
             rows,
             cols,
@@ -683,6 +685,9 @@ impl Text {
             super::observations::reset_text();
         }
         let resized = snap.rows != self.rows || snap.cols != self.cols;
+        if resized {
+            self.combined_damage = Vec::new();
+        }
         let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
 
         let mut requested = if resized {
@@ -718,16 +723,22 @@ impl Text {
             projection_dirty,
             scalar_changed,
         );
-        let mut combined = dirty_ranges.to_vec();
-        for range in extra {
-            if let Some(existing) = combined.iter_mut().find(|r| r.row == range.row) {
-                existing.start_col = existing.start_col.min(range.start_col);
-                existing.end_col = existing.end_col.max(range.end_col);
-            } else {
-                combined.push(range);
+        let dirty_ranges = if extra.is_empty() {
+            dirty_ranges
+        } else {
+            let combined = &mut self.combined_damage;
+            combined.clear();
+            combined.extend_from_slice(dirty_ranges);
+            for range in extra {
+                if let Some(existing) = combined.iter_mut().find(|r| r.row == range.row) {
+                    existing.start_col = existing.start_col.min(range.start_col);
+                    existing.end_col = existing.end_col.max(range.end_col);
+                } else {
+                    combined.push(range);
+                }
             }
-        }
-        let dirty_ranges = combined.as_slice();
+            self.combined_damage.as_slice()
+        };
         // Observe atlas/global invalidation before ordinary text clears its dirty
         // flag or returns early. Suppression damage belongs to cell overlays too.
         self.cell_overlays.prepare(

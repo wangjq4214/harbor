@@ -1144,7 +1144,7 @@ mod perf;
 mod reference;
 
 #[cfg(test)]
-mod allocation_probe;
+pub(crate) mod allocation_probe;
 
 #[cfg(test)]
 mod fast_path_tests;

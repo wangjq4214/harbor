@@ -95,6 +95,7 @@ fn bounded_drain_rewakes_and_preserves_order_through_synchronized_output_and_eof
     let wake_pending = Arc::new(AtomicBool::new(true));
     let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
         output,
+        recycle: ReaderRecycle::default(),
         commands,
         writer: Box::new(std::io::sink()),
         reader: None,
@@ -105,12 +106,12 @@ fn bounded_drain_rewakes_and_preserves_order_through_synchronized_output_and_eof
         test_interrupt: None,
         barrier_timeout: RESIZE_BARRIER_TIMEOUT,
     }));
-    tx.send(ReaderEvent::Bytes(b"\x1b[?2026h".to_vec()))
+    tx.send(ReaderEvent::Bytes(b"\x1b[?2026h".to_vec().into()))
         .unwrap();
     for _ in 1..PTY_DRAIN_EVENT_BUDGET {
-        tx.send(ReaderEvent::Bytes(b"a".to_vec())).unwrap();
+        tx.send(ReaderEvent::Bytes(b"a".to_vec().into())).unwrap();
     }
-    tx.send(ReaderEvent::Bytes(b"\x1b[?2026lb".to_vec()))
+    tx.send(ReaderEvent::Bytes(b"\x1b[?2026lb".to_vec().into()))
         .unwrap();
     drop(tx);
 
@@ -147,6 +148,7 @@ fn exact_budget_empty_queue_rearms_for_later_producer_wake() {
     let wake_pending = Arc::new(AtomicBool::new(true));
     let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
         output,
+        recycle: ReaderRecycle::default(),
         commands,
         writer: Box::new(std::io::sink()),
         reader: None,
@@ -158,7 +160,7 @@ fn exact_budget_empty_queue_rearms_for_later_producer_wake() {
         barrier_timeout: RESIZE_BARRIER_TIMEOUT,
     }));
     for _ in 0..PTY_DRAIN_EVENT_BUDGET {
-        tx.send(ReaderEvent::Bytes(b"x".to_vec())).unwrap();
+        tx.send(ReaderEvent::Bytes(b"x".to_vec().into())).unwrap();
     }
     let mut screen = Screen::new(2, 80);
     let mut pointer = PointerInteraction::default();
@@ -169,7 +171,7 @@ fn exact_budget_empty_queue_rearms_for_later_producer_wake() {
     assert!(wake_rx.try_recv().is_err());
 
     // The real producer sends before atomically arming its coalesced wake.
-    tx.send(ReaderEvent::Bytes(b"y".to_vec())).unwrap();
+    tx.send(ReaderEvent::Bytes(b"y".to_vec().into())).unwrap();
     assert!(!wake_pending.swap(true, Ordering::AcqRel));
     let wake = &io.session.pty.as_ref().unwrap().wake;
     assert!((wake.lock().unwrap())());
@@ -279,7 +281,7 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
                 if count == PTY_QUEUE_CAPACITY + 1 {
                     full_tx.send(()).unwrap();
                 }
-                output_tx.send(ReaderEvent::Bytes(bytes)).unwrap();
+                output_tx.send(ReaderEvent::Bytes(bytes.into())).unwrap();
                 producer_published.fetch_add(1, Ordering::SeqCst);
             }
             let ReaderCommand::Barrier(epoch) = command_rx.recv().unwrap() else {
@@ -305,6 +307,7 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
         let replies = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
             output,
+            recycle: ReaderRecycle::default(),
             commands,
             writer: Box::new(Writer(Arc::clone(&replies))),
             reader: Some(reader),
@@ -693,6 +696,7 @@ fn empty_reader_chunk_drains_pending_replies_without_snapping_review() {
     let replies = Arc::new(Mutex::new(Vec::new()));
     let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
         output,
+        recycle: ReaderRecycle::default(),
         commands,
         writer: Box::new(Writer(Arc::clone(&replies))),
         reader: None,
@@ -714,7 +718,7 @@ fn empty_reader_chunk_drains_pending_replies_without_snapping_review() {
     assert_eq!(screen.view_offset(), review_offset);
     assert!(replies.lock().unwrap().is_empty());
 
-    tx.send(ReaderEvent::Bytes(Vec::new())).unwrap();
+    tx.send(ReaderEvent::Bytes(Vec::new().into())).unwrap();
     assert!(io.drain(&mut screen, &mut pointer));
     assert_eq!(screen.view_offset(), review_offset);
     assert_eq!(*replies.lock().unwrap(), b"\x1b[1;2R");
@@ -722,12 +726,14 @@ fn empty_reader_chunk_drains_pending_replies_without_snapping_review() {
     assert_eq!(*replies.lock().unwrap(), b"\x1b[1;2R");
 
     // A query split across chunks and an alt-screen exit retain reply order.
-    tx.send(ReaderEvent::Bytes(b"\x1b[?47h\x1b[2;3H\x1b[6".to_vec()))
-        .unwrap();
+    tx.send(ReaderEvent::Bytes(
+        b"\x1b[?47h\x1b[2;3H\x1b[6".to_vec().into(),
+    ))
+    .unwrap();
     assert!(io.drain(&mut screen, &mut pointer));
     assert!(screen.is_alt());
     assert_eq!(*replies.lock().unwrap(), b"\x1b[1;2R");
-    tx.send(ReaderEvent::Bytes(b"n\x1b[?47l\x1b[6n".to_vec()))
+    tx.send(ReaderEvent::Bytes(b"n\x1b[?47l\x1b[6n".to_vec().into()))
         .unwrap();
     assert!(io.drain(&mut screen, &mut pointer));
     assert!(!screen.is_alt());
@@ -958,7 +964,14 @@ fn spawn_test_pump<R: Read + Send + 'static>(
     let (commands, command_rx) = mpsc::channel();
     let wake_pending = Arc::new(AtomicBool::new(false));
     let thread = std::thread::spawn(move || {
-        pump_reader(reader, output_tx, command_rx, wake_pending, || true);
+        pump_reader(
+            reader,
+            output_tx,
+            command_rx,
+            wake_pending,
+            || true,
+            ReaderBuffers::pair().0,
+        );
     });
     (commands, output, thread)
 }
@@ -978,6 +991,7 @@ fn spawn_test_pump_with_after_read<R: Read + Send + 'static, F: FnMut() + Send +
             wake_pending,
             || true,
             after_read,
+            ReaderBuffers::pair().0,
         );
     });
     (commands, output, thread)
@@ -1003,7 +1017,7 @@ fn completed_read_is_published_before_barrier_ack_and_resume() {
 
     assert!(matches!(
         output.recv_timeout(Duration::from_secs(1)).unwrap(),
-        ReaderEvent::Bytes(bytes) if bytes == b"old"
+        ReaderEvent::Bytes(bytes) if &*bytes == b"old"
     ));
     assert!(matches!(
         output.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -1014,7 +1028,7 @@ fn completed_read_is_published_before_barrier_ack_and_resume() {
     commands.send(ReaderCommand::Resume(7)).unwrap();
     assert!(matches!(
         output.recv_timeout(Duration::from_secs(1)).unwrap(),
-        ReaderEvent::Bytes(bytes) if bytes == b"new"
+        ReaderEvent::Bytes(bytes) if &*bytes == b"new"
     ));
     drop(commands);
     thread.join().unwrap();
@@ -1047,8 +1061,148 @@ fn interrupted_blocking_read_acknowledges_then_waits_for_resume() {
     commands.send(ReaderCommand::Resume(11)).unwrap();
     assert!(matches!(
         output.recv_timeout(Duration::from_secs(1)).unwrap(),
-        ReaderEvent::Bytes(bytes) if bytes == b"new"
+        ReaderEvent::Bytes(bytes) if &*bytes == b"new"
     ));
     drop(commands);
     thread.join().unwrap();
+}
+
+#[test]
+fn interrupted_unpublished_reads_reuse_the_buffer_and_preserve_ack_order() {
+    struct Interrupts {
+        commands: Sender<ReaderCommand>,
+        remaining: u64,
+        pointer: Option<usize>,
+        sent: bool,
+    }
+    impl Read for Interrupts {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            assert_eq!(buffer.len(), chunk::CHUNK_BYTES);
+            let pointer = buffer.as_ptr() as usize;
+            assert_eq!(*self.pointer.get_or_insert(pointer), pointer);
+            if self.remaining > 0 {
+                let epoch = 101 - self.remaining;
+                self.remaining -= 1;
+                self.commands.send(ReaderCommand::Barrier(epoch)).unwrap();
+                self.commands.send(ReaderCommand::Resume(epoch)).unwrap();
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            if !self.sent {
+                self.sent = true;
+                buffer[0] = b'x';
+                return Ok(1);
+            }
+            Ok(0)
+        }
+    }
+
+    let (output_tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
+    let (commands, command_rx) = mpsc::channel();
+    let pending = Arc::new(AtomicBool::new(false));
+    let (buffers, recycle) = ReaderBuffers::pair();
+    let recycle = std::cell::RefCell::new(recycle);
+    let epochs = std::cell::RefCell::new(Vec::with_capacity(100));
+    let bytes_seen = std::cell::Cell::new(0);
+    pump_reader(
+        Interrupts {
+            commands,
+            remaining: 100,
+            pointer: None,
+            sent: false,
+        },
+        output_tx,
+        command_rx,
+        pending.clone(),
+        || {
+            let mut recycle = recycle.borrow_mut();
+            while let Ok(event) = output.try_recv() {
+                match event {
+                    ReaderEvent::BarrierAck(epoch) => epochs.borrow_mut().push(epoch),
+                    ReaderEvent::Bytes(bytes) => {
+                        assert_eq!(&*bytes, b"x");
+                        bytes_seen.set(bytes_seen.get() + 1);
+                        recycle.recycle(bytes);
+                    }
+                }
+            }
+            recycle.flush();
+            pending.store(false, Ordering::Release);
+            true
+        },
+        buffers,
+    );
+    assert_eq!(*epochs.borrow(), (1..=100).collect::<Vec<_>>());
+    assert_eq!(bytes_seen.get(), 1);
+}
+
+#[test]
+fn real_drain_recycles_after_protocol_replies_without_losing_queries() {
+    use std::sync::atomic::AtomicUsize;
+    const CHUNKS: usize = 2048;
+    struct Queries {
+        remaining: usize,
+        calls: Arc<AtomicUsize>,
+    }
+    impl Read for Queries {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            assert_eq!(buffer.len(), chunk::CHUNK_BYTES);
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.remaining == 0 {
+                return Ok(0);
+            }
+            self.remaining -= 1;
+            buffer[..4].copy_from_slice(b"\x1b[6n");
+            Ok(4)
+        }
+    }
+    struct Replies(Arc<AtomicUsize>);
+    impl Write for Replies {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            assert_eq!(bytes, b"\x1b[1;1R");
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let reads = Arc::new(AtomicUsize::new(0));
+    let replies = Arc::new(AtomicUsize::new(0));
+    let mut io = TerminalIo::new(
+        Queries {
+            remaining: CHUNKS,
+            calls: reads.clone(),
+        },
+        Replies(replies.clone()),
+        None,
+        || true,
+    );
+    let mut screen = Screen::new(3, 80);
+    let mut pointer = PointerInteraction::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let consumed = io.drain(&mut screen, &mut pointer);
+        if !consumed && io.is_session_closed() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reader/drain must keep making progress"
+        );
+        if !consumed {
+            std::thread::yield_now();
+        }
+    }
+    io.session
+        .pty
+        .as_mut()
+        .unwrap()
+        .reader
+        .take()
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(replies.load(Ordering::SeqCst), CHUNKS);
+    assert_eq!(reads.load(Ordering::SeqCst), CHUNKS + 1);
 }

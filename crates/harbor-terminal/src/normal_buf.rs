@@ -2,6 +2,8 @@ use crate::damage::{DamageTracker, DirtyRange};
 use crate::screen::Cell;
 use harbor_config::HistoryLimits;
 
+mod copy;
+
 /// Stable identity of retained content belonging to one logical terminal line.
 ///
 /// IDs are local to one `NormalBuf`; they are never derived from ring positions
@@ -659,8 +661,7 @@ impl NormalBuf {
 
     /// Copies cells and their retained-content state within the ring buffer.
     pub(crate) fn copy_linear_range(&mut self, src_start: usize, src_end: usize, dst: usize) {
-        let source = self.cells[src_start..src_end].to_vec();
-        self.cells[dst..dst + source.len()].clone_from_slice(&source);
+        copy::clone_within(&mut self.cells, src_start..src_end, dst);
         self.cell_state.copy_within(src_start..src_end, dst);
         let len = src_end - src_start;
         if len > 0 {
@@ -681,24 +682,13 @@ impl NormalBuf {
         } else {
             self.total_rows - src_start + src_end
         };
-        let snapshot: Vec<_> = (0..row_count)
-            .map(|offset| {
-                let ring_row = (src_start + offset) % self.total_rows;
-                let start = ring_row * self.cols;
-                (
-                    self.cells[start..start + self.cols].to_vec(),
-                    self.cell_state[start..start + self.cols].to_vec(),
-                    self.row_metadata[ring_row],
-                )
-            })
-            .collect();
-
-        for (offset, (cells, states, metadata)) in snapshot.into_iter().enumerate() {
+        copy::clone_ring_blocks_within(&mut self.cells, self.cols, src_start, row_count, dst);
+        copy::clone_ring_blocks_within(&mut self.cell_state, self.cols, src_start, row_count, dst);
+        copy::clone_ring_blocks_within(&mut self.row_metadata, 1, src_start, row_count, dst);
+        // Keep mutation revisions in destination order, independently of the
+        // dependency order used to protect overlapping source payloads.
+        for offset in 0..row_count {
             let ring_row = (dst + offset) % self.total_rows;
-            let start = ring_row * self.cols;
-            self.cells[start..start + self.cols].clone_from_slice(&cells);
-            self.cell_state[start..start + self.cols].copy_from_slice(&states);
-            self.row_metadata[ring_row] = metadata;
             self.touch_ring_row(ring_row);
         }
     }
@@ -1074,16 +1064,21 @@ impl NormalBuf {
     }
 
     pub fn dirty_ranges(&self) -> Vec<DirtyRange> {
+        let mut ranges = Vec::new();
+        self.dirty_ranges_into(&mut ranges);
+        ranges
+    }
+
+    pub(crate) fn dirty_ranges_into(&self, ranges: &mut Vec<DirtyRange>) {
         if self.view_offset > 0 {
-            (0..self.visible_rows)
-                .map(|row| DirtyRange {
-                    row,
-                    start_col: 0,
-                    end_col: self.cols,
-                })
-                .collect()
+            ranges.clear();
+            ranges.extend((0..self.visible_rows).map(|row| DirtyRange {
+                row,
+                start_col: 0,
+                end_col: self.cols,
+            }));
         } else {
-            self.damage_tracker.dirty_ranges()
+            self.damage_tracker.dirty_ranges_into(ranges);
         }
     }
 

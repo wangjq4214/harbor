@@ -4,7 +4,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Stats {
+pub(crate) struct Stats {
     pub calls: usize,
     pub allocated_bytes: usize,
     pub peak_live_bytes: usize,
@@ -68,7 +68,7 @@ unsafe impl GlobalAlloc for Probe {
     }
 }
 
-pub(super) fn measure<T>(prepare: impl FnOnce() -> T) -> (T, Stats) {
+pub(crate) fn measure<T>(prepare: impl FnOnce() -> T) -> (T, Stats) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {

@@ -120,20 +120,21 @@ impl SnapshotCache {
     pub(crate) fn project(&mut self, normal: &NormalBuf) -> SnapshotCells {
         let start = normal.history_start() + (normal.scroll_count() - normal.view_offset()) as u64;
         let generation = normal.content_generation();
-        let versions: Vec<_> = (0..normal.rows())
-            .map(|row| Some(normal.row_version(start + row as u64).expect("visible row")))
-            .collect();
         if self.generation == generation
             && self.start == start
-            && self.versions == versions
+            && self.versions.len() == normal.rows()
+            && self
+                .versions
+                .iter()
+                .enumerate()
+                .all(|(row, &version)| version == normal.row_version(start + row as u64))
             && let Some(cells) = &self.cells
         {
             return cells.clone();
         }
-        let rows = versions
-            .iter()
-            .enumerate()
-            .map(|(row, &version)| {
+        let rows = (0..normal.rows())
+            .map(|row| {
+                let version = normal.row_version(start + row as u64);
                 let old_row = (start + row as u64)
                     .checked_sub(self.start)
                     .and_then(|n| usize::try_from(n).ok());
@@ -158,7 +159,9 @@ impl SnapshotCache {
         let cells = SnapshotCells::from_rows(rows, normal.cols());
         self.generation = generation;
         self.start = start;
-        self.versions = versions;
+        self.versions.clear();
+        self.versions
+            .extend((0..normal.rows()).map(|row| normal.row_version(start + row as u64)));
         self.cells = Some(cells.clone());
         cells
     }

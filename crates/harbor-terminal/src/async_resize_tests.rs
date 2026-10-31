@@ -182,6 +182,7 @@ impl Fixture {
         let mut terminal = Terminal::new_headless(3, 20);
         terminal.io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
             output,
+            recycle: ReaderRecycle::default(),
             commands,
             writer: Box::new(RecordingWriter(Arc::clone(&replies))),
             reader: Some(reader),
@@ -216,7 +217,7 @@ impl Fixture {
 
     fn bytes(&self, bytes: &[u8]) {
         self.events
-            .send(ReaderEvent::Bytes(bytes.to_vec()))
+            .send(ReaderEvent::Bytes(bytes.to_vec().into()))
             .unwrap();
     }
 
