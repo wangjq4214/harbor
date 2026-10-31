@@ -93,10 +93,12 @@ pub(crate) fn visit<'a>(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn decode(normal: &NormalBuf) -> Result<Vec<LogicalAtom>, DecodeError> {
     decode_active(normal, normal.scroll_count() + normal.rows())
 }
 
+#[cfg(test)]
 pub(crate) fn decode_active(
     normal: &NormalBuf,
     active_count: usize,
@@ -340,10 +342,10 @@ pub(crate) fn selected_text(
         return Ok(String::new());
     }
 
-    let atoms = decode(normal)?;
     let mut text = String::new();
     let last_col = normal.cols().saturating_sub(1);
-    for atom in atoms {
+    // Visit the complete stream: corruption outside the selection must still fail.
+    visit(normal, |atom| {
         match atom {
             LogicalAtom::Glyph {
                 source_span, glyph, ..
@@ -371,7 +373,8 @@ pub(crate) fn selected_text(
             }
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     Ok(text)
 }
 
@@ -386,6 +389,81 @@ mod tests {
 
     fn write(normal: &mut NormalBuf, row: usize, col: usize, cell: Cell) {
         normal.write_meaningful_cell(row, col, cell);
+    }
+
+    #[test]
+    fn selection_validates_corruption_outside_bounds_without_partial_success() {
+        for invalid_row in [0, 2] {
+            let mut normal = NormalBuf::new(3, 4);
+            write(
+                &mut normal,
+                1,
+                0,
+                Cell {
+                    ch: 'x',
+                    ..Cell::default()
+                },
+            );
+            write(
+                &mut normal,
+                invalid_row,
+                0,
+                Cell {
+                    ch: '界',
+                    ..Cell::default()
+                },
+            );
+            let bounds = SelectionBounds {
+                start_row: 1,
+                start_col: 0,
+                end_row: 1,
+                end_col: 3,
+            };
+            assert_eq!(
+                selected_text(&normal, bounds).unwrap_err(),
+                DecodeError {
+                    generation: invalid_row as u64,
+                    column: 0,
+                    kind: DecodeErrorKind::MissingWideContinuation,
+                }
+            );
+            let empty = SelectionBounds {
+                start_row: 8,
+                end_row: 9,
+                ..bounds
+            };
+            assert_eq!(selected_text(&normal, empty).unwrap(), "");
+        }
+    }
+
+    #[test]
+    fn selection_preserves_suffix_spaces_and_soft_wrap_without_owned_decode() {
+        let mut normal = NormalBuf::new(2, 4);
+        let mut cell = Cell {
+            ch: 'a',
+            ..Cell::default()
+        };
+        cell.suffix = "\u{301}".into();
+        write(&mut normal, 0, 0, cell);
+        write(&mut normal, 0, 1, Cell::default());
+        let source = normal.live_row_metadata(0);
+        write(
+            &mut normal,
+            1,
+            0,
+            Cell {
+                ch: 'b',
+                ..Cell::default()
+            },
+        );
+        normal.continue_logical_line(1, source, normal.live_row_logical_atom_count(0));
+        let bounds = SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 3,
+        };
+        assert_eq!(selected_text(&normal, bounds).unwrap(), "a\u{301} b");
     }
 
     #[test]
@@ -581,6 +659,44 @@ mod tests {
             decode(&inconsistent).unwrap_err().kind,
             DecodeErrorKind::InconsistentSoftWrap
         );
+    }
+
+    #[test]
+    fn selection_allocations_do_not_clone_unselected_suffix_payloads() {
+        use crate::primary_reflow::allocation_probe::measure;
+        let mut costs = Vec::new();
+        for suffix in ["", "\u{301}".repeat(128).as_str()] {
+            let mut normal = NormalBuf::new(2, 4);
+            write(
+                &mut normal,
+                0,
+                0,
+                Cell {
+                    ch: 'x',
+                    ..Cell::default()
+                },
+            );
+            write(
+                &mut normal,
+                1,
+                0,
+                Cell {
+                    ch: 'a',
+                    suffix: suffix.into(),
+                    ..Cell::default()
+                },
+            );
+            let bounds = SelectionBounds {
+                start_row: 0,
+                start_col: 0,
+                end_row: 0,
+                end_col: 0,
+            };
+            let (text, stats) = measure(|| selected_text(&normal, bounds).unwrap());
+            assert_eq!(text, "x");
+            costs.push((stats.calls, stats.allocated_bytes));
+        }
+        assert_eq!(costs[0], costs[1]);
     }
 
     #[test]
