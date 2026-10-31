@@ -2,6 +2,7 @@
 
 **Status:** Completed
 **Date:** 2026-08-14
+**Superseded in part by:** [ADR 0102](./0102-buffer-local-alternate-screen-ownership.md), only the whole-Screen swap primitive; buffer isolation and per-buffer cursor/pen semantics remain applicable.
 
 ## Context
 

@@ -1,5 +1,5 @@
 use super::box_drawing::BoxDrawing;
-use crate::TerminalUpdate;
+use crate::TerminalProjection;
 use crate::damage::DirtyRange;
 use crate::model::UpdateDamage;
 use crate::render::{
@@ -12,14 +12,14 @@ use std::sync::Arc;
 /// Encapsulates the GPU rendering pipeline components for the terminal.
 pub struct TerminalRenderPipeline {
     viewport: RenderViewport,
-    pub background: Background,
-    pub text: Text,
-    pub(super) boxes: BoxDrawing,
-    pub decoration: Decoration,
+    background: Background,
+    text: Text,
+    boxes: BoxDrawing,
+    decoration: Decoration,
     highlights: super::highlight::Highlights,
-    pub selection: Selection,
-    pub cursor: Cursor,
-    pub scrollbar: Scrollbar,
+    selection: Selection,
+    cursor: Cursor,
+    scrollbar: Scrollbar,
     palette: Palette,
     raster_scale: f32,
     grid: (usize, usize),
@@ -31,7 +31,7 @@ impl TerminalRenderPipeline {
         initial_surface_size: (u32, u32),
         font_book: FontBook,
         metrics: TextMetrics,
-        update: &TerminalUpdate,
+        update: &TerminalProjection,
     ) -> anyhow::Result<Self> {
         Self::new_at_scale(gpu, initial_surface_size, font_book, metrics, update, 1.0)
     }
@@ -41,7 +41,7 @@ impl TerminalRenderPipeline {
         initial_surface_size: (u32, u32),
         font_book: FontBook,
         metrics: TextMetrics,
-        update: &TerminalUpdate,
+        update: &TerminalProjection,
         raster_scale: f32,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
@@ -133,7 +133,7 @@ impl TerminalRenderPipeline {
         &mut self,
         gpu: TerminalGpuAccess<'_>,
         fonts: FontBook,
-        update: &TerminalUpdate,
+        update: &TerminalProjection,
     ) -> anyhow::Result<()> {
         *self = self.prepare_fonts(gpu, fonts, update)?;
         Ok(())
@@ -144,7 +144,7 @@ impl TerminalRenderPipeline {
         &self,
         gpu: TerminalGpuAccess<'_>,
         fonts: FontBook,
-        update: &TerminalUpdate,
+        update: &TerminalProjection,
     ) -> anyhow::Result<Self> {
         let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
         // Candidate resources may fail GPU validation/allocation even after the
@@ -195,7 +195,7 @@ impl TerminalRenderPipeline {
         &mut self,
         gpu: TerminalGpuAccess<'_>,
         scale: f32,
-        update: &TerminalUpdate,
+        update: &TerminalProjection,
     ) -> anyhow::Result<bool> {
         anyhow::ensure!(
             scale.is_finite() && scale > 0.0 && (96.0 * scale).is_finite(),
@@ -265,7 +265,7 @@ impl TerminalRenderPipeline {
         self.viewport
     }
 
-    fn can_prepare(&self, gpu: TerminalGpuAccess<'_>, update: &TerminalUpdate) -> bool {
+    fn can_prepare(&self, gpu: TerminalGpuAccess<'_>, update: &TerminalProjection) -> bool {
         let snap = &update.snapshot;
         super::decoration::slot_count(snap, gpu.device().limits().max_buffer_size).is_some()
             && super::box_drawing::slot_count(snap, gpu.device().limits().max_buffer_size).is_some()
@@ -287,7 +287,7 @@ impl TerminalRenderPipeline {
     pub fn prepare(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
-        update: &TerminalUpdate,
+        update: &TerminalProjection,
         blink_visible: bool,
     ) -> bool {
         let snap = &update.snapshot;
@@ -333,6 +333,32 @@ impl TerminalRenderPipeline {
         self.scrollbar.draw(pass);
     }
 
+    #[cfg(test)]
+    pub(super) fn text_for_test(&self) -> &Text {
+        &self.text
+    }
+    #[cfg(test)]
+    pub(super) fn text_mut_for_test(&mut self) -> &mut Text {
+        &mut self.text
+    }
+    #[cfg(test)]
+    pub(super) fn decoration_for_test(&self) -> &Decoration {
+        &self.decoration
+    }
+    #[cfg(test)]
+    pub(super) fn background_for_test(&self) -> &Background {
+        &self.background
+    }
+    #[cfg(test)]
+    pub(super) fn boxes_for_test(&self) -> &BoxDrawing {
+        &self.boxes
+    }
+
+    /// Read-only diagnostics without exposing independently mutable layers.
+    pub fn presentation_stats(&self) -> super::text::PresentationStats {
+        self.text.presentation_stats()
+    }
+
     pub fn metrics(&self) -> &TextMetrics {
         self.text.metrics()
     }
@@ -360,7 +386,7 @@ fn valid_projection(view: &RenderViewport, grid: (usize, usize), metrics: &TextM
 }
 
 /// Translate explicit full damage into complete ranges for the existing layer upload policy.
-fn update_dirty_ranges(update: &TerminalUpdate) -> std::borrow::Cow<'_, [DirtyRange]> {
+fn update_dirty_ranges(update: &TerminalProjection) -> std::borrow::Cow<'_, [DirtyRange]> {
     match &update.damage {
         UpdateDamage::Ranges(ranges) => std::borrow::Cow::Borrowed(ranges),
         UpdateDamage::FullUpload => std::borrow::Cow::Owned(

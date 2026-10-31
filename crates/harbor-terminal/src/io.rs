@@ -21,6 +21,8 @@ use crate::pointer::PointerInteraction;
 use crate::screen::Screen;
 use crate::types::{TerminalEvent, TerminalPointerPhase};
 
+mod chunk;
+use chunk::{ReaderBuffers, ReaderChunk, ReaderRecycle};
 /// The maximum number of parser events buffered between the blocking PTY reader
 /// and the UI thread. Backpressure here bounds memory without blocking UI.
 pub(crate) const PTY_QUEUE_CAPACITY: usize = 32;
@@ -31,6 +33,8 @@ const RESIZE_BARRIER_TIMEOUT: Duration = Duration::from_secs(2);
 const BARRIER_INTERRUPT_RETRY: Duration = Duration::from_millis(10);
 
 #[cfg(test)]
+mod allocation_tests;
+#[cfg(test)]
 #[path = "async_resize_tests.rs"]
 mod async_resize_tests;
 
@@ -38,7 +42,7 @@ type ReaderInterrupt = Arc<dyn Fn(&JoinHandle<()>) -> anyhow::Result<()> + Send 
 type Wake = Arc<Mutex<dyn Fn() -> bool + Send>>;
 #[derive(Debug)]
 enum ReaderEvent {
-    Bytes(Vec<u8>),
+    Bytes(ReaderChunk),
     BarrierAck(u64),
 }
 
@@ -125,6 +129,7 @@ struct PendingBarrier {
 /// I/O and shutdown resources sharing the terminal's lifetime.
 struct TerminalPty {
     output: Receiver<ReaderEvent>,
+    recycle: ReaderRecycle,
     commands: Sender<ReaderCommand>,
     writer: Box<dyn Write + Send>,
     reader: Option<JoinHandle<()>>,
@@ -174,6 +179,7 @@ impl TerminalPty {
     {
         let (output_tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
         let (commands, reader_commands) = mpsc::channel();
+        let (reader_buffers, recycle) = ReaderBuffers::pair();
         let wake_pending = Arc::new(AtomicBool::new(false));
         let reader_wake_pending = Arc::clone(&wake_pending);
         let wake: Wake = Arc::new(Mutex::new(wake));
@@ -185,6 +191,7 @@ impl TerminalPty {
                 reader_commands,
                 reader_wake_pending,
                 move || (reader_wake.lock().unwrap_or_else(|e| e.into_inner()))(),
+                reader_buffers,
             )
         }));
         let reader = match reader {
@@ -200,6 +207,7 @@ impl TerminalPty {
         };
         Ok(Self {
             output,
+            recycle,
             commands,
             writer: Box::new(writer),
             reader: Some(reader),
@@ -249,10 +257,11 @@ fn pump_reader<R>(
     commands: Receiver<ReaderCommand>,
     wake_pending: Arc<AtomicBool>,
     wake: impl Fn() -> bool,
+    buffers: ReaderBuffers,
 ) where
     R: Read,
 {
-    pump_reader_with_after_read(reader, output, commands, wake_pending, wake, || {});
+    pump_reader_with_after_read(reader, output, commands, wake_pending, wake, || {}, buffers);
 }
 
 fn pump_reader_with_after_read<R>(
@@ -262,6 +271,7 @@ fn pump_reader_with_after_read<R>(
     wake_pending: Arc<AtomicBool>,
     wake: impl Fn() -> bool,
     mut after_read: impl FnMut(),
+    mut buffers: ReaderBuffers,
 ) where
     R: Read,
 {
@@ -272,14 +282,15 @@ fn pump_reader_with_after_read<R>(
             true
         }
     };
-    let mut buffer = [0; 4096];
     while let Ok(ReaderCommandStatus::Idle | ReaderCommandStatus::Resumed) =
         service_reader_commands(&commands, &output, &notify)
     {
-        let length = match reader.read(&mut buffer) {
+        let mut chunk = buffers.take();
+        let length = match reader.read(chunk.read_buffer()) {
             Ok(0) => break,
             Ok(length) => length,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                buffers.put_unread(chunk);
                 match service_reader_commands(&commands, &output, &notify) {
                     Ok(ReaderCommandStatus::Resumed) => continue,
                     Ok(ReaderCommandStatus::Idle | ReaderCommandStatus::Disconnected) | Err(()) => {
@@ -294,10 +305,8 @@ fn pump_reader_with_after_read<R>(
             }
         };
         after_read();
-        if output
-            .send(ReaderEvent::Bytes(buffer[..length].to_vec()))
-            .is_err()
-        {
+        chunk.finish(length);
+        if output.send(ReaderEvent::Bytes(chunk)).is_err() {
             break;
         }
         if !notify() {
@@ -403,6 +412,18 @@ impl TerminalSession {
                 pty.wake_pending.store(false, Ordering::Release);
                 Err(error)
             }
+        }
+    }
+
+    fn recycle_chunk(&mut self, chunk: ReaderChunk) {
+        if let Some(pty) = self.pty.as_mut() {
+            pty.recycle.recycle(chunk);
+        }
+    }
+
+    fn flush_recycled(&mut self) {
+        if let Some(pty) = self.pty.as_mut() {
+            pty.recycle.flush();
         }
     }
     fn request_resize_barrier(&mut self, configuration: bool, now: Instant) -> anyhow::Result<()> {
@@ -746,28 +767,37 @@ impl TerminalIo {
     pub(crate) fn drain(&mut self, screen: &mut Screen, pointer: &mut PointerInteraction) -> bool {
         self.session.advance_resize_barrier(Instant::now());
         let mut consumed_bytes = false;
+        let mut budget_exhausted = true;
         for _ in 0..PTY_DRAIN_EVENT_BUDGET {
             match self.session.next_event() {
                 Ok(Some(ReaderEvent::Bytes(bytes))) => {
                     consumed_bytes = true;
                     self.process_reader_bytes(screen, pointer, &bytes);
+                    self.session.recycle_chunk(bytes);
                 }
                 Ok(Some(ReaderEvent::BarrierAck(epoch))) => {
                     self.session.acknowledge_resize_barrier(epoch);
                 }
-                Ok(None) => return consumed_bytes,
+                Ok(None) => {
+                    budget_exhausted = false;
+                    break;
+                }
                 Err(_) => {
                     self.observe_reader_disconnect(screen);
-                    return consumed_bytes;
+                    budget_exhausted = false;
+                    break;
                 }
             }
         }
-        // The reader coalesces wakes until the queue is empty. We stopped before
-        // observing that state, so explicitly request another turn, including
-        // when synchronized output suppresses ordinary presentation. A harmless
-        // extra wake is possible if the last event exhausted the queue.
-        if let Some(pty) = self.session.pty.as_ref() {
-            let _ = (pty.wake.lock().unwrap_or_else(|e| e.into_inner()))();
+        // Return even a partial batch before yielding, including ACK/EOF paths.
+        // No buffer is returned until parsing and protocol replies are finished.
+        self.session.flush_recycled();
+        if budget_exhausted {
+            // Wakes stay coalesced until the queue is observed empty. A budget
+            // stop therefore needs another turn even under synchronized output.
+            if let Some(pty) = self.session.pty.as_ref() {
+                let _ = (pty.wake.lock().unwrap_or_else(|e| e.into_inner()))();
+            }
         }
         consumed_bytes
     }

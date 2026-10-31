@@ -135,10 +135,10 @@ impl PointerInteraction {
     }
 
     pub(crate) fn apply_alt_transition(&mut self, screen: &mut Screen, action: AltScreenAction) {
-        match action {
-            AltScreenAction::Enter { clear } if !screen.is_alt() => {
+        match screen.transition_buffer(action) {
+            Some(crate::screen::BufferTransition::Entered { restored_parked }) => {
                 self.cancel_active_for_buffer_transition();
-                let alternate = if !clear && screen.has_parked_alt() {
+                let alternate = if restored_parked {
                     self.parked_alt_selection.take().unwrap_or_default()
                 } else {
                     self.parked_alt_selection = None;
@@ -146,14 +146,12 @@ impl PointerInteraction {
                 };
                 let primary = std::mem::replace(&mut self.selection, alternate.into()).into_inner();
                 self.saved_primary_selection = Some(primary);
-                screen.enter_alt(clear);
             }
-            AltScreenAction::Exit if screen.is_alt() => {
+            Some(crate::screen::BufferTransition::Exited) => {
                 self.cancel_active_for_buffer_transition();
                 let primary = self.saved_primary_selection.take().unwrap_or_default();
                 let alternate = std::mem::replace(&mut self.selection, primary.into()).into_inner();
                 self.parked_alt_selection = Some(alternate);
-                screen.exit_alt();
                 // ConPTY may have deferred the primary resize until this exit.
                 // Reproject saved logical endpoints only against the final geometry.
                 match screen.content_projection() {
@@ -166,7 +164,6 @@ impl PointerInteraction {
             _ => {}
         }
     }
-
     fn cancel_active_for_buffer_transition(&mut self) {
         let _ = self.selection.cancel();
         self.queue_local_release();

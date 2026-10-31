@@ -2,6 +2,9 @@
 
 **Status:** Proposed
 **Date:** 2026-10-11
+**Superseded by:** [ADR 0101](./0101-demand-bounded-box-and-decoration-storage.md), only for fixed-slot allocation and underline slot/offset preservation constraints; remaining decisions continue to apply.
+
+**2026-10-31 refinement:** The owner approved demand-bounded box/decoration storage and GPU/CPU capacity reclamation. This replaces the allocation constraints below, not their presentation or local-update guarantees. Implementation and detailed reclamation policy are not established by this note.
 
 ## Context
 

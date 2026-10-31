@@ -3,7 +3,8 @@ use harbor_text::{
     PresentationGeneration, PresentationTile, SEQUENCE_MAX_UTF16, SEQUENCE_PIXEL_BUDGET,
     SEQUENCE_TILE_SIDE, SequenceOutcome, SequencePresentation, SequenceRequest,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 pub(super) const COLOR_ATLAS_SIDE: u32 = 1024;
 pub(super) const COLOR_CACHE_ENTRIES: usize = 128;
@@ -40,6 +41,7 @@ pub(super) struct ColorAtlas {
     y: u32,
     shelf_height: u32,
     placed: usize,
+    active: Vec<SequenceRequest>,
 }
 
 #[derive(Default)]
@@ -62,19 +64,35 @@ impl ColorAtlas {
             self.generation = Some(generation);
             changes.full = true;
         }
-        // Skip already-admitted duplicates before recounting long UTF-16 sources.
-        // Only valid requests enter this set, which is bounded by the admission cap.
-        let mut seen = HashSet::new();
-        let active: Vec<_> = requests
-            .into_iter()
-            .filter(|r| {
-                !seen.contains(r)
-                    && r.source.encode_utf16().count() <= SEQUENCE_MAX_UTF16
-                    && seen.insert(*r)
-            })
-            .take(COLOR_CACHE_ENTRIES)
-            .cloned()
-            .collect();
+        // Keep only this call's first admitted requests. Stable entries retain
+        // their source strings; replacements drop previous identities.
+        let mut active = std::mem::take(&mut self.active);
+        let mut count = 0;
+        let mut hashes = [0; COLOR_CACHE_ENTRIES];
+        for request in requests {
+            let hash = self.entries.hasher().hash_one(request);
+            if hashes[..count]
+                .iter()
+                .enumerate()
+                .any(|(i, &old)| old == hash && active[i] == *request)
+                || request.source.encode_utf16().count() > SEQUENCE_MAX_UTF16
+            {
+                continue;
+            }
+            if let Some(slot) = active.get_mut(count) {
+                if slot != request {
+                    *slot = request.clone();
+                }
+            } else {
+                active.push(request.clone());
+            }
+            hashes[count] = hash;
+            count += 1;
+            if count == COLOR_CACHE_ENTRIES {
+                break;
+            }
+        }
+        active.truncate(count);
         let before = self.entries.len();
         self.entries.retain(|r, _| active.contains(r));
         if before != self.entries.len() {
@@ -129,19 +147,15 @@ impl ColorAtlas {
                 },
             );
         }
-        let pending: Vec<_> = active
-            .iter()
-            .filter(|r| {
-                let e = &self.entries[*r];
-                e.tile.is_some() && !e.attempted
-            })
-            .cloned()
-            .collect();
-        for request in pending {
-            let bounds = self.entries[&request].tile.as_ref().unwrap().bounds;
+        for request in &active {
+            let entry = &self.entries[request];
+            if entry.tile.is_none() || entry.attempted {
+                continue;
+            }
+            let bounds = entry.tile.as_ref().unwrap().bounds;
             if let Some(p) = self.pack(bounds.width, bounds.height) {
-                self.blit(&request, p);
-                changes.added.push(request);
+                self.blit(request, p);
+                changes.added.push(request.clone());
             } else {
                 // All previously issued UVs are invalid. Rebuild every retained
                 // reference in one prepare; anything that still does not fit falls back.
@@ -163,6 +177,7 @@ impl ColorAtlas {
                 break;
             }
         }
+        self.active = active;
         changes
     }
 
@@ -228,6 +243,38 @@ fn valid_tile(t: &PresentationTile) -> bool {
 mod tests {
     use super::*;
     use harbor_text::{CompleteKind, FontSize, TileBounds, UnsupportedReason};
+
+    #[test]
+    fn admission_reuses_sources_and_drops_historical_identities() {
+        let generation = generation();
+        let stable: Vec<_> = (0..COLOR_CACHE_ENTRIES).map(request).collect();
+        let mut atlas = ColorAtlas::default();
+        atlas.sync(&stable, generation, |_| SequencePresentation {
+            generation,
+            outcome: SequenceOutcome::Unsupported(UnsupportedReason::MissingGlyph),
+        });
+        let ptr = atlas.active[0].source.as_ptr();
+        let (_, stats) = crate::primary_reflow::allocation_probe::measure(|| {
+            for _ in 0..128 {
+                atlas.sync(&stable, generation, |_| panic!("already cached"));
+            }
+        });
+        assert_eq!(stats.calls, 0);
+        assert_eq!(atlas.active[0].source.as_ptr(), ptr);
+        for turn in 0..256 {
+            let next = [request(turn)];
+            atlas.sync(&next, generation, |_| SequencePresentation {
+                generation,
+                outcome: SequenceOutcome::Unsupported(UnsupportedReason::MissingGlyph),
+            });
+            assert_eq!(atlas.active, next);
+            assert_eq!(atlas.entries.len(), 1);
+            assert!(atlas.active.capacity() <= COLOR_CACHE_ENTRIES);
+        }
+        atlas.sync(std::iter::empty(), generation, |_| panic!("no requests"));
+        assert!(atlas.active.is_empty());
+        assert!(atlas.entries.is_empty());
+    }
     fn generation() -> PresentationGeneration {
         PresentationGeneration {
             session: 1,

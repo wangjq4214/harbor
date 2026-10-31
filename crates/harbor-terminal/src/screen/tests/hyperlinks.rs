@@ -23,16 +23,16 @@ fn selected_text_preserves_styled_and_hyperlinked_trailing_blanks() {
 fn hyperlink_registry_deduplicates_and_periodically_collects_orphans() {
     let mut screen = Screen::new(1, 2);
     screen.open_hyperlink("https://same.test".to_owned(), Some("id".to_owned()));
-    let first = screen.pen_state.active_hyperlink.unwrap();
+    let first = screen.active.pen_state.active_hyperlink.unwrap();
     screen.open_hyperlink("https://same.test".to_owned(), Some("id".to_owned()));
-    assert_eq!(screen.pen_state.active_hyperlink, Some(first));
+    assert_eq!(screen.active.pen_state.active_hyperlink, Some(first));
 
     screen.close_hyperlink();
     for index in 0..600 {
         screen.open_hyperlink(format!("https://example.test/{index}"), None);
         screen.close_hyperlink();
     }
-    assert!(screen.hyperlinks.len() <= 256);
+    assert!(screen.active.hyperlinks.len() <= 256);
 }
 
 #[test]

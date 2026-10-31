@@ -387,9 +387,9 @@ fn gpu_osc_palette_retained_layers_recolor_and_replay() {
     let updated = terminal.read_update(now);
     assert_eq!(first.snapshot.cells, updated.snapshot.cells);
     renderer.sync_palette(updated.appearance.palette());
-    assert!(renderer.background.is_dirty());
-    assert!(renderer.text.is_dirty());
-    assert!(renderer.decoration.is_dirty());
+    assert!(renderer.background_for_test().is_dirty());
+    assert!(renderer.text_for_test().is_dirty());
+    assert!(renderer.decoration_for_test().is_dirty());
     renderer.prepare(gpu, &updated, true);
     assert!(terminal.acknowledge_update(&updated));
     let after = raster_draw(&device, &queue, |pass| renderer.draw(pass));
@@ -451,11 +451,6 @@ fn t0002_gpu_retained_edits_stride_projection_and_invalid_recovery_match_full() 
     );
     assert!(raster(&device, &queue, &layer).iter().any(|&v| v != 0));
     assert!(engine.acknowledge_update(&initial));
-    let buffers = (
-        layer.underline_buffer.clone(),
-        layer.strikethrough_buffer.clone(),
-        layer.overline_buffer.clone(),
-    );
     // Skipped/hidden output is read but not acknowledged; both edits remain pending.
     engine.put_str("\x1b[1;1H\x1b[8mX");
     let skipped = engine.read_update(std::time::Instant::now());
@@ -491,11 +486,9 @@ fn t0002_gpu_retained_edits_stride_projection_and_invalid_recovery_match_full() 
         let update = engine.read_update(std::time::Instant::now());
         layer.prepare_with_dirty(gpu, &update.snapshot, &[], &view);
         compare(&layer, &update.snapshot, &view);
-        if rows * cols <= 32 {
-            assert_eq!(
-                layer.underline_buffer, buffers.0,
-                "equal/smaller count reuses capacity"
-            );
+        for storage in [&layer.underline, &layer.strikethrough, &layer.overline] {
+            let (d, g, c) = storage.storage_bytes();
+            assert!(g <= 4 * d && c <= 4 * d);
         }
         assert!(engine.acknowledge_update(&update));
         engine.put_str("\x1b[1;2H\x1b[24;29;55mQ");
@@ -539,7 +532,7 @@ fn t0002_gpu_retained_edits_stride_projection_and_invalid_recovery_match_full() 
         layer.prepare_with_dirty(gpu, &update.snapshot, &[range], &view);
         compare(&layer, &update.snapshot, &view);
     }
-    let valid_buffer = layer.underline_buffer.clone();
+    let valid_buffer = layer.underline.buffers();
     for mut invalid in [
         RenderViewport {
             line_height: f32::NAN,
@@ -556,7 +549,7 @@ fn t0002_gpu_retained_edits_stride_projection_and_invalid_recovery_match_full() 
     ] {
         layer.prepare_with_dirty(gpu, &update.snapshot, &[], &invalid);
         assert!(layer.is_dirty());
-        assert_eq!(layer.underline_buffer, valid_buffer);
+        assert_eq!(layer.underline.buffers(), valid_buffer);
         assert!(raster(&device, &queue, &layer).iter().all(|&v| v == 0));
         invalid = view;
         layer.prepare_with_dirty(gpu, &update.snapshot, &[], &invalid);
@@ -567,7 +560,7 @@ fn t0002_gpu_retained_edits_stride_projection_and_invalid_recovery_match_full() 
     malformed.rows = usize::MAX;
     layer.prepare_with_dirty(gpu, &malformed, &[], &view);
     assert!(layer.is_dirty());
-    assert_eq!(layer.underline_buffer, valid_buffer);
+    assert_eq!(layer.underline.buffers(), valid_buffer);
     layer.prepare_with_dirty(gpu, &update.snapshot, &[], &view);
     compare(&layer, &update.snapshot, &view);
     eprintln!(
@@ -613,9 +606,9 @@ fn gpu_decoration_drawability_survives_invalidation_and_recovers_from_rejection(
     assert!(!layer.is_dirty());
 
     let retained = (
-        layer.underline_buffer.clone(),
-        layer.strikethrough_buffer.clone(),
-        layer.overline_buffer.clone(),
+        layer.underline.buffers(),
+        layer.strikethrough.buffers(),
+        layer.overline.buffers(),
     );
     let invalid_view = RenderViewport {
         line_height: f32::NAN,
@@ -632,9 +625,9 @@ fn gpu_decoration_drawability_survives_invalidation_and_recovers_from_rejection(
     layer.prepare_with_dirty(gpu, &snap, &[], &view);
     assert!(!layer.is_dirty());
     assert_eq!(raster(&device, &queue, &layer), recolored);
-    assert_eq!(layer.underline_buffer, retained.0);
-    assert_eq!(layer.strikethrough_buffer, retained.1);
-    assert_eq!(layer.overline_buffer, retained.2);
+    assert_eq!(layer.underline.buffers(), retained.0);
+    assert_eq!(layer.strikethrough.buffers(), retained.1);
+    assert_eq!(layer.overline.buffers(), retained.2);
 
     // Empty and malformed snapshots also reject drawing without throwing away
     // retained buffers; a no-damage valid retry must rebuild and recover.
@@ -648,7 +641,7 @@ fn gpu_decoration_drawability_survives_invalidation_and_recovers_from_rejection(
         layer.prepare_with_dirty(gpu, &snap, &[], &view);
         assert!(!layer.is_dirty());
         assert_eq!(raster(&device, &queue, &layer), recolored);
-        assert_eq!(layer.underline_buffer, retained.0);
+        assert_eq!(layer.underline.buffers(), retained.0);
     }
     invalid.rows = 0;
     let mut initially_invalid = fresh(&invalid, palette);
@@ -857,4 +850,167 @@ fn gpu_background_oversize_initialized_buffer_has_distinct_scoped_failure() {
     }));
     assert!(pollster::block_on(sized_scope.pop()).is_some());
     assert!(sized.is_ok());
+}
+
+#[test]
+#[ignore = "gpu: demand-bounded decoration capacities and dense-reference readback"]
+fn gpu_demand_bounded_decorations_reclaim_each_layer_and_preserve_local_rows() {
+    let (device, queue) = crate::test_gpu::device();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let pipeline = Arc::new(crate::render::gpu::create_colored_quad_pipeline(
+        &device,
+        gpu.format(),
+        "demand bounded decorations",
+    ));
+    let view = viewport();
+    let palette = Palette::default();
+    let initial = snapshot("", 8, 16);
+    let mut layer = Decoration::new(
+        gpu,
+        pipeline.clone(),
+        (256, 192),
+        &initial,
+        metrics(),
+        palette,
+    );
+    let compare_dense = |layer: &Decoration, snap: &TerminalSnapshot| {
+        let geometry = [
+            build_underline_vertices(&metrics(), snap, &view, &palette),
+            build_strikethrough_vertices(&metrics(), snap, &view, &palette),
+            build_overline_vertices(&metrics(), snap, &view, &palette),
+        ];
+        let buffers: Vec<_> = geometry
+            .iter()
+            .map(|v| crate::render::gpu::create_colored_vertex_buffer(&device, v))
+            .collect();
+        assert_eq!(
+            raster(&device, &queue, layer),
+            raster_draw(&device, &queue, |p| {
+                p.set_pipeline(&pipeline);
+                for (v, buffer) in geometry.iter().zip(&buffers) {
+                    p.set_vertex_buffer(0, buffer.slice(..));
+                    p.draw(0..v.len() as u32, 0..1);
+                }
+            })
+        );
+    };
+    let mut sparse_bytes = None;
+    for (rows, cols) in [(4, 8), (32, 64)] {
+        let empty = snapshot("", rows, cols);
+        layer.prepare_with_dirty(gpu, &empty, &[], &view);
+        for storage in [&layer.underline, &layer.strikethrough, &layer.overline] {
+            assert_eq!(storage.storage_bytes(), (0, 0, 0));
+        }
+        let sparse = snapshot("\x1b[4:3;9;53mA", rows, cols);
+        layer.prepare_with_dirty(
+            gpu,
+            &sparse,
+            &[DirtyRange {
+                row: 0,
+                start_col: 0,
+                end_col: 1,
+            }],
+            &view,
+        );
+        let bytes = [
+            layer.underline.storage_bytes(),
+            layer.strikethrough.storage_bytes(),
+            layer.overline.storage_bytes(),
+        ];
+        assert_eq!(
+            *sparse_bytes.get_or_insert(bytes),
+            bytes,
+            "grid-independent geometry"
+        );
+        compare_dense(&layer, &sparse);
+    }
+
+    for _ in 0..3 {
+        let mut dense = snapshot("", 8, 16);
+        let decorated = snapshot("\x1b[4:3;9;53mA", 1, 1).cells[0].clone();
+        for cell in dense.cells.iter_mut() {
+            *cell = decorated.clone();
+        }
+        layer.prepare_with_dirty(gpu, &dense, &dense.dirty_ranges, &view);
+        compare_dense(&layer, &dense);
+        let previous = [
+            layer.underline.storage_bytes(),
+            layer.strikethrough.storage_bytes(),
+            layer.overline.storage_bytes(),
+        ];
+        let ranges: Vec<_> = (0..8)
+            .map(|row| DirtyRange {
+                row,
+                start_col: 0,
+                end_col: 16,
+            })
+            .collect();
+        let mut sparse = snapshot("\x1b[4:3;9;53mA", 8, 16);
+        layer.prepare_with_dirty(gpu, &sparse, &ranges, &view);
+        for (storage, (_, old_g, old_c)) in
+            [&layer.underline, &layer.strikethrough, &layer.overline]
+                .into_iter()
+                .zip(previous)
+        {
+            let (d, g, c) = storage.storage_bytes();
+            assert!(d > 0 && old_g > 4 * d && old_c > 4 * d);
+            assert!(g <= 2 * d && c <= 2 * d);
+            eprintln!(
+                "decoration old_gpu_cpu=({old_g},{old_c}) sparse_demand_gpu_cpu=({d},{g},{c})"
+            );
+        }
+        compare_dense(&layer, &sparse);
+        assert_eq!(
+            crate::render::observations::buffer_write_bytes(|| {
+                layer.prepare_with_dirty(gpu, &sparse, &[], &view);
+            }),
+            0
+        );
+        sparse.cells[16] = decorated.clone();
+        let unchanged = [
+            layer.underline.buffers()[0].clone(),
+            layer.strikethrough.buffers()[0].clone(),
+            layer.overline.buffers()[0].clone(),
+        ];
+        let bytes = crate::render::observations::buffer_write_bytes(|| {
+            layer.prepare_with_dirty(
+                gpu,
+                &sparse,
+                &[DirtyRange {
+                    row: 1,
+                    start_col: 0,
+                    end_col: 1,
+                }],
+                &view,
+            );
+        });
+        let local_demand = layer.underline.storage_bytes().0
+            + layer.strikethrough.storage_bytes().0
+            + layer.overline.storage_bytes().0;
+        assert_eq!(bytes * 2, local_demand, "only the changed row is uploaded");
+        assert_eq!(
+            [
+                layer.underline.buffers()[0].clone(),
+                layer.strikethrough.buffers()[0].clone(),
+                layer.overline.buffers()[0].clone()
+            ],
+            unchanged
+        );
+        compare_dense(&layer, &sparse);
+        for (rows, cols) in [(16, 8), (2, 4), (8, 16)] {
+            let resized = snapshot("\x1b[4:3;9;53mA", rows, cols);
+            layer.prepare_with_dirty(gpu, &resized, &[], &view);
+            for storage in [&layer.underline, &layer.strikethrough, &layer.overline] {
+                let (d, g, c) = storage.storage_bytes();
+                assert!(g <= 4 * d && c <= 4 * d);
+            }
+            compare_dense(&layer, &resized);
+        }
+        let empty = snapshot("", 8, 16);
+        layer.prepare_with_dirty(gpu, &empty, &ranges, &view);
+        for storage in [&layer.underline, &layer.strikethrough, &layer.overline] {
+            assert_eq!(storage.storage_bytes(), (0, 0, 0));
+        }
+        compare_dense(&layer, &empty);
+    }
 }

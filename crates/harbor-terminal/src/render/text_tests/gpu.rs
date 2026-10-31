@@ -1,3 +1,6 @@
+#[path = "overlay.rs"]
+mod overlay;
+
 use super::*;
 
 #[test]
@@ -180,7 +183,7 @@ fn scalar_repack_invalidates_all_vertex_uvs_even_for_local_damage() {
     let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
     let mut engine = Terminal::new_headless(4, 16);
     engine.put_str("AB\r\nBA");
-    let snap = engine.read_update(Instant::now()).snapshot;
+    let snap = engine.read_update(Instant::now()).snapshot.clone();
     let (mut layer, viewport) = text(gpu, &snap);
     let before = read_draw(&device, &queue, |p| layer.draw(p));
     let old_positions: Vec<_> = ['A', 'B']
@@ -263,7 +266,7 @@ fn mixed_suffix_overlays_match_filtered_marks_and_skip_hidden_cells() {
     assert!(!layer.sequences.tile_cells.contains(&0));
     assert!(!layer.sequences.tile_cells.contains(&1));
     layer.prepare_preedit(gpu, None, &snap, &viewport);
-    let count = layer.overlay.count();
+    let count = layer.cell_overlays.count();
     assert!(count > 0);
     let mixed_pixels = read_draw(&device, &queue, |p| layer.draw(p));
 
@@ -316,8 +319,19 @@ fn mixed_suffix_overlays_match_filtered_marks_and_skip_hidden_cells() {
     snap.cells[2].isolated_mark = false;
     snap.cells[3].suffix.clear();
     snap.cells[3].isolated_mark = false;
+    layer.prepare_with_dirty(
+        gpu,
+        &snap,
+        &[DirtyRange {
+            row: 0,
+            start_col: 0,
+            end_col: 4,
+        }],
+        &viewport,
+        None,
+    );
     layer.prepare_preedit(gpu, None, &snap, &viewport);
-    assert_eq!(layer.overlay.count(), count);
+    assert_eq!(layer.cell_overlays.count(), count);
     assert_eq!(read_draw(&device, &queue, |p| layer.draw(p)), mixed_pixels);
 }
 
@@ -350,7 +364,7 @@ fn ordinary_only_keeps_r8_and_never_shapes_or_allocates_color_resources() {
     assert_eq!(stats.color_atlas_bytes, 0);
     assert_eq!(stats.cached_requests, 0);
     assert!(layer.sequences.emoji_cells.is_empty());
-    assert!(layer.overlay.count() > 0);
+    assert!(layer.cell_overlays.count() + layer.ime_overlay.count() > 0);
 }
 
 #[test]
@@ -367,34 +381,34 @@ fn dpi_transitions_preserve_physical_metrics_and_scalar_pixels() {
     pipeline.prepare(gpu, &update, false);
     let viewport = pipeline.viewport();
     let pixels = read_draw(&device, &queue, |p| pipeline.draw(p));
-    let atlas_pixels = pipeline.text.atlas.pixels().to_vec();
+    let atlas_pixels = pipeline.text_for_test().atlas.pixels().to_vec();
     let vertices = pipeline
-        .text
+        .text_for_test()
         .build_all_vertices(&update.snapshot, &viewport);
-    let scalar_pipeline = pipeline.text.pipeline.clone();
-    let scalar_texture = pipeline.text.gpu_atlas._texture.clone();
-    let scalar_buffer = pipeline.text.vertex_buffer.clone();
+    let scalar_pipeline = pipeline.text_for_test().pipeline.clone();
+    let scalar_texture = pipeline.text_for_test().gpu_atlas._texture.clone();
+    let scalar_buffer = pipeline.text_for_test().vertex_buffer.clone();
     assert!(engine.acknowledge_update(&update));
     let update = engine.read_update(Instant::now());
     for scale in [1.25, 1.5, 2.0, 1.5, 1.0] {
-        let generation = pipeline.text.fonts.presentation_generation();
+        let generation = pipeline.text_for_test().fonts.presentation_generation();
         assert!(pipeline.sync_raster_scale(gpu, scale, &update).unwrap());
-        assert_eq!(pipeline.text.pipeline, scalar_pipeline);
-        assert_eq!(pipeline.text.gpu_atlas._texture, scalar_texture);
-        assert_eq!(pipeline.text.vertex_buffer, scalar_buffer);
+        assert_eq!(pipeline.text_for_test().pipeline, scalar_pipeline);
+        assert_eq!(pipeline.text_for_test().gpu_atlas._texture, scalar_texture);
+        assert_eq!(pipeline.text_for_test().vertex_buffer, scalar_buffer);
         pipeline.prepare(gpu, &update, false);
         assert_eq!(metric_values(pipeline.metrics()), metric_values(&metrics));
         assert_eq!(pipeline.viewport(), viewport);
-        assert_eq!(pipeline.text.fonts.size(), 16.0);
-        let current_generation = pipeline.text.fonts.presentation_generation();
+        assert_eq!(pipeline.text_for_test().fonts.size(), 16.0);
+        let current_generation = pipeline.text_for_test().fonts.presentation_generation();
         assert_eq!(current_generation.session, generation.session);
         assert!(current_generation.revision > generation.revision);
         assert!(
-            pipeline.text.atlas.pixels() == atlas_pixels,
+            pipeline.text_for_test().atlas.pixels() == atlas_pixels,
             "CPU scalar atlas changed at scale {scale}"
         );
         let current_vertices = pipeline
-            .text
+            .text_for_test()
             .build_all_vertices(&update.snapshot, &viewport);
         assert!(
             bytemuck::cast_slice::<_, u8>(&current_vertices)
@@ -406,21 +420,24 @@ fn dpi_transitions_preserve_physical_metrics_and_scalar_pixels() {
             &pixels,
             scale,
         );
-        let stats = pipeline.text.presentation_stats();
+        let stats = pipeline.presentation_stats();
         assert_eq!(stats.native.shapes, 0);
         assert_eq!(stats.color_atlas_bytes, 0);
         assert!(!pipeline.sync_raster_scale(gpu, scale, &update).unwrap());
         assert_eq!(
-            pipeline.text.fonts.presentation_generation(),
+            pipeline.text_for_test().fonts.presentation_generation(),
             current_generation
         );
     }
-    let generation = pipeline.text.fonts.presentation_generation();
+    let generation = pipeline.text_for_test().fonts.presentation_generation();
     for scale in [f32::NAN, f32::INFINITY, 0.0, -1.0] {
         assert!(pipeline.sync_raster_scale(gpu, scale, &update).is_err());
         assert_eq!(pipeline.raster_scale(), 1.0);
-        assert_eq!(pipeline.text.fonts.presentation_generation(), generation);
-        assert_eq!(pipeline.text.pipeline, scalar_pipeline);
+        assert_eq!(
+            pipeline.text_for_test().fonts.presentation_generation(),
+            generation
+        );
+        assert_eq!(pipeline.text_for_test().pipeline, scalar_pipeline);
     }
 }
 
@@ -436,7 +453,7 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
     let metrics = TextMetrics::from_font_metrics(f.font_metrics());
     let mut pipeline = TerminalRenderPipeline::new(gpu, (256, 128), f, metrics, &update).unwrap();
     pipeline.prepare(gpu, &update, false);
-    let before = pipeline.text.fonts.presentation_generation();
+    let before = pipeline.text_for_test().fonts.presentation_generation();
     // A DPI-only update must refresh sequence caches without engine damage.
     assert!(engine.acknowledge_update(&update));
     let update = engine.read_update(Instant::now());
@@ -444,13 +461,11 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
         foreground: harbor_config::Rgba::from_rgba8(0, 255, 0, 128),
         ..Palette::default()
     };
-    pipeline.text.set_palette(palette);
-    pipeline
-        .text
-        .prepare_with_dirty(gpu, &update.snapshot, &[], &pipeline.viewport(), None);
+    pipeline.text_mut_for_test().set_palette(palette);
+    assert!(pipeline.prepare(gpu, &update, false));
     assert!(
         pipeline
-            .text
+            .text_for_test()
             .sequences
             .atlas
             .entries
@@ -459,21 +474,21 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
     );
     assert!(pipeline.sync_raster_scale(gpu, 2.0, &update).unwrap());
     pipeline.prepare(gpu, &update, false);
-    let after_dpi = pipeline.text.fonts.presentation_generation();
+    let after_dpi = pipeline.text_for_test().fonts.presentation_generation();
     assert_eq!(after_dpi.session, before.session);
     assert!(after_dpi.revision > before.revision);
     assert!(
         !pipeline
-            .text
+            .text_for_test()
             .sequences
-            .atlas_generation_changed(&pipeline.text.fonts)
+            .atlas_generation_changed(&pipeline.text_for_test().fonts)
     );
     assert_eq!(metric_values(pipeline.metrics()), metric_values(&metrics));
-    assert_eq!(pipeline.text.fonts.size(), 16.0);
-    assert!(!pipeline.text.sequences.atlas.entries.is_empty());
+    assert_eq!(pipeline.text_for_test().fonts.size(), 16.0);
+    assert!(!pipeline.text_for_test().sequences.atlas.entries.is_empty());
     assert!(
         pipeline
-            .text
+            .text_for_test()
             .sequences
             .atlas
             .entries
@@ -481,24 +496,36 @@ fn appearance_dpi_and_font_session_replace_tiles_without_mutating_engine_source(
             .all(|r| r.dpi.get() == 192.0 && r.size.get() == 8.0 && r.raster_size() == 16.0)
     );
     assert!(!pipeline.sync_raster_scale(gpu, 2.0, &update).unwrap());
-    let generation = pipeline.text.fonts.presentation_generation();
-    pipeline.text.fonts.invalidate_presentations();
+    let generation = pipeline.text_for_test().fonts.presentation_generation();
     pipeline
-        .text
-        .prepare_with_dirty(gpu, &update.snapshot, &[], &pipeline.viewport(), None);
-    assert!(pipeline.text.fonts.presentation_generation().revision > generation.revision);
+        .text_mut_for_test()
+        .fonts
+        .invalidate_presentations();
+    assert!(pipeline.prepare(gpu, &update, false));
+    assert!(
+        pipeline
+            .text_for_test()
+            .fonts
+            .presentation_generation()
+            .revision
+            > generation.revision
+    );
     pipeline.replace_fonts(gpu, fonts(), &update).unwrap();
     pipeline.prepare(gpu, &update, false);
     assert_ne!(
-        pipeline.text.fonts.presentation_generation().session,
+        pipeline
+            .text_for_test()
+            .fonts
+            .presentation_generation()
+            .session,
         generation.session
     );
     assert_eq!(pipeline.raster_scale(), 2.0);
     assert_eq!(metric_values(pipeline.metrics()), metric_values(&metrics));
-    assert_eq!(pipeline.text.fonts.size(), 16.0);
+    assert_eq!(pipeline.text_for_test().fonts.size(), 16.0);
     assert!(
         pipeline
-            .text
+            .text_for_test()
             .sequences
             .atlas
             .entries
@@ -586,40 +613,46 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
         matches!(&update.damage, crate::model::UpdateDamage::Ranges(ranges) if ranges.is_empty())
     );
     let source = update.snapshot.cells.clone();
-    let before_text = read_draw(&device, &queue, |pass| pipeline.text.draw(pass));
-    let before_decoration = read_draw(&device, &queue, |pass| pipeline.decoration.draw(pass));
+    let before_text = read_draw(&device, &queue, |pass| pipeline.text_for_test().draw(pass));
+    let before_decoration = read_draw(&device, &queue, |pass| {
+        pipeline.decoration_for_test().draw(pass)
+    });
     let before_all = read_draw(&device, &queue, |pass| pipeline.draw(pass));
-    let generation = pipeline.text.fonts.presentation_generation();
-    let old_text_pipeline = pipeline.text.pipeline.clone();
+    let generation = pipeline.text_for_test().fonts.presentation_generation();
+    let old_text_pipeline = pipeline.text_for_test().pipeline.clone();
     // Same-metrics replacement changes session/resources but not geometry/pixels.
     pipeline.replace_fonts(gpu, fonts(), &update).unwrap();
     assert_eq!(metric_values(pipeline.metrics()), metric_values(&m));
     assert_ne!(
-        pipeline.text.fonts.presentation_generation().session,
+        pipeline
+            .text_for_test()
+            .fonts
+            .presentation_generation()
+            .session,
         generation.session
     );
-    assert_ne!(pipeline.text.pipeline, old_text_pipeline);
+    assert_ne!(pipeline.text_for_test().pipeline, old_text_pipeline);
     assert_eq!(
         read_draw(&device, &queue, |pass| pipeline.draw(pass)),
         before_all
     );
-    let atlas = pipeline.text.gpu_atlas._texture.clone();
-    let buffer = pipeline.text.vertex_buffer.clone();
-    let scalar_pipeline = pipeline.text.pipeline.clone();
+    let atlas = pipeline.text_for_test().gpu_atlas._texture.clone();
+    let buffer = pipeline.text_for_test().vertex_buffer.clone();
+    let scalar_pipeline = pipeline.text_for_test().pipeline.clone();
     // Even extremely small/large accepted DPI identities leave physical pixels alone.
     for scale in [f32::from_bits(1), 1.25, 1.5, 2.0, f32::MAX / 192.0, 1.0] {
         assert!(pipeline.sync_raster_scale(gpu, scale, &update).unwrap());
         assert_eq!(pipeline.viewport(), view);
         assert_eq!(metric_values(pipeline.metrics()), metric_values(&m));
-        assert_eq!(pipeline.text.gpu_atlas._texture, atlas);
-        assert_eq!(pipeline.text.vertex_buffer, buffer);
-        assert_eq!(pipeline.text.pipeline, scalar_pipeline);
+        assert_eq!(pipeline.text_for_test().gpu_atlas._texture, atlas);
+        assert_eq!(pipeline.text_for_test().vertex_buffer, buffer);
+        assert_eq!(pipeline.text_for_test().pipeline, scalar_pipeline);
         assert_eq!(
             read_draw(&device, &queue, |pass| pipeline.draw(pass)),
             before_all
         );
     }
-    let generation = pipeline.text.fonts.presentation_generation();
+    let generation = pipeline.text_for_test().fonts.presentation_generation();
     for scale in [
         f32::NAN,
         f32::INFINITY,
@@ -630,8 +663,11 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
     ] {
         assert!(pipeline.sync_raster_scale(gpu, scale, &update).is_err());
         assert_eq!(pipeline.raster_scale(), 1.0);
-        assert_eq!(pipeline.text.fonts.presentation_generation(), generation);
-        assert_eq!(pipeline.text.gpu_atlas._texture, atlas);
+        assert_eq!(
+            pipeline.text_for_test().fonts.presentation_generation(),
+            generation
+        );
+        assert_eq!(pipeline.text_for_test().gpu_atlas._texture, atlas);
     }
     let changed_fonts = || {
         harbor_text::load_system_fonts(&harbor_config::FontSettings {
@@ -656,7 +692,7 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
     pipeline.sync_raster_scale(gpu, 1.5, &update).unwrap();
     pipeline.replace_fonts(gpu, candidate, &update).unwrap();
     assert_eq!(pipeline.raster_scale(), 1.5);
-    assert_eq!(pipeline.text.raster_scale, 1.5);
+    assert_eq!(pipeline.text_for_test().raster_scale, 1.5);
     assert_eq!(
         pipeline.viewport().allocation_origin,
         view.allocation_origin
@@ -667,15 +703,17 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
     );
     assert_eq!(pipeline.viewport().cell_width, changed_metrics.cell_width);
     assert_eq!(pipeline.viewport().line_height, changed_metrics.line_height);
-    assert_ne!(pipeline.text.gpu_atlas._texture, atlas);
-    assert_ne!(pipeline.text.vertex_buffer, buffer);
-    assert_ne!(pipeline.text.pipeline, scalar_pipeline);
+    assert_ne!(pipeline.text_for_test().gpu_atlas._texture, atlas);
+    assert_ne!(pipeline.text_for_test().vertex_buffer, buffer);
+    assert_ne!(pipeline.text_for_test().pipeline, scalar_pipeline);
     assert_ne!(
-        read_draw(&device, &queue, |pass| pipeline.text.draw(pass)),
+        read_draw(&device, &queue, |pass| pipeline.text_for_test().draw(pass)),
         before_text
     );
     assert_ne!(
-        read_draw(&device, &queue, |pass| pipeline.decoration.draw(pass)),
+        read_draw(&device, &queue, |pass| pipeline
+            .decoration_for_test()
+            .draw(pass)),
         before_decoration
     );
     assert_ne!(
@@ -690,8 +728,8 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
     fresh.prepare(gpu, &update, false);
     for layer in 0..3 {
         let draw = |p: &TerminalRenderPipeline, pass: &mut wgpu::RenderPass| match layer {
-            0 => p.text.draw(pass),
-            1 => p.decoration.draw(pass),
+            0 => p.text_for_test().draw(pass),
+            1 => p.decoration_for_test().draw(pass),
             _ => p.draw(pass),
         };
         assert_eq!(
@@ -703,24 +741,24 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
     // Capture all public presentation and scalar resource identity before errors.
     let valid_view = pipeline.viewport();
     let valid_metrics = metric_values(pipeline.metrics());
-    let valid_atlas = pipeline.text.gpu_atlas._texture.clone();
-    let valid_pipeline = pipeline.text.pipeline.clone();
-    let valid_buffer = pipeline.text.vertex_buffer.clone();
-    let valid_generation = pipeline.text.fonts.presentation_generation();
+    let valid_atlas = pipeline.text_for_test().gpu_atlas._texture.clone();
+    let valid_pipeline = pipeline.text_for_test().pipeline.clone();
+    let valid_buffer = pipeline.text_for_test().vertex_buffer.clone();
+    let valid_generation = pipeline.text_for_test().fonts.presentation_generation();
     let valid_pixels = read_draw(&device, &queue, |pass| pipeline.draw(pass));
     // Rejected resource preparation: malformed/oversized grids fail before publish.
     for (rows, cols) in [(0, 10), (usize::MAX, 10), (3, usize::MAX)] {
         let mut invalid = update.clone();
-        std::sync::Arc::make_mut(&mut invalid.snapshot).rows = rows;
-        std::sync::Arc::make_mut(&mut invalid.snapshot).cols = cols;
+        std::sync::Arc::make_mut(&mut invalid.projection.snapshot).rows = rows;
+        std::sync::Arc::make_mut(&mut invalid.projection.snapshot).cols = cols;
         assert!(pipeline.replace_fonts(gpu, fonts(), &invalid).is_err());
         assert_eq!(pipeline.viewport(), valid_view);
         assert_eq!(metric_values(pipeline.metrics()), valid_metrics);
-        assert_eq!(pipeline.text.gpu_atlas._texture, valid_atlas);
-        assert_eq!(pipeline.text.pipeline, valid_pipeline);
-        assert_eq!(pipeline.text.vertex_buffer, valid_buffer);
+        assert_eq!(pipeline.text_for_test().gpu_atlas._texture, valid_atlas);
+        assert_eq!(pipeline.text_for_test().pipeline, valid_pipeline);
+        assert_eq!(pipeline.text_for_test().vertex_buffer, valid_buffer);
         assert_eq!(
-            pipeline.text.fonts.presentation_generation(),
+            pipeline.text_for_test().fonts.presentation_generation(),
             valid_generation
         );
         assert_eq!(
@@ -731,7 +769,7 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
         assert!(pipeline.sync_raster_scale(gpu, 2.0, &invalid).is_err());
         assert_eq!(pipeline.raster_scale(), 1.5);
         assert_eq!(
-            pipeline.text.fonts.presentation_generation(),
+            pipeline.text_for_test().fonts.presentation_generation(),
             valid_generation
         );
     }
@@ -744,11 +782,11 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
     assert!(error.to_string().contains("resource preparation failed"));
     assert_eq!(pipeline.viewport(), valid_view);
     assert_eq!(metric_values(pipeline.metrics()), valid_metrics);
-    assert_eq!(pipeline.text.gpu_atlas._texture, valid_atlas);
-    assert_eq!(pipeline.text.pipeline, valid_pipeline);
-    assert_eq!(pipeline.text.vertex_buffer, valid_buffer);
+    assert_eq!(pipeline.text_for_test().gpu_atlas._texture, valid_atlas);
+    assert_eq!(pipeline.text_for_test().pipeline, valid_pipeline);
+    assert_eq!(pipeline.text_for_test().vertex_buffer, valid_buffer);
     assert_eq!(
-        pipeline.text.fonts.presentation_generation(),
+        pipeline.text_for_test().fonts.presentation_generation(),
         valid_generation
     );
     assert_eq!(
@@ -796,7 +834,7 @@ fn t0002_native_changed_metrics_replacement_and_failed_preparation_are_coherent(
         ..valid_view
     };
     pipeline.sync_viewport(shifted, false);
-    assert!(pipeline.decoration.is_dirty());
+    assert!(pipeline.decoration_for_test().is_dirty());
     pipeline.prepare(gpu, &update, false);
     fresh.sync_viewport(shifted, false);
     fresh.prepare(gpu, &update, false);

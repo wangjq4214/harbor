@@ -126,3 +126,33 @@ fn producer_wide_glyph_straddles_new_right_boundary() {
         "53;32",
     );
 }
+
+// Macro-generated cases also spawn real children: keep them in the serial PTY gate.
+macro_rules! fixture_test {
+    ($name:ident, $sgr:literal, $rows:literal) => {
+        #[test]
+        #[ignore = "pty: run the matching explicit test recipe"]
+        fn $name() {
+            minimal_fixture($sgr, $rows);
+        }
+    };
+}
+
+fixture_test!(overline_printed_and_erased_tails, "53;32", 29);
+fixture_test!(underline_printed_and_erased_tails, "4;31", 29);
+fixture_test!(background_printed_and_erased_tails, "44", 29);
+fixture_test!(
+    overline_tails_at_bottom_with_history_and_height_resize,
+    "53;32",
+    6
+);
+fixture_test!(
+    underline_tails_at_bottom_with_history_and_height_resize,
+    "4;31",
+    6
+);
+fixture_test!(
+    background_tails_at_bottom_with_history_and_height_resize,
+    "44",
+    6
+);
