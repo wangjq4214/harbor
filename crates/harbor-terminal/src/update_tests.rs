@@ -185,7 +185,7 @@ fn update_proof_rejects_another_engine_and_tampered_damage() {
     let update = first.read_update(Instant::now());
     assert!(!second.acknowledge_update(&update));
     let mut altered = update.clone();
-    altered.damage = UpdateDamage::Ranges(vec![]);
+    altered.projection.damage = UpdateDamage::Ranges(vec![]);
     assert!(!first.acknowledge_update(&altered));
     assert!(first.acknowledge_update(&update));
     assert!(!first.acknowledge_update(&update));
@@ -220,4 +220,24 @@ fn selection_a_b_a_has_independent_mutation_provenance() {
     assert_eq!(t.screen.mutation_revisions(), screen_revision);
     assert!(!t.acknowledge_update(&old));
     assert!(t.acknowledge_update(&t.read_update(now)));
+}
+
+#[test]
+fn appearance_rgba_keeps_startup_tint_while_accepted_projection_advances() {
+    let mut t = terminal(2, 8);
+    let startup = t.appearance_rgba();
+    let mut palette = t.read_update(Instant::now()).appearance.palette();
+    palette.background = harbor_config::Rgba::from_rgb8(1, 2, 3);
+    let tx = t
+        .prepare_configuration_resize(crate::TerminalSize { rows: 2, cols: 8 })
+        .unwrap();
+    let candidate = tx.update(palette);
+    assert_eq!(candidate.appearance.palette(), palette);
+    tx.commit(palette, None, 1.0);
+    assert_eq!(t.appearance_rgba(), startup);
+    assert_eq!(t.read_update(Instant::now()).appearance.palette(), palette);
+    assert_eq!(
+        t.clear_rgba(false),
+        TerminalAppearance::from_palette(palette).clear_rgba(false)
+    );
 }

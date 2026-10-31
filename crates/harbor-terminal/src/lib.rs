@@ -85,7 +85,7 @@ pub use types::{
     TerminalModifiers, TerminalOutputEvent, TerminalPointerButton, TerminalPointerEvent,
     TerminalPointerPhase, WorkingDirectoryMetadata,
 };
-pub use update::TerminalUpdate;
+pub use update::{TerminalProjection, TerminalUpdate};
 mod revision;
 mod snapshot;
 #[cfg(test)]
@@ -244,7 +244,8 @@ impl Terminal {
             .clear_rgba(backdrop_available)
     }
 
-    /// Returns the configured tint used by a host compositor backdrop.
+    /// Returns the construction-time compositor tint, not the latest accepted palette.
+    /// Use `clear_rgba` or `read_update().appearance` for current session colors.
     pub fn appearance_rgba(&self) -> [f32; 4] {
         self.appearance.rgba()
     }
@@ -623,13 +624,15 @@ impl Terminal {
                 presentation: self.presentation_revision,
                 full_upload: self.update_needs_full,
             },
-            snapshot,
-            damage,
-            selection: self.pointer.bounds(),
-            preedit: self.preedit.clone(),
-            appearance: TerminalAppearance::from_palette(self.screen.active_palette()),
-            backdrop_available: self.backdrop_available,
-            frame_demand: self.current_frame_demand(now),
+            projection: TerminalProjection {
+                snapshot,
+                damage,
+                selection: self.pointer.bounds(),
+                preedit: self.preedit.clone(),
+                appearance: TerminalAppearance::from_palette(self.screen.active_palette()),
+                backdrop_available: self.backdrop_available,
+                frame_demand: self.current_frame_demand(now),
+            },
             projection_epoch: self.projection_epoch,
         }
     }
@@ -737,11 +740,6 @@ impl Terminal {
     #[cfg(test)]
     pub fn screen_mut(&mut self) -> &mut Screen {
         &mut self.screen
-    }
-
-    /// Resets the screen's dirty-row tracking.
-    pub fn clear_screen_dirty(&mut self) {
-        self.screen.clear_dirty();
     }
 
     pub fn row_text(&self, row: usize) -> String {

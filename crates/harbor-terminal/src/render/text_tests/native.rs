@@ -153,7 +153,7 @@ fn preedit_paints_above_complete_tiles_at_an_overlapping_cursor() {
     let mut engine = Terminal::new_headless(4, 16);
     engine.put_str("♥️");
     engine.process_output(b"\x1b[1;1H");
-    let snap = engine.read_update(Instant::now()).snapshot;
+    let snap = engine.read_update(Instant::now()).snapshot.clone();
     let (mut layer, viewport) = text(gpu, &snap);
     let before = read_draw(&device, &queue, |p| layer.draw(p));
     let preedit = Preedit::new("M", None);

@@ -12,7 +12,7 @@ fn update_acknowledgement_rejects_modified_snapshot_by_identity() {
     macro_rules! altered {
         ($change:expr) => {{
             let mut changed = update.clone();
-            $change(std::sync::Arc::make_mut(&mut changed.snapshot));
+            $change(std::sync::Arc::make_mut(&mut changed.projection.snapshot));
             variants.push(changed);
         }};
     }

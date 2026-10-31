@@ -467,16 +467,16 @@ fn structural_and_rejected_updates_preserve_overlay_damage_until_resume() {
         }
         let skipped = engine.read_update(Instant::now());
         let mut rejected = skipped.clone();
-        std::sync::Arc::make_mut(&mut rejected.snapshot).cols = 0;
+        std::sync::Arc::make_mut(&mut rejected.projection.snapshot).cols = 0;
         assert!(!pipeline.prepare(gpu, &rejected, false));
         assert!(!engine.acknowledge_update(&rejected));
         engine.put_str("\x1b[2;4He\u{327}");
         assert!(!engine.acknowledge_update(&skipped));
         let current = engine.read_update(Instant::now());
         assert!(pipeline.prepare(gpu, &current, false));
-        assert!(pipeline.text.cell_overlays.count() > 0);
+        assert!(pipeline.text_for_test().cell_overlays.count() > 0);
         assert_fresh(
-            &pipeline.text,
+            pipeline.text_for_test(),
             gpu,
             &current.snapshot,
             &pipeline.viewport(),

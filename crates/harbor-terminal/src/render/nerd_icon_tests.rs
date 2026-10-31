@@ -4,7 +4,7 @@ mod native;
 
 use super::*;
 use crate::model::SelectionBounds;
-use crate::{Terminal, TerminalRenderPipeline, TerminalUpdate, UpdateDamage};
+use crate::{Terminal, TerminalProjection, TerminalRenderPipeline, UpdateDamage};
 use std::time::Instant;
 
 const FAMILY: &str = "FiraMono Nerd Font";
@@ -95,7 +95,7 @@ fn assert_geometry(layer: &Text, snap: &TerminalSnapshot, view: &RenderViewport)
 
 fn fresh_pixels(
     gpu: TerminalGpuAccess<'_>,
-    update: &TerminalUpdate,
+    update: &TerminalProjection,
     view: &RenderViewport,
     size: f32,
 ) -> Vec<u8> {

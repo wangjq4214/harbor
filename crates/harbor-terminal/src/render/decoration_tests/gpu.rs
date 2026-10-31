@@ -387,9 +387,9 @@ fn gpu_osc_palette_retained_layers_recolor_and_replay() {
     let updated = terminal.read_update(now);
     assert_eq!(first.snapshot.cells, updated.snapshot.cells);
     renderer.sync_palette(updated.appearance.palette());
-    assert!(renderer.background.is_dirty());
-    assert!(renderer.text.is_dirty());
-    assert!(renderer.decoration.is_dirty());
+    assert!(renderer.background_for_test().is_dirty());
+    assert!(renderer.text_for_test().is_dirty());
+    assert!(renderer.decoration_for_test().is_dirty());
     renderer.prepare(gpu, &updated, true);
     assert!(terminal.acknowledge_update(&updated));
     let after = raster_draw(&device, &queue, |pass| renderer.draw(pass));

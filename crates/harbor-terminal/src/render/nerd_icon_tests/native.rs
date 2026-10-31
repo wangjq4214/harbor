@@ -14,7 +14,7 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
     assert!(renderer.prepare(gpu, &initial, true));
     assert!(engine.acknowledge_update(&initial));
     let view = renderer.viewport();
-    let glyph = renderer.text.atlas.glyph_by_char(ICON).unwrap();
+    let glyph = renderer.text_for_test().atlas.glyph_by_char(ICON).unwrap();
     let (native_width, native_height) = (glyph.width as f32, glyph.height as f32);
     let native_left = glyph.bearing_x as f32;
     let native_top = metrics.ascent.ceil() - glyph.bearing_y as f32 - native_height;
@@ -36,9 +36,9 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
             && glyph.height as f32 <= metrics.line_height,
         "fixture must expose natural-size retention"
     );
-    assert_geometry(&renderer.text, &initial.snapshot, &view);
+    assert_geometry(renderer.text_for_test(), &initial.snapshot, &view);
     let natural = crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| {
-        renderer.text.draw(pass)
+        renderer.text_for_test().draw(pass)
     });
     capture("natural", &natural);
     assert_eq!(natural, fresh_pixels(gpu, &initial, &view, 20.0));
@@ -54,7 +54,7 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
 
     // All overlay-only transitions have empty PTY damage; source coordinates/data are unchanged.
     for kind in ["cursor", "selection", "preedit"] {
-        let mut update = initial.clone();
+        let mut update = initial.projection().clone();
         update.damage = UpdateDamage::Ranges(vec![]);
         match kind {
             "cursor" => std::sync::Arc::make_mut(&mut update.snapshot).cursor_x = 1,
@@ -74,9 +74,9 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
         }
         let cells = update.snapshot.cells.clone();
         assert!(renderer.prepare(gpu, &update, true));
-        assert_geometry(&renderer.text, &update.snapshot, &view);
+        assert_geometry(renderer.text_for_test(), &update.snapshot, &view);
         let blocked = crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| {
-            renderer.text.draw(pass)
+            renderer.text_for_test().draw(pass)
         });
         capture(kind, &blocked);
         // Even when preedit composites above the overhang, source-cell ink
@@ -99,12 +99,12 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
         }
         assert_eq!(blocked, fresh_pixels(gpu, &update, &view, 20.0), "{kind}");
         assert_eq!(update.snapshot.cells, cells);
-        let mut restored = initial.clone();
+        let mut restored = initial.projection().clone();
         restored.damage = UpdateDamage::Ranges(vec![]);
         assert!(renderer.prepare(gpu, &restored, false));
         assert_eq!(
             crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| renderer
-                .text
+                .text_for_test()
                 .draw(pass)),
             natural,
             "{kind} removal"
@@ -116,27 +116,27 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
 
     // Text and narrowed cell geometry do not crop or scale the native quad.
     for (block_col, cell_width) in [(1, view.cell_width), (2, view.cell_width), (2, 7.0)] {
-        let mut update = initial.clone();
+        let mut update = initial.projection().clone();
         std::sync::Arc::make_mut(&mut update.snapshot).cells[block_col].ch = 'Z';
         update.damage = UpdateDamage::FullUpload;
         let mut constrained = view;
         constrained.cell_width = cell_width;
         assert!(renderer.sync_viewport(constrained, false));
         assert!(renderer.prepare(gpu, &update, true));
-        assert_geometry(&renderer.text, &update.snapshot, &constrained);
+        assert_geometry(renderer.text_for_test(), &update.snapshot, &constrained);
         let actual = crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| {
-            renderer.text.draw(pass)
+            renderer.text_for_test().draw(pass)
         });
         assert_eq!(actual, fresh_pixels(gpu, &update, &constrained, 20.0));
         capture(&format!("text-{block_col}-width-{cell_width}"), &actual);
     }
     assert!(renderer.sync_viewport(view, false));
-    let mut edge = initial.clone();
+    let mut edge = initial.projection().clone();
     std::sync::Arc::make_mut(&mut edge.snapshot).cells[0] = Cell::default();
     std::sync::Arc::make_mut(&mut edge.snapshot).cells[11] = initial.snapshot.cells[0].clone();
     edge.damage = UpdateDamage::FullUpload;
     assert!(renderer.prepare(gpu, &edge, true));
-    let quad = renderer.text.build_range_vertices(
+    let quad = renderer.text_for_test().build_range_vertices(
         &DirtyRange {
             row: 0,
             start_col: 11,
@@ -157,19 +157,19 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
     );
     assert_eq!(
         crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| renderer
-            .text
+            .text_for_test()
             .draw(pass)),
         fresh_pixels(gpu, &edge, &view, 20.0)
     );
 
     // Synthetic edge placement above was not an engine mutation. Restore a
     // complete engine snapshot before applying genuine neighbor-only damage.
-    let mut reset = initial.clone();
+    let mut reset = initial.projection().clone();
     reset.damage = UpdateDamage::FullUpload;
     assert!(renderer.prepare(gpu, &reset, true));
     assert_eq!(
         crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| renderer
-            .text
+            .text_for_test()
             .draw(pass)),
         natural
     );
@@ -195,10 +195,10 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
             "{ranges:?}"
         );
         assert!(renderer.prepare(gpu, &update, true));
-        assert_geometry(&renderer.text, &update.snapshot, &view);
+        assert_geometry(renderer.text_for_test(), &update.snapshot, &view);
         assert_eq!(
             crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| renderer
-                .text
+                .text_for_test()
                 .draw(pass)),
             fresh_pixels(gpu, &update, &view, 20.0),
             "{stream:?}"
@@ -209,7 +209,7 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
         assert!(renderer.prepare(gpu, &restored, true));
         assert_eq!(
             crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| renderer
-                .text
+                .text_for_test()
                 .draw(pass)),
             natural
         );
@@ -218,7 +218,7 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
 
     // Source styling must not reinstate the old background-dependent restriction.
     for inverse in [false, true] {
-        let mut styled = initial.clone();
+        let mut styled = initial.projection().clone();
         styled.damage = UpdateDamage::FullUpload;
         std::sync::Arc::make_mut(&mut styled.snapshot).cells[0].bg = Color::Named(1);
         if inverse {
@@ -227,10 +227,10 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
                 .set(CellAttrs::INVERSE);
         }
         assert!(renderer.prepare(gpu, &styled, true));
-        assert_geometry(&renderer.text, &styled.snapshot, &view);
+        assert_geometry(renderer.text_for_test(), &styled.snapshot, &view);
         assert_eq!(
             crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| renderer
-                .text
+                .text_for_test()
                 .draw(pass)),
             fresh_pixels(gpu, &styled, &view, 20.0)
         );
@@ -242,7 +242,7 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
     let empty = crate::render::text::sequence_tests::read_draw(&device, &queue, |_| {});
     let clipped = crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| {
         pass.set_scissor_rect(16, 16, 12, 24);
-        renderer.text.draw(pass);
+        renderer.text_for_test().draw(pass);
     });
     let mut overflow_pixels = 0;
     for y in 0..128 {
@@ -292,33 +292,37 @@ fn nerd_icons_native_overflow_and_retained_overlay_neighbor_updates() {
         assert!(retained.prepare(gpu, &next, true));
         assert_eq!(
             crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| retained
-                .text
+                .text_for_test()
                 .draw(pass)),
             fresh_pixels(gpu, &next, &retained.viewport(), 20.0)
         );
         assert!(moving.acknowledge_update(&next));
     }
 
-    let mut update = initial.clone();
+    let mut update = initial.projection().clone();
     update.damage = UpdateDamage::Ranges(vec![]);
     assert!(renderer.sync_raster_scale(gpu, 1.5, &update).unwrap());
-    assert_geometry(&renderer.text, &update.snapshot, &view);
+    assert_geometry(renderer.text_for_test(), &update.snapshot, &view);
     let mut shifted = view;
     shifted.allocation_origin = (3.25, 2.5);
     shifted.cell_width *= 0.75;
     shifted.line_height = 8.0; // deliberately shorter than native ink
     assert!(renderer.sync_viewport(shifted, false));
     assert!(renderer.prepare(gpu, &update, true));
-    assert_geometry(&renderer.text, &update.snapshot, &shifted);
+    assert_geometry(renderer.text_for_test(), &update.snapshot, &shifted);
     assert_eq!(
         crate::render::text::sequence_tests::read_draw(&device, &queue, |pass| renderer
-            .text
+            .text_for_test()
             .draw(pass)),
         fresh_pixels(gpu, &update, &shifted, 20.0)
     );
     renderer.replace_fonts(gpu, fonts(16.0), &update).unwrap();
     assert!(renderer.prepare(gpu, &update, true));
-    assert_geometry(&renderer.text, &update.snapshot, &renderer.viewport());
+    assert_geometry(
+        renderer.text_for_test(),
+        &update.snapshot,
+        &renderer.viewport(),
+    );
     assert_eq!(update.snapshot.cells, initial.snapshot.cells);
     assert_eq!(engine.screen.selected_text(copy_bounds), copied);
     assert_eq!(update.snapshot.cell(0, 0).grid_width(), 1);

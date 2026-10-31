@@ -7,9 +7,31 @@ use crate::{
 ///
 /// `Ranges` are valid only relative to the most recently acknowledged update of this
 /// engine; the first update (and any update after an uncertain projection) is full.
+///
+/// Engine-issued data cannot be modified:
+/// ```compile_fail
+/// let mut terminal = harbor_terminal::Terminal::new_headless(2, 4);
+/// let mut update = terminal.read_update(std::time::Instant::now());
+/// update.damage = harbor_terminal::UpdateDamage::FullUpload;
+/// ```
+/// Detached candidates cannot consume live damage:
+/// ```compile_fail
+/// let mut terminal = harbor_terminal::Terminal::new_headless(2, 4);
+/// let candidate = terminal.read_update(std::time::Instant::now()).projection().clone();
+/// terminal.acknowledge_update(&candidate);
+/// ```
 #[derive(Clone, Debug)]
 pub struct TerminalUpdate {
-    /// Shared coherent projection. Detaching it creates a synthetic, non-acknowledgeable update.
+    pub(crate) projection: TerminalProjection,
+    /// Internal projection epoch; invalidation makes old acknowledgements stale.
+    pub(crate) projection_epoch: u64,
+    pub(crate) acknowledgement: Acknowledgement,
+}
+
+/// Renderer-neutral data, including detached configuration candidates and custom
+/// synthetic projections. Unlike an engine-issued update, this cannot be acknowledged.
+#[derive(Clone, Debug)]
+pub struct TerminalProjection {
     pub snapshot: std::sync::Arc<TerminalSnapshot>,
     pub damage: UpdateDamage,
     pub selection: Option<SelectionBounds>,
@@ -17,9 +39,21 @@ pub struct TerminalUpdate {
     pub appearance: TerminalAppearance,
     pub backdrop_available: bool,
     pub frame_demand: FrameDemand,
-    /// Internal projection epoch; invalidation makes old acknowledgements stale.
-    pub(crate) projection_epoch: u64,
-    pub(crate) acknowledgement: Acknowledgement,
+}
+
+/// Engine-issued projections are read-only; clone the projection explicitly for
+/// synthetic rendering. There is deliberately no DerefMut or public constructor.
+impl std::ops::Deref for TerminalUpdate {
+    type Target = TerminalProjection;
+    fn deref(&self) -> &Self::Target {
+        &self.projection
+    }
+}
+
+impl TerminalUpdate {
+    pub fn projection(&self) -> &TerminalProjection {
+        &self.projection
+    }
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Acknowledgement {

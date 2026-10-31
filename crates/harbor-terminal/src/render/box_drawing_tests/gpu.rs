@@ -198,7 +198,7 @@ fn gpu_retained_updates_resize_stride_palette_and_skipped_projection_match_rebui
         );
         assert!(terminal.acknowledge_update(&update));
     }
-    let snap = terminal.read_update(now).snapshot;
+    let snap = terminal.read_update(now).snapshot.clone();
     let blue = Palette::default()
         .resolve(Color::Named(4))
         .map(|v| (v * 255.0).round() as u8);
@@ -450,7 +450,7 @@ fn gpu_box_scalar_suppression_suffix_preedit_and_font_resource_replacement() {
     let mut renderer =
         TerminalRenderPipeline::new(gpu, (256, 256), fonts, metrics, &update).unwrap();
     renderer.prepare(gpu, &update, false);
-    let old = raster(&device, &queue, |p| renderer.boxes.draw(p));
+    let old = raster(&device, &queue, |p| renderer.boxes_for_test().draw(p));
     assert!(terminal.acknowledge_update(&update));
     let current = terminal.read_update(now);
     assert_eq!(current.damage, crate::model::UpdateDamage::Ranges(vec![]));
@@ -461,7 +461,7 @@ fn gpu_box_scalar_suppression_suffix_preedit_and_font_resource_replacement() {
     .unwrap();
     renderer.replace_fonts(gpu, fonts, &current).unwrap();
     assert_ne!(renderer.metrics().cell_width, metrics.cell_width);
-    let after = raster(&device, &queue, |p| renderer.boxes.draw(p));
+    let after = raster(&device, &queue, |p| renderer.boxes_for_test().draw(p));
     assert_ne!(
         old, after,
         "changed font-resource metrics reproject box pixels"
@@ -489,7 +489,7 @@ fn gpu_box_scalar_suppression_suffix_preedit_and_font_resource_replacement() {
         renderer.sync_raster_scale(gpu, scale, &current).unwrap();
         assert_eq!(
             after,
-            raster(&device, &queue, |p| renderer.boxes.draw(p)),
+            raster(&device, &queue, |p| renderer.boxes_for_test().draw(p)),
             "DPI-only keeps physical box metrics"
         );
     }
