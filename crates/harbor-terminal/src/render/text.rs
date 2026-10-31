@@ -227,19 +227,19 @@ fn suffix_paint_chars(suffix: &str) -> impl Iterator<Item = char> + '_ {
 }
 
 /// Scalars needed by both the initial atlas and incremental dirty uploads.
-fn paint_chars(cell: &Cell) -> Vec<char> {
-    if cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
-        return Vec::new();
-    }
-    let mut chars = Vec::new();
-    if cell.isolated_mark {
-        chars.push('\u{25cc}');
-    }
-    if cell.ch != ' ' && !super::box_drawing::is_box_drawing(cell.ch) {
-        chars.push(cell.ch);
-    }
-    chars.extend(suffix_paint_chars(&cell.suffix));
-    chars
+/// Borrow suffixes and yield directly into the collector without per-cell allocation.
+fn paint_chars(cell: &Cell) -> impl Iterator<Item = char> + '_ {
+    std::iter::once(cell)
+        .filter(|cell| !cell.wide_continuation && !cell.attrs.contains(CellAttrs::CONCEAL))
+        .flat_map(|cell| {
+            [
+                cell.isolated_mark.then_some('\u{25cc}'),
+                (cell.ch != ' ' && !super::box_drawing::is_box_drawing(cell.ch)).then_some(cell.ch),
+            ]
+            .into_iter()
+            .flatten()
+            .chain(suffix_paint_chars(&cell.suffix))
+        })
 }
 
 /// Diagnostic resource counters; never part of the retained terminal model.
@@ -989,6 +989,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ascii_and_space_paint_chars_preserve_base_and_suffix_rules() {
+        let mut cell = Cell {
+            ch: 'x',
+            ..Cell::default()
+        };
+        {
+            let mut chars = paint_chars(&cell);
+            assert_eq!(chars.next(), Some('x'));
+            assert_eq!(chars.next(), None);
+        }
+
+        cell.ch = ' ';
+        assert!(paint_chars(&cell).next().is_none());
+        cell.suffix.push('\u{301}');
+        assert_eq!(paint_chars(&cell).collect::<Vec<_>>(), ['\u{301}']);
+    }
+
+    #[test]
+    fn paint_chars_streams_long_suffix_without_truncation() {
+        let cell = Cell {
+            ch: 'e',
+            suffix: "\u{301}".repeat(128),
+            ..Cell::default()
+        };
+        let mut chars = paint_chars(&cell);
+        assert_eq!(chars.next(), Some('e'));
+        assert_eq!(chars.filter(|&ch| ch == '\u{301}').count(), 128);
+    }
+
+    #[test]
     fn procedural_box_collection_suppresses_only_the_base_and_retains_marks() {
         for scalar in 0x2500..=0x257f {
             let mut cell = Cell {
@@ -996,7 +1026,7 @@ mod tests {
                 ..Cell::default()
             };
             cell.suffix.push('\u{301}');
-            assert_eq!(paint_chars(&cell), ['\u{301}']);
+            assert_eq!(paint_chars(&cell).collect::<Vec<_>>(), ['\u{301}']);
             assert_eq!(cell.grid_width(), 1);
             assert_eq!(cell.raw_text(), format!("{}\u{301}", cell.ch));
         }
@@ -1011,19 +1041,22 @@ mod tests {
                 .into(),
             ..Cell::default()
         };
-        assert_eq!(paint_chars(&cell), ['e', '\u{301}', '\u{327}', '\u{200b}']);
+        assert_eq!(
+            paint_chars(&cell).collect::<Vec<_>>(),
+            ['e', '\u{301}', '\u{327}', '\u{200b}']
+        );
 
         cell.ch = '\u{301}';
         cell.isolated_mark = true;
         assert_eq!(
-            paint_chars(&cell),
+            paint_chars(&cell).collect::<Vec<_>>(),
             ['\u{25cc}', '\u{301}', '\u{301}', '\u{327}', '\u{200b}']
         );
         cell.wide_continuation = true;
-        assert!(paint_chars(&cell).is_empty());
+        assert!(paint_chars(&cell).next().is_none());
         cell.wide_continuation = false;
         cell.attrs.set(CellAttrs::CONCEAL);
-        assert!(paint_chars(&cell).is_empty());
+        assert!(paint_chars(&cell).next().is_none());
     }
 
     #[test]
@@ -1038,7 +1071,7 @@ mod tests {
         );
         heart.suffix.push('\u{fe0f}');
         heart.width = 2;
-        assert_eq!(paint_chars(&heart), ['♥']);
+        assert_eq!(paint_chars(&heart).collect::<Vec<_>>(), ['♥']);
         assert_eq!(heart.raw_text(), "♥️");
         let mut joined = Cell::default();
         joined.set(
@@ -1049,7 +1082,7 @@ mod tests {
             false,
         );
         joined.suffix.push_str("\u{200d}💻");
-        assert_eq!(paint_chars(&joined), ['👩']);
+        assert_eq!(paint_chars(&joined).collect::<Vec<_>>(), ['👩']);
         assert_eq!(joined.raw_text(), "👩‍💻");
     }
 
@@ -1081,8 +1114,11 @@ mod tests {
             false,
         );
         isolated.isolated_mark = true;
-        assert_eq!(paint_chars(&base), ['e', '\u{0301}']);
-        assert_eq!(paint_chars(&isolated), ['\u{25cc}', '\u{0301}']);
+        assert_eq!(paint_chars(&base).collect::<Vec<_>>(), ['e', '\u{0301}']);
+        assert_eq!(
+            paint_chars(&isolated).collect::<Vec<_>>(),
+            ['\u{25cc}', '\u{0301}']
+        );
         let mut verts = Vec::new();
         let cell_view = OverlayCell {
             x: 0.0,
