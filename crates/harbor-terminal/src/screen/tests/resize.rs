@@ -16,35 +16,38 @@ fn resize_rebuilds_dirty_all_true() {
 #[test]
 fn resize_clamps_margins_and_updates_tab_stops() {
     let mut screen = Screen::new(2, 12);
-    screen.cursor.margins.enabled = true;
-    screen.cursor.margins.left = 8;
-    screen.cursor.margins.right = 11;
+    screen.active.cursor.margins.enabled = true;
+    screen.active.cursor.margins.left = 8;
+    screen.active.cursor.margins.right = 11;
     screen.clear_tab_stops(3);
-    screen.pen_state.tab_stops.0[4] = true;
+    screen.active.pen_state.tab_stops.0[4] = true;
 
     let prepared = screen.prepare_resize(2, 6).unwrap();
     screen.commit_resize(prepared);
     assert_eq!(
-        (screen.cursor.margins.left, screen.cursor.margins.right),
+        (
+            screen.active.cursor.margins.left,
+            screen.active.cursor.margins.right
+        ),
         (5, 5)
     );
     assert_eq!(
-        screen.pen_state.tab_stops.0,
+        screen.active.pen_state.tab_stops.0,
         vec![false, false, false, false, true, false]
     );
 
     let prepared = screen.prepare_resize(2, 18).unwrap();
     screen.commit_resize(prepared);
     assert!(
-        screen.pen_state.tab_stops.0[4],
+        screen.active.pen_state.tab_stops.0[4],
         "existing tab stops must be preserved"
     );
     assert!(
-        screen.pen_state.tab_stops.0[8],
+        screen.active.pen_state.tab_stops.0[8],
         "new default tab stop at column 8"
     );
     assert!(
-        screen.pen_state.tab_stops.0[16],
+        screen.active.pen_state.tab_stops.0[16],
         "new default tab stop at column 16"
     );
 }
@@ -55,46 +58,46 @@ fn resize_preserves_saved_cursor() {
     let mut screen = Screen::new(5, 10);
     screen.save_cursor();
     // Move cursor away and set SGR.
-    screen.cursor.cursor.y = 4;
-    screen.cursor.cursor.x = 7;
-    screen.pen_state.pen.fg = Color::Named(1);
-    screen.pen_state.pen.bg = Color::Named(2);
-    screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
+    screen.active.cursor.cursor.y = 4;
+    screen.active.cursor.cursor.x = 7;
+    screen.active.pen_state.pen.fg = Color::Named(1);
+    screen.active.pen_state.pen.bg = Color::Named(2);
+    screen.active.pen_state.pen.attrs.set(CellAttrs::BOLD);
     screen.resize(3, 5); // smaller — saved cursor must be clamped
     screen.restore_cursor();
     assert_eq!(
-        screen.cursor.cursor.x, 4,
+        screen.active.cursor.cursor.x, 4,
         "invalidated saved cursor leaves the clamped live cursor in place"
     );
     assert_eq!(
-        screen.cursor.cursor.y, 2,
+        screen.active.cursor.cursor.y, 2,
         "invalidated saved cursor leaves the clamped live cursor in place"
     );
-    assert_eq!(screen.pen_state.pen.fg, Color::Default);
-    assert_eq!(screen.pen_state.pen.bg, Color::Default);
-    assert_eq!(screen.pen_state.pen.attrs, CellAttrs::default());
+    assert_eq!(screen.active.pen_state.pen.fg, Color::Default);
+    assert_eq!(screen.active.pen_state.pen.bg, Color::Default);
+    assert_eq!(screen.active.pen_state.pen.attrs, CellAttrs::default());
 
     // Save at non-home, resize larger, restore → original position preserved.
     let mut screen = Screen::new(2, 5);
-    screen.cursor.cursor.y = 1;
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 3;
     screen.save_cursor();
     screen.resize(10, 20); // larger — no clamping needed
     screen.restore_cursor();
-    assert_eq!(screen.cursor.cursor.x, 3, "original x preserved");
-    assert_eq!(screen.cursor.cursor.y, 1, "original y preserved");
+    assert_eq!(screen.active.cursor.cursor.x, 3, "original x preserved");
+    assert_eq!(screen.active.cursor.cursor.y, 1, "original y preserved");
 }
 
 #[test]
 fn resize_preserves_live_and_saved_cursor_in_unwritten_suffix() {
     let mut screen = Screen::new(1, 4);
     screen.write_char('a');
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.x = 3;
     screen.save_cursor();
 
     screen.resize(1, 6);
     assert_eq!(screen.cursor_x(), 3);
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.restore_cursor();
     assert_eq!(screen.cursor_x(), 3);
     screen.write_char('b');
@@ -201,8 +204,8 @@ fn partial_erase_rebases_following_soft_wrap_for_copy_and_resize() {
     for ch in "abcde".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.y = 0;
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.x = 2;
     screen.erase_line(0);
 
     assert!(screen.content_projection().is_ok());
@@ -227,11 +230,11 @@ fn resize_refreshes_clamped_saved_cursor_anchor_before_later_edits() {
         screen.write_char(ch);
     }
     screen.finish_anchor_mutations(None).unwrap();
-    screen.cursor.cursor.x = 5;
+    screen.active.cursor.cursor.x = 5;
     screen.save_cursor();
 
     screen.resize(1, 4);
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.delete_chars(1);
     screen.finish_anchor_mutations(None).unwrap();
     screen.restore_cursor();
@@ -262,11 +265,11 @@ fn should_clear_pending_wrap_for_line_controls_resize_and_edits() {
 #[test]
 fn should_project_pending_wrap_on_resize_and_preserve_surviving_marker() {
     let mut screen = screen_with_pending_wrap();
-    screen.normal.set_wrapped(1, true);
+    screen.active.normal.set_wrapped(1, true);
 
     screen.resize(2, 6);
 
-    assert!(screen.cursor.modes.pending_wrap);
+    assert!(screen.active.cursor.modes.pending_wrap);
     assert!(screen.is_wrapped(1));
 }
 
@@ -326,14 +329,15 @@ fn prepared_resize_retains_only_reachable_hyperlinks() {
     screen.close_hyperlink();
     screen.open_hyperlink("https://stale.example".into(), None);
     screen.close_hyperlink();
-    assert_eq!(screen.hyperlinks.len(), 2);
+    assert_eq!(screen.active.hyperlinks.len(), 2);
 
     let prepared = screen.prepare_resize(2, 4).unwrap();
     screen.commit_resize(prepared);
 
-    assert_eq!(screen.hyperlinks.len(), 1);
+    assert_eq!(screen.active.hyperlinks.len(), 1);
     assert_eq!(
         screen
+            .active
             .hyperlinks
             .get(retained_id)
             .map(|link| link.uri.as_str()),
@@ -344,8 +348,8 @@ fn prepared_resize_retains_only_reachable_hyperlinks() {
 #[test]
 fn should_preserve_wrapped_flags_when_resize_shrinks_rows() {
     let mut screen = Screen::new(4, 6);
-    screen.normal.set_wrapped(1, true);
-    screen.normal.set_wrapped(3, true);
+    screen.active.normal.set_wrapped(1, true);
+    screen.active.normal.set_wrapped(3, true);
     // Act — shrink to 2 rows: rows 0..1 survive, rows 2..3 are clipped.
     screen.resize(2, 6);
     // Assert
@@ -362,10 +366,11 @@ fn saved_cursor_anchor_adjusts_for_insert_before_saved_position() {
     for ch in "abcdef".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.x = 4;
     screen.save_cursor();
     assert!(
         screen
+            .active
             .cursor
             .cursor
             .saved
@@ -376,8 +381,8 @@ fn saved_cursor_anchor_adjusts_for_insert_before_saved_position() {
     );
 
     let before = screen.content_projection().unwrap();
-    screen.cursor.cursor.x = 1;
-    screen.cursor.modes.insert = true;
+    screen.active.cursor.cursor.x = 1;
+    screen.active.cursor.modes.insert = true;
     screen.write_char('X');
     screen
         .finish_anchor_mutations(Some(&before))
@@ -399,6 +404,7 @@ fn pending_wrap_saved_cursor_uses_after_final_atom_anchor() {
     screen.save_cursor();
     let projection = screen.content_projection().expect("valid projection");
     let anchor = screen
+        .active
         .cursor
         .cursor
         .saved
@@ -456,26 +462,38 @@ fn resize_saved_pending_wrap_follows_current_physical_row() {
 #[test]
 fn review_anchor_tracks_retained_top_and_falls_back_after_eviction() {
     let mut screen = Screen::new(2, 2);
-    screen.normal.scroll_up_full_screen(2, Cell::default());
+    screen
+        .active
+        .normal
+        .scroll_up_full_screen(2, Cell::default());
     screen.scroll_up(1);
-    let retained_anchor = screen.review_anchor.expect("review anchor");
+    let retained_anchor = screen.active.review_anchor.expect("review anchor");
     let before = screen.content_projection().unwrap();
 
-    screen.normal.scroll_up_full_screen(1, Cell::default());
+    screen
+        .active
+        .normal
+        .scroll_up_full_screen(1, Cell::default());
     screen
         .finish_anchor_mutations(Some(&before))
         .expect("valid retained projection");
-    assert_eq!(screen.review_anchor, Some(retained_anchor));
+    assert_eq!(screen.active.review_anchor, Some(retained_anchor));
     assert_eq!(screen.view_offset(), 2);
 
     let before_eviction = screen.content_projection().unwrap();
-    for _ in 0..=screen.normal.max_scrollback() {
-        screen.normal.scroll_up_full_screen(1, Cell::default());
+    for _ in 0..=screen.active.normal.max_scrollback() {
+        screen
+            .active
+            .normal
+            .scroll_up_full_screen(1, Cell::default());
     }
     let (_, projection) = screen
         .finish_anchor_mutations(Some(&before_eviction))
         .expect("valid projection after eviction");
-    let fallback = screen.review_anchor.expect("oldest retained fallback");
+    let fallback = screen
+        .active
+        .review_anchor
+        .expect("oldest retained fallback");
     assert_ne!(fallback.line_id, retained_anchor.line_id);
     assert!(projection.resolve_selection(fallback).is_some());
     assert_eq!(screen.view_offset(), screen.scroll_count());
@@ -484,13 +502,13 @@ fn review_anchor_tracks_retained_top_and_falls_back_after_eviction() {
 #[test]
 fn saved_cursor_anchor_reprojects_after_identity_preserving_row_movement() {
     let mut screen = Screen::new(3, 4);
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.y = 1;
     screen.write_char('x');
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.save_cursor();
     let before = screen.content_projection().unwrap();
 
-    screen.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.y = 0;
     screen.insert_lines(1);
     screen
         .finish_anchor_mutations(Some(&before))
@@ -504,7 +522,7 @@ fn saved_cursor_anchor_reprojects_after_identity_preserving_row_movement() {
 #[test]
 fn partial_soft_line_eviction_preserves_absolute_surviving_anchor_without_aliasing() {
     let mut screen = Screen::new(2, 1);
-    let capacity = screen.normal.max_scrollback() + screen.rows();
+    let capacity = screen.active.normal.max_scrollback() + screen.rows();
     for _ in 0..capacity {
         screen.write_char('x');
     }
@@ -564,10 +582,10 @@ fn preparation_applies_pending_saved_cursor_mutations_without_committing_them() 
     for ch in "abcdef".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.x = 4;
     screen.save_cursor();
-    screen.cursor.cursor.x = 1;
-    screen.cursor.modes.insert = true;
+    screen.active.cursor.cursor.x = 1;
+    screen.active.cursor.modes.insert = true;
     screen.write_char('X');
 
     let prepared = screen
@@ -584,7 +602,7 @@ fn preparation_applies_pending_saved_cursor_mutations_without_committing_them() 
         )
     );
     assert_eq!(
-        screen.cursor.cursor.saved.as_ref().unwrap().cursor_x,
+        screen.active.cursor.cursor.saved.as_ref().unwrap().cursor_x,
         4,
         "detached preparation must not commit the adjusted source coordinate"
     );
@@ -597,7 +615,7 @@ fn prepares_complete_history_sequence_and_review_anchor() {
         screen.write_char(ch);
     }
     assert_eq!(screen.scroll_count(), 1);
-    screen.normal.set_view_offset(1);
+    screen.active.normal.set_view_offset(1);
     let before_offset = screen.view_offset();
 
     let prepared = screen
@@ -615,8 +633,11 @@ fn prepares_complete_history_sequence_and_review_anchor() {
 #[test]
 fn prepares_height_growth_with_review_clamped_to_new_live_top() {
     let mut screen = Screen::new(2, 2);
-    screen.normal.scroll_up_full_screen(2, Cell::default());
-    screen.normal.set_view_offset(1);
+    screen
+        .active
+        .normal
+        .scroll_up_full_screen(2, Cell::default());
+    screen.active.normal.set_view_offset(1);
     let before = screen.terminal_snapshot();
 
     let prepared = screen
@@ -637,14 +658,14 @@ fn prepares_height_growth_with_review_clamped_to_new_live_top() {
 fn narrowing_with_trailing_unwritten_rows_does_not_push_to_scrollback() {
     let mut screen = Screen::new(24, 80);
     for line in 0..7 {
-        screen.cursor.cursor.y = line;
-        screen.cursor.cursor.x = 0;
+        screen.active.cursor.cursor.y = line;
+        screen.active.cursor.cursor.x = 0;
         for ch in "123456789012345678901234567890".chars() {
             screen.write_char(ch);
         }
     }
-    screen.cursor.cursor.y = 7;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 7;
+    screen.active.cursor.cursor.x = 0;
     assert_eq!(screen.scroll_count(), 0);
 
     let prepared = screen
@@ -659,11 +680,11 @@ fn narrowing_with_trailing_unwritten_rows_does_not_push_to_scrollback() {
 
     screen.resize(24, 20);
     assert_eq!(screen.scroll_count(), 0);
-    assert_eq!(screen.normal.cell(0, 0).ch, '1');
+    assert_eq!(screen.active.normal.cell(0, 0).ch, '1');
 
     screen.resize(24, 80);
     assert_eq!(screen.scroll_count(), 0);
-    assert_eq!(screen.normal.cell(0, 0).ch, '1');
+    assert_eq!(screen.active.normal.cell(0, 0).ch, '1');
 }
 
 #[test]
@@ -674,21 +695,21 @@ fn narrowing_past_viewport_into_scrollback_and_widening_restores_clean_history()
     // Line 1: "(c) Microsoft Corporation. All rights reserved." (47 chars)
     // Line 2: "" (empty)
     // Line 3: "C:\Users\test>" (14 chars)
-    screen.cursor.cursor.y = 0;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.x = 0;
     for ch in "Microsoft Windows [Version 10.0.22621.4317]".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.y = 1;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 0;
     for ch in "(c) Microsoft Corporation. All rights reserved.".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.y = 2;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 0;
 
-    screen.cursor.cursor.y = 3;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 3;
+    screen.active.cursor.cursor.x = 0;
     for ch in "C:\\Users\\test>".chars() {
         screen.write_char(ch);
     }
@@ -709,7 +730,7 @@ fn narrowing_past_viewport_into_scrollback_and_widening_restores_clean_history()
             "temporary reflow rows should return to the viewport after widening"
         );
     }
-    assert_eq!(screen.cursor.cursor.y, 3);
+    assert_eq!(screen.active.cursor.cursor.y, 3);
     assert!(
         screen
             .row_text(0)
@@ -752,7 +773,7 @@ fn narrow_output_then_widen_restores_cursor_above_trailing_blank_rows() {
     assert_eq!(screen.row_text(22).trim(), "");
     assert_eq!(screen.row_text(23).trim(), "");
 
-    let preserved = crate::logical_content::decode_lines(&screen.normal)
+    let preserved = crate::logical_content::decode_lines(&screen.active.normal)
         .expect("reflowed profile output should remain decodable")
         .into_iter()
         .filter(|logical_line| {
@@ -775,21 +796,21 @@ fn narrowing_past_viewport_into_scrollback_and_widening_restores_chinese_windows
     // Line 1: "(c) Microsoft Corporation。保留所有权利。"
     // Line 2: "" (empty)
     // Line 3: "C:\Users\Administrator>"
-    screen.cursor.cursor.y = 0;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.x = 0;
     for ch in "Microsoft Windows [版本 10.0.22621.4317]".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.y = 1;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 0;
     for ch in "(c) Microsoft Corporation。保留所有权利。".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.y = 2;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 0;
 
-    screen.cursor.cursor.y = 3;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 3;
+    screen.active.cursor.cursor.x = 0;
     for ch in "C:\\Users\\Administrator>".chars() {
         screen.write_char(ch);
     }
@@ -813,8 +834,8 @@ fn narrowing_past_viewport_into_scrollback_and_widening_restores_chinese_windows
         0,
         "scrollback should return to 0 after returning to 24x80"
     );
-    assert_eq!(screen.cursor.cursor.y, 3);
-    assert_eq!(screen.cursor.cursor.x, 23);
+    assert_eq!(screen.active.cursor.cursor.y, 3);
+    assert_eq!(screen.active.cursor.cursor.x, 23);
     assert!(
         screen
             .row_text(0)

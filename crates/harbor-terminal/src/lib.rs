@@ -71,7 +71,7 @@ pub use render::{
 };
 pub use screen::{
     AltScreenAction, Cell, CellAttrs, CharacterProtection, CursorShape, CursorStyleArg, Screen,
-    ScreenReader, SelectionBounds,
+    SelectionBounds,
 };
 pub use selection_model::{
     AutoScroll, GenPos, SelectionGranularity, SelectionModel, SelectionOutcome, SelectionRange,

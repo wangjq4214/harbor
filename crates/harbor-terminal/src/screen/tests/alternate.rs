@@ -19,8 +19,8 @@ fn alt_screen_restores_all_state_groups() {
     screen.set_character_protection(crate::model::CharacterProtection::Protected); // protected
     screen.set_sgr_slice(&[Some(1), Some(31), Some(42)]);
     screen.write_char('X'); // set last_char (advances cursor to 1)
-    screen.cursor.cursor.x = 5;
-    screen.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 5;
+    screen.active.cursor.cursor.y = 2;
     screen.set_tab_stop();
     screen.save_cursor();
     screen.designate_g0(b'0');
@@ -30,8 +30,8 @@ fn alt_screen_restores_all_state_groups() {
     screen.enter_alt(true);
 
     // Mutate every group in alt.
-    screen.cursor.cursor.x = 0;
-    screen.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 0;
     screen.set_private_mode(69, false);
     screen.set_private_mode(1, false);
     screen.set_private_mode(66, false);
@@ -54,70 +54,99 @@ fn alt_screen_restores_all_state_groups() {
 
     // Assert all state groups restored.
     // CursorState
-    assert_eq!(screen.cursor.cursor.x, 5, "cursor.x restored");
-    assert_eq!(screen.cursor.cursor.y, 2, "cursor.y restored");
+    assert_eq!(screen.active.cursor.cursor.x, 5, "cursor.x restored");
+    assert_eq!(screen.active.cursor.cursor.y, 2, "cursor.y restored");
     assert_eq!(
-        screen.cursor.cursor.shape,
+        screen.active.cursor.cursor.shape,
         CursorShape::Block,
         "cursor shape restored"
     );
-    assert!(!screen.cursor.cursor.blink, "cursor blink restored");
-    assert!(!screen.cursor.cursor.visible, "cursor visible restored");
+    assert!(!screen.active.cursor.cursor.blink, "cursor blink restored");
+    assert!(
+        !screen.active.cursor.cursor.visible,
+        "cursor visible restored"
+    );
     // Pen
     assert!(
-        screen.pen_state.pen.attrs.contains(CellAttrs::BOLD),
+        screen.active.pen_state.pen.attrs.contains(CellAttrs::BOLD),
         "SGR bold restored"
     );
-    assert_eq!(screen.pen_state.pen.fg, Color::Named(1), "SGR fg restored");
-    assert_eq!(screen.pen_state.pen.bg, Color::Named(2), "SGR bg restored");
-    assert!(screen.pen_state.pen.protected, "pen protected restored");
+    assert_eq!(
+        screen.active.pen_state.pen.fg,
+        Color::Named(1),
+        "SGR fg restored"
+    );
+    assert_eq!(
+        screen.active.pen_state.pen.bg,
+        Color::Named(2),
+        "SGR bg restored"
+    );
+    assert!(
+        screen.active.pen_state.pen.protected,
+        "pen protected restored"
+    );
     // ScrollRegion
     assert_eq!(
-        screen.cursor.scroll_region.top, 1,
+        screen.active.cursor.scroll_region.top, 1,
         "scroll region top restored"
     );
     assert_eq!(
-        screen.cursor.scroll_region.bottom, 3,
+        screen.active.cursor.scroll_region.bottom, 3,
         "scroll region bottom restored"
     );
     // Margins
-    assert!(screen.cursor.margins.enabled, "margin mode restored");
-    assert_eq!(screen.cursor.margins.left, 2, "margin left restored");
-    assert_eq!(screen.cursor.margins.right, 9, "margin right restored");
+    assert!(screen.active.cursor.margins.enabled, "margin mode restored");
+    assert_eq!(screen.active.cursor.margins.left, 2, "margin left restored");
+    assert_eq!(
+        screen.active.cursor.margins.right, 9,
+        "margin right restored"
+    );
     // TerminalModes
-    assert!(!screen.cursor.modes.autowrap, "autowrap restored");
-    assert!(!screen.cursor.modes.pending_wrap, "pending wrap restored");
-    assert!(screen.cursor.modes.origin, "origin mode restored");
-    assert!(screen.cursor.modes.insert, "insert mode restored");
-    assert!(screen.cursor.modes.line_feed, "line feed mode restored");
+    assert!(!screen.active.cursor.modes.autowrap, "autowrap restored");
     assert!(
-        screen.cursor.modes.application_cursor,
+        !screen.active.cursor.modes.pending_wrap,
+        "pending wrap restored"
+    );
+    assert!(screen.active.cursor.modes.origin, "origin mode restored");
+    assert!(screen.active.cursor.modes.insert, "insert mode restored");
+    assert!(
+        screen.active.cursor.modes.line_feed,
+        "line feed mode restored"
+    );
+    assert!(
+        screen.active.cursor.modes.application_cursor,
         "application cursor restored"
     );
     assert!(
-        screen.cursor.modes.application_keypad,
+        screen.active.cursor.modes.application_keypad,
         "application keypad restored"
     );
     // TabStops
-    assert!(screen.pen_state.tab_stops.0[5], "tab stop restored");
+    assert!(screen.active.pen_state.tab_stops.0[5], "tab stop restored");
     // CharacterSets
     assert_eq!(
-        screen.pen_state.charsets.last_char,
+        screen.active.pen_state.charsets.last_char,
         Some('X'),
         "last_char restored"
     );
-    assert_eq!(screen.pen_state.charsets.g0, b'0', "g0 charset restored");
-    assert_eq!(screen.pen_state.charsets.g1, b'B', "g1 charset restored");
     assert_eq!(
-        screen.pen_state.charsets.active, 1,
+        screen.active.pen_state.charsets.g0, b'0',
+        "g0 charset restored"
+    );
+    assert_eq!(
+        screen.active.pen_state.charsets.g1, b'B',
+        "g1 charset restored"
+    );
+    assert_eq!(
+        screen.active.pen_state.charsets.active, 1,
         "active charset restored"
     );
     // Move cursor away, then restore_cursor proves saved cursor survived alt
-    screen.cursor.cursor.x = 0;
-    screen.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 0;
     screen.restore_cursor();
-    assert_eq!(screen.cursor.cursor.x, 5, "saved cursor x restored");
-    assert_eq!(screen.cursor.cursor.y, 2, "saved cursor y restored");
+    assert_eq!(screen.active.cursor.cursor.x, 5, "saved cursor x restored");
+    assert_eq!(screen.active.cursor.cursor.y, 2, "saved cursor y restored");
 }
 
 #[test]
@@ -350,24 +379,25 @@ fn alt_screen_park_restore_keeps_snapshot_rows_and_advances_damage_revisions() {
     let mut screen = Screen::new(2, 8);
     screen.write_char('P');
     let primary_snapshot = screen.terminal_snapshot();
-    let primary_generation = screen.normal.content_generation();
-    let primary_revision = screen.normal.stamp();
+    let primary_generation = screen.active.normal.content_generation();
+    let primary_revision = screen.active.normal.stamp();
 
     screen.enter_alt(false);
-    assert_ne!(screen.normal.stamp(), primary_revision);
+    assert_ne!(screen.active.normal.stamp(), primary_revision);
     screen.write_char('A');
     let alternate_snapshot = screen.terminal_snapshot();
-    let alternate_generation = screen.normal.content_generation();
+    let alternate_generation = screen.active.normal.content_generation();
     screen.clear_dirty();
-    let alternate_revision = screen.normal.stamp();
+    let alternate_revision = screen.active.normal.stamp();
 
     screen.exit_alt();
-    let primary_after_exit = screen.normal.stamp();
-    assert_eq!(screen.normal.content_generation(), primary_generation);
+    let primary_after_exit = screen.active.normal.stamp();
+    assert_eq!(
+        screen.active.normal.content_generation(),
+        primary_generation
+    );
     assert_ne!(primary_after_exit, primary_revision);
     let parked = screen.parked_alt.as_deref().unwrap();
-    assert!(parked.saved_primary.is_none());
-    assert!(parked.parked_alt.is_none());
     assert_eq!(parked.normal.stamp(), alternate_revision);
     assert_eq!(
         primary_snapshot
@@ -379,18 +409,14 @@ fn alt_screen_park_restore_keeps_snapshot_rows_and_advances_damage_revisions() {
     let before_reentry = screen.mutation_revisions();
     screen.enter_alt(false);
     let after_reentry = screen.mutation_revisions();
-    assert!(
-        screen
-            .saved_primary
-            .as_deref()
-            .unwrap()
-            .parked_alt
-            .is_none()
+    assert!(screen.parked_alt.is_none()); // saved primary and parked alternate are leaf types
+    assert_eq!(
+        screen.active.normal.content_generation(),
+        alternate_generation
     );
-    assert_eq!(screen.normal.content_generation(), alternate_generation);
-    assert_ne!(screen.normal.stamp(), alternate_revision);
-    assert_ne!(before_reentry[2], after_reentry[2]); // session colors
-    assert_ne!(before_reentry[3], after_reentry[3]); // synchronized output
+    assert_ne!(screen.active.normal.stamp(), alternate_revision);
+    assert_eq!(before_reentry[2], after_reentry[2]); // session colors
+    assert_eq!(before_reentry[3], after_reentry[3]); // synchronized output
     assert_eq!(
         alternate_snapshot
             .cells
@@ -401,12 +427,15 @@ fn alt_screen_park_restore_keeps_snapshot_rows_and_advances_damage_revisions() {
 
     screen.exit_alt();
     let after_second_exit = screen.mutation_revisions();
-    assert_ne!(screen.normal.stamp(), primary_after_exit);
-    assert_ne!(after_reentry[2], after_second_exit[2]);
-    assert_ne!(after_reentry[3], after_second_exit[3]);
+    assert_ne!(screen.active.normal.stamp(), primary_after_exit);
+    assert_eq!(after_reentry[2], after_second_exit[2]);
+    assert_eq!(after_reentry[3], after_second_exit[3]);
     assert_eq!(screen.cell(0, 0).ch, 'P');
     screen.enter_alt(true);
-    assert_ne!(screen.normal.content_generation(), alternate_generation);
+    assert_ne!(
+        screen.active.normal.content_generation(),
+        alternate_generation
+    );
     assert_eq!(screen.cell(0, 0).ch, ' ');
     // The cleared buffer's already-issued snapshot still owns its rows.
     assert_eq!(alternate_snapshot.cells[0].ch, 'A');
@@ -423,11 +452,11 @@ fn alt_screen_exit_reconciles_saved_cursor_before_parking() {
         screen.write_char(ch);
     }
     screen.finish_anchor_mutations(None).unwrap();
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.x = 4;
     screen.save_cursor();
 
-    screen.cursor.cursor.x = 1;
-    screen.cursor.modes.insert = true;
+    screen.active.cursor.cursor.x = 1;
+    screen.active.cursor.modes.insert = true;
     screen.write_char('X');
     screen.exit_alt();
     screen.enter_alt(false);
@@ -460,8 +489,6 @@ fn alt_screen_reentry_commits_deferred_primary_resize_before_parking() {
     assert!(screen.deferred_primary_resize.is_empty());
     let parked = screen.parked_alt.as_deref().unwrap();
     assert_eq!((parked.rows(), parked.cols()), (3, 8));
-    assert!(parked.saved_primary.is_none());
-    assert!(parked.deferred_primary_resize.is_empty());
 
     screen.enter_alt(false);
     assert_eq!((screen.rows(), screen.cols()), (3, 8));

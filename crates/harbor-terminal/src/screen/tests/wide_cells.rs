@@ -53,7 +53,7 @@ fn selected_text_copies_wide_glyph_once() {
 #[test]
 fn selected_text_omits_generated_wide_edge_padding() {
     let mut screen = Screen::new(2, 3);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('界');
 
     let result = screen.selected_text(SelectionBounds {
@@ -69,7 +69,7 @@ fn selected_text_omits_generated_wide_edge_padding() {
 #[test]
 fn selected_text_fails_closed_for_malformed_wide_state() {
     let mut screen = Screen::new(1, 2);
-    screen.normal.write_meaningful_cell(
+    screen.active.normal.write_meaningful_cell(
         0,
         0,
         Cell {
@@ -106,14 +106,14 @@ fn selective_erase_preserves_protected_combined_wide_unit() {
 fn should_preserve_wide_pairs_when_selective_erase_hits_protected_cells() {
     // Arrange — protect both halves of a wide glyph, including when the selection starts on its base.
     let mut screen = Screen::new(1, 6);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     screen.cell_mut(0, 2).protected = true;
     screen.cell_mut(0, 3).protected = true;
     screen.clear_dirty();
 
     // Act — selective line erase touches the protected glyph through its base.
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.selective_erase_line(2);
 
     // Assert — protection applies to the complete glyph and the invariant remains intact.
@@ -127,13 +127,13 @@ fn should_preserve_wide_pairs_when_selective_erase_hits_protected_cells() {
 fn should_move_complete_wide_pairs_when_lines_and_scroll_regions_change() {
     // Arrange — constrain vertical and horizontal movement to active margins.
     let mut screen = Screen::new(4, 8);
-    screen.cursor.margins.enabled = true;
-    screen.cursor.margins.left = 2;
-    screen.cursor.margins.right = 5;
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 3;
-    screen.cursor.cursor.x = 3;
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.margins.enabled = true;
+    screen.active.cursor.margins.left = 2;
+    screen.active.cursor.margins.right = 5;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 3;
+    screen.active.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 1;
     screen.write_char('中');
     screen.clear_dirty();
 
@@ -143,12 +143,12 @@ fn should_move_complete_wide_pairs_when_lines_and_scroll_regions_change() {
     assert_eq!(screen.cell(2, 3).ch, '中');
     assert!(screen.cell(2, 4).wide_continuation);
 
-    screen.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.y = 2;
     screen.delete_lines(1);
     assert_wide_cell_invariant(&screen);
 
-    screen.cursor.cursor.y = 1;
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 3;
     screen.write_char('中');
     screen.scroll_up_region(1);
     screen.scroll_down_region(1);
@@ -162,14 +162,14 @@ fn should_normalize_wide_pairs_when_dec_rectangles_touch_or_overlap() {
     let mut parser = TerminalParser::default();
 
     let mut screen = Screen::new(2, 8);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     parser.put_bytes(&mut screen, b"\x1b[1;4;1;4$z");
     assert_eq!(screen.cell(0, 2).ch, ' ');
     assert_eq!(screen.cell(0, 3).ch, ' ');
 
     let mut screen = Screen::new(2, 8);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     screen.cell_mut(0, 2).protected = true;
     screen.cell_mut(0, 3).protected = true;
@@ -178,14 +178,14 @@ fn should_normalize_wide_pairs_when_dec_rectangles_touch_or_overlap() {
     assert!(screen.cell(0, 3).wide_continuation);
 
     let mut screen = Screen::new(2, 8);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     parser.put_bytes(&mut screen, b"\x1b[88;1;4;1;4$x");
     assert_eq!(screen.row_text(0), "  XX    ");
     assert_wide_cell_invariant(&screen);
 
     let mut screen = Screen::new(2, 8);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     parser.put_bytes(&mut screen, b"\x1b[1;4;1;4;1$r");
     assert!(screen.cell(0, 2).attrs.contains(CellAttrs::BOLD));
@@ -196,7 +196,7 @@ fn should_normalize_wide_pairs_when_dec_rectangles_touch_or_overlap() {
 
     // A partial source copies blanks rather than creating a destination fragment.
     let mut screen = Screen::new(2, 8);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     parser.put_bytes(&mut screen, b"\x1b[1;4;1;4;;2;1$v");
     assert_eq!(screen.cell(1, 0).ch, ' ');
@@ -208,7 +208,7 @@ fn should_normalize_wide_pairs_when_dec_rectangles_touch_or_overlap() {
     assert_wide_cell_invariant(&screen);
 
     let mut screen = Screen::new(1, 8);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     parser.put_bytes(&mut screen, b"\x1b[1;4;1;4;;1;1$v");
     assert_eq!(screen.cell(0, 0).ch, ' ');
@@ -219,13 +219,13 @@ fn should_normalize_wide_pairs_when_dec_rectangles_touch_or_overlap() {
 #[test]
 fn delete_chars_from_continuation_preserves_shift_source() {
     let mut screen = Screen::new(1, 8);
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.write_char('a');
-    screen.cursor.cursor.x = 1;
+    screen.active.cursor.cursor.x = 1;
     screen.write_char('中');
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.x = 3;
     screen.write_char('b');
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.clear_dirty();
 
     screen.delete_chars(1);
@@ -241,13 +241,13 @@ fn delete_chars_from_continuation_preserves_shift_source() {
 #[test]
 fn insert_chars_from_continuation_preserves_complete_glyph() {
     let mut screen = Screen::new(1, 8);
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.write_char('a');
-    screen.cursor.cursor.x = 1;
+    screen.active.cursor.cursor.x = 1;
     screen.write_char('中');
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.x = 3;
     screen.write_char('b');
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
 
     screen.insert_chars(1);
 
@@ -262,14 +262,14 @@ fn insert_chars_from_continuation_preserves_complete_glyph() {
 #[test]
 fn insert_mode_write_on_continuation_preserves_shifted_glyph() {
     let mut screen = Screen::new(1, 8);
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.write_char('a');
-    screen.cursor.cursor.x = 1;
+    screen.active.cursor.cursor.x = 1;
     screen.write_char('中');
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.x = 3;
     screen.write_char('b');
-    screen.cursor.modes.insert = true;
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.modes.insert = true;
+    screen.active.cursor.cursor.x = 2;
 
     screen.write_char('x');
 
@@ -287,13 +287,13 @@ fn irm_off_overwrites_without_shift() {
     for ch in "abcdef".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.x = 2;
-    screen.cursor.modes.pending_wrap = false;
+    screen.active.cursor.cursor.x = 2;
+    screen.active.cursor.modes.pending_wrap = false;
 
     screen.write_char('X');
 
     assert_eq!(screen.row_text(0), "abXdef");
-    assert_eq!(screen.cursor.cursor.x, 3);
+    assert_eq!(screen.active.cursor.cursor.x, 3);
 }
 
 #[test]
@@ -302,8 +302,8 @@ fn irm_wide_insert_shifts_and_preserves_pairing() {
     for ch in "abcd".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.x = 2;
-    screen.cursor.modes.insert = true;
+    screen.active.cursor.cursor.x = 2;
+    screen.active.cursor.modes.insert = true;
 
     screen.write_char('中');
 
@@ -311,7 +311,7 @@ fn irm_wide_insert_shifts_and_preserves_pairing() {
     assert!(screen.cell(0, 3).wide_continuation);
     assert_eq!(screen.cell(0, 4).ch, 'c');
     assert_eq!(screen.cell(0, 5).ch, 'd');
-    assert_eq!(screen.cursor.cursor.x, 4);
+    assert_eq!(screen.active.cursor.cursor.x, 4);
     assert_wide_cell_invariant(&screen);
 }
 
@@ -322,8 +322,8 @@ fn irm_insert_at_wide_base_shifts_whole_glyph() {
     screen.write_char('b');
     screen.write_char('中');
     screen.write_char('c');
-    screen.cursor.modes.insert = true;
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.modes.insert = true;
+    screen.active.cursor.cursor.x = 2;
 
     screen.write_char('X');
 
@@ -331,17 +331,17 @@ fn irm_insert_at_wide_base_shifts_whole_glyph() {
     assert_eq!(screen.cell(0, 3).ch, '中');
     assert!(screen.cell(0, 4).wide_continuation);
     assert_eq!(screen.cell(0, 5).ch, 'c');
-    assert_eq!(screen.cursor.cursor.x, 3);
+    assert_eq!(screen.active.cursor.cursor.x, 3);
     assert_wide_cell_invariant(&screen);
 }
 
 #[test]
 fn wide_cell_edits_normalize_touched_halves_and_damage() {
     let mut screen = Screen::new(2, 6);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     screen.clear_dirty();
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.x = 3;
     screen.erase_line(1);
 
     assert_eq!(screen.cell(0, 2).ch, ' ');
@@ -354,12 +354,12 @@ fn wide_cell_edits_normalize_touched_halves_and_damage() {
             .any(|range| range.row == 0 && range.start_col <= 2 && range.end_col > 3)
     );
 
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     screen.clear_dirty();
     screen.cell_mut(0, 2).protected = true;
     screen.cell_mut(0, 3).protected = true;
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.x = 3;
     screen.selective_erase_line(1);
     assert_eq!(screen.cell(0, 2).ch, '中');
     assert!(screen.cell(0, 3).wide_continuation);
@@ -369,18 +369,18 @@ fn wide_cell_edits_normalize_touched_halves_and_damage() {
 #[test]
 fn wide_cell_insert_delete_and_scroll_normalize_rows() {
     let mut screen = Screen::new(3, 7);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.x = 3;
     screen.insert_chars(1);
     assert_wide_cell_invariant(&screen);
 
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.delete_chars(1);
     assert_wide_cell_invariant(&screen);
 
-    screen.cursor.cursor.y = 0;
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     screen.scroll_up_region(1);
     assert_wide_cell_invariant(&screen);
@@ -390,7 +390,7 @@ fn wide_cell_insert_delete_and_scroll_normalize_rows() {
 fn wide_cell_rectangle_operations_preserve_pairs() {
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(2, 6);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
 
     // Attribute only selections extend from the continuation to the complete glyph.
@@ -413,13 +413,13 @@ fn wide_cell_rectangle_operations_preserve_pairs() {
     // Erase and fill clean both halves when their rectangle touches one half.
     parser.put_bytes(&mut screen, b"\x1b[1;4;1;4$z");
     assert_wide_cell_invariant(&screen);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     parser.put_bytes(&mut screen, b"\x1b[88;1;4;1;4$x");
     assert_wide_cell_invariant(&screen);
 
     // Copying a partial source does not create a partial destination glyph.
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     parser.put_bytes(&mut screen, b"\x1b[1;4;1;4;;2;1$v");
     assert_wide_cell_invariant(&screen);
@@ -430,7 +430,7 @@ fn deccra_rejects_partial_wide_source_and_handles_overlapping_snapshot() {
     // Arrange — create a wide source glyph and clear setup damage.
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(2, 8);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
     screen.clear_dirty();
 
@@ -476,28 +476,28 @@ fn should_mark_entered_row_when_wide_char_cannot_fit() {
 #[test]
 fn wide_glyph_wrap_rebases_the_continuation_after_partial_region_scroll() {
     let mut screen = screen_with_soft_line(4);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 3;
-    screen.cursor.cursor.y = 3;
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 3;
+    screen.active.cursor.cursor.y = 3;
+    screen.active.cursor.cursor.x = 3;
 
     screen.write_char('界');
 
     assert_moved_suffix_starts_hard_and_keeps_internal_wraps(&screen, 1, 2);
-    let prior = screen.normal.live_row_metadata(2);
-    let wrapped = screen.normal.live_row_metadata(3);
+    let prior = screen.active.normal.live_row_metadata(2);
+    let wrapped = screen.active.normal.live_row_metadata(3);
     assert!(wrapped.soft_wrapped);
     assert_eq!(wrapped.logical_line_id, prior.logical_line_id);
     assert_narrow_reflow_prepares(&screen);
 }
 
 fn shift_chars_for_boundary_test(screen: &mut Screen, insert: bool) -> bool {
-    let Screen {
+    let BufferState {
         pen_state,
         normal,
         cursor,
         ..
-    } = screen;
+    } = &mut screen.active;
     if insert {
         CellOps::insert_chars(pen_state, normal, cursor, 1)
     } else {
@@ -514,16 +514,16 @@ fn boundary_shift_characterizes_malformed_wide_fragments() {
         for (col, ch) in "abcdefgh".chars().enumerate() {
             screen.cell_mut(0, col).ch = ch;
         }
-        screen.cursor.margins.enabled = true;
-        screen.cursor.margins.left = 2;
-        screen.cursor.margins.right = 5;
-        screen.cursor.cursor.x = 3;
+        screen.active.cursor.margins.enabled = true;
+        screen.active.cursor.margins.left = 2;
+        screen.active.cursor.margins.right = 5;
+        screen.active.cursor.cursor.x = 3;
         screen.cell_mut(0, 2).wide_continuation = true;
         screen.cell_mut(0, 2).width = 0;
         screen.cell_mut(0, 5).ch = '中';
         screen.cell_mut(0, 5).width = 2;
         let before = screen_cells(&screen);
-        screen.cursor.modes.pending_wrap = true;
+        screen.active.cursor.modes.pending_wrap = true;
         screen.clear_dirty();
 
         assert!(shift_chars_for_boundary_test(&mut screen, insert));
@@ -538,7 +538,7 @@ fn boundary_shift_characterizes_malformed_wide_fragments() {
                 "insert={insert}, col={col}"
             );
         }
-        assert!(!screen.cursor.modes.pending_wrap);
+        assert!(!screen.active.cursor.modes.pending_wrap);
         let damage: Vec<_> = screen
             .dirty_ranges()
             .iter()
@@ -549,10 +549,10 @@ fn boundary_shift_characterizes_malformed_wide_fragments() {
         // A malformed outside base that is also a continuation is still
         // recognized by the inside continuation and rejects a left crossing.
         let mut screen = Screen::new(1, 8);
-        screen.cursor.margins.enabled = true;
-        screen.cursor.margins.left = 2;
-        screen.cursor.margins.right = 5;
-        screen.cursor.cursor.x = 3;
+        screen.active.cursor.margins.enabled = true;
+        screen.active.cursor.margins.left = 2;
+        screen.active.cursor.margins.right = 5;
+        screen.active.cursor.cursor.x = 3;
         screen.cell_mut(0, 1).width = 2;
         screen.cell_mut(0, 1).wide_continuation = true;
         screen.cell_mut(0, 2).width = 0;
@@ -566,16 +566,19 @@ fn boundary_shift_characterizes_malformed_wide_fragments() {
         // continuation can see it as a base, but the original in-margin scan
         // does not inspect that outside cell and therefore accepts this shift.
         let mut screen = Screen::new(1, 8);
-        screen.cursor.margins.enabled = true;
-        screen.cursor.margins.left = 2;
-        screen.cursor.margins.right = 5;
-        screen.cursor.cursor.x = 3;
+        screen.active.cursor.margins.enabled = true;
+        screen.active.cursor.margins.left = 2;
+        screen.active.cursor.margins.right = 5;
+        screen.active.cursor.cursor.x = 3;
         screen.cell_mut(0, 5).width = 2;
         screen.cell_mut(0, 5).wide_continuation = true;
         screen.cell_mut(0, 6).width = 0;
         screen.cell_mut(0, 6).wide_continuation = true;
-        assert_eq!(CellOps::wide_range(&screen.normal, 0, 5), None);
-        assert_eq!(CellOps::wide_range(&screen.normal, 0, 6), Some((5, 6)));
+        assert_eq!(CellOps::wide_range(&screen.active.normal, 0, 5), None);
+        assert_eq!(
+            CellOps::wide_range(&screen.active.normal, 0, 6),
+            Some((5, 6))
+        );
         let outside = screen.cell(0, 6).clone();
         assert!(shift_chars_for_boundary_test(&mut screen, insert));
         assert_eq!(screen.cell(0, 6), &outside);
@@ -617,7 +620,7 @@ fn boundary_shift_matches_original_scan_for_valid_and_malformed_cells() {
         },
     ];
     let mut screen = Screen::new(1, 5);
-    screen.cursor.margins.enabled = true;
+    screen.active.cursor.margins.enabled = true;
     for pattern in 0..cells.len().pow(5) {
         let mut indices = [0; 5];
         let mut remaining = pattern;
@@ -631,11 +634,11 @@ fn boundary_shift_matches_original_scan_for_valid_and_malformed_cells() {
                     for (col, &index) in indices.iter().enumerate() {
                         *screen.cell_mut(0, col) = cells[index].clone();
                     }
-                    screen.cursor.margins.left = left;
-                    screen.cursor.margins.right = right;
-                    screen.cursor.cursor.x = (left + right) / 2;
+                    screen.active.cursor.margins.left = left;
+                    screen.active.cursor.margins.right = right;
+                    screen.active.cursor.cursor.x = (left + right) / 2;
                     let crossing = (left..=right).any(|col| {
-                        CellOps::wide_range(&screen.normal, 0, col).is_some_and(
+                        CellOps::wide_range(&screen.active.normal, 0, col).is_some_and(
                             |(base, continuation)| {
                                 (base < left || continuation > right)
                                     && base < right + 1
@@ -661,17 +664,17 @@ fn boundary_shift_accepts_fragments_on_a_single_column_screen() {
         for insert in [true, false] {
             for (width, continuation) in [(1, false), (2, false), (0, true), (2, true)] {
                 let mut screen = Screen::new(1, 1);
-                screen.cursor.margins.enabled = enabled;
+                screen.active.cursor.margins.enabled = enabled;
                 screen.cell_mut(0, 0).width = width;
                 screen.cell_mut(0, 0).wide_continuation = continuation;
-                screen.cursor.modes.pending_wrap = true;
-                screen.cursor.last_clamped_write = true;
+                screen.active.cursor.modes.pending_wrap = true;
+                screen.active.cursor.last_clamped_write = true;
                 screen.clear_dirty();
 
                 assert!(shift_chars_for_boundary_test(&mut screen, insert));
                 assert_eq!(screen.cell(0, 0), &Cell::default());
-                assert!(!screen.cursor.modes.pending_wrap);
-                assert!(!screen.cursor.last_clamped_write);
+                assert!(!screen.active.cursor.modes.pending_wrap);
+                assert!(!screen.active.cursor.last_clamped_write);
                 let damage: Vec<_> = screen
                     .dirty_ranges()
                     .iter()
