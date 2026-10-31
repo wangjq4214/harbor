@@ -7,6 +7,8 @@
 **Stable execution aliases:** 0016/T0001 = procedural boxes (R1/R2/R4); T0002 = decoration metric lifecycle (R3/R4); T0003 = combined desktop acceptance (R5 and Definition of Done), including source/test comments and historical evidence labels referring to T0003.
 **Sources:** [Issue #193](https://github.com/wangjq4214/harbor/issues/193), the user-approved refinement contract below, [ADR 0056](../adr/0056-terminal-owned-procedural-box-drawing.md), [modern SGR contract](./0018-modern-sgr-decorations.md), and Validation Policy.
 
+**Storage-contract amendment — 2026-10-31:** [Spec 0050](./0050-demand-bounded-box-and-decoration-storage.md) and [ADR 0101](../adr/0101-demand-bounded-box-and-decoration-storage.md) replace only the fixed per-cell storage, fixed-slot capacity and underline slot/offset preservation constraints in R2/R4 and Out of Scope. Demand-bounded allocation and capacity reclamation are approved new work, not established implementation. All remaining presentation, local-update, lifecycle, safety and evidence guarantees remain in force.
+
 ## Scope and Settled Contract
 
 Deliver seamless terminal box drawing for the complete **U+2500–U+257F Box Drawing** block and correct underline, strikethrough, and overline presentation across metric/resource and viewport/DPI transitions. The user approved terminal-owned procedural geometry, the complete block, native font-resource replacement smoke without adding user-configuration hot reload on 2026-10-11.

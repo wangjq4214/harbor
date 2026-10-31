@@ -3,15 +3,15 @@ use harbor_config::Palette;
 use harbor_text::TextMetrics;
 use std::sync::Arc;
 
-use super::gpu::{self, ColoredVertex, TerminalGpuAccess, UploadMode};
+use super::gpu::{self, ColoredVertex, TerminalGpuAccess};
 use super::text::glyph_color_with_palette;
 use crate::render::RenderViewport;
 use crate::{CellAttrs, Color, DirtyRange, UnderlineStyle};
 
 // ── Vertex builders (free fn, testable without GPU handles) ───────────────────
 
-// Fixed-size cell slots keep dirty-range uploads bounded and independent of
-// neighboring cells. Curves use 16 strips; other styles use at most that many.
+// Bounded per-cell builder scratch; retained GPU/CPU geometry is compacted by row.
+// Curves use 16 strips; other styles use at most that many.
 const UNDERLINE_VERTICES_PER_CELL: usize = 16 * 6;
 
 /// Reject malformed public metric records before projecting or publishing resources.
@@ -365,9 +365,9 @@ pub(super) fn slot_count(snap: &TerminalSnapshot, max_buffer_size: u64) -> Optio
 /// Rendered after text so lines draw over glyphs.
 pub struct Decoration {
     pipeline: Arc<wgpu::RenderPipeline>,
-    underline_buffer: wgpu::Buffer,
-    strikethrough_buffer: wgpu::Buffer,
-    overline_buffer: wgpu::Buffer,
+    underline: gpu::ColoredRows,
+    strikethrough: gpu::ColoredRows,
+    overline: gpu::ColoredRows,
     rows: usize,
     cols: usize,
     metrics: TextMetrics,
@@ -375,10 +375,6 @@ pub struct Decoration {
     dirty: bool,
     // Retain a valid projection through invalidation, but not a rejected preparation.
     viewport: Option<RenderViewport>,
-    capacity: usize,
-    underline_staging: gpu::ColoredSlotStaging,
-    strikethrough_staging: gpu::ColoredSlotStaging,
-    overline_staging: gpu::ColoredSlotStaging,
 }
 
 impl Decoration {
@@ -394,33 +390,23 @@ impl Decoration {
         metrics: TextMetrics,
         palette: Palette,
     ) -> Self {
-        let empty = [ColoredVertex::default()];
-        let underline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
-        let strikethrough_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
-        let overline_buffer = gpu::create_colored_vertex_buffer(gpu.device(), &empty);
-
         let viewport = RenderViewport::with_surface(
             metrics.cell_width,
             metrics.line_height,
             initial_surface_size,
             initial_surface_size,
         );
-
         let mut layer = Self {
             pipeline,
-            underline_buffer,
-            strikethrough_buffer,
-            overline_buffer,
+            underline: gpu::ColoredRows::default(),
+            strikethrough: gpu::ColoredRows::default(),
+            overline: gpu::ColoredRows::default(),
             rows: 0,
             cols: 0,
             metrics,
             palette,
             dirty: true,
             viewport: None,
-            capacity: 0,
-            underline_staging: gpu::ColoredSlotStaging::default(),
-            strikethrough_staging: gpu::ColoredSlotStaging::default(),
-            overline_staging: gpu::ColoredSlotStaging::default(),
         };
         layer.prepare_with_dirty(gpu, snap, &[], &viewport);
         layer
@@ -442,133 +428,83 @@ impl Decoration {
         dirty_ranges: &[DirtyRange],
         viewport: &RenderViewport,
     ) {
-        let count = slot_count(snap, gpu.device().limits().max_buffer_size);
-        if !valid_metrics(&self.metrics) || !viewport.is_drawable() || count.is_none() {
+        if !valid_metrics(&self.metrics)
+            || !viewport.is_drawable()
+            || slot_count(snap, gpu.device().limits().max_buffer_size).is_none()
+        {
             self.viewport = None;
             self.dirty = true;
             return;
         }
-        let count = count.unwrap();
-        let invalid_range = dirty_ranges.iter().any(|range| {
-            range.row >= snap.rows || range.start_col > range.end_col || range.end_col > snap.cols
-        });
-        let resized = snap.rows != self.rows || snap.cols != self.cols;
-        let bytes_per_cell =
-            (UNDERLINE_VERTICES_PER_CELL + 12) * std::mem::size_of::<ColoredVertex>();
-        let plan = gpu.upload_plan(
-            snap.rows,
-            snap.cols,
-            bytes_per_cell,
-            dirty_ranges,
-            resized || self.dirty || self.viewport != Some(*viewport) || invalid_range,
-        );
-
-        if count > self.capacity {
-            self.underline_buffer = gpu::create_colored_vertex_buffer_sized(
-                gpu.device(),
-                count * UNDERLINE_VERTICES_PER_CELL,
-            );
-            self.strikethrough_buffer =
-                gpu::create_colored_vertex_buffer_sized(gpu.device(), count * 6);
-            self.overline_buffer = gpu::create_colored_vertex_buffer_sized(gpu.device(), count * 6);
-            self.underline_staging.reset(count);
-            self.strikethrough_staging.reset(count);
-            self.overline_staging.reset(count);
-            self.capacity = count;
-        }
-
-        if plan.mode == UploadMode::None {
-            return;
-        }
-
-        if plan.mode == UploadMode::Full {
-            tracing::trace!("rebuilding decoration draw batch (full)");
-            self.upload_cells(gpu, snap, viewport, 0..count);
-        } else {
-            tracing::trace!("rebuilding decoration draw batch (incremental)");
-            for range in dirty_ranges {
-                self.upload_cells(
-                    gpu,
-                    snap,
-                    viewport,
-                    range.row * snap.cols + range.start_col..range.row * snap.cols + range.end_col,
-                );
-            }
-        }
-
+        let full = self.dirty
+            || (snap.rows, snap.cols) != (self.rows, self.cols)
+            || self.viewport != Some(*viewport)
+            || dirty_ranges
+                .iter()
+                .any(|r| r.row >= snap.rows || r.start_col > r.end_col || r.end_col > snap.cols);
+        self.underline
+            .prepare(gpu, snap.rows, dirty_ranges, full, |row, vertices| {
+                for col in 0..snap.cols {
+                    if effective_underline(snap.cell(row, col), snap, row, col)
+                        != UnderlineStyle::Off
+                    {
+                        gpu::ColoredRows::append(
+                            vertices,
+                            &underline_cell_vertices(
+                                &self.metrics,
+                                snap,
+                                viewport,
+                                &self.palette,
+                                row,
+                                col,
+                            ),
+                        );
+                    }
+                }
+            });
+        self.strikethrough
+            .prepare(gpu, snap.rows, dirty_ranges, full, |row, vertices| {
+                for col in 0..snap.cols {
+                    if is_strikethrough_active(snap.cell(row, col)) {
+                        gpu::ColoredRows::append(
+                            vertices,
+                            &strikethrough_cell_vertices(
+                                &self.metrics,
+                                snap,
+                                viewport,
+                                &self.palette,
+                                row,
+                                col,
+                            ),
+                        );
+                    }
+                }
+            });
+        self.overline
+            .prepare(gpu, snap.rows, dirty_ranges, full, |row, vertices| {
+                for col in 0..snap.cols {
+                    let cell = snap.cell(row, col);
+                    if cell.attrs.contains(CellAttrs::OVERLINE)
+                        && !cell.attrs.contains(CellAttrs::CONCEAL)
+                    {
+                        gpu::ColoredRows::append(
+                            vertices,
+                            &overline_cell_vertices(
+                                &self.metrics,
+                                snap,
+                                viewport,
+                                &self.palette,
+                                row,
+                                col,
+                            ),
+                        );
+                    }
+                }
+            });
         self.rows = snap.rows;
         self.cols = snap.cols;
         self.dirty = false;
         self.viewport = Some(*viewport);
-    }
-
-    fn upload_cells(
-        &mut self,
-        gpu: TerminalGpuAccess<'_>,
-        snap: &TerminalSnapshot,
-        viewport: &RenderViewport,
-        range: std::ops::Range<usize>,
-    ) {
-        let metrics = &self.metrics;
-        let palette = &self.palette;
-        self.underline_staging.upload(
-            gpu,
-            &self.underline_buffer,
-            range.clone(),
-            |i| {
-                effective_underline(
-                    snap.cell(i / snap.cols, i % snap.cols),
-                    snap,
-                    i / snap.cols,
-                    i % snap.cols,
-                ) != UnderlineStyle::Off
-            },
-            |i| {
-                underline_cell_vertices(
-                    metrics,
-                    snap,
-                    viewport,
-                    palette,
-                    i / snap.cols,
-                    i % snap.cols,
-                )
-            },
-        );
-        self.strikethrough_staging.upload(
-            gpu,
-            &self.strikethrough_buffer,
-            range.clone(),
-            |i| is_strikethrough_active(snap.cell(i / snap.cols, i % snap.cols)),
-            |i| {
-                strikethrough_cell_vertices(
-                    metrics,
-                    snap,
-                    viewport,
-                    palette,
-                    i / snap.cols,
-                    i % snap.cols,
-                )
-            },
-        );
-        self.overline_staging.upload(
-            gpu,
-            &self.overline_buffer,
-            range,
-            |i| {
-                let cell = snap.cell(i / snap.cols, i % snap.cols);
-                cell.attrs.contains(CellAttrs::OVERLINE) && !cell.attrs.contains(CellAttrs::CONCEAL)
-            },
-            |i| {
-                overline_cell_vertices(
-                    metrics,
-                    snap,
-                    viewport,
-                    palette,
-                    i / snap.cols,
-                    i % snap.cols,
-                )
-            },
-        );
     }
 
     pub fn prepare(
@@ -583,21 +519,10 @@ impl Decoration {
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
-        if self.viewport.is_none() {
-            return;
-        }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.underline_buffer.slice(..));
-        let vertex_count = (self.rows * self.cols * 6) as u32;
-        if vertex_count > 0 {
-            pass.draw(
-                0..(self.rows * self.cols * UNDERLINE_VERTICES_PER_CELL) as u32,
-                0..1,
-            );
-            pass.set_vertex_buffer(0, self.strikethrough_buffer.slice(..));
-            pass.draw(0..vertex_count, 0..1);
-            pass.set_vertex_buffer(0, self.overline_buffer.slice(..));
-            pass.draw(0..vertex_count, 0..1);
+        if self.viewport.is_some() {
+            self.underline.draw(pass, &self.pipeline);
+            self.strikethrough.draw(pass, &self.pipeline);
+            self.overline.draw(pass, &self.pipeline);
         }
     }
 }
