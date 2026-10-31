@@ -86,6 +86,8 @@ pub use types::{
     TerminalPointerPhase, WorkingDirectoryMetadata,
 };
 pub use update::{TerminalProjection, TerminalUpdate};
+mod resize;
+pub use resize::{ResizeOutcome, ResizeStatus};
 mod revision;
 mod snapshot;
 #[cfg(test)]
@@ -759,19 +761,25 @@ impl Terminal {
         }
     }
 
-    /// Requests the latest grid dimensions. Returns true only when a change commits;
-    /// false also covers a pending reader ACK. Drive drain_pty/frame_demand and
-    /// resize_deadline until completion. Host-scheduled engines additionally require
-    /// advance_resize admission. No Terminal lock is retained across calls.
+    /// Compatibility convenience: true only on commit. Prefer request_resize plus
+    /// advance_resize to distinguish waiting, configuration ownership, and errors.
     pub fn try_resize_if_changed(&mut self, new_size: TerminalSize) -> anyhow::Result<bool> {
+        match self.request_resize(new_size)? {
+            ResizeOutcome::Pending(_) if !self.host_driven_resize => self.finish_pending_resize(),
+            _ => Ok(false),
+        }
+    }
+
+    /// Publish latest intent without running a geometry transaction. Hosts admit
+    /// expensive work through advance_resize; standalone drains also advance it.
+    /// Reader acquisition is nonblocking and failures retain their error channel.
+    pub fn request_resize(&mut self, new_size: TerminalSize) -> anyhow::Result<ResizeOutcome> {
         let normalized = TerminalSize {
             rows: new_size.rows.max(1),
             cols: new_size.cols.max(2),
         };
-        // The application owns geometry while coordinating a font/configuration group.
-        // Its next allocation pass recomputes ordinary targets under accepted metrics.
         if self.io.configuration_barrier_active() {
-            return Ok(false);
+            return Ok(ResizeOutcome::ConfigurationOwned);
         }
         if normalized
             == (TerminalSize {
@@ -781,17 +789,16 @@ impl Terminal {
         {
             self.pending_resize = None;
             self.io.cancel_resize_barrier();
-            return Ok(false);
+            return Ok(ResizeOutcome::Unchanged);
         }
-        if self.pending_resize.is_none() {
-            self.io.request_resize_barrier(Instant::now())?;
+        if self.pending_resize.is_none()
+            && let Err(error) = self.io.request_resize_barrier(Instant::now())
+        {
+            self.io.cancel_resize_barrier();
+            return Err(error);
         }
         self.pending_resize = Some(normalized);
-        if self.host_driven_resize {
-            Ok(false)
-        } else {
-            self.finish_pending_resize()
-        }
+        Ok(ResizeOutcome::Pending(self.resize_status()))
     }
 
     /// Transfer ordinary resize admission to the host. Requests and all automatic
@@ -808,19 +815,37 @@ impl Terminal {
         }
     }
 
-    /// Ready ordinary work, including failed acquisition needing cleanup. Merely
-    /// polling this does not consume reader events or take the configuration barrier.
-    pub fn resize_ready(&self) -> bool {
-        self.pending_resize.is_some()
-            && !self.io.configuration_barrier_active()
-            && !matches!(self.io.resize_barrier_ready(), Ok(false))
+    /// Non-consuming state; failed acquisition is explicitly distinct from readiness.
+    pub fn resize_status(&self) -> ResizeStatus {
+        if self.io.configuration_barrier_active() {
+            return ResizeStatus::ConfigurationOwned;
+        }
+        let Some(target) = self.pending_resize else {
+            return ResizeStatus::Idle;
+        };
+        match self.io.resize_barrier_ready() {
+            Ok(false) => ResizeStatus::WaitingForReader { target },
+            Ok(true) => ResizeStatus::ReadyToCommit { target },
+            Err(_) => ResizeStatus::Failed { target },
+        }
     }
 
-    /// Admit at most one ordinary transaction after ordered drain observed its ACK.
-    /// A multi-terminal host must bound calls to this across all of its sessions.
-    /// Errors release the reader and leave geometry unchanged.
-    pub fn advance_resize(&mut self) -> anyhow::Result<bool> {
-        self.finish_pending_resize()
+    /// Admit at most one transaction. A multi-terminal host must bound calls across
+    /// all sessions. Failed acquisition/transactions release the reader and return Err.
+    pub fn advance_resize(&mut self) -> anyhow::Result<ResizeOutcome> {
+        if self.io.configuration_barrier_active() {
+            return Ok(ResizeOutcome::ConfigurationOwned);
+        }
+        let Some(size) = self.pending_resize else {
+            return Ok(ResizeOutcome::Unchanged);
+        };
+        if self.finish_pending_resize()? {
+            Ok(ResizeOutcome::Committed(size))
+        } else if self.pending_resize.is_none() {
+            Ok(ResizeOutcome::Unchanged)
+        } else {
+            Ok(ResizeOutcome::Pending(self.resize_status()))
+        }
     }
 
     fn finish_pending_resize(&mut self) -> anyhow::Result<bool> {

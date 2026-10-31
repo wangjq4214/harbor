@@ -146,13 +146,13 @@ Retained draws may replay committed buffers while geometry and input mapping rem
 
 ## Resize transaction and failure behavior
 
-Use `try_resize_if_changed(TerminalSize { rows, cols })` when the host needs an error; `resize_if_changed` logs errors and returns false for both failure and unchanged geometry. `resize` discards that boolean. Dimensions normalize to at least one row and two columns on resize; ConPTY's signed-16-bit limits still apply. Validate a reasonable maximum before allocating.
+Use `request_resize(TerminalSize { rows, cols })` to publish intent without committing geometry. It returns `Unchanged`, `ConfigurationOwned`, or `Pending(ResizeStatus)`. Poll `resize_status()` to distinguish `WaitingForReader`, `ReadyToCommit`, and `Failed`; failed acquisition is not readiness, but `needs_advance()` includes failure cleanup. Schedule `resize_deadline` and drain output even for hidden sessions. Call `advance_resize()` in bounded per-host-turn admission slots; only `Committed(size)` means geometry was published, and failures return `Err` after reader release. For multi-tab hosts, enable `use_host_resize_scheduling` so automatic drains/draws cannot bypass admission. Dimensions normalize to at least one row and two columns; ConPTY's signed-16-bit limits still apply. Validate a reasonable maximum before allocating.
 
 The supplied live session requests an epoch-qualified reader barrier, interrupts a blocking read, and parses all completed pre-barrier chunks against the old geometry. It prepares new screen/pointer state detached from the live model, resizes the PTY, then commits through ownership moves. The barrier guard resumes on success and error. Timeout (currently two seconds), interrupted-read/control error, preparation failure or PTY resize failure must not commit candidate geometry.
 
 Failure can still leave newly ingested **old-geometry output** visible; "resize failed" is not "no output was processed." The barrier orders reader-observed chunks, not every byte still inside the OS pipe. Keep partial parser sequences across resize; do not strip application clears/redraws or reset the parser to manufacture a boundary. Primary reflow and alternate clipping retain their documented losses; resize is not a lossless archival operation.
 
-`prepare_render_frame` uses the logging/boolean resize path. If your host needs an explicit resize error UI or retry decision, call the fallible method and track the actual accepted grid, not just the requested allocation.
+The compatibility `try_resize_if_changed` wrapper returns true only on commit; `resize_if_changed` logs errors, and `resize` discards that boolean. `prepare_render_frame` retains this convenience path for standalone engines. Error-aware or multi-tab hosts should use the explicit request/progress API and track committed geometry, not merely requested allocation.
 
 ## Teardown, EOF and host failures
 

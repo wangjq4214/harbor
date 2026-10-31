@@ -1,6 +1,78 @@
 //! Deterministic consumer-side tests. The reader protocol itself is tested in io::tests.
 use super::*;
 use crate::Terminal;
+#[test]
+fn explicit_resize_request_progress_and_coalescing_are_distinct() {
+    use crate::{ResizeOutcome, ResizeStatus};
+    let f = Fixture::new();
+    let first = TerminalSize { rows: 4, cols: 10 };
+    let latest = TerminalSize { rows: 5, cols: 8 };
+    {
+        let mut terminal = f.terminal.lock().unwrap();
+        terminal.use_host_resize_scheduling();
+        assert_eq!(terminal.resize_status(), ResizeStatus::Idle);
+        assert_eq!(
+            terminal.request_resize(first).unwrap(),
+            ResizeOutcome::Pending(ResizeStatus::WaitingForReader { target: first })
+        );
+        assert_eq!(
+            terminal.advance_resize().unwrap(),
+            ResizeOutcome::Pending(ResizeStatus::WaitingForReader { target: first })
+        );
+        assert_eq!(
+            terminal.request_resize(latest).unwrap(),
+            ResizeOutcome::Pending(ResizeStatus::WaitingForReader { target: latest })
+        );
+        assert_eq!(terminal.screen().cols(), 20);
+    }
+    let epoch = f.epoch();
+    f.ack(epoch);
+    let mut terminal = f.terminal.lock().unwrap();
+    terminal.drain_pty();
+    assert_eq!(
+        terminal.resize_status(),
+        ResizeStatus::ReadyToCommit { target: latest }
+    );
+    assert_eq!(
+        terminal.advance_resize().unwrap(),
+        ResizeOutcome::Committed(latest)
+    );
+    assert_eq!(
+        terminal.request_resize(latest).unwrap(),
+        ResizeOutcome::Unchanged
+    );
+    assert_eq!(terminal.resize_status(), ResizeStatus::Idle);
+    assert_eq!(f.commands.try_recv().unwrap(), ReaderCommand::Resume(epoch));
+}
+
+#[test]
+fn explicit_resize_failure_cleanup_and_configuration_ownership_are_not_readiness() {
+    use crate::{ResizeOutcome, ResizeStatus};
+    let f = Fixture::new();
+    let target = TerminalSize { rows: 4, cols: 8 };
+    let mut terminal = f.terminal.lock().unwrap();
+    terminal.use_host_resize_scheduling();
+    terminal.io.session.pty.as_mut().unwrap().barrier_timeout = Duration::ZERO;
+    let _ = terminal.request_resize(target).unwrap();
+    terminal.drain_pty();
+    assert_eq!(terminal.resize_status(), ResizeStatus::Failed { target });
+    assert!(terminal.resize_status().needs_advance());
+    assert!(terminal.advance_resize().is_err());
+    assert_eq!(terminal.resize_status(), ResizeStatus::Idle);
+    terminal.io.session.pty.as_mut().unwrap().barrier_timeout = RESIZE_BARRIER_TIMEOUT;
+    let lease = terminal.begin_configuration_resize().unwrap();
+    assert_eq!(terminal.resize_status(), ResizeStatus::ConfigurationOwned);
+    assert_eq!(
+        terminal.request_resize(target).unwrap(),
+        ResizeOutcome::ConfigurationOwned
+    );
+    assert_eq!(
+        terminal.advance_resize().unwrap(),
+        ResizeOutcome::ConfigurationOwned
+    );
+    assert!(!terminal.resize_status().needs_advance());
+    drop(lease);
+}
 
 #[test]
 fn host_admission_keeps_acked_work_deferred_and_stream_ordered_through_all_drains() {
@@ -10,7 +82,7 @@ fn host_admission_keeps_acked_work_deferred_and_stream_ordered_through_all_drain
         let mut terminal = f.terminal.lock().unwrap();
         terminal.use_host_resize_scheduling();
         assert!(!terminal.try_resize_if_changed(target).unwrap());
-        assert!(!terminal.resize_ready());
+        assert!(!terminal.resize_status().needs_advance());
     }
     let epoch = f.epoch();
     f.bytes(b"\x1b[3;20H\x1b[6n\x1b[");
@@ -24,19 +96,19 @@ fn host_admission_keeps_acked_work_deferred_and_stream_ordered_through_all_drain
                 crate::TerminalFocusEvent::Gained,
             ))
             .unwrap();
-        assert!(terminal.resize_ready());
+        assert!(terminal.resize_status().needs_advance());
         assert_eq!(
             (terminal.screen().rows(), terminal.screen().cols()),
             (3, 20)
         );
         assert_eq!(*f.replies.lock().unwrap(), b"\x1b[3;20R");
         assert!(matches!(f.commands.try_recv(), Err(TryRecvError::Empty)));
-        assert!(terminal.advance_resize().unwrap());
+        assert!(terminal.advance_resize().unwrap().committed());
         assert_eq!(
             (terminal.screen().rows(), terminal.screen().cols()),
             (4, 10)
         );
-        assert!(!terminal.advance_resize().unwrap());
+        assert!(!terminal.advance_resize().unwrap().committed());
     }
     assert_eq!(f.commands.try_recv().unwrap(), ReaderCommand::Resume(epoch));
     f.bytes(b"4;10H\x1b[6n");
@@ -62,7 +134,7 @@ fn host_admission_failure_and_cancellation_release_reader_and_allow_retry() {
     {
         let mut terminal = f.terminal.lock().unwrap();
         assert!(!terminal.drain_pty(), "ACK only is not child text");
-        assert!(terminal.resize_ready());
+        assert!(terminal.resize_status().needs_advance());
         assert!(terminal.advance_resize().is_err());
         assert!(!terminal.resize_pending());
         assert_eq!(
@@ -84,7 +156,7 @@ fn host_admission_failure_and_cancellation_release_reader_and_allow_retry() {
     );
     f.ack(cancelled);
     f.terminal.lock().unwrap().drain_pty();
-    assert!(!f.terminal.lock().unwrap().resize_ready());
+    assert!(!f.terminal.lock().unwrap().resize_status().needs_advance());
     f.terminal
         .lock()
         .unwrap()
@@ -95,7 +167,7 @@ fn host_admission_failure_and_cancellation_release_reader_and_allow_retry() {
     f.ack(retried);
     let mut terminal = f.terminal.lock().unwrap();
     terminal.drain_pty();
-    assert!(terminal.advance_resize().unwrap());
+    assert!(terminal.advance_resize().unwrap().committed());
     assert_eq!(terminal.screen().cols(), 9);
     assert_eq!(
         f.commands.try_recv().unwrap(),
@@ -119,7 +191,7 @@ fn host_admission_timeout_is_actionable_without_child_text_or_presentation() {
         let mut terminal = f.terminal.lock().unwrap();
         terminal.frame_demand(Instant::now());
         assert!(
-            terminal.resize_ready(),
+            terminal.resize_status().needs_advance(),
             "failed acquisition must receive a cleanup slot"
         );
         assert!(terminal.resize_deadline().is_none());
@@ -145,7 +217,7 @@ fn host_admission_timeout_is_actionable_without_child_text_or_presentation() {
     f.ack(next);
     let mut terminal = f.terminal.lock().unwrap();
     assert!(!terminal.drain_pty());
-    assert!(terminal.advance_resize().unwrap());
+    assert!(terminal.advance_resize().unwrap().committed());
     assert_eq!(terminal.screen().cols(), 9);
 }
 
