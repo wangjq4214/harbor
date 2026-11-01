@@ -262,6 +262,38 @@ fn should_return_positive_metrics_when_system_primary_opens() {
 }
 
 #[test]
+fn should_round_cell_width_without_inflating_spacing_or_changing_vertical_metrics() {
+    let state = open_primary();
+    let face = state
+        .session
+        .faces
+        .borrow()
+        .get(PRIMARY_FACE_ID)
+        .expect("primary face")
+        .clone();
+    let mut native = Default::default();
+    unsafe { face.GetMetrics(&mut native) };
+    let glyph = glyph_index_on_face(&face, 'M').expect("primary M");
+    let advance = design_advance(&face, glyph).expect("primary advance");
+
+    // Scale the available native face to known advances; no particular installed
+    // font (including the user's Maple Mono) is required for this regression.
+    for (raw_width, expected_width) in [(13.2, 13.0), (13.8, 14.0), (12.0, 12.0), (0.2, 1.0)] {
+        let size = raw_width * f32::from(native.designUnitsPerEm) / advance;
+        let scale = size / f32::from(native.designUnitsPerEm);
+        let actual = state.font_metrics(size);
+        assert_eq!(actual.cell_width, expected_width, "raw width {raw_width}");
+        let ascent = f32::from(native.ascent) * scale;
+        let descent = f32::from(native.descent) * scale;
+        let line_gap = f32::from(native.lineGap) * scale;
+        assert_eq!(actual.line_height, (ascent + descent + line_gap).ceil());
+        assert_eq!(actual.ascent, ascent.ceil());
+        assert_eq!(actual.descent, descent);
+        assert_eq!(actual.line_gap, line_gap);
+    }
+}
+
+#[test]
 fn should_return_stable_metrics_when_queried_repeatedly() {
     let state = open_primary();
     let first = state.font_metrics(harbor_config::FONT_SIZE);

@@ -777,7 +777,8 @@ fn font_metrics_from_face(face: &IDWriteFontFace, size: f32) -> Result<FontMetri
     let scale = size / f32::from(metrics.designUnitsPerEm);
     let glyph = glyph_index_on_face(face, 'M')?;
     let advance = design_advance(face, glyph)?;
-    let cell_width = (advance * scale).ceil();
+    // Keep an integer pixel grid without systematically widening every cell.
+    let cell_width = (advance * scale).round().max(1.0);
     let ascent = f32::from(metrics.ascent) * scale;
     let descent = f32::from(metrics.descent) * scale;
     let line_gap = f32::from(metrics.lineGap) * scale;
