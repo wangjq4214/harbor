@@ -1,0 +1,81 @@
+name: PR performance
+
+on:
+  pull_request:
+    branches:
+      - main
+
+# PR code and benchmark binaries never receive comment-write permission.
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+
+concurrency:
+  group: pr-performance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: Performance observations (not required)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out candidate merge
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+          persist-credentials: false
+
+      - name: Check out exact PR base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+          persist-credentials: false
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache benchmark dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            candidate -> ../target/pr-performance/build
+          key: windows-pr-performance-v1
+          cache-bin: false
+          cache-on-failure: false
+
+      - name: Restore pinned ConPTY runtime for both revisions
+        run: |
+          ./baseline/scripts/setup/fetch_conpty.ps1
+          ./candidate/scripts/setup/fetch_conpty.ps1
+
+      - name: Build both revisions and measure serial alternating A/B runs
+        run: >-
+          python candidate/scripts/ci/performance_report.py
+          --base baseline --candidate candidate --out target/pr-performance
+          --event "$env:GITHUB_EVENT_PATH"
+
+      # Internal data handoff to a trusted workflow_run consumer, not a downloadable
+      # report requirement. Raw stdout is never used as privileged Markdown/code.
+      - name: Hand off bounded measurement data
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-performance-data-${{ github.run_attempt }}
+          path: target/pr-performance/report.json
+          if-no-files-found: warn
+          retention-days: 1

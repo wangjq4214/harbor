@@ -9,6 +9,7 @@ from the repository root unless noted otherwise. Automated script tests live in
 | [`setup/`](setup/) | Restore pinned Windows dependencies | `fetch_conpty.ps1`, `fetch_wasdk.ps1` |
 | [`packaging/`](packaging/) | Build Windows release assets | `package_windows.ps1`; `build_windows_msi.ps1` consumes an existing payload; `windows_package_version.ps1` is a shared helper |
 | [`docs/`](docs/) | Check Markdown language/links/fragments and compile/run public-guide Rust examples | `check_docs.py`, `check_examples.py` |
+| [`ci/`](ci/) | Required quality aggregation and advisory performance reporting | `check_quality_gate.py` aggregates required jobs; `performance_report.py` / `performance_probe.rs` measure A/B changes; `publish_performance_comment.py` maintains one PR comment |
 | [`profiling/`](profiling/) | Analyze DHAT allocation reports | `dhat_analyze.py`, `dhat_drill.py` |
 | [`terminal/`](terminal/) | Interactive terminal probes and synthetic workloads | See the fixture list below |
 | [`tests/`](tests/) | Automated tests of the scripts themselves | Python unit tests, `test_sample_process.ps1` and `test_package_windows.ps1` |
