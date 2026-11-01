@@ -15,10 +15,56 @@ on:
 permissions:
   contents: read
 
+# Use a different group from the release caller. Never cancel a tag release.
+concurrency:
+  group: windows-quality-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  quality:
-    name: quality
+  quick:
+    name: Quick checks
     runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python for documentation tools
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check documentation
+        run: python scripts/docs/check_docs.py
+
+      - name: Test documentation and helper scripts
+        run: python -B -m unittest discover -s scripts/tests -v
+
+      - name: Test Windows process sampler
+        run: pwsh -NoProfile -File scripts/tests/test_sample_process.ps1
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Validate package version and optional release tag
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: ./scripts/packaging/package_windows.ps1 -ValidateVersionOnly -ReleaseTag $env:RELEASE_TAG
+
+  rust:
+    name: Rust validation
+    needs: quick
+    runs-on: windows-latest
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
@@ -30,28 +76,23 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          components: rustfmt, clippy
+          components: clippy
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache Rust dependencies and build artifacts
+      - name: Cache debug validation dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          cache-on-failure: true
-
-      - name: Validate package version and optional release tag
-        env:
-          RELEASE_TAG: ${{ inputs.release-tag }}
-        run: ./scripts/packaging/package_windows.ps1 -ValidateVersionOnly -ReleaseTag $env:RELEASE_TAG
+          key: windows-debug-validation-v1
+          cache-bin: false
+          cache-on-failure: false
 
       - name: Restore pinned ConPTY runtime
         run: ./scripts/setup/fetch_conpty.ps1
 
-      - name: Check formatting
-        run: cargo fmt --check
-
       - name: Run Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+      # Keep these suites together to reuse the same compiled test binaries.
       - name: Run default workspace tests
         run: cargo test --locked --workspace
 
@@ -73,15 +114,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Test documentation and helper scripts
-        run: python -B -m unittest discover -s scripts/tests -v
-
-      - name: Test Windows process sampler
-        run: pwsh -NoProfile -File scripts/tests/test_sample_process.ps1
-
-      - name: Check documentation
-        run: python scripts/docs/check_docs.py
-
       - name: Check public-guide Rust examples
         run: python scripts/docs/check_examples.py --include-readmes
 
@@ -89,6 +121,33 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --no-deps -p harbor-widget --features harbor-widget/winit -p harbor-terminal
+
+  package:
+    name: Release packages
+    needs: quick
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      # The packaging script applies static CRT flags only to its release build.
+      # Do not share this cache with debug validation or cache packaged outputs.
+      - name: Cache static-CRT release dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-release-static-crt-v1
+          cache-bin: false
+          cache-on-failure: false
 
       - name: Install .NET for pinned WiX
         uses: actions/setup-dotnet@v4
@@ -114,3 +173,24 @@ jobs:
             target/dist/harbor-*-windows-x64-portable.zip
           if-no-files-found: error
           retention-days: 7
+
+  quality:
+    # Required by the main-branch ruleset; keep this status name stable.
+    name: quality
+    needs: [quick, rust, package]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python for quality aggregation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Require every validation lane to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python scripts/ci/check_quality_gate.py
