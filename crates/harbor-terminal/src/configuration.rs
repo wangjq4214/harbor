@@ -2,7 +2,7 @@
 use crate::io::ResizeBarrier;
 use crate::pointer::PreparedPointerResize;
 use crate::screen::PreparedScreenResize;
-use crate::{Terminal, TerminalAppearance, TerminalSize, TerminalUpdate, UpdateDamage};
+use crate::{Terminal, TerminalAppearance, TerminalProjection, TerminalSize, UpdateDamage};
 use harbor_config::Palette;
 use std::time::Instant;
 
@@ -105,8 +105,12 @@ impl Terminal {
 
 impl ConfigurationResize<'_> {
     /// Full candidate projection, without consuming live damage or advancing its baseline.
-    pub fn update(&self, baseline: Palette) -> TerminalUpdate {
-        let mut update = self.terminal.read_update(Instant::now());
+    pub fn update(&self, baseline: Palette) -> TerminalProjection {
+        let mut update = self
+            .terminal
+            .read_update(Instant::now())
+            .projection()
+            .clone();
         if let Some((screen, pointer)) = &self.prepared {
             update.snapshot = screen.snapshot(&self.terminal.screen).into();
             update.selection = pointer.bounds();

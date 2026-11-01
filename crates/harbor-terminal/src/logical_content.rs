@@ -17,8 +17,8 @@ pub(crate) struct SourceSpan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LogicalGlyph {
-    pub(crate) cell: Cell,
+pub(crate) struct LogicalGlyph<C = Cell> {
+    pub(crate) cell: C,
     pub(crate) width: u8,
     pub(crate) meaningful_blank: bool,
     pub(crate) cell_state: CellState,
@@ -26,29 +26,29 @@ pub(crate) struct LogicalGlyph {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LogicalLineGlyph {
+pub(crate) struct LogicalLineGlyph<C = Cell> {
     pub(crate) atom_offset: LogicalAtomOffset,
     pub(crate) source_span: SourceSpan,
-    pub(crate) glyph: LogicalGlyph,
+    pub(crate) glyph: LogicalGlyph<C>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LogicalLine {
+pub(crate) struct LogicalLine<C = Cell> {
     pub(crate) line_id: LogicalLineId,
     pub(crate) head_truncated: bool,
     pub(crate) atom_start: LogicalAtomOffset,
     pub(crate) cell_start: usize,
     pub(crate) generations: Vec<u64>,
-    pub(crate) glyphs: Vec<LogicalLineGlyph>,
+    pub(crate) glyphs: Vec<LogicalLineGlyph<C>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum LogicalAtom {
+pub(crate) enum LogicalAtom<C = Cell> {
     Glyph {
         line_id: LogicalLineId,
         atom_offset: LogicalAtomOffset,
         source_span: SourceSpan,
-        glyph: LogicalGlyph,
+        glyph: LogicalGlyph<C>,
     },
     HardBreak {
         after_generation: u64,
@@ -80,15 +80,45 @@ impl fmt::Display for DecodeError {
     }
 }
 
+/// Visit borrowed content when only positions/metadata are needed.
+pub(crate) fn visit<'a>(
+    normal: &'a NormalBuf,
+    emit: impl FnMut(LogicalAtom<&'a Cell>) -> Result<(), DecodeError>,
+) -> Result<(), DecodeError> {
+    visit_active(
+        normal,
+        normal.scroll_count() + normal.rows(),
+        |cell| cell,
+        emit,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn decode(normal: &NormalBuf) -> Result<Vec<LogicalAtom>, DecodeError> {
     decode_active(normal, normal.scroll_count() + normal.rows())
 }
 
+#[cfg(test)]
 pub(crate) fn decode_active(
     normal: &NormalBuf,
     active_count: usize,
 ) -> Result<Vec<LogicalAtom>, DecodeError> {
     let mut atoms = Vec::new();
+    visit_active(normal, active_count, Cell::clone, |atom| {
+        atoms.push(atom);
+        Ok(())
+    })?;
+    Ok(atoms)
+}
+
+/// Share interpretation/validation between owned reads and borrowed reflow.
+/// Only the caller that needs owned payloads clones cells.
+fn visit_active<'a, C>(
+    normal: &'a NormalBuf,
+    active_count: usize,
+    mut map_cell: impl FnMut(&'a Cell) -> C,
+    mut emit: impl FnMut(LogicalAtom<C>) -> Result<(), DecodeError>,
+) -> Result<(), DecodeError> {
     let mut previous: Option<RetainedRow<'_>> = None;
     let mut atom_offset = 0usize;
 
@@ -110,9 +140,9 @@ pub(crate) fn decode_active(
                     });
                 }
             } else {
-                atoms.push(LogicalAtom::HardBreak {
+                emit(LogicalAtom::HardBreak {
                     after_generation: prior.generation,
-                });
+                })?;
                 atom_offset = row.metadata.logical_atom_start;
             }
         } else {
@@ -126,21 +156,21 @@ pub(crate) fn decode_active(
             atom_offset = row.metadata.logical_atom_start;
         }
 
-        decode_row(row, &mut atom_offset, &mut atoms)?;
+        decode_row(row, &mut atom_offset, &mut map_cell, &mut emit)?;
         previous = Some(row);
     }
 
-    Ok(atoms)
+    Ok(())
 }
 
 /// Shared validation/width for one retained text unit, without copying its suffix.
 pub(crate) fn row_glyph_width(row: RetainedRow<'_>, col: usize) -> Result<u8, DecodeError> {
     let extent = row.metadata.meaningful_extent.min(row.cells.len());
     let cell = &row.cells[col];
+    let width = cell.grid_width();
     let kind = if cell.wide_continuation {
         Some(DecodeErrorKind::OrphanWideContinuation)
-    } else if cell.grid_width() == 2 && (col + 1 >= extent || !row.cells[col + 1].wide_continuation)
-    {
+    } else if width == 2 && (col + 1 >= extent || !row.cells[col + 1].wide_continuation) {
         Some(DecodeErrorKind::MissingWideContinuation)
     } else {
         None
@@ -152,21 +182,22 @@ pub(crate) fn row_glyph_width(row: RetainedRow<'_>, col: usize) -> Result<u8, De
             kind,
         });
     }
-    Ok(if cell.grid_width() == 2 { 2 } else { 1 })
+    Ok(if width == 2 { 2 } else { 1 })
 }
-fn decode_row(
-    row: RetainedRow<'_>,
+fn decode_row<'a, C>(
+    row: RetainedRow<'a>,
     atom_offset: &mut usize,
-    atoms: &mut Vec<LogicalAtom>,
+    map_cell: &mut impl FnMut(&'a Cell) -> C,
+    emit: &mut impl FnMut(LogicalAtom<C>) -> Result<(), DecodeError>,
 ) -> Result<(), DecodeError> {
     let extent = row.metadata.meaningful_extent.min(row.cells.len());
     let mut col = 0;
     while col < extent {
         let width = row_glyph_width(row, col)?;
-        let cell = row.cells[col].clone();
+        let cell = &row.cells[col];
         let meaningful_blank =
             cell.ch == ' ' && cell.suffix.is_empty() && row.cell_state[col].is_meaningful();
-        atoms.push(LogicalAtom::Glyph {
+        emit(LogicalAtom::Glyph {
             line_id: row.metadata.logical_line_id,
             atom_offset: LogicalAtomOffset(*atom_offset),
             source_span: SourceSpan {
@@ -175,13 +206,13 @@ fn decode_row(
                 end_col: col + usize::from(width - 1),
             },
             glyph: LogicalGlyph {
-                cell,
+                cell: map_cell(cell),
                 width,
                 meaningful_blank,
                 cell_state: row.cell_state[col],
                 continuation_state: (width == 2).then(|| row.cell_state[col + 1]),
             },
-        });
+        })?;
         *atom_offset += 1;
         col += usize::from(width);
     }
@@ -192,15 +223,31 @@ pub(crate) fn decode_lines(normal: &NormalBuf) -> Result<Vec<LogicalLine>, Decod
     decode_lines_active(normal, normal.scroll_count() + normal.rows())
 }
 
+#[cfg(test)]
 pub(crate) fn decode_lines_active(
     normal: &NormalBuf,
     active_count: usize,
 ) -> Result<Vec<LogicalLine>, DecodeError> {
+    decode_lines_with(normal, active_count, Cell::clone)
+}
+
+/// Reflow borrows payloads until final materialization into independent storage.
+pub(crate) fn project_lines_active(
+    normal: &NormalBuf,
+    active_count: usize,
+) -> Result<Vec<LogicalLine<&Cell>>, DecodeError> {
+    decode_lines_with(normal, active_count, |cell| cell)
+}
+
+fn decode_lines_with<'a, C>(
+    normal: &'a NormalBuf,
+    active_count: usize,
+    map_cell: impl FnMut(&'a Cell) -> C,
+) -> Result<Vec<LogicalLine<C>>, DecodeError> {
     let last_generation = normal
         .retained_rows_bounded(active_count)
         .last()
         .map_or(0, |row| row.generation);
-    let atoms = decode_active(normal, active_count)?;
     let mut lines = Vec::new();
 
     for (index, row) in normal.retained_rows_bounded(active_count).enumerate() {
@@ -220,7 +267,7 @@ pub(crate) fn decode_lines_active(
     }
 
     let mut line_index = 0usize;
-    for atom in atoms {
+    visit_active(normal, active_count, map_cell, |atom| {
         match atom {
             LogicalAtom::HardBreak { after_generation } => {
                 line_index = line_index.checked_add(1).ok_or(DecodeError {
@@ -264,7 +311,8 @@ pub(crate) fn decode_lines_active(
                 });
             }
         }
-    }
+        Ok(())
+    })?;
 
     if !lines.is_empty() && line_index + 1 != lines.len() {
         return Err(DecodeError {
@@ -294,10 +342,10 @@ pub(crate) fn selected_text(
         return Ok(String::new());
     }
 
-    let atoms = decode(normal)?;
     let mut text = String::new();
     let last_col = normal.cols().saturating_sub(1);
-    for atom in atoms {
+    // Visit the complete stream: corruption outside the selection must still fail.
+    visit(normal, |atom| {
         match atom {
             LogicalAtom::Glyph {
                 source_span, glyph, ..
@@ -325,7 +373,8 @@ pub(crate) fn selected_text(
             }
             _ => {}
         }
-    }
+        Ok(())
+    })?;
     Ok(text)
 }
 
@@ -340,6 +389,81 @@ mod tests {
 
     fn write(normal: &mut NormalBuf, row: usize, col: usize, cell: Cell) {
         normal.write_meaningful_cell(row, col, cell);
+    }
+
+    #[test]
+    fn selection_validates_corruption_outside_bounds_without_partial_success() {
+        for invalid_row in [0, 2] {
+            let mut normal = NormalBuf::new(3, 4);
+            write(
+                &mut normal,
+                1,
+                0,
+                Cell {
+                    ch: 'x',
+                    ..Cell::default()
+                },
+            );
+            write(
+                &mut normal,
+                invalid_row,
+                0,
+                Cell {
+                    ch: '界',
+                    ..Cell::default()
+                },
+            );
+            let bounds = SelectionBounds {
+                start_row: 1,
+                start_col: 0,
+                end_row: 1,
+                end_col: 3,
+            };
+            assert_eq!(
+                selected_text(&normal, bounds).unwrap_err(),
+                DecodeError {
+                    generation: invalid_row as u64,
+                    column: 0,
+                    kind: DecodeErrorKind::MissingWideContinuation,
+                }
+            );
+            let empty = SelectionBounds {
+                start_row: 8,
+                end_row: 9,
+                ..bounds
+            };
+            assert_eq!(selected_text(&normal, empty).unwrap(), "");
+        }
+    }
+
+    #[test]
+    fn selection_preserves_suffix_spaces_and_soft_wrap_without_owned_decode() {
+        let mut normal = NormalBuf::new(2, 4);
+        let mut cell = Cell {
+            ch: 'a',
+            ..Cell::default()
+        };
+        cell.suffix = "\u{301}".into();
+        write(&mut normal, 0, 0, cell);
+        write(&mut normal, 0, 1, Cell::default());
+        let source = normal.live_row_metadata(0);
+        write(
+            &mut normal,
+            1,
+            0,
+            Cell {
+                ch: 'b',
+                ..Cell::default()
+            },
+        );
+        normal.continue_logical_line(1, source, normal.live_row_logical_atom_count(0));
+        let bounds = SelectionBounds {
+            start_row: 0,
+            start_col: 0,
+            end_row: 1,
+            end_col: 3,
+        };
+        assert_eq!(selected_text(&normal, bounds).unwrap(), "a\u{301} b");
     }
 
     #[test]
@@ -535,6 +659,44 @@ mod tests {
             decode(&inconsistent).unwrap_err().kind,
             DecodeErrorKind::InconsistentSoftWrap
         );
+    }
+
+    #[test]
+    fn selection_allocations_do_not_clone_unselected_suffix_payloads() {
+        use crate::primary_reflow::allocation_probe::measure;
+        let mut costs = Vec::new();
+        for suffix in ["", "\u{301}".repeat(128).as_str()] {
+            let mut normal = NormalBuf::new(2, 4);
+            write(
+                &mut normal,
+                0,
+                0,
+                Cell {
+                    ch: 'x',
+                    ..Cell::default()
+                },
+            );
+            write(
+                &mut normal,
+                1,
+                0,
+                Cell {
+                    ch: 'a',
+                    suffix: suffix.into(),
+                    ..Cell::default()
+                },
+            );
+            let bounds = SelectionBounds {
+                start_row: 0,
+                start_col: 0,
+                end_row: 0,
+                end_col: 0,
+            };
+            let (text, stats) = measure(|| selected_text(&normal, bounds).unwrap());
+            assert_eq!(text, "x");
+            costs.push((stats.calls, stats.allocated_bytes));
+        }
+        assert_eq!(costs[0], costs[1]);
     }
 
     #[test]

@@ -198,7 +198,7 @@ fn gpu_retained_updates_resize_stride_palette_and_skipped_projection_match_rebui
         );
         assert!(terminal.acknowledge_update(&update));
     }
-    let snap = terminal.read_update(now).snapshot;
+    let snap = terminal.read_update(now).snapshot.clone();
     let blue = Palette::default()
         .resolve(Color::Named(4))
         .map(|v| (v * 255.0).round() as u8);
@@ -210,14 +210,9 @@ fn gpu_retained_updates_resize_stride_palette_and_skipped_projection_match_rebui
         terminal.resize_if_changed(crate::TerminalSize { rows, cols });
         let update = terminal.read_update(now);
         layer.prepare_with_dirty(gpu, &update.snapshot, &[], &view);
-        assert_eq!(
-            layer.vertex_count as usize,
-            rows * cols * BOX_VERTICES_PER_CELL
-        );
-        assert!(
-            layer.buffer.size()
-                >= (layer.vertex_count as u64) * std::mem::size_of::<ColoredVertex>() as u64
-        );
+        let (demand, held_gpu, held_cpu) = layer.geometry.storage_bytes();
+        assert!(held_gpu >= demand && held_gpu <= 4 * demand);
+        assert!(held_cpu >= demand && held_cpu <= 4 * demand);
         assert_eq!(
             raster(&device, &queue, |p| layer.draw(p)),
             rebuilt_pixels(
@@ -255,7 +250,7 @@ fn gpu_retained_updates_resize_stride_palette_and_skipped_projection_match_rebui
     };
     layer.prepare_with_dirty(gpu, &pending.snapshot, &[], &invalid);
     assert!(layer.dirty);
-    assert_eq!(layer.vertex_count, 0);
+    assert!(layer.viewport.is_none());
     assert!(
         raster(&device, &queue, |p| layer.draw(p))
             .iter()
@@ -299,7 +294,7 @@ fn gpu_retained_updates_resize_stride_palette_and_skipped_projection_match_rebui
             pending.appearance.palette()
         )
     );
-    let valid_size = layer.buffer.size();
+    let valid_size = layer.geometry.storage_bytes().1;
     for bad in [
         RenderViewport {
             cell_width: f32::NAN,
@@ -324,9 +319,9 @@ fn gpu_retained_updates_resize_stride_palette_and_skipped_projection_match_rebui
     ] {
         layer.prepare_with_dirty(gpu, &pending.snapshot, &[], &bad);
         assert!(layer.dirty);
-        assert_eq!(layer.vertex_count, 0);
+        assert!(layer.viewport.is_none());
         assert_eq!(
-            layer.buffer.size(),
+            layer.geometry.storage_bytes().1,
             valid_size,
             "invalid geometry preserves allocated valid resources"
         );
@@ -455,7 +450,7 @@ fn gpu_box_scalar_suppression_suffix_preedit_and_font_resource_replacement() {
     let mut renderer =
         TerminalRenderPipeline::new(gpu, (256, 256), fonts, metrics, &update).unwrap();
     renderer.prepare(gpu, &update, false);
-    let old = raster(&device, &queue, |p| renderer.boxes.draw(p));
+    let old = raster(&device, &queue, |p| renderer.boxes_for_test().draw(p));
     assert!(terminal.acknowledge_update(&update));
     let current = terminal.read_update(now);
     assert_eq!(current.damage, crate::model::UpdateDamage::Ranges(vec![]));
@@ -466,7 +461,7 @@ fn gpu_box_scalar_suppression_suffix_preedit_and_font_resource_replacement() {
     .unwrap();
     renderer.replace_fonts(gpu, fonts, &current).unwrap();
     assert_ne!(renderer.metrics().cell_width, metrics.cell_width);
-    let after = raster(&device, &queue, |p| renderer.boxes.draw(p));
+    let after = raster(&device, &queue, |p| renderer.boxes_for_test().draw(p));
     assert_ne!(
         old, after,
         "changed font-resource metrics reproject box pixels"
@@ -494,11 +489,129 @@ fn gpu_box_scalar_suppression_suffix_preedit_and_font_resource_replacement() {
         renderer.sync_raster_scale(gpu, scale, &current).unwrap();
         assert_eq!(
             after,
-            raster(&device, &queue, |p| renderer.boxes.draw(p)),
+            raster(&device, &queue, |p| renderer.boxes_for_test().draw(p)),
             "DPI-only keeps physical box metrics"
         );
     }
     eprintln!(
         "PASS: scalar suppression, ordinary/suffix/preedit paths, source/copy/width/cursor, actual changed-metrics font-resource box reprojection"
     );
+}
+
+#[test]
+#[ignore = "gpu: demand-bounded box capacity and dense-reference readback"]
+fn gpu_demand_bounded_boxes_reclaim_content_and_resize_without_stale_paint() {
+    let (device, queue) = test_gpu();
+    let gpu = TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let pipeline = Arc::new(crate::render::gpu::create_colored_quad_pipeline(
+        &device,
+        gpu.format(),
+        "demand bounded boxes",
+    ));
+    let view = viewport();
+    let palette = Palette::default();
+    let mut layer = BoxDrawing::new(gpu, pipeline.clone(), palette);
+    let compare_dense = |layer: &BoxDrawing, snap: &TerminalSnapshot| {
+        let vertices: Vec<_> = (0..snap.rows)
+            .flat_map(|row| {
+                (0..snap.cols).flat_map(move |col| {
+                    cell_vertices(snap.cell(row, col), &view, &palette, row, col)
+                })
+            })
+            .collect();
+        let buffer = crate::render::gpu::create_colored_vertex_buffer(&device, &vertices);
+        assert_eq!(
+            raster(&device, &queue, |p| layer.draw(p)),
+            raster(&device, &queue, |p| {
+                p.set_pipeline(&pipeline);
+                p.set_vertex_buffer(0, buffer.slice(..));
+                p.draw(0..vertices.len() as u32, 0..1);
+            }),
+        );
+    };
+    let mut sparse_bytes = None;
+    for (rows, cols) in [(4, 8), (32, 64)] {
+        let empty = snapshot("", rows, cols);
+        layer.prepare_with_dirty(gpu, &empty, &[], &view);
+        assert_eq!(layer.geometry.storage_bytes(), (0, 0, 0));
+        let sparse = snapshot("─", rows, cols);
+        layer.prepare_with_dirty(
+            gpu,
+            &sparse,
+            &[DirtyRange {
+                row: 0,
+                start_col: 0,
+                end_col: 1,
+            }],
+            &view,
+        );
+        let bytes = layer.geometry.storage_bytes();
+        assert_eq!(
+            *sparse_bytes.get_or_insert(bytes),
+            bytes,
+            "grid-independent geometry"
+        );
+        compare_dense(&layer, &sparse);
+    }
+
+    for _ in 0..3 {
+        let mut dense = snapshot("", 8, 16);
+        for c in dense.cells.iter_mut() {
+            *c = cell('╬');
+        }
+        layer.prepare_with_dirty(gpu, &dense, &dense.dirty_ranges, &view);
+        compare_dense(&layer, &dense);
+        let (old_d, old_g, old_c) = layer.geometry.storage_bytes();
+        assert!(old_d > 0 && old_g >= old_d && old_c >= old_d);
+        let ranges: Vec<_> = (0..8)
+            .map(|row| DirtyRange {
+                row,
+                start_col: 0,
+                end_col: 16,
+            })
+            .collect();
+        let mut sparse = snapshot("─", 8, 16);
+        layer.prepare_with_dirty(gpu, &sparse, &ranges, &view);
+        let (d, g, c) = layer.geometry.storage_bytes();
+        assert!(old_g > 4 * d && old_c > 4 * d);
+        assert!(g <= 2 * d && c <= 2 * d);
+        eprintln!("boxes dense_bytes=({old_d},{old_g},{old_c}) sparse_bytes=({d},{g},{c})");
+        compare_dense(&layer, &sparse);
+        let warm = layer.geometry.buffers();
+        assert_eq!(
+            crate::render::observations::buffer_write_bytes(|| {
+                layer.prepare_with_dirty(gpu, &sparse, &[], &view);
+            }),
+            0
+        );
+        assert_eq!(layer.geometry.buffers(), warm);
+        sparse.cells[16] = cell('╳');
+        let unchanged = layer.geometry.buffers()[0].clone();
+        let writes = crate::render::observations::buffer_write_bytes(|| {
+            layer.prepare_with_dirty(
+                gpu,
+                &sparse,
+                &[DirtyRange {
+                    row: 1,
+                    start_col: 0,
+                    end_col: 1,
+                }],
+                &view,
+            );
+        });
+        assert!(writes > 0 && writes < old_d);
+        assert_eq!(layer.geometry.buffers()[0], unchanged);
+        compare_dense(&layer, &sparse);
+        for (rows, cols) in [(16, 8), (2, 4), (8, 16)] {
+            let resized = snapshot("╭─", rows, cols);
+            layer.prepare_with_dirty(gpu, &resized, &[], &view);
+            let (d, g, c) = layer.geometry.storage_bytes();
+            assert!(g <= 4 * d && c <= 4 * d);
+            compare_dense(&layer, &resized);
+        }
+        let empty = snapshot("", 8, 16);
+        layer.prepare_with_dirty(gpu, &empty, &ranges, &view);
+        assert_eq!(layer.geometry.storage_bytes(), (0, 0, 0));
+        compare_dense(&layer, &empty);
+    }
 }

@@ -319,7 +319,7 @@ fn native_group_rejection_and_retry(compensation_fails: bool) {
                 terminal.read_update(Instant::now()).appearance.palette(),
                 renderer.clone(),
                 projection.viewport(),
-                projection.text.presentation_stats().native,
+                projection.presentation_stats().native,
             )
         })
         .collect();
@@ -381,7 +381,7 @@ fn native_group_rejection_and_retry(compensation_fails: bool) {
         let mut renderer = renderer.lock().unwrap();
         assert_eq!(*renderer.metrics(), metrics);
         assert_eq!(renderer.viewport(), before[index].2);
-        assert_eq!(renderer.text.presentation_stats().native, before[index].3);
+        assert_eq!(renderer.presentation_stats().native, before[index].3);
         let expected = if compensation_fails && index == 0 {
             new_size
         } else {

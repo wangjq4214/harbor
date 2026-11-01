@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn erase_display_mode_0_marks_from_cursor_to_end() {
     let mut screen = Screen::new(5, 4);
-    screen.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.y = 2;
     screen.clear_dirty();
     screen.erase_display(0);
     let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
@@ -17,7 +17,7 @@ fn erase_display_mode_0_marks_from_cursor_to_end() {
 #[test]
 fn erase_display_mode_1_marks_from_start_to_cursor() {
     let mut screen = Screen::new(5, 4);
-    screen.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.y = 2;
     screen.clear_dirty();
     screen.erase_display(1);
     let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
@@ -44,27 +44,27 @@ fn decaln_fills_visible_cells_homes_cursor_and_preserves_terminal_state() {
         for col in 0..screen.cols() {
             screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
         }
-        screen.normal.set_wrapped(row, true);
+        screen.active.normal.set_wrapped(row, true);
     }
-    screen.cursor.cursor.x = 3;
-    screen.cursor.cursor.y = 2;
-    screen.cursor.modes.pending_wrap = true;
-    screen.cursor.modes.origin = true;
-    screen.cursor.modes.autowrap = false;
-    screen.cursor.modes.insert = true;
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.cursor.margins.enabled = true;
-    screen.cursor.margins.left = 1;
-    screen.cursor.margins.right = 2;
-    screen.cursor.cursor.visible = false;
+    screen.active.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 2;
+    screen.active.cursor.modes.pending_wrap = true;
+    screen.active.cursor.modes.origin = true;
+    screen.active.cursor.modes.autowrap = false;
+    screen.active.cursor.modes.insert = true;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.margins.enabled = true;
+    screen.active.cursor.margins.left = 1;
+    screen.active.cursor.margins.right = 2;
+    screen.active.cursor.cursor.visible = false;
     screen.designate_g1(b'0');
     screen.set_active_charset(1);
-    screen.pen_state.pen.fg = Color::Named(1);
-    screen.pen_state.pen.bg = Color::Named(4);
-    screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
+    screen.active.pen_state.pen.fg = Color::Named(1);
+    screen.active.pen_state.pen.bg = Color::Named(4);
+    screen.active.pen_state.pen.attrs.set(CellAttrs::BOLD);
     screen.save_cursor();
-    let saved_cursor = screen.cursor.cursor.saved.as_ref().map(|saved| {
+    let saved_cursor = screen.active.cursor.cursor.saved.as_ref().map(|saved| {
         (
             saved.cursor_x,
             saved.cursor_y,
@@ -95,7 +95,7 @@ fn decaln_fills_visible_cells_homes_cursor_and_preserves_terminal_state() {
     assert_eq!(screen.scroll_count(), scroll_count);
     assert_eq!(screen.input_modes(), input_modes);
     assert_eq!(screen.current_sgr(), current_sgr);
-    let actual_saved_cursor = screen.cursor.cursor.saved.as_ref().map(|saved| {
+    let actual_saved_cursor = screen.active.cursor.cursor.saved.as_ref().map(|saved| {
         (
             saved.cursor_x,
             saved.cursor_y,
@@ -133,7 +133,7 @@ fn erase_chars_clears_from_cursor_to_right() {
     assert_eq!(screen.row_text(0).trim_end(), "hello world!");
 
     // Move cursor back to column 5 (at ' ') and erase 7 chars.
-    screen.cursor.cursor.x = 5;
+    screen.active.cursor.cursor.x = 5;
     screen.clear_dirty();
     screen.erase_chars(7);
     assert_eq!(screen.row_text(0).trim_end(), "hello");
@@ -147,7 +147,7 @@ fn erase_chars_clamps_to_row_end() {
     screen.write_char('b');
     assert_eq!(screen.row_text(0), "ab  ");
 
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.erase_chars(10); // more than remaining cols
     assert_eq!(screen.row_text(0), "ab  ");
 }
@@ -159,7 +159,7 @@ fn erase_chars_zero_acts_as_one() {
     screen.write_char('b');
     assert_eq!(screen.row_text(0), "ab  ");
 
-    screen.cursor.cursor.x = 1;
+    screen.active.cursor.cursor.x = 1;
     screen.erase_chars(0);
     assert_eq!(screen.row_text(0), "a   ");
 }
@@ -172,7 +172,7 @@ fn insert_chars_shifts_right() {
     }
     assert_eq!(screen.row_text(0), "abcdef  ");
 
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.clear_dirty();
     screen.insert_chars(2);
     assert_eq!(screen.row_text(0), "ab  cdef");
@@ -187,7 +187,7 @@ fn insert_chars_zero_acts_as_one() {
     }
     assert_eq!(screen.row_text(0), "abcde ");
 
-    screen.cursor.cursor.x = 1;
+    screen.active.cursor.cursor.x = 1;
     screen.insert_chars(0);
     assert_eq!(screen.row_text(0), "a bcde");
 }
@@ -199,7 +199,7 @@ fn insert_chars_clamps_to_row_end() {
     screen.write_char('b');
     assert_eq!(screen.row_text(0), "ab  ");
 
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.insert_chars(10);
     assert_eq!(screen.row_text(0), "ab  ");
 }
@@ -212,7 +212,7 @@ fn delete_chars_shifts_left() {
     }
     assert_eq!(screen.row_text(0), "abcdef  ");
 
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.clear_dirty();
     screen.delete_chars(2);
     assert_eq!(screen.row_text(0), "abef    ");
@@ -225,7 +225,7 @@ fn delete_chars_zero_acts_as_one() {
     for ch in "abcd".chars() {
         screen.write_char(ch);
     }
-    screen.cursor.cursor.x = 1;
+    screen.active.cursor.cursor.x = 1;
     screen.delete_chars(0);
     assert_eq!(screen.row_text(0), "acd  ");
 }
@@ -237,7 +237,7 @@ fn delete_chars_clamps_to_row_end() {
     screen.write_char('b');
     assert_eq!(screen.row_text(0), "ab  ");
 
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.delete_chars(10);
     assert_eq!(screen.row_text(0), "ab  ");
 }
@@ -245,8 +245,8 @@ fn delete_chars_clamps_to_row_end() {
 #[test]
 fn insert_lines_within_region() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 2;
     for row in 0..4 {
         for col in 0..4 {
             screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
@@ -257,7 +257,7 @@ fn insert_lines_within_region() {
     assert_eq!(screen.row_text(2), "cccc");
     assert_eq!(screen.row_text(3), "dddd");
 
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.y = 1;
     screen.insert_lines(1);
     assert_eq!(screen.row_text(0), "aaaa");
     assert_eq!(screen.row_text(1), "    ");
@@ -268,14 +268,14 @@ fn insert_lines_within_region() {
 #[test]
 fn insert_lines_outside_region_noop() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 2;
     for row in 0..4 {
         for col in 0..4 {
             screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
         }
     }
-    screen.cursor.cursor.y = 0; // above scroll_top
+    screen.active.cursor.cursor.y = 0; // above scroll_top
     screen.insert_lines(1);
     assert_eq!(screen.row_text(0), "aaaa");
     assert_eq!(screen.row_text(1), "bbbb");
@@ -286,8 +286,8 @@ fn insert_lines_outside_region_noop() {
 #[test]
 fn delete_lines_within_region() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 2;
     for row in 0..4 {
         for col in 0..4 {
             screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
@@ -296,7 +296,7 @@ fn delete_lines_within_region() {
     assert_eq!(screen.row_text(1), "bbbb");
     assert_eq!(screen.row_text(2), "cccc");
 
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.y = 1;
     screen.delete_lines(1);
     assert_eq!(screen.row_text(0), "aaaa");
     assert_eq!(screen.row_text(1), "cccc");
@@ -307,14 +307,14 @@ fn delete_lines_within_region() {
 #[test]
 fn delete_lines_outside_region_noop() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 2;
     for row in 0..4 {
         for col in 0..4 {
             screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
         }
     }
-    screen.cursor.cursor.y = 3; // below scroll_bottom
+    screen.active.cursor.cursor.y = 3; // below scroll_bottom
     screen.delete_lines(1);
     assert_eq!(screen.row_text(1), "bbbb");
     assert_eq!(screen.row_text(2), "cccc");
@@ -323,8 +323,8 @@ fn delete_lines_outside_region_noop() {
 #[test]
 fn scroll_up_region_scrolls() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 0;
-    screen.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.scroll_region.top = 0;
+    screen.active.cursor.scroll_region.bottom = 2;
     for row in 0..4 {
         for col in 0..4 {
             screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
@@ -345,8 +345,8 @@ fn scroll_up_region_scrolls() {
 #[test]
 fn scroll_down_region_scrolls() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 0;
-    screen.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.scroll_region.top = 0;
+    screen.active.cursor.scroll_region.bottom = 2;
     for row in 0..4 {
         for col in 0..4 {
             screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
@@ -377,78 +377,78 @@ fn scroll_up_region_clamps_n() {
 #[test]
 fn set_scroll_region_default() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 2;
-    screen.cursor.scroll_region.bottom = 3;
+    screen.active.cursor.scroll_region.top = 2;
+    screen.active.cursor.scroll_region.bottom = 3;
     screen.set_scroll_region(0, 0);
-    assert_eq!(screen.cursor.scroll_region.top, 0);
-    assert_eq!(screen.cursor.scroll_region.bottom, 3);
+    assert_eq!(screen.active.cursor.scroll_region.top, 0);
+    assert_eq!(screen.active.cursor.scroll_region.bottom, 3);
     // Cursor homes on success.
-    assert_eq!(screen.cursor.cursor.x, 0);
-    assert_eq!(screen.cursor.cursor.y, 0);
+    assert_eq!(screen.active.cursor.cursor.x, 0);
+    assert_eq!(screen.active.cursor.cursor.y, 0);
 }
 
 #[test]
 fn set_scroll_region_custom() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.cursor.x = 3;
-    screen.cursor.cursor.y = 3;
+    screen.active.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 3;
     screen.set_scroll_region(2, 3);
-    assert_eq!(screen.cursor.scroll_region.top, 1);
-    assert_eq!(screen.cursor.scroll_region.bottom, 2);
-    assert_eq!(screen.cursor.cursor.x, 0);
-    assert_eq!(screen.cursor.cursor.y, 0);
+    assert_eq!(screen.active.cursor.scroll_region.top, 1);
+    assert_eq!(screen.active.cursor.scroll_region.bottom, 2);
+    assert_eq!(screen.active.cursor.cursor.x, 0);
+    assert_eq!(screen.active.cursor.cursor.y, 0);
 }
 
 #[test]
 fn set_scroll_region_invalid_ignored() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 0;
-    screen.cursor.scroll_region.bottom = 3;
+    screen.active.cursor.scroll_region.top = 0;
+    screen.active.cursor.scroll_region.bottom = 3;
     screen.set_scroll_region(3, 2); // top >= bottom after clamping
-    assert_eq!(screen.cursor.scroll_region.top, 0);
-    assert_eq!(screen.cursor.scroll_region.bottom, 3);
+    assert_eq!(screen.active.cursor.scroll_region.top, 0);
+    assert_eq!(screen.active.cursor.scroll_region.bottom, 3);
 }
 
 #[test]
 fn save_restore_cursor_roundtrips() {
     let mut screen = Screen::new(4, 4);
     screen.save_cursor();
-    screen.cursor.cursor.x = 2;
-    screen.cursor.cursor.y = 3;
-    screen.pen_state.pen.fg = Color::Named(1);
-    screen.pen_state.pen.bg = Color::Named(2);
-    screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
+    screen.active.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.y = 3;
+    screen.active.pen_state.pen.fg = Color::Named(1);
+    screen.active.pen_state.pen.bg = Color::Named(2);
+    screen.active.pen_state.pen.attrs.set(CellAttrs::BOLD);
     screen.restore_cursor();
-    assert_eq!(screen.cursor.cursor.x, 0);
-    assert_eq!(screen.cursor.cursor.y, 0);
-    assert_eq!(screen.pen_state.pen.fg, Color::Default);
-    assert_eq!(screen.pen_state.pen.bg, Color::Default);
-    assert_eq!(screen.pen_state.pen.attrs, CellAttrs::default());
+    assert_eq!(screen.active.cursor.cursor.x, 0);
+    assert_eq!(screen.active.cursor.cursor.y, 0);
+    assert_eq!(screen.active.pen_state.pen.fg, Color::Default);
+    assert_eq!(screen.active.pen_state.pen.bg, Color::Default);
+    assert_eq!(screen.active.pen_state.pen.attrs, CellAttrs::default());
 }
 
 #[test]
 fn restore_cursor_none_is_noop() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.cursor.x = 2;
-    screen.cursor.cursor.y = 3;
+    screen.active.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.y = 3;
     screen.restore_cursor();
-    assert_eq!(screen.cursor.cursor.x, 2);
-    assert_eq!(screen.cursor.cursor.y, 3);
+    assert_eq!(screen.active.cursor.cursor.x, 2);
+    assert_eq!(screen.active.cursor.cursor.y, 3);
 }
 
 #[test]
 fn newline_scrolls_region() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 2;
     for row in 0..4 {
         for col in 0..4 {
             screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
         }
     }
     // Cursor at scroll_bottom, call newline.
-    screen.cursor.cursor.y = 2;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 0;
     screen.clear_dirty();
     screen.newline();
     // Region [1,2] scrolled up: row 1 gets old row 2 ("cccc"), row 2 blanked.
@@ -461,15 +461,15 @@ fn newline_scrolls_region() {
 #[test]
 fn reverse_index_scrolls_region() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 2;
     for row in 0..4 {
         for col in 0..4 {
             screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
         }
     }
     // Cursor at scroll_top, call reverse_index.
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.y = 1;
     screen.clear_dirty();
     screen.reverse_index();
     // Region [1,2] scrolled down: row 1 blank, row 2 gets old row 1 ("bbbb").
@@ -482,13 +482,13 @@ fn reverse_index_scrolls_region() {
 #[test]
 fn reverse_index_above_region_no_panic() {
     let mut screen = Screen::new(5, 4);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 3;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 3;
     // Cursor at (0, 0) — above the scroll region.
     screen.reverse_index(); // must NOT panic
     // No rows or cursor should have changed (no-op above region).
-    assert_eq!(screen.cursor.cursor.x, 0);
-    assert_eq!(screen.cursor.cursor.y, 0);
+    assert_eq!(screen.active.cursor.cursor.x, 0);
+    assert_eq!(screen.active.cursor.cursor.y, 0);
     assert_eq!(screen.row_text(0), "    ");
     assert_eq!(screen.row_text(1), "    ");
     assert_eq!(screen.row_text(2), "    ");
@@ -499,23 +499,23 @@ fn reverse_index_above_region_no_panic() {
 #[test]
 fn newline_below_region_no_panic() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
-    screen.cursor.cursor.y = 3; // below region at last row
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.cursor.y = 3; // below region at last row
+    screen.active.cursor.cursor.x = 0;
     screen.newline(); // must NOT panic
     // Cursor should not have wrapped past rows-1.
-    assert!(screen.cursor.cursor.y < screen.rows());
-    assert_eq!(screen.cursor.cursor.y, 3);
-    assert_eq!(screen.cursor.cursor.x, 0);
+    assert!(screen.active.cursor.cursor.y < screen.rows());
+    assert_eq!(screen.active.cursor.cursor.y, 3);
+    assert_eq!(screen.active.cursor.cursor.x, 0);
 }
 
 #[test]
 fn erase_line_preserves_current_bg() {
     let mut screen = Screen::new(1, 4);
-    screen.pen_state.pen.bg = Color::Named(4); // blue
+    screen.active.pen_state.pen.bg = Color::Named(4); // blue
     screen.write_char('a');
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.erase_line(0);
     for col in 0..4 {
         assert_eq!(
@@ -529,9 +529,9 @@ fn erase_line_preserves_current_bg() {
 #[test]
 fn erase_display_mode_0_preserves_current_bg() {
     let mut screen = Screen::new(2, 3);
-    screen.pen_state.pen.bg = Color::Named(2); // green
-    screen.cursor.cursor.y = 0;
-    screen.cursor.cursor.x = 1;
+    screen.active.pen_state.pen.bg = Color::Named(2); // green
+    screen.active.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.x = 1;
     screen.erase_display(0);
     // cursor row, from cursor_x onward
     for col in 1..3 {
@@ -546,9 +546,9 @@ fn erase_display_mode_0_preserves_current_bg() {
 #[test]
 fn erase_display_mode_1_preserves_current_bg() {
     let mut screen = Screen::new(2, 3);
-    screen.pen_state.pen.bg = Color::Rgb(64, 128, 255);
-    screen.cursor.cursor.y = 1;
-    screen.cursor.cursor.x = 1;
+    screen.active.pen_state.pen.bg = Color::Rgb(64, 128, 255);
+    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 1;
     screen.erase_display(1);
     // rows before cursor entirely
     for col in 0..3 {
@@ -563,7 +563,7 @@ fn erase_display_mode_1_preserves_current_bg() {
 #[test]
 fn erase_display_mode_2_preserves_current_bg() {
     let mut screen = Screen::new(2, 3);
-    screen.pen_state.pen.bg = Color::Bright(7);
+    screen.active.pen_state.pen.bg = Color::Bright(7);
     screen.erase_display(2);
     for row in 0..2 {
         for col in 0..3 {
@@ -579,8 +579,8 @@ fn erase_display_mode_2_preserves_current_bg() {
 #[test]
 fn erase_chars_preserves_current_bg() {
     let mut screen = Screen::new(1, 4);
-    screen.pen_state.pen.bg = Color::Named(1); // red
-    screen.cursor.cursor.x = 1;
+    screen.active.pen_state.pen.bg = Color::Named(1); // red
+    screen.active.cursor.cursor.x = 1;
     screen.erase_chars(2);
     assert_eq!(
         screen.cell(0, 0).bg,
@@ -599,9 +599,9 @@ fn erase_chars_preserves_current_bg() {
 #[test]
 fn erase_uses_current_fg_too() {
     let mut screen = Screen::new(1, 3);
-    screen.pen_state.pen.fg = Color::Named(3); // yellow
-    screen.pen_state.pen.bg = Color::Named(4); // blue
-    screen.pen_state.pen.attrs.set(CellAttrs::BOLD);
+    screen.active.pen_state.pen.fg = Color::Named(3); // yellow
+    screen.active.pen_state.pen.bg = Color::Named(4); // blue
+    screen.active.pen_state.pen.attrs.set(CellAttrs::BOLD);
     screen.erase_line(2);
     for col in 0..3 {
         let cell = screen.cell(0, col);
@@ -617,7 +617,7 @@ fn erase_uses_current_fg_too() {
 #[test]
 fn reset_display_uses_default_not_current_bg() {
     let mut screen = Screen::new(2, 3);
-    screen.pen_state.pen.bg = Color::Named(4); // blue
+    screen.active.pen_state.pen.bg = Color::Named(4); // blue
     screen.reset_display();
     for row in 0..2 {
         for col in 0..3 {
@@ -655,18 +655,18 @@ fn should_clear_pending_wrap_before_next_print() {
 #[test]
 fn should_clear_pending_wrap_before_accepted_edit_noop_returns() {
     let mut screen = screen_with_pending_wrap();
-    screen.cursor.margins.enabled = true;
-    screen.cursor.margins.left = 1;
-    screen.cursor.margins.right = 3;
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.margins.enabled = true;
+    screen.active.cursor.margins.left = 1;
+    screen.active.cursor.margins.right = 3;
+    screen.active.cursor.cursor.x = 0;
     screen.erase_line(0);
-    assert!(!screen.cursor.modes.pending_wrap);
+    assert!(!screen.active.cursor.modes.pending_wrap);
 
-    screen.cursor.modes.pending_wrap = true;
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.cursor.y = 0;
+    screen.active.cursor.modes.pending_wrap = true;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.cursor.y = 0;
     screen.insert_lines(1);
-    assert!(!screen.cursor.modes.pending_wrap);
+    assert!(!screen.active.cursor.modes.pending_wrap);
 }
 
 #[test]
@@ -674,12 +674,12 @@ fn should_preserve_pending_wrap_for_non_moving_c0_controls() {
     let mut screen = Screen::new(3, 5);
     let mut parser = TerminalParser::default();
     parser.put_bytes(&mut screen, b"abcde");
-    assert!(screen.cursor.modes.pending_wrap);
+    assert!(screen.active.cursor.modes.pending_wrap);
 
     for control in *b"\x05\x07\x0e\x0f" {
         parser.put_bytes(&mut screen, &[control]);
         assert!(
-            screen.cursor.modes.pending_wrap,
+            screen.active.cursor.modes.pending_wrap,
             "control {control:#04x} must not clear pending wrap"
         );
     }
@@ -689,11 +689,11 @@ fn should_preserve_pending_wrap_for_non_moving_c0_controls() {
 fn should_clear_pending_wrap_on_both_reset_paths() {
     let mut screen = screen_with_pending_wrap();
     screen.reset_display();
-    assert!(!screen.cursor.modes.pending_wrap);
+    assert!(!screen.active.cursor.modes.pending_wrap);
 
     let mut screen = screen_with_pending_wrap();
     screen.soft_reset();
-    assert!(!screen.cursor.modes.pending_wrap);
+    assert!(!screen.active.cursor.modes.pending_wrap);
 }
 
 #[test]
@@ -701,7 +701,7 @@ fn should_clear_markers_when_full_height_edits_blank_rows() {
     fn assert_blank_rows(operation: impl FnOnce(&mut Screen)) {
         let mut screen = Screen::new(3, 4);
         for row in 0..screen.rows() {
-            screen.normal.set_wrapped(row, true);
+            screen.active.normal.set_wrapped(row, true);
         }
         operation(&mut screen);
         for row in 0..screen.rows() {
@@ -718,42 +718,42 @@ fn should_clear_markers_when_full_height_edits_blank_rows() {
 #[test]
 fn test_cursor_visibility() {
     let mut screen = Screen::new(5, 5);
-    assert!(screen.cursor.cursor.visible);
+    assert!(screen.active.cursor.cursor.visible);
     screen.set_private_mode(25, false);
-    assert!(!screen.cursor.cursor.visible);
+    assert!(!screen.active.cursor.cursor.visible);
     screen.set_private_mode(25, true);
-    assert!(screen.cursor.cursor.visible);
+    assert!(screen.active.cursor.cursor.visible);
 }
 
 #[test]
 fn test_origin_mode_positioning() {
     let mut screen = Screen::new(5, 5);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 3;
-    screen.cursor.margins.enabled = true;
-    screen.cursor.margins.left = 1;
-    screen.cursor.margins.right = 3;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 3;
+    screen.active.cursor.margins.enabled = true;
+    screen.active.cursor.margins.left = 1;
+    screen.active.cursor.margins.right = 3;
 
     // Origin mode off: set_cursor_position uses absolute screen coordinates
-    screen.cursor.modes.origin = false;
+    screen.active.cursor.modes.origin = false;
     screen.set_cursor_position(1, 1);
-    assert_eq!(screen.cursor.cursor.y, 0);
-    assert_eq!(screen.cursor.cursor.x, 0);
+    assert_eq!(screen.active.cursor.cursor.y, 0);
+    assert_eq!(screen.active.cursor.cursor.x, 0);
 
     // Origin mode on: set_cursor_position is relative to scroll region and margins
-    screen.cursor.modes.origin = true;
+    screen.active.cursor.modes.origin = true;
     screen.set_cursor_position(1, 1); // Top-left of region/margins
-    assert_eq!(screen.cursor.cursor.y, 1);
-    assert_eq!(screen.cursor.cursor.x, 1);
+    assert_eq!(screen.active.cursor.cursor.y, 1);
+    assert_eq!(screen.active.cursor.cursor.x, 1);
 
     screen.set_cursor_position(2, 2);
-    assert_eq!(screen.cursor.cursor.y, 2);
-    assert_eq!(screen.cursor.cursor.x, 2);
+    assert_eq!(screen.active.cursor.cursor.y, 2);
+    assert_eq!(screen.active.cursor.cursor.x, 2);
 
     // Should clamp to the scrolling region boundaries
     screen.set_cursor_position(100, 100);
-    assert_eq!(screen.cursor.cursor.y, 3);
-    assert_eq!(screen.cursor.cursor.x, 3);
+    assert_eq!(screen.active.cursor.cursor.y, 3);
+    assert_eq!(screen.active.cursor.cursor.x, 3);
 }
 
 #[test]
@@ -792,51 +792,57 @@ fn should_expose_decrqss_getters_for_sgr_regions_style_and_protection() {
 #[test]
 fn set_scroll_region_homes_cursor_within_origin_mode() {
     let mut screen = Screen::new(6, 8);
-    screen.cursor.modes.origin = true;
-    screen.cursor.margins.enabled = true;
-    screen.cursor.margins.left = 2;
-    screen.cursor.margins.right = 6;
-    screen.cursor.cursor.x = 5;
-    screen.cursor.cursor.y = 5;
+    screen.active.cursor.modes.origin = true;
+    screen.active.cursor.margins.enabled = true;
+    screen.active.cursor.margins.left = 2;
+    screen.active.cursor.margins.right = 6;
+    screen.active.cursor.cursor.x = 5;
+    screen.active.cursor.cursor.y = 5;
 
     screen.set_scroll_region(2, 5);
 
-    assert_eq!((screen.cursor.cursor.x, screen.cursor.cursor.y), (2, 1));
+    assert_eq!(
+        (screen.active.cursor.cursor.x, screen.active.cursor.cursor.y),
+        (2, 1)
+    );
 }
 
 #[test]
 fn test_tab_stops_hts_tbc() {
     let mut screen = Screen::new(1, 20);
     // Default stops are every 8 columns: 0, 8, 16
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.horizontal_tab();
-    assert_eq!(screen.cursor.cursor.x, 8);
+    assert_eq!(screen.active.cursor.cursor.x, 8);
 
     // Set custom tab stop at col 4
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.x = 4;
     screen.set_tab_stop();
 
-    screen.cursor.cursor.x = 0;
-    screen.horizontal_tab();
-    assert_eq!(screen.cursor.cursor.x, 4, "should jump to custom tab stop");
-
-    // Clear tab stop at col 4
-    screen.cursor.cursor.x = 4;
-    screen.clear_tab_stops(0);
-
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.horizontal_tab();
     assert_eq!(
-        screen.cursor.cursor.x, 8,
+        screen.active.cursor.cursor.x, 4,
+        "should jump to custom tab stop"
+    );
+
+    // Clear tab stop at col 4
+    screen.active.cursor.cursor.x = 4;
+    screen.clear_tab_stops(0);
+
+    screen.active.cursor.cursor.x = 0;
+    screen.horizontal_tab();
+    assert_eq!(
+        screen.active.cursor.cursor.x, 8,
         "should jump over cleared tab stop"
     );
 
     // Clear all tab stops
     screen.clear_tab_stops(3);
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.horizontal_tab();
     assert_eq!(
-        screen.cursor.cursor.x, 19,
+        screen.active.cursor.cursor.x, 19,
         "should jump to the right margin limit"
     );
 }
@@ -889,7 +895,7 @@ fn should_move_back_one_tab_stop_when_cbt_parameter_is_zero() {
     // Arrange
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(1, 20);
-    screen.cursor.cursor.x = 16;
+    screen.active.cursor.cursor.x = 16;
 
     // Act
     parser.put_bytes(&mut screen, b"\x1b[0Z");
@@ -914,7 +920,7 @@ fn should_move_forward_one_tab_stop_when_direct_step_count_is_zero() {
 fn should_move_backward_one_tab_stop_when_direct_step_count_is_zero() {
     // Arrange
     let mut screen = Screen::new(1, 20);
-    screen.cursor.cursor.x = 16;
+    screen.active.cursor.cursor.x = 16;
 
     // Act
     screen.backward_tab(0);
@@ -970,7 +976,7 @@ fn should_preserve_cell_state_when_backward_tabulation_moves_cursor() {
     // Arrange
     let mut screen = Screen::new(1, 20);
     screen.cell_mut(0, 16).ch = 'A';
-    screen.cursor.cursor.x = 16;
+    screen.active.cursor.cursor.x = 16;
     screen.cell_mut(0, 16).fg = Color::Named(1);
     screen.cell_mut(0, 16).bg = Color::Named(4);
     screen.cell_mut(0, 16).attrs.set(CellAttrs::BOLD);
@@ -995,14 +1001,14 @@ fn should_preserve_cell_state_when_backward_tabulation_moves_cursor() {
 #[test]
 fn test_erase_background_filling() {
     let mut screen = Screen::new(3, 5);
-    screen.pen_state.pen.bg = Color::Named(4); // Blue
-    screen.pen_state.pen.fg = Color::Named(1); // Red
-    screen.pen_state.pen.attrs.set(CellAttrs::ITALIC);
+    screen.active.pen_state.pen.bg = Color::Named(4); // Blue
+    screen.active.pen_state.pen.fg = Color::Named(1); // Red
+    screen.active.pen_state.pen.attrs.set(CellAttrs::ITALIC);
 
     // Erase exposed cells in insert_chars
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.write_char('a');
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     screen.insert_chars(1);
     let cell = screen.cell(0, 0);
     assert_eq!(cell.ch, ' ');
@@ -1018,15 +1024,15 @@ fn test_selective_erase_protection() {
     // Write "abcde" with 'c' protected
     screen.write_char('a');
     screen.write_char('b');
-    screen.pen_state.pen.protected = true;
+    screen.active.pen_state.pen.protected = true;
     screen.write_char('c');
-    screen.pen_state.pen.protected = false;
+    screen.active.pen_state.pen.protected = false;
     screen.write_char('d');
     screen.write_char('e');
     assert_eq!(screen.row_text(0), "abcde");
 
     // Normal erase line clears everything
-    screen.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.x = 0;
     let mut screen_copy = Screen::new(1, 5);
     for col in 0..5 {
         *screen_copy.cell_mut(0, col) = screen.cell(0, col).clone();
@@ -1046,13 +1052,13 @@ fn test_selective_erase_protection() {
 #[test]
 fn test_soft_reset_decstr() {
     let mut screen = Screen::new(5, 5);
-    screen.pen_state.pen.bg = Color::Named(4);
-    screen.pen_state.pen.fg = Color::Named(1);
-    screen.cursor.modes.origin = true;
-    screen.cursor.modes.autowrap = false;
-    screen.cursor.margins.enabled = true;
-    screen.cursor.margins.left = 1;
-    screen.cursor.margins.right = 3;
+    screen.active.pen_state.pen.bg = Color::Named(4);
+    screen.active.pen_state.pen.fg = Color::Named(1);
+    screen.active.cursor.modes.origin = true;
+    screen.active.cursor.modes.autowrap = false;
+    screen.active.cursor.margins.enabled = true;
+    screen.active.cursor.margins.left = 1;
+    screen.active.cursor.margins.right = 3;
     screen.home_cursor(); // Set cursor to margin_left
 
     screen.write_char('a');
@@ -1062,11 +1068,11 @@ fn test_soft_reset_decstr() {
     screen.soft_reset();
 
     // Modes and attributes should be reset
-    assert_eq!(screen.pen_state.pen.bg, Color::Default);
-    assert_eq!(screen.pen_state.pen.fg, Color::Default);
-    assert!(!screen.cursor.modes.origin);
-    assert!(screen.cursor.modes.autowrap);
-    assert!(!screen.cursor.margins.enabled);
+    assert_eq!(screen.active.pen_state.pen.bg, Color::Default);
+    assert_eq!(screen.active.pen_state.pen.fg, Color::Default);
+    assert!(!screen.active.cursor.modes.origin);
+    assert!(screen.active.cursor.modes.autowrap);
+    assert!(!screen.active.cursor.margins.enabled);
     // Screen contents should NOT be cleared
     assert_eq!(screen.row_text(0), " a   ");
 }
@@ -1075,61 +1081,64 @@ fn test_soft_reset_decstr() {
 fn line_feed_mode_defaults_and_resets_disabled() {
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(5, 5);
-    screen.cursor.cursor.x = 3;
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 1;
 
     parser.put_bytes(&mut screen, b"\n");
-    assert_eq!(screen.cursor.cursor.x, 3);
-    assert_eq!(screen.cursor.cursor.y, 2);
+    assert_eq!(screen.active.cursor.cursor.x, 3);
+    assert_eq!(screen.active.cursor.cursor.y, 2);
 
     parser.put_bytes(&mut screen, b"\x1b[20h\n");
-    assert_eq!(screen.cursor.cursor.x, 0);
-    assert_eq!(screen.cursor.cursor.y, 3);
+    assert_eq!(screen.active.cursor.cursor.x, 0);
+    assert_eq!(screen.active.cursor.cursor.y, 3);
 
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.x = 3;
     parser.put_bytes(&mut screen, b"\x1b[20l\n");
-    assert_eq!(screen.cursor.cursor.x, 3);
-    assert_eq!(screen.cursor.cursor.y, 4);
+    assert_eq!(screen.active.cursor.cursor.x, 3);
+    assert_eq!(screen.active.cursor.cursor.y, 4);
 
     parser.put_bytes(&mut screen, b"\x1b[20h\x1bc");
-    assert!(!screen.cursor.modes.line_feed);
+    assert!(!screen.active.cursor.modes.line_feed);
 
     parser.put_bytes(&mut screen, b"\x1b[20h\x1b[!p");
-    assert!(!screen.cursor.modes.line_feed);
+    assert!(!screen.active.cursor.modes.line_feed);
 }
 
 #[test]
 fn index_is_independent_of_line_feed_mode() {
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(3, 6);
-    screen.cursor.cursor.x = 4;
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 1;
 
     parser.put_bytes(&mut screen, b"\x1b[20h\x1bD");
 
-    assert!(screen.cursor.modes.line_feed);
-    assert_eq!((screen.cursor.cursor.x, screen.cursor.cursor.y), (4, 2));
+    assert!(screen.active.cursor.modes.line_feed);
+    assert_eq!(
+        (screen.active.cursor.cursor.x, screen.active.cursor.cursor.y),
+        (4, 2)
+    );
 }
 
 #[test]
 fn scrolling_preserves_the_column_chosen_by_the_caller() {
     let mut screen = Screen::new(3, 6);
-    screen.cursor.cursor.x = 4;
-    screen.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 2;
     screen.line_feed();
     assert_eq!(
-        screen.cursor.cursor.x, 4,
+        screen.active.cursor.cursor.x, 4,
         "LF must preserve its column while scrolling"
     );
 
-    screen.cursor.margins.enabled = true;
-    screen.cursor.margins.left = 1;
-    screen.cursor.margins.right = 4;
-    screen.cursor.cursor.x = 3;
-    screen.cursor.cursor.y = 2;
+    screen.active.cursor.margins.enabled = true;
+    screen.active.cursor.margins.left = 1;
+    screen.active.cursor.margins.right = 4;
+    screen.active.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 2;
     screen.newline();
     assert_eq!(
-        screen.cursor.cursor.x, 1,
+        screen.active.cursor.cursor.x, 1,
         "newline must retain the carriage-return margin while scrolling"
     );
 }
@@ -1137,33 +1146,33 @@ fn scrolling_preserves_the_column_chosen_by_the_caller() {
 #[test]
 fn test_decsca_protected_attr() {
     let mut screen = Screen::new(5, 5);
-    assert!(!screen.pen_state.pen.protected);
+    assert!(!screen.active.pen_state.pen.protected);
     screen.set_character_protection(crate::model::CharacterProtection::Protected);
-    assert!(screen.pen_state.pen.protected);
+    assert!(screen.active.pen_state.pen.protected);
     screen.set_character_protection(crate::model::CharacterProtection::Unprotected);
-    assert!(!screen.pen_state.pen.protected);
+    assert!(!screen.active.pen_state.pen.protected);
 }
 
 #[test]
 fn test_decstr_csi_dispatch() {
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(5, 5);
-    screen.pen_state.pen.bg = Color::Named(4);
+    screen.active.pen_state.pen.bg = Color::Named(4);
 
     // Dispatch soft reset CSI ! p
     parser.put_bytes(&mut screen, b"\x1b[!p");
-    assert_eq!(screen.pen_state.pen.bg, Color::Default);
+    assert_eq!(screen.active.pen_state.pen.bg, Color::Default);
 }
 
 #[test]
 fn test_decsca_csi_dispatch() {
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(5, 5);
-    assert!(!screen.pen_state.pen.protected);
+    assert!(!screen.active.pen_state.pen.protected);
 
     // Dispatch DECSCA 1 (protected on): CSI 1 " q
     parser.put_bytes(&mut screen, b"\x1b[1\"q");
-    assert!(screen.pen_state.pen.protected);
+    assert!(screen.active.pen_state.pen.protected);
 }
 
 #[test]
@@ -1172,21 +1181,21 @@ fn test_decslrm_csi_dispatch() {
     let mut screen = Screen::new(5, 5);
 
     // With margin_mode false, CSI s saves the cursor position
-    screen.cursor.cursor.x = 3;
-    screen.cursor.cursor.y = 3;
+    screen.active.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 3;
     parser.put_bytes(&mut screen, b"\x1b[s");
 
-    screen.cursor.cursor.x = 0;
-    screen.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.x = 0;
+    screen.active.cursor.cursor.y = 0;
     parser.put_bytes(&mut screen, b"\x1b[u");
-    assert_eq!(screen.cursor.cursor.x, 3);
-    assert_eq!(screen.cursor.cursor.y, 3);
+    assert_eq!(screen.active.cursor.cursor.x, 3);
+    assert_eq!(screen.active.cursor.cursor.y, 3);
 
     // Turn margin mode on: CSI left;right s sets horizontal margins to [left-1, right-1]
     parser.put_bytes(&mut screen, b"\x1b[?69h"); // enable DECLRMM
     parser.put_bytes(&mut screen, b"\x1b[2;4s"); // set left=2, right=4 (margins: 1, 3)
-    assert_eq!(screen.cursor.margins.left, 1);
-    assert_eq!(screen.cursor.margins.right, 3);
+    assert_eq!(screen.active.cursor.margins.left, 1);
+    assert_eq!(screen.active.cursor.margins.right, 3);
 }
 
 #[test]
@@ -1253,27 +1262,27 @@ fn attribute_rectangles_preserve_explicit_blanks_and_recompute_style_only_blanks
     screen.write_char(' ');
 
     parser.put_bytes(&mut screen, b"\x1b[1;1;1;2;41$r");
-    assert!(screen.normal.cell_is_meaningful(0, 0));
-    assert!(screen.normal.cell_is_meaningful(0, 1));
+    assert!(screen.active.normal.cell_is_meaningful(0, 0));
+    assert!(screen.active.normal.cell_is_meaningful(0, 1));
     parser.put_bytes(&mut screen, b"\x1b[1;1;1;2;49$r");
     assert!(
-        screen.normal.cell_is_meaningful(0, 0),
+        screen.active.normal.cell_is_meaningful(0, 0),
         "printed default blank must retain explicit provenance"
     );
     assert!(
-        !screen.normal.cell_is_meaningful(0, 1),
+        !screen.active.normal.cell_is_meaningful(0, 1),
         "unused blank must lose style-only meaning with its background"
     );
 
     parser.put_bytes(&mut screen, b"\x1b[1;3;1;3;7$r");
-    assert!(screen.normal.cell_is_meaningful(0, 2));
+    assert!(screen.active.normal.cell_is_meaningful(0, 2));
     parser.put_bytes(&mut screen, b"\x1b[1;3;1;3;27$r");
-    assert!(!screen.normal.cell_is_meaningful(0, 2));
+    assert!(!screen.active.normal.cell_is_meaningful(0, 2));
 
     parser.put_bytes(&mut screen, b"\x1b[1;1;1;1;;1;4$v");
     parser.put_bytes(&mut screen, b"\x1b[1;4;1;4;49$r");
     assert!(
-        screen.normal.cell_is_meaningful(0, 3),
+        screen.active.normal.cell_is_meaningful(0, 3),
         "DECCRA must copy explicit provenance with a printed blank"
     );
 }
@@ -1282,17 +1291,17 @@ fn attribute_rectangles_preserve_explicit_blanks_and_recompute_style_only_blanks
 fn deccra_destination_matches_origin_bounds() {
     let mut parser = TerminalParser::default();
     let mut screen = Screen::new(4, 8);
-    screen.cursor.margins.enabled = true;
-    screen.cursor.margins.left = 2;
-    screen.cursor.margins.right = 5;
+    screen.active.cursor.margins.enabled = true;
+    screen.active.cursor.margins.left = 2;
+    screen.active.cursor.margins.right = 5;
     for col in 0..8 {
         screen.cell_mut(0, col).ch = char::from(b'a' + col as u8);
         screen.cell_mut(1, col).ch = char::from(b'A' + col as u8);
         screen.cell_mut(2, col).ch = char::from(b'0' + col as u8);
         screen.cell_mut(3, col).ch = char::from(b'!' + col as u8);
     }
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 2;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 2;
 
     // With origin disabled, destination coordinates are absolute and use the
     // full screen. This valid destination is outside the scroll region and
@@ -1303,7 +1312,7 @@ fn deccra_destination_matches_origin_bounds() {
 
     // With origin enabled, destination coordinates are relative to the active
     // scroll region and margins, and a destination below that region clips.
-    screen.cursor.modes.origin = true;
+    screen.active.cursor.modes.origin = true;
     let before = screen_cells(&screen);
     parser.put_bytes(&mut screen, b"\x1b[1;3;1;3;;3;3$v");
     assert_eq!(screen_cells(&screen), before);
@@ -1337,11 +1346,11 @@ fn reversed_rectangular_ranges_are_ignored() {
                 }
             }
             if origin_mode {
-                screen.cursor.scroll_region.top = 1;
-                screen.cursor.scroll_region.bottom = 4;
-                screen.cursor.margins.left = 1;
-                screen.cursor.margins.right = 4;
-                screen.cursor.modes.origin = true;
+                screen.active.cursor.scroll_region.top = 1;
+                screen.active.cursor.scroll_region.bottom = 4;
+                screen.active.cursor.margins.left = 1;
+                screen.active.cursor.margins.right = 4;
+                screen.active.cursor.modes.origin = true;
             }
             screen.clear_dirty();
             let before = screen_cells(&screen);
@@ -1422,16 +1431,16 @@ fn output_wrap_uses_live_metadata_while_viewport_is_scrolled_back() {
     screen.scroll_up(1);
     assert_eq!(screen.view_offset(), 1);
 
-    let source = screen.normal.live_row_metadata(1);
+    let source = screen.active.normal.live_row_metadata(1);
     assert_ne!(
-        screen.normal.row_metadata(1).logical_start,
+        screen.active.normal.row_metadata(1).logical_start,
         source.logical_start,
         "displayed metadata should differ from the writable live row in this fixture"
     );
 
     screen.write_char('j');
 
-    let continuation = screen.normal.live_row_metadata(1);
+    let continuation = screen.active.normal.live_row_metadata(1);
     assert!(continuation.soft_wrapped);
     assert_eq!(continuation.logical_line_id, source.logical_line_id);
     assert_eq!(
@@ -1443,13 +1452,13 @@ fn output_wrap_uses_live_metadata_while_viewport_is_scrolled_back() {
 #[test]
 fn partial_region_move_severs_the_unchanged_tail_from_its_replaced_predecessor() {
     let mut screen = screen_with_soft_line(5);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 3;
-    let old_tail_id = screen.normal.live_row_metadata(4).logical_line_id;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 3;
+    let old_tail_id = screen.active.normal.live_row_metadata(4).logical_line_id;
 
     screen.scroll_up_region(1);
 
-    let tail = screen.normal.live_row_metadata(4);
+    let tail = screen.active.normal.live_row_metadata(4);
     assert!(!tail.soft_wrapped);
     assert_ne!(tail.logical_line_id, old_tail_id);
     assert_narrow_reflow_prepares(&screen);
@@ -1462,11 +1471,11 @@ fn alt_entry_reconciles_pending_primary_saved_cursor_mutations() {
         screen.write_char(ch);
     }
     screen.finish_anchor_mutations(None).unwrap();
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.x = 4;
     screen.save_cursor();
 
-    screen.cursor.cursor.x = 1;
-    screen.cursor.modes.insert = true;
+    screen.active.cursor.cursor.x = 1;
+    screen.active.cursor.modes.insert = true;
     screen.write_char('X');
     screen.enter_alt(true);
     screen.exit_alt();
@@ -1489,7 +1498,7 @@ fn structural_erase_emits_atom_deletion_without_payload_heuristics() {
             crate::content_anchor::Affinity::After,
         )
         .expect("endpoint anchor");
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.x = 3;
 
     screen.erase_chars(2);
     let (mutations, projection) = screen
@@ -1507,12 +1516,12 @@ fn structural_erase_emits_atom_deletion_without_payload_heuristics() {
 #[test]
 fn saved_cursor_preserves_unwritten_column_when_blank_row_moves() {
     let mut screen = Screen::new(3, 6);
-    screen.cursor.cursor.y = 1;
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 4;
     screen.save_cursor();
     let before = screen.content_projection().unwrap();
 
-    screen.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.y = 0;
     screen.insert_lines(1);
     screen
         .finish_anchor_mutations(Some(&before))

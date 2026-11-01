@@ -42,7 +42,7 @@ fn native_multi_tab_resize_yields_for_runtime_input_and_quiet_background_complet
         if all
             .iter()
             .filter(|(id, _, _)| *id != active)
-            .all(|(_, terminal, _)| terminal.lock().unwrap().resize_ready())
+            .all(|(_, terminal, _)| terminal.lock().unwrap().resize_status().needs_advance())
         {
             break;
         }
@@ -52,7 +52,7 @@ fn native_multi_tab_resize_yields_for_runtime_input_and_quiet_background_complet
         );
         std::thread::yield_now();
     }
-    assert!(!native[1].1.lock().unwrap().resize_ready());
+    assert!(!native[1].1.lock().unwrap().resize_status().needs_advance());
     let first = f.tabs.advance_resizes();
     assert_eq!(first.attempted, 2);
     assert!(!first.active_changed && first.ready_remaining);

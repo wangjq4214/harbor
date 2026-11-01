@@ -116,14 +116,29 @@ fn complete_tiles_suppress_combining_overlays_and_conceal_removes_presentation()
     assert!(layer.sequences.tile_cells.contains(&0));
     // A mark on a tile-represented cell must not be painted a second time.
     snap.cells[0].suffix.push('\u{301}');
+    // Keep the already resolved tile outcome: extending this synthetic source
+    // and rerunning native shaping could legitimately select scalar fallback.
+    layer.cell_overlays.prepare(
+        gpu,
+        &snap,
+        OverlayView {
+            atlas: &layer.atlas,
+            metrics: &layer.metrics,
+            palette: &layer.palette,
+            viewport: &viewport,
+        },
+        &layer.sequences.tile_cells,
+        &[],
+        true,
+    );
     layer.prepare_preedit(gpu, None, &snap, &viewport);
-    assert_eq!(layer.overlay.count(), 0);
+    assert_eq!(layer.cell_overlays.count(), 0);
     snap.cells[0].attrs.set(CellAttrs::CONCEAL);
     layer.invalidate_projection();
     layer.prepare_with_dirty(gpu, &snap, &[], &viewport, None);
     layer.prepare_preedit(gpu, None, &snap, &viewport);
     assert!(layer.sequences.tile_cells.is_empty());
-    assert_eq!(layer.overlay.count(), 0);
+    assert_eq!(layer.cell_overlays.count(), 0);
     assert_eq!(
         read_draw(&device, &queue, |p| layer.draw(p)),
         read_draw(&device, &queue, |_| {})
@@ -138,21 +153,21 @@ fn preedit_paints_above_complete_tiles_at_an_overlapping_cursor() {
     let mut engine = Terminal::new_headless(4, 16);
     engine.put_str("♥️");
     engine.process_output(b"\x1b[1;1H");
-    let snap = engine.read_update(Instant::now()).snapshot;
+    let snap = engine.read_update(Instant::now()).snapshot.clone();
     let (mut layer, viewport) = text(gpu, &snap);
     let before = read_draw(&device, &queue, |p| layer.draw(p));
     let preedit = Preedit::new("M", None);
     layer.prepare_with_dirty(gpu, &snap, &[], &viewport, Some(&preedit));
     layer.prepare_preedit(gpu, Some(&preedit), &snap, &viewport);
-    assert!(layer.overlay.count() > 0);
+    assert!(layer.ime_overlay.count() > 0);
     let actual = read_draw(&device, &queue, |p| layer.draw(p));
     // An explicit scalar overlay drawn after a sequence-only frame is the reference.
     let expected = read_draw(&device, &queue, |pass| {
         layer.sequences.draw(pass);
         pass.set_pipeline(&layer.pipeline);
         pass.set_bind_group(0, &layer.gpu_atlas.bind_group, &[]);
-        pass.set_vertex_buffer(0, layer.overlay.buffer().slice(..));
-        pass.draw(0..layer.overlay.count(), 0..1);
+        pass.set_vertex_buffer(0, layer.ime_overlay.buffer().slice(..));
+        pass.draw(0..layer.ime_overlay.count(), 0..1);
     });
     assert_eq!(actual, expected);
     assert_ne!(actual, before);

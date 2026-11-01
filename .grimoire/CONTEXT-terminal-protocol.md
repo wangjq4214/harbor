@@ -156,7 +156,7 @@ Protocol concepts belonging to Terminal. Linked ADRs define detailed validation/
   - contains Alternate-Screen Buffer Isolation
 
 ### Alternate-Screen Buffer Isolation
-- **Definition:** Harbor's whole-screen swap technique that saves the entire primary `Screen` (cells, cursor, pen, modes, scrollback) and installs a fresh or persistent alternate `Screen`, so alternate-screen edits cannot corrupt primary scrollback and cursor save/restore is a superset of DECSC. `CSI 3 J` saved-lines erasure is likewise buffer-local and does not erase saved primary history while alternate is active ([ADR 0090](./adr/0090-buffer-local-csi-3j-history-erasure.md)).
+- **Definition:** Harbor isolates primary and alternate storage, cursor, pen, modes, hyperlinks and anchors in buffer-local state. Screen alone owns the saved-primary/parked-alternate lifecycle and session colors, focus reporting, synchronized output and replies; switching never swaps session state. Pointer selections consume the same authoritative transition while retaining independent ownership ([ADR 0102](./adr/0102-buffer-local-alternate-screen-ownership.md)). `CSI 3 J` remains buffer-local and cannot erase saved primary history while alternate is active ([ADR 0090](./adr/0090-buffer-local-csi-3j-history-erasure.md)).
 - **Relationships:**
   - depends on Alternate-Screen Mode Family
 

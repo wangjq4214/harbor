@@ -105,7 +105,10 @@ fn selected_text_across_scrollback_generations() {
     set_semantic_cell(&mut screen, 1, 0, 'B');
     set_semantic_cell(&mut screen, 2, 0, 'C');
     // Push into scrollback.
-    screen.normal.scroll_up_full_screen(3, Cell::default());
+    screen
+        .active
+        .normal
+        .scroll_up_full_screen(3, Cell::default());
     // Now gen 0 = 'A', gen 1 = 'B', gen 2 = 'C'.
     // Write fresh content to new visible rows.
     set_semantic_cell(&mut screen, 0, 0, 'X'); // gen 3
@@ -142,13 +145,16 @@ fn selected_text_across_scrollback_generations() {
 #[test]
 fn selected_text_evicted_generation_skipped() {
     let mut screen = Screen::new(5, 3);
-    let max = screen.normal.max_scrollback();
+    let max = screen.active.normal.max_scrollback();
 
     // Write a marker at gen 0.
     set_semantic_cell(&mut screen, 0, 0, 'M');
     // Fill the ring until gen 0 is evicted (max+1 scrolls).
     for _ in 0..max + 1 {
-        screen.normal.scroll_up_full_screen(1, Cell::default());
+        screen
+            .active
+            .normal
+            .scroll_up_full_screen(1, Cell::default());
     }
     // gen 0 is now evicted (history_start = 1).
 
@@ -168,8 +174,8 @@ fn selected_text_evicted_generation_skipped() {
     );
 
     // Select the current generation (display row 0 after max+1 scrolls).
-    let hist_start = screen.normal.history_start();
-    let scroll_count = screen.normal.scroll_count();
+    let hist_start = screen.active.normal.history_start();
+    let scroll_count = screen.active.normal.scroll_count();
     let current_gen = hist_start + scroll_count as u64; // display row 0
     let result = screen.selected_text(SelectionBounds {
         start_row: current_gen,
@@ -183,18 +189,28 @@ fn selected_text_evicted_generation_skipped() {
 #[test]
 fn selected_text_evicted_start_clamped_no_blank_lines() {
     let mut screen = Screen::new(5, 3);
-    let max = screen.normal.max_scrollback();
+    let max = screen.active.normal.max_scrollback();
 
     // Write a distinct marker at display row 1 (generation 1: hist_start=0, scroll_count=0, row=1).
     set_semantic_cell(&mut screen, 1, 0, 'Z');
     // One scroll pushes gen 0 into scrollback; 'Z' lands at gen 1 display row 0.
-    screen.normal.scroll_up_full_screen(1, Cell::default());
+    screen
+        .active
+        .normal
+        .scroll_up_full_screen(1, Cell::default());
     // Fill the ring to evict gen 0 (max more scrolls → total = max+1).
     for _ in 0..max {
-        screen.normal.scroll_up_full_screen(1, Cell::default());
+        screen
+            .active
+            .normal
+            .scroll_up_full_screen(1, Cell::default());
     }
     // history_start == 1 now → gen 0 evicted, gen 1 is the first retained gen.
-    assert_eq!(screen.normal.history_start(), 1, "gen 0 must be evicted");
+    assert_eq!(
+        screen.active.normal.history_start(),
+        1,
+        "gen 0 must be evicted"
+    );
 
     // Select from evicted gen 0 through the first retained gen (hist_start = 1).
     let result = screen.selected_text(SelectionBounds {

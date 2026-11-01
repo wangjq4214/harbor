@@ -54,10 +54,7 @@ fn main() -> anyhow::Result<()> {
             timings[1000], timings[1900]
         );
     }
-    println!(
-        "presentation_stats={:?}",
-        pipeline.text.presentation_stats()
-    );
+    println!("presentation_stats={:?}", pipeline.presentation_stats());
     println!(
         "ordinary R8 texture=2048x2048=4194304 bytes; grid text vertices=368640 bytes; microbenchmark excludes draw/PTY/readback"
     );

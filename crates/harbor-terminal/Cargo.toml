@@ -33,3 +33,7 @@ required-features = ["renderer"]
 [[example]]
 name = "sequence_prepare"
 required-features = ["renderer"]
+
+[[example]]
+name = "hot_path_timing"
+required-features = ["renderer"]

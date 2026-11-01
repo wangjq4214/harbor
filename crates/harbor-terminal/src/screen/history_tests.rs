@@ -15,7 +15,7 @@ fn terminal(rows: usize, cols: usize, max_rows: usize, max_bytes: usize) -> Term
 }
 
 fn accounting(screen: &Screen) {
-    let source = screen.saved_primary.as_deref().unwrap_or(screen);
+    let source = screen.saved_primary.as_deref().unwrap_or(&screen.active);
     let buf = &source.normal;
     let recomputed: usize = buf
         .retained_rows()
@@ -37,6 +37,7 @@ fn history_independent_row_byte_and_combined_eviction_keep_newest_whole_rows() {
         if retained > 0 {
             assert_eq!(
                 t.screen
+                    .active
                     .normal
                     .retained_rows()
                     .nth(retained - 1)
@@ -53,7 +54,7 @@ fn history_independent_row_byte_and_combined_eviction_keep_newest_whole_rows() {
     t.put_str("e\u{301}\r\nx\r\nZ");
     assert_eq!(t.screen.history_content_bytes(), 1);
     assert_eq!(
-        t.screen.normal.retained_rows().next().unwrap().cells[0].ch,
+        t.screen.active.normal.retained_rows().next().unwrap().cells[0].ch,
         'x'
     );
 }
@@ -140,6 +141,7 @@ fn history_byte_eviction_truncates_heads_invalidates_selection_and_review_withou
     assert_eq!(t.screen.view_offset(), 1);
     assert!(
         t.screen
+            .active
             .normal
             .retained_rows()
             .next()
@@ -148,7 +150,7 @@ fn history_byte_eviction_truncates_heads_invalidates_selection_and_review_withou
             .head_truncated
     );
     assert_eq!(
-        t.screen.review_anchor.unwrap(),
+        t.screen.active.review_anchor.unwrap(),
         t.screen
             .content_projection()
             .unwrap()
@@ -190,7 +192,15 @@ fn history_conpty_saved_primary_shrinks_now_and_deferred_resize_cannot_resurrect
         6,
         "producer geometry stays deferred"
     );
-    assert_eq!(t.screen.saved_primary.as_ref().unwrap().scroll_count(), 1);
+    assert_eq!(
+        t.screen
+            .saved_primary
+            .as_ref()
+            .unwrap()
+            .normal
+            .scroll_count(),
+        1
+    );
     accounting(&t.screen);
     let lost = t
         .screen
@@ -226,6 +236,7 @@ fn history_conpty_saved_primary_shrinks_now_and_deferred_resize_cannot_resurrect
     accounting(&t.screen);
     let text: String = t
         .screen
+        .active
         .normal
         .retained_rows()
         .flat_map(|r| r.cells.iter())
@@ -316,16 +327,20 @@ fn csi_3j_clears_wrapped_ring_history_without_changing_live_screen_or_limits() {
     }
     t.put_str("LIVE\r\nTAIL\x1b[45m\x1b7\x1b[?69h\x1b[3;6s\x1b[1;1H");
     assert!(t.screen.history_start() > 0);
-    assert!(t.screen.cursor.cursor.x < t.screen.cursor.margins.left);
+    assert!(t.screen.active.cursor.cursor.x < t.screen.active.cursor.margins.left);
     let cells: Vec<_> = t
         .screen
+        .active
         .normal
         .retained_rows()
         .skip(t.screen.scroll_count())
         .flat_map(|row| row.cells.iter().cloned())
         .collect();
-    let cursor = (t.screen.cursor.cursor.x, t.screen.cursor.cursor.y);
-    let saved = t.screen.cursor.cursor.saved.clone().unwrap();
+    let cursor = (
+        t.screen.active.cursor.cursor.x,
+        t.screen.active.cursor.cursor.y,
+    );
+    let saved = t.screen.active.cursor.cursor.saved.clone().unwrap();
     let limits = t.screen.history_limits();
     let old_start = t.screen.history_start();
     let count = t.screen.scroll_count();
@@ -341,21 +356,34 @@ fn csi_3j_clears_wrapped_ring_history_without_changing_live_screen_or_limits() {
     assert_eq!(t.screen.history_limits(), limits);
     assert_eq!(
         t.screen
+            .active
             .normal
             .retained_rows()
             .flat_map(|row| row.cells.iter().cloned())
             .collect::<Vec<_>>(),
         cells
     );
-    assert_eq!((t.screen.cursor.cursor.x, t.screen.cursor.cursor.y), cursor);
-    let after_saved = t.screen.cursor.cursor.saved.as_ref().unwrap();
+    assert_eq!(
+        (
+            t.screen.active.cursor.cursor.x,
+            t.screen.active.cursor.cursor.y
+        ),
+        cursor
+    );
+    let after_saved = t.screen.active.cursor.cursor.saved.as_ref().unwrap();
     assert_eq!(
         (after_saved.cursor_x, after_saved.cursor_y),
         (saved.cursor_x, saved.cursor_y)
     );
     assert_eq!(t.content_version().generation, version.generation);
     assert!(t.content_version().revision > version.revision);
-    assert!(t.screen.normal.cell_at_generation(old_start, 0).is_none());
+    assert!(
+        t.screen
+            .active
+            .normal
+            .cell_at_generation(old_start, 0)
+            .is_none()
+    );
     accounting(&t.screen);
     // Current pen attributes also survive; erase is not a terminal reset.
     t.put_str("\x1b[?69lX");
@@ -381,6 +409,7 @@ fn csi_3j_streams_is_idempotent_and_does_not_disable_future_history() {
         t.resize(3, 8);
         let text: String = t
             .screen
+            .active
             .normal
             .retained_rows()
             .flat_map(|row| row.cells.iter().map(|cell| cell.ch))
@@ -392,10 +421,10 @@ fn csi_3j_streams_is_idempotent_and_does_not_disable_future_history() {
 
     let mut empty = terminal(1, 4, 0, 0);
     empty.put_str("ABCD");
-    assert!(empty.screen.cursor.modes.pending_wrap);
+    assert!(empty.screen.active.cursor.modes.pending_wrap);
     empty.put_bytes(sequence);
-    assert!(!empty.screen.cursor.modes.pending_wrap);
-    assert_eq!(empty.screen.cursor.cursor.x, 3);
+    assert!(!empty.screen.active.cursor.modes.pending_wrap);
+    assert_eq!(empty.screen.active.cursor.cursor.x, 3);
     assert_eq!(empty.screen.row_text(0), "ABCD");
 }
 
@@ -432,12 +461,12 @@ fn csi_3j_marks_truncated_soft_line_and_invalidates_only_lost_read_evidence() {
         .fragments[0]
         .range(0..2)
         .unwrap();
-    let first_live = t.screen.normal.live_row_metadata(0);
-    let saved = t.screen.cursor.cursor.saved.clone().unwrap();
+    let first_live = t.screen.active.normal.live_row_metadata(0);
+    let saved = t.screen.active.cursor.cursor.saved.clone().unwrap();
 
     t.put_str("\x1b[3J");
 
-    let after = t.screen.normal.live_row_metadata(0);
+    let after = t.screen.active.normal.live_row_metadata(0);
     assert!(after.head_truncated);
     assert_eq!(after.logical_line_id, first_live.logical_line_id);
     assert_eq!(after.logical_start, first_live.logical_start);
@@ -448,7 +477,7 @@ fn csi_3j_marks_truncated_soft_line_and_invalidates_only_lost_read_evidence() {
         t.continue_content_read(continuation, ReadBudget::default()),
         Err(ReadError::StaleContinuation)
     ));
-    let after_saved = t.screen.cursor.cursor.saved.as_ref().unwrap();
+    let after_saved = t.screen.active.cursor.cursor.saved.as_ref().unwrap();
     assert_eq!(
         (after_saved.cursor_x, after_saved.cursor_y),
         (saved.cursor_x, saved.cursor_y)
@@ -467,13 +496,13 @@ fn csi_3j_returns_review_to_live_and_keeps_it_live_after_same_feed_output() {
     let mut t = terminal(2, 8, 20, 100);
     t.put_str("OLD\r\nMID\r\nLIVE");
     t.screen.scroll_up(1);
-    assert!(t.screen.review_anchor.is_some());
+    assert!(t.screen.active.review_anchor.is_some());
     t.screen.clear_dirty();
 
     t.put_str("\x1b[3J\r\nNEW");
 
     assert_eq!(t.screen.view_offset(), 0);
-    assert!(t.screen.review_anchor.is_none());
+    assert!(t.screen.active.review_anchor.is_none());
     assert_eq!(t.screen.scroll_count(), 1);
     assert_eq!(&t.screen.row_text(0)[..4], "LIVE");
     assert_eq!(&t.screen.row_text(1)[..3], "NEW");
@@ -486,16 +515,16 @@ fn csi_3j_preserves_saved_primary_and_private_3j_does_not_erase_history() {
         let mut t = terminal(2, 8, 20, 100);
         t.put_str("OLD\r\nMID\r\nLIVE");
         t.screen.scroll_up(1);
-        let normal = (*t.screen.normal).clone();
+        let normal = (*t.screen.active.normal).clone();
         t.put_str("\x1b[?3J");
-        assert_eq!(*t.screen.normal, normal);
+        assert_eq!(*t.screen.active.normal, normal);
         t.put_str(&format!("\x1b[?{mode}hALT\x1b[3J"));
         assert!(t.screen.is_alt());
         assert_eq!(&t.screen.row_text(0)[..3], "ALT");
         assert_eq!(*t.screen.saved_primary.as_ref().unwrap().normal, normal);
         t.put_str(&format!("\x1b[?{mode}l"));
         assert!(!t.screen.is_alt());
-        assert_eq!(*t.screen.normal, normal);
+        assert_eq!(*t.screen.active.normal, normal);
         accounting(&t.screen);
     }
 }

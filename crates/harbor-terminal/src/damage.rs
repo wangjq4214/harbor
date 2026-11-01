@@ -88,8 +88,16 @@ impl DamageTracker {
         self.dirty_row_bits[row / 64] |= 1u64 << (row % 64);
     }
 
+    #[cfg(test)]
     pub fn dirty_ranges(&self) -> Vec<DirtyRange> {
         let mut ranges = Vec::new();
+        self.dirty_ranges_into(&mut ranges);
+        ranges
+    }
+
+    /// Refill caller-owned scratch without consuming any damage.
+    pub(crate) fn dirty_ranges_into(&self, ranges: &mut Vec<DirtyRange>) {
+        ranges.clear();
         for (word_idx, &word) in self.dirty_row_bits.iter().enumerate() {
             let mut w = word;
             while w != 0 {
@@ -119,7 +127,6 @@ impl DamageTracker {
                 }
             }
         }
-        ranges
     }
 
     /// Clear bits beyond `rows` in the last word so they are never visited.

@@ -286,7 +286,7 @@ impl ContentProjection {
             }
         }
 
-        for atom in logical_content::decode(normal)? {
+        logical_content::visit(normal, |atom| {
             if let LogicalAtom::Glyph {
                 line_id,
                 atom_offset,
@@ -301,7 +301,8 @@ impl ContentProjection {
                     source_span,
                 });
             }
-        }
+            Ok(())
+        })?;
 
         Ok(Self {
             cols: normal.cols(),

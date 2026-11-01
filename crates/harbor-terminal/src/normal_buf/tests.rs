@@ -1,5 +1,158 @@
 use super::*;
 
+fn copy_fixture(rows: usize, cols: usize) -> NormalBuf {
+    let mut buf = NormalBuf::with_max_scrollback(rows, cols, 0);
+    for index in 0..buf.cells.len() {
+        let mut cell = match index % 5 {
+            0 => Cell {
+                ch: '界',
+                suffix: format!("\u{301}{index}\u{200d}\u{1f680}"),
+                width: 2,
+                protected: true,
+                ..Cell::default()
+            },
+            1 => Cell::wide_continuation_of(&buf.cells[index - 1]),
+            2 => Cell {
+                ch: '\u{301}',
+                suffix: format!("\u{fe0f}{index}"),
+                isolated_mark: true,
+                ..Cell::default()
+            },
+            3 => {
+                let mut cell = Cell::default();
+                cell.apply_sgr(41);
+                cell.apply_sgr(4);
+                cell.hyperlink = Some(crate::model::HyperlinkId::from_nonzero(
+                    std::num::NonZeroU32::new(index as u32 + 1).unwrap(),
+                ));
+                cell
+            }
+            _ => Cell::default(),
+        };
+        if index % 3 == 0 {
+            cell.discard_text_extension('\u{200d}');
+        }
+        buf.cell_state[index] = if index % 5 == 4 {
+            CellState::erase(&cell)
+        } else {
+            CellState::explicit(&cell)
+        };
+        buf.cells[index] = cell;
+    }
+    for row in 0..rows {
+        buf.row_metadata[row].logical_start = row * 10;
+        buf.row_metadata[row].logical_atom_start = row * 7;
+        buf.row_metadata[row].soft_wrapped = row % 2 != 0;
+        buf.row_metadata[row].head_truncated = row % 3 == 0;
+        buf.recompute_ring_row_extent(row);
+    }
+    buf.clear_dirty();
+    buf
+}
+
+#[test]
+fn copy_linear_range_matches_snapshot_in_both_directions_and_preserves_state() {
+    let base = copy_fixture(2, 5);
+    let old_snapshot = base.snapshot_cells();
+    for start in 0..=base.cells.len() {
+        for end in start..=base.cells.len() {
+            let count = end - start;
+            for dst in 0..=base.cells.len() - count {
+                let mut actual = base.clone();
+                let mut expected_cells = base.cells.clone();
+                let mut expected_state = base.cell_state.clone();
+                expected_cells[dst..dst + count].clone_from_slice(&base.cells[start..end]);
+                expected_state.copy_within(start..end, dst);
+
+                actual.copy_linear_range(start, end, dst);
+
+                assert_eq!(actual.cells, expected_cells);
+                assert_eq!(actual.cell_state, expected_state);
+                let snapshot = actual.snapshot_cells();
+                let mut revision = base.content_revision;
+                for row in 0..base.total_rows {
+                    let touched =
+                        count > 0 && row >= dst / base.cols && row <= (dst + count - 1) / base.cols;
+                    let mut metadata = base.row_metadata[row];
+                    if touched {
+                        revision += 1;
+                        metadata.meaningful_extent = expected_state
+                            [row * base.cols..(row + 1) * base.cols]
+                            .iter()
+                            .rposition(|state| state.is_meaningful())
+                            .map_or(0, |col| col + 1);
+                    }
+                    assert_eq!(actual.row_metadata[row], metadata);
+                    assert_eq!(
+                        actual.row_versions[row],
+                        if touched {
+                            revision
+                        } else {
+                            base.row_versions[row]
+                        }
+                    );
+                }
+                assert_eq!(actual.content_revision, revision);
+                assert_eq!(actual.dirty_ranges(), base.dirty_ranges());
+                for index in 0..base.cells.len() {
+                    assert_eq!(snapshot[index], expected_cells[index]);
+                    assert_eq!(old_snapshot[index], base.cells[index]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn copy_ring_rows_matches_snapshot_for_all_small_ring_overlaps() {
+    for total in 1..=8 {
+        let base = copy_fixture(total, 3);
+        let old_snapshot = base.snapshot_cells();
+        for src in 0..total {
+            for count in 0..total {
+                for dst in 0..total {
+                    let mut actual = base.clone();
+                    let mut expected_cells = base.cells.clone();
+                    let mut expected_state = base.cell_state.clone();
+                    let mut expected_metadata = base.row_metadata.clone();
+                    let mut expected_versions = base.row_versions.clone();
+                    for offset in 0..count {
+                        let from = (src + offset) % total;
+                        let to = (dst + offset) % total;
+                        expected_cells[to * 3..to * 3 + 3]
+                            .clone_from_slice(&base.cells[from * 3..from * 3 + 3]);
+                        expected_state[to * 3..to * 3 + 3]
+                            .copy_from_slice(&base.cell_state[from * 3..from * 3 + 3]);
+                        expected_metadata[to] = base.row_metadata[from];
+                        expected_versions[to] = base.content_revision + offset as u64 + 1;
+                    }
+
+                    actual.copy_ring_rows(src, (src + count) % total, dst);
+
+                    assert_eq!(actual.cells, expected_cells);
+                    assert_eq!(actual.cell_state, expected_state);
+                    assert_eq!(actual.row_metadata, expected_metadata);
+                    assert_eq!(actual.row_versions, expected_versions);
+                    assert_eq!(
+                        actual.content_revision,
+                        base.content_revision + count as u64
+                    );
+                    assert_eq!(actual.content_generation, base.content_generation);
+                    assert_eq!(actual.dirty_ranges(), base.dirty_ranges());
+                    assert_eq!(actual.history_content_bytes(), base.history_content_bytes());
+                    assert_eq!(actual.history_start(), base.history_start());
+                    assert_eq!(actual.visible_start(), base.visible_start());
+                    let snapshot = actual.snapshot_cells();
+                    for index in 0..base.cells.len() {
+                        assert_eq!(snapshot[index], expected_cells[index]);
+                        assert_eq!(old_snapshot[index], base.cells[index]);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn new_creates_blank_grid() {
     let buf = NormalBuf::new(3, 4);

@@ -19,6 +19,8 @@ harbor-terminal = { path = "../harbor/crates/harbor-terminal", default-features 
 
 A rendered host must arrange compatible wgpu device/queue/target-format access and font/metric setup. In this workspace these are supplied by `wgpu`, `harbor-text` and the native host. To spawn the supplied live backend, the host also uses `harbor_pty::PtyEndpoints` and `ShellCommand`; adding its own direct dependencies is the host project's responsibility.
 
+Pipeline layers are private. Use `presentation_stats()` for diagnostics and pipeline-level viewport/palette/raster/font operations for resource changes; standalone layer types remain supported. `ScreenReader` was removed: use immutable `Screen::terminal_snapshot` and `Screen::selected_text` directly. `appearance_rgba` deliberately reports the construction-time tint; `clear_rgba` and update appearance expose current session colors.
+
 Cargo features are additive. Check your dependency graph if another dependency may enable the renderer:
 
 ```sh
@@ -104,7 +106,7 @@ Construct fallible resources before publishing a session. Keep an unstarted `Pty
 
 ## Read and acknowledgement contract
 
-`TerminalUpdate` owns a complete visible projection plus incremental damage. Its `Ranges` apply relative to the most recently acknowledged state of that engine; it does not maintain per-subscriber cursors. Use one renderer per baseline. Multiple read-only content consumers are fine; independent incremental renderers sharing acknowledgements are not supported.
+`TerminalUpdate` is an engine-issued, immutable acknowledgement token with read-only access to its complete visible `TerminalProjection` and incremental damage. Configuration preparation returns only a `TerminalProjection`, which renderers can consume but engines cannot acknowledge. Its `Ranges` apply relative to the most recently acknowledged state of that engine; it does not maintain per-subscriber cursors. Use one renderer per baseline. Multiple read-only content consumers are fine; independent incremental renderers sharing acknowledgements are not supported.
 
 ### Projection ownership and copying
 
@@ -112,7 +114,7 @@ Construct fallible resources before publishing a session. Keep an unstarted `Pty
 
 Ordinary engine reads reconcile visible row versions and share unchanged rows, including when older updates remain alive. A changed row copies its cells/suffixes; there is no per-cell sharing claim. The engine caches only its latest visible row directory, not all scrollback. Reads still process row metadata/damage and allocate the small snapshot/update metadata; this is not an O(1) entire-frame guarantee. Initial/resize/reconstruction work may be full.
 
-Keep the exact update and snapshot for acknowledgement. A private shared snapshot reference seals its identity: `Arc::make_mut(&mut update.snapshot)` creates a detached synthetic snapshot and cannot acknowledge the original engine update, even if the resulting contents are equal. Cloning a `TerminalSnapshot` shares its cell rows; synthetic cell mutation uses copy-on-write for the touched row (plus the row directory). Building `SnapshotCells` from a flat Vec creates one storage chunk, so mutating that explicitly materialized chunk can copy all of it.
+Keep the exact engine-issued update for acknowledgement. Its projection is immutable (no `DerefMut`). To render synthetic data, explicitly clone `update.projection()` and mutate that detached `TerminalProjection`; it has no acknowledgement capability. Cloning a `TerminalSnapshot` shares its cell rows; synthetic cell mutation uses copy-on-write for the touched row (plus the row directory). Building `SnapshotCells` from a flat Vec creates one storage chunk, so mutating that chunk can copy all of it.
 
 Validity uses checked mutation revisions, distinct from semantic content-reader revisions and the projection acknowledgement/invalidation epoch. It includes buffer/cursor/colors/synchronized-output, selection/auto-scroll, blink and preedit/backdrop state. Relevant A → B → A changes reject old acknowledgement. Mutable owner access may conservatively invalidate; an empty PTY scheduling poll does not itself mutate the selection owner. No grid equality scan is used to revive an old token.
 
@@ -136,7 +138,7 @@ fn project_once(
 }
 ```
 
-The callback's true result must mean the caller retained everything needed to replay this state. It is not an acknowledgement of merely receiving a snapshot. A false acknowledgement means state/epoch no longer matches: keep work pending and obtain a fresh update. Do not loop on the stale object or call `clear_screen_dirty` to suppress it.
+The callback's true result must mean the caller retained everything needed to replay this state. It is not an acknowledgement of merely receiving a snapshot. A false acknowledgement means state/epoch no longer matches: keep work pending and obtain a fresh update. Do not loop on the stale object. There is no public manual damage-clearing bypass.
 
 The reference bridge acknowledges after successful preparation and draw encoding; that is **not proof the OS has displayed the frame**. The host owns submit/present failures. If retained GPU data remains trustworthy, replay it; if resources or the projection become uncertain, call `invalidate_update`, rebuild and do not acknowledge a failed preparation. Recreating the pipeline from a range update without forcing a full baseline is not a safe recovery strategy.
 
@@ -144,13 +146,13 @@ Retained draws may replay committed buffers while geometry and input mapping rem
 
 ## Resize transaction and failure behavior
 
-Use `try_resize_if_changed(TerminalSize { rows, cols })` when the host needs an error; `resize_if_changed` logs errors and returns false for both failure and unchanged geometry. `resize` discards that boolean. Dimensions normalize to at least one row and two columns on resize; ConPTY's signed-16-bit limits still apply. Validate a reasonable maximum before allocating.
+Use `request_resize(TerminalSize { rows, cols })` to publish intent without committing geometry. It returns `Unchanged`, `ConfigurationOwned`, or `Pending(ResizeStatus)`. Poll `resize_status()` to distinguish `WaitingForReader`, `ReadyToCommit`, and `Failed`; failed acquisition is not readiness, but `needs_advance()` includes failure cleanup. Schedule `resize_deadline` and drain output even for hidden sessions. Call `advance_resize()` in bounded per-host-turn admission slots; only `Committed(size)` means geometry was published, and failures return `Err` after reader release. For multi-tab hosts, enable `use_host_resize_scheduling` so automatic drains/draws cannot bypass admission. Dimensions normalize to at least one row and two columns; ConPTY's signed-16-bit limits still apply. Validate a reasonable maximum before allocating.
 
 The supplied live session requests an epoch-qualified reader barrier, interrupts a blocking read, and parses all completed pre-barrier chunks against the old geometry. It prepares new screen/pointer state detached from the live model, resizes the PTY, then commits through ownership moves. The barrier guard resumes on success and error. Timeout (currently two seconds), interrupted-read/control error, preparation failure or PTY resize failure must not commit candidate geometry.
 
 Failure can still leave newly ingested **old-geometry output** visible; "resize failed" is not "no output was processed." The barrier orders reader-observed chunks, not every byte still inside the OS pipe. Keep partial parser sequences across resize; do not strip application clears/redraws or reset the parser to manufacture a boundary. Primary reflow and alternate clipping retain their documented losses; resize is not a lossless archival operation.
 
-`prepare_render_frame` uses the logging/boolean resize path. If your host needs an explicit resize error UI or retry decision, call the fallible method and track the actual accepted grid, not just the requested allocation.
+The compatibility `try_resize_if_changed` wrapper returns true only on commit; `resize_if_changed` logs errors, and `resize` discards that boolean. `prepare_render_frame` retains this convenience path for standalone engines. Error-aware or multi-tab hosts should use the explicit request/progress API and track committed geometry, not merely requested allocation.
 
 ## Teardown, EOF and host failures
 

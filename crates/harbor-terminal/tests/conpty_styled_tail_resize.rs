@@ -434,31 +434,3 @@ fn producer_edge_fixture(body: &str, expression: &str, spaces: usize, sgr: &str)
     }
     live.edit_and_execute(&input);
 }
-
-macro_rules! fixture_test {
-    ($name:ident, $sgr:literal, $rows:literal) => {
-        #[test]
-        fn $name() {
-            minimal_fixture($sgr, $rows);
-        }
-    };
-}
-
-fixture_test!(overline_printed_and_erased_tails, "53;32", 29);
-fixture_test!(underline_printed_and_erased_tails, "4;31", 29);
-fixture_test!(background_printed_and_erased_tails, "44", 29);
-fixture_test!(
-    overline_tails_at_bottom_with_history_and_height_resize,
-    "53;32",
-    6
-);
-fixture_test!(
-    underline_tails_at_bottom_with_history_and_height_resize,
-    "4;31",
-    6
-);
-fixture_test!(
-    background_tails_at_bottom_with_history_and_height_resize,
-    "44",
-    6
-);

@@ -19,6 +19,7 @@ pub struct Background {
     cols: usize,
     tint: [f32; 4],
     palette: Palette,
+    staging: Vec<ColoredVertex>,
 }
 
 impl Background {
@@ -59,6 +60,7 @@ impl Background {
             cols,
             tint,
             palette,
+            staging: Vec::new(),
         };
 
         // Build initial vertex data and upload.
@@ -68,8 +70,10 @@ impl Background {
             initial_surface_size,
             initial_surface_size,
         );
-        let verts = layer.build_all_vertices(snap, &viewport);
+        let mut verts = std::mem::take(&mut layer.staging);
+        layer.append_all_vertices(snap, &viewport, &mut verts);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+        layer.staging = verts;
         layer.upload_full_rect(gpu, &viewport);
         layer.dirty = false;
         layer
@@ -133,6 +137,23 @@ impl Background {
         palette: &Palette,
     ) -> Vec<ColoredVertex> {
         let mut verts = Vec::with_capacity((end_col - start_col) * 6);
+        Self::append_background_range_vertices(
+            row, start_col, end_col, snap, viewport, palette, &mut verts,
+        );
+        verts
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_background_range_vertices(
+        row: usize,
+        start_col: usize,
+        end_col: usize,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+        palette: &Palette,
+        verts: &mut Vec<ColoredVertex>,
+    ) {
+        verts.reserve((end_col - start_col) * 6);
         let (surf_w, surf_h) = viewport.surface_dimensions();
         for col in start_col..end_col {
             let cell = snap.cell(row, col);
@@ -155,25 +176,27 @@ impl Background {
                 verts.extend(std::iter::repeat_n(ColoredVertex::default(), 6));
             }
         }
-        verts
     }
 
     /// Builds vertices for every row in the full grid.
-    fn build_all_vertices(
+    fn append_all_vertices(
         &self,
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
-    ) -> Vec<ColoredVertex> {
-        let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
+        verts: &mut Vec<ColoredVertex>,
+    ) {
+        verts.reserve(snap.rows * snap.cols * 6);
         for row in 0..snap.rows {
-            verts.extend(Self::build_background_row_vertices_with_palette(
+            Self::append_background_range_vertices(
                 row,
+                0,
+                snap.cols,
                 snap,
                 viewport,
                 &self.palette,
-            ));
+                verts,
+            );
         }
-        verts
     }
 
     pub fn invalidate_projection(&mut self) {
@@ -227,20 +250,25 @@ impl Background {
             }
         }
 
+        let mut verts = std::mem::take(&mut self.staging);
+        verts.clear();
+
         if plan.mode == UploadMode::Full {
             tracing::trace!("rebuilding background draw batch (full)");
-            let verts = self.build_all_vertices(snap, viewport);
+            self.append_all_vertices(snap, viewport, &mut verts);
             gpu.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         } else {
             tracing::trace!("rebuilding background draw batch (incremental)");
             for range in dirty_ranges {
-                let range_verts = Self::build_background_range_vertices(
+                verts.clear();
+                Self::append_background_range_vertices(
                     range.row,
                     range.start_col,
                     range.end_col,
                     snap,
                     viewport,
                     &self.palette,
+                    &mut verts,
                 );
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
@@ -248,10 +276,11 @@ impl Background {
                 gpu.write_buffer(
                     &self.vertex_buffer,
                     offset as u64,
-                    bytemuck::cast_slice(&range_verts),
+                    bytemuck::cast_slice(&verts),
                 );
             }
         }
+        self.staging = verts;
 
         if rebuild_full_rect {
             self.upload_full_rect(gpu, viewport);

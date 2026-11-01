@@ -13,6 +13,8 @@ use harbor_text::{
 };
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
+mod allocation_tests;
 /// Classify source, never width. ASCII ordinary cells need no allocated String.
 pub(super) fn emoji_candidate(cell: &Cell) -> bool {
     if cell.wide_continuation || cell.isolated_mark || cell.attrs.contains(CellAttrs::CONCEAL) {
@@ -28,13 +30,18 @@ pub(super) fn emoji_candidate(cell: &Cell) -> bool {
     } else {
         // Classification depends on the lead and selector/join/keycap presence.
         // Inspect the complete suffix without copying an arbitrarily long source.
-        let mut source = String::from(first);
+        let mut source = [0u8; 16];
+        let mut len = first.len();
+        source[..len].copy_from_slice(first.as_bytes());
         for marker in ['\u{fe0e}', '\u{fe0f}', '\u{200d}', '\u{20e3}'] {
             if cell.suffix.contains(marker) {
-                source.push(marker);
+                len += marker.encode_utf8(&mut source[len..]).len();
             }
         }
-        classify_unit(&source, PresentationIntent::Auto) == UnitKind::Emoji
+        classify_unit(
+            std::str::from_utf8(&source[..len]).unwrap(),
+            PresentationIntent::Auto,
+        ) == UnitKind::Emoji
     }
 }
 
@@ -116,12 +123,33 @@ struct Candidate {
 }
 
 impl Candidate {
-    fn same_projection(&self, other: &Self) -> bool {
-        self.col == other.col
-            && self.ch == other.ch
-            && self.width == other.width
-            && self.color == other.color
-            && self.request == other.request
+    fn same_request(&self, col: usize, cell: &Cell, color: [f32; 4]) -> bool {
+        self.col == col
+            && self.ch == cell.ch
+            && self.color == color
+            && self.request.as_ref().map_or_else(
+                || {
+                    cell.ch.len_utf16() + cell.suffix.chars().map(char::len_utf16).sum::<usize>()
+                        > SEQUENCE_MAX_UTF16
+                },
+                |r| {
+                    let mut encoded = [0; 4];
+                    r.source
+                        .strip_prefix(cell.ch.encode_utf8(&mut encoded) as &str)
+                        == Some(cell.suffix.as_str())
+                        && r.style.bold == cell.attrs.contains(CellAttrs::BOLD)
+                        && r.style.italic == cell.attrs.contains(CellAttrs::ITALIC)
+                },
+            )
+    }
+
+    fn tile(&self, atlas: &ColorAtlas) -> Option<Resolved> {
+        self.request
+            .as_ref()
+            .and_then(|r| atlas.entries.get(r))
+            .filter(|e| matches!(e.outcome, super::color_atlas::CachedOutcome::Complete(_)))
+            .and_then(|e| e.tile.as_ref().zip(e.placement))
+            .map(|(tile, p)| Resolved::Tile(tile.bounds, p.x, p.y))
     }
 }
 
@@ -144,6 +172,17 @@ struct ProjectionKey {
     scale: f32,
     generation: harbor_text::PresentationGeneration,
 }
+/// At most one viewport's flags/lookups and one row's construction scratch.
+/// Cleared at use and reset on grid changes; keys never accumulate across frames.
+#[derive(Default)]
+struct SequenceScratch {
+    touched: Vec<bool>,
+    cells: Vec<Candidate>,
+    vertices: Vec<TexturedVertex>,
+    missing: Vec<ColoredVertex>,
+    suppressed: HashSet<usize>,
+    usability: HashMap<char, bool>,
+}
 
 #[derive(Default)]
 pub(super) struct SequenceLayer {
@@ -152,6 +191,7 @@ pub(super) struct SequenceLayer {
     pub tile_cells: HashSet<usize>,
     rows: Vec<SequenceRow>,
     key: Option<ProjectionKey>,
+    scratch: SequenceScratch,
     gpu: Option<ColorGpu>,
     missing: Option<MissingGpu>,
 }
@@ -248,10 +288,14 @@ impl SequenceLayer {
         }
         if self.rows.len() != snap.rows || self.key.as_ref().is_some_and(|k| k.cols != snap.cols) {
             self.rows = (0..snap.rows).map(|_| SequenceRow::default()).collect();
-            self.emoji_cells.clear();
-            self.tile_cells.clear();
+            self.emoji_cells = HashSet::new();
+            self.tile_cells = HashSet::new();
+            self.scratch = SequenceScratch::default();
         }
-        let mut touched = vec![full; snap.rows];
+        let scratch = &mut self.scratch;
+        let touched = &mut scratch.touched;
+        touched.resize(snap.rows, false);
+        touched.fill(full);
         for range in dirty {
             if range.start_col < range.end_col && range.row < snap.rows {
                 touched[range.row] = true;
@@ -262,7 +306,9 @@ impl SequenceLayer {
                 continue;
             }
             let retained = &mut self.rows[row];
-            let mut cells = Vec::new();
+            let cells = &mut scratch.cells;
+            cells.clear();
+            let mut same = !full;
             for col in 0..snap.cols {
                 #[cfg(test)]
                 {
@@ -270,31 +316,41 @@ impl SequenceLayer {
                 }
                 let cell = snap.cell(row, col);
                 if emoji_candidate(cell) {
+                    let color = glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs);
+                    let old = retained.cells.get_mut(cells.len());
+                    let reuse = !full
+                        && old
+                            .as_ref()
+                            .is_some_and(|c| c.same_request(col, cell, color));
+                    same &= reuse && old.as_ref().is_some_and(|c| c.width == cell.grid_width());
+                    let (request, resolved) = if reuse {
+                        let old = old.unwrap();
+                        (old.request.take(), old.resolved)
+                    } else {
+                        (sequence_request(cell, fonts, palette, scale), None)
+                    };
                     cells.push(Candidate {
                         col,
                         ch: cell.ch,
                         width: cell.grid_width(),
-                        color: glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs),
-                        request: sequence_request(cell, fonts, palette, scale),
-                        resolved: None,
+                        color,
+                        request,
+                        resolved,
                     });
                 }
             }
-            let same = cells.len() == retained.cells.len()
-                && cells
-                    .iter()
-                    .zip(&retained.cells)
-                    .all(|(a, b)| a.same_projection(b));
+            same &= cells.len() == retained.cells.len();
             *changed = full || !same;
             if !same {
                 for cell in &retained.cells {
                     self.emoji_cells.remove(&(row * snap.cols + cell.col));
                 }
-                for cell in &cells {
+                for cell in cells.iter() {
                     self.emoji_cells.insert(row * snap.cols + cell.col);
                 }
-                retained.cells = cells;
             }
+            std::mem::swap(&mut retained.cells, cells);
+            cells.clear();
         }
         // Pending damage can be replayed before acknowledgement. Identical
         // candidates keep both resolved dependencies and geometry in that case.
@@ -308,47 +364,21 @@ impl SequenceLayer {
             .iter()
             .flat_map(|r| &r.cells)
             .filter_map(|c| c.request.as_ref());
-        let before: HashMap<_, _> = self
-            .atlas
-            .entries
-            .iter()
-            .map(|(r, e)| {
-                (
-                    r.clone(),
-                    e.tile
-                        .as_ref()
-                        .zip(e.placement)
-                        .map(|(t, p)| (t.bounds, p.x, p.y)),
-                )
-            })
-            .collect();
         let changes = self.atlas.sync(requests, key.generation, |r| {
             (*fonts.present_sequence(r)).clone()
         });
-        let changed_requests: HashSet<_> = before
-            .keys()
-            .chain(self.atlas.entries.keys())
-            .filter(|r| {
-                let old = before.get(*r).copied().flatten();
-                let new = self
-                    .atlas
-                    .entries
-                    .get(*r)
-                    .and_then(|e| e.tile.as_ref().zip(e.placement))
-                    .map(|(t, p)| (t.bounds, p.x, p.y));
-                old != new
-            })
-            .cloned()
-            .collect();
         let mut scalar_damage = Vec::new();
-        let mut usability = HashMap::new();
+        scratch.usability.clear();
         for (row, retained) in self.rows.iter_mut().enumerate() {
             if !touched[row]
                 && !scalar_changed
                 && !retained.cells.iter().any(|c| {
-                    c.request
-                        .as_ref()
-                        .is_some_and(|r| changed_requests.contains(r))
+                    let tile = c.tile(&self.atlas);
+                    if matches!(c.resolved, Some(Resolved::Tile(..))) {
+                        c.resolved != tile
+                    } else {
+                        tile.is_some()
+                    }
                 })
             {
                 continue;
@@ -362,15 +392,10 @@ impl SequenceLayer {
             let mut rebuild = touched[row];
             for candidate in &mut retained.cells {
                 let cell = snap.cell(row, candidate.col);
-                let tile = candidate
-                    .request
-                    .as_ref()
-                    .and_then(|r| self.atlas.entries.get(r))
-                    .filter(|e| matches!(e.outcome, super::color_atlas::CachedOutcome::Complete(_)))
-                    .and_then(|e| e.tile.as_ref().zip(e.placement));
-                let resolved = if let Some((tile, p)) = tile {
-                    Resolved::Tile(tile.bounds, p.x, p.y)
-                } else if *usability
+                let resolved = if let Some(tile) = candidate.tile(&self.atlas) {
+                    tile
+                } else if *scratch
+                    .usability
                     .entry(cell.ch)
                     .or_insert_with(|| usable_scalar(scalar, cell.ch))
                 {
@@ -388,12 +413,16 @@ impl SequenceLayer {
             {
                 super::observations::record_sequence(|work| work.built_rows.push(row));
             }
-            let old_suppression = std::mem::take(&mut retained.suppressed);
-            for idx in &old_suppression {
+            std::mem::swap(&mut scratch.suppressed, &mut retained.suppressed);
+            retained.suppressed.clear();
+            let old_suppression = &scratch.suppressed;
+            for idx in old_suppression {
                 self.tile_cells.remove(idx);
             }
-            let mut vertices = Vec::new();
-            let mut missing = Vec::new();
+            let vertices = &mut scratch.vertices;
+            let missing = &mut scratch.missing;
+            vertices.clear();
+            missing.clear();
             for candidate in &retained.cells {
                 let col = candidate.col;
                 let idx = row * snap.cols + col;
@@ -427,7 +456,7 @@ impl SequenceLayer {
                     self.tile_cells.insert(idx);
                     retained.suppressed.insert(idx);
                     append_missing_cue(
-                        &mut missing,
+                        missing,
                         rect,
                         viewport.surface_dimensions(),
                         glyph_color_with_palette(palette, cell.fg, cell.bg, cell.attrs),
@@ -531,9 +560,10 @@ fn update_row_buffer<T: bytemuck::Pod + Default>(
     gpu: TerminalGpuAccess<'_>,
     buffer: &mut Option<VertexBuffer<T>>,
     old: &mut Vec<T>,
-    new: Vec<T>,
+    new: &mut Vec<T>,
 ) -> usize {
-    if bytemuck::cast_slice::<T, u8>(old) == bytemuck::cast_slice::<T, u8>(&new) {
+    if bytemuck::cast_slice::<T, u8>(old) == bytemuck::cast_slice::<T, u8>(new) {
+        new.clear();
         return 0;
     }
     let bytes = std::mem::size_of_val(new.as_slice());
@@ -542,9 +572,13 @@ fn update_row_buffer<T: bytemuck::Pod + Default>(
     } else {
         buffer
             .get_or_insert_with(|| VertexBuffer::new(gpu.device()))
-            .write(gpu, &new);
+            .write(gpu, new);
     }
-    *old = new;
+    std::mem::swap(old, new);
+    new.clear();
+    if old.is_empty() {
+        *old = Vec::new();
+    }
     bytes
 }
 

@@ -615,7 +615,7 @@ fn structural_and_failed_updates_converge_without_consuming_pending_damage() {
         }
         let skipped = engine.read_update(Instant::now());
         let mut invalid = skipped.clone();
-        std::sync::Arc::make_mut(&mut invalid.snapshot).cols = 0;
+        std::sync::Arc::make_mut(&mut invalid.projection.snapshot).cols = 0;
         assert!(!pipeline.prepare(gpu, &invalid, false));
         assert!(!engine.acknowledge_update(&invalid));
         engine.put_str("\x1b[2;4Hx");
@@ -633,7 +633,7 @@ fn structural_and_failed_updates_converge_without_consuming_pending_damage() {
             current.appearance.palette(),
         )
         .unwrap();
-        let actual = read_draw(&device, &queue, |p| pipeline.text.draw(p));
+        let actual = read_draw(&device, &queue, |p| pipeline.text_for_test().draw(p));
         let reference = read_draw(&device, &queue, |p| fresh.draw(p));
         assert!(
             actual == reference,

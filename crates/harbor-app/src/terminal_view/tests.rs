@@ -501,7 +501,14 @@ fn assert_rendered_bridge_replays_hidden_output_and_retained_resize(
                 (before_admission.rows, before_admission.cols),
                 "drawing must not bypass host admission"
             );
-            terminal.lock().unwrap().advance_resize().unwrap();
+            assert!(
+                terminal
+                    .lock()
+                    .unwrap()
+                    .advance_resize()
+                    .unwrap()
+                    .committed()
+            );
             let before_draw = terminal.lock().unwrap().snapshot();
             draw(&ctx, 73, ExternalDrawMode::Retain);
             let after_draw = terminal.lock().unwrap().snapshot();

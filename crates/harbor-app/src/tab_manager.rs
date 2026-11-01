@@ -573,7 +573,7 @@ impl TabManager {
         for tab in &mut self.tabs {
             match tab.terminal.lock() {
                 Ok(mut terminal) => {
-                    if let Err(error) = terminal.try_resize_if_changed(size) {
+                    if let Err(error) = terminal.request_resize(size) {
                         tracing::warn!(tab_id = tab.id.get(), %error, "failed to request terminal resize");
                     }
                 }
@@ -625,7 +625,7 @@ impl TabManager {
         outcome.ready_remaining = self.tabs.iter().any(|tab| {
             tab.terminal
                 .lock()
-                .is_ok_and(|terminal| terminal.resize_ready())
+                .is_ok_and(|terminal| terminal.resize_status().needs_advance())
         });
         self.refresh_resize_completion();
         outcome
@@ -635,12 +635,12 @@ impl TabManager {
         let Ok(mut terminal) = tab.terminal.lock() else {
             return;
         };
-        if !terminal.resize_ready() {
+        if !terminal.resize_status().needs_advance() {
             return;
         }
         outcome.attempted += 1;
         match terminal.advance_resize() {
-            Ok(changed) => outcome.active_changed |= active && changed,
+            Ok(changed) => outcome.active_changed |= active && changed.committed(),
             Err(error) => {
                 tracing::warn!(tab_id = tab.id.get(), %error, "failed to complete terminal resize")
             }

@@ -18,6 +18,7 @@ Native pipeline verification selected AMD Radeon RX 7900 XT, discrete GPU, Vulka
 
 - Acknowledgement checks session/epoch, checked state-owner mutation provenance, presentation revision and exact shared snapshot identity; it does not compare or hash visible cells. Selection/auto-scroll tracks its actual owner, not the outer mutable pointer argument passed through an empty scheduling poll.
 - `TerminalUpdate::snapshot` is an `Arc<TerminalSnapshot>`; a private matching reference rejects detached/modified synthetic snapshots without grid equality. Exposed damage and presentation values remain validated.
+  - API update (2026-10-31): engine-issued updates now expose this data immutably through `TerminalProjection`. Clone `update.projection()` for synthetic rendering; configuration candidates have only the projection type and cannot be acknowledged. The runtime identity/provenance checks remain as defense in depth. See the current embedding contract.
 - `SnapshotCells` shares a visible row directory and immutable row payloads. The cache checks row versions/generations and copies changed rows only, regardless of older updates remaining alive. Unchanged payloads/suffixes are not copied. There is O(visible rows) metadata work, not a claim that every read or renderer layer is O(1).
 - Nonsemantic text-overflow bookkeeping invalidates only its cached row without advancing independent semantic content versions or adding visual damage. All ordinary/bulk semantic cell mutation paths continue to use row versions.
 

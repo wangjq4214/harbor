@@ -1,5 +1,5 @@
 //! Character-local, hard-edged terminal box drawing. No font or neighbor state.
-use super::gpu::{self, ColoredVertex, TerminalGpuAccess, UploadMode};
+use super::gpu::{self, ColoredVertex, TerminalGpuAccess};
 use super::layout::RenderViewport;
 use super::text::glyph_color_with_palette;
 use crate::{Cell, CellAttrs, DirtyRange, TerminalSnapshot};
@@ -475,9 +475,7 @@ pub(super) fn slot_count(snap: &TerminalSnapshot, max_buffer_size: u64) -> Optio
 
 pub(super) struct BoxDrawing {
     pipeline: Arc<wgpu::RenderPipeline>,
-    buffer: wgpu::Buffer,
-    capacity: usize,
-    vertex_count: u32,
+    geometry: gpu::ColoredRows,
     grid: (usize, usize),
     viewport: Option<RenderViewport>,
     palette: Palette,
@@ -486,15 +484,13 @@ pub(super) struct BoxDrawing {
 
 impl BoxDrawing {
     pub(super) fn new(
-        gpu: TerminalGpuAccess<'_>,
+        _gpu: TerminalGpuAccess<'_>,
         pipeline: Arc<wgpu::RenderPipeline>,
         palette: Palette,
     ) -> Self {
         Self {
             pipeline,
-            buffer: gpu::create_colored_vertex_buffer(gpu.device(), &[]),
-            capacity: 0,
-            vertex_count: 0,
+            geometry: gpu::ColoredRows::default(),
             grid: (0, 0),
             viewport: None,
             palette,
@@ -520,91 +516,41 @@ impl BoxDrawing {
         ranges: &[DirtyRange],
         view: &RenderViewport,
     ) {
-        let count = slot_count(snap, gpu.device().limits().max_buffer_size);
-        if !drawable(view) || count.is_none() {
-            self.vertex_count = 0;
+        if !drawable(view) || slot_count(snap, gpu.device().limits().max_buffer_size).is_none() {
+            self.viewport = None;
             self.dirty = true;
             return;
         }
-        let count = count.unwrap();
-        let resized = self.grid != (snap.rows, snap.cols);
-        let invalid_range = ranges
-            .iter()
-            .any(|r| r.row >= snap.rows || r.start_col > r.end_col || r.end_col > snap.cols);
-        let plan = gpu.upload_plan(
-            snap.rows,
-            snap.cols,
-            BOX_VERTICES_PER_CELL * std::mem::size_of::<ColoredVertex>(),
-            ranges,
-            self.dirty || resized || self.viewport != Some(*view) || invalid_range,
-        );
-        if plan.mode == UploadMode::None {
-            return;
-        }
-        if count > self.capacity {
-            self.buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
-                label: Some("terminal box slots"),
-                size: (count * std::mem::size_of::<ColoredVertex>()).max(4) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
+        let full = self.dirty
+            || self.grid != (snap.rows, snap.cols)
+            || self.viewport != Some(*view)
+            || ranges
+                .iter()
+                .any(|r| r.row >= snap.rows || r.start_col > r.end_col || r.end_col > snap.cols);
+        self.geometry
+            .prepare(gpu, snap.rows, ranges, full, |row, vertices| {
+                for col in 0..snap.cols {
+                    let cell = snap.cell(row, col);
+                    if is_box_drawing(cell.ch)
+                        && !cell.wide_continuation
+                        && !cell.attrs.contains(CellAttrs::CONCEAL)
+                    {
+                        gpu::ColoredRows::append(
+                            vertices,
+                            &cell_vertices(cell, view, &self.palette, row, col),
+                        );
+                    }
+                }
             });
-            self.capacity = count;
-        }
-        if plan.mode == UploadMode::Full {
-            // Write one row at a time; CPU staging is bounded by one row, not the
-            // full GPU allocation. A row-stride-only resize still rebuilds all.
-            for row in 0..snap.rows {
-                self.upload_range(gpu, snap, view, row, 0, snap.cols);
-            }
-        } else {
-            for range in ranges {
-                self.upload_range(gpu, snap, view, range.row, range.start_col, range.end_col);
-            }
-        }
         self.grid = (snap.rows, snap.cols);
         self.viewport = Some(*view);
-        self.vertex_count = count as u32;
         self.dirty = false;
     }
 
-    fn upload_range(
-        &self,
-        gpu: TerminalGpuAccess<'_>,
-        snap: &TerminalSnapshot,
-        view: &RenderViewport,
-        row: usize,
-        start: usize,
-        end: usize,
-    ) {
-        let mut vertices = Vec::with_capacity((end - start) * BOX_VERTICES_PER_CELL);
-        for col in start..end {
-            vertices.extend_from_slice(&cell_vertices(
-                snap.cell(row, col),
-                view,
-                &self.palette,
-                row,
-                col,
-            ));
-        }
-        if !vertices.is_empty() {
-            let offset = (row * snap.cols + start)
-                * BOX_VERTICES_PER_CELL
-                * std::mem::size_of::<ColoredVertex>();
-            debug_assert!(
-                offset as u64 + std::mem::size_of_val(vertices.as_slice()) as u64
-                    <= self.buffer.size()
-            );
-            gpu.write_buffer(&self.buffer, offset as u64, bytemuck::cast_slice(&vertices));
-        }
-    }
-
     pub(super) fn draw(&self, pass: &mut wgpu::RenderPass) {
-        if self.vertex_count == 0 {
-            return;
+        if self.viewport.is_some() {
+            self.geometry.draw(pass, &self.pipeline);
         }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.buffer.slice(..));
-        pass.draw(0..self.vertex_count, 0..1);
     }
 }
 

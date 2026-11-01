@@ -12,6 +12,10 @@ use harbor_config::BACKGROUND;
 use harbor_text::atlas::MAX_ATLAS_SIZE;
 use harbor_text::{FontBook, GlyphAtlas, TextMetrics};
 
+#[path = "text_overlay.rs"]
+mod overlay;
+use overlay::{CellOverlays, ImeOverlay, OverlayView};
+
 const SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -223,19 +227,19 @@ fn suffix_paint_chars(suffix: &str) -> impl Iterator<Item = char> + '_ {
 }
 
 /// Scalars needed by both the initial atlas and incremental dirty uploads.
-fn paint_chars(cell: &Cell) -> Vec<char> {
-    if cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
-        return Vec::new();
-    }
-    let mut chars = Vec::new();
-    if cell.isolated_mark {
-        chars.push('\u{25cc}');
-    }
-    if cell.ch != ' ' && !super::box_drawing::is_box_drawing(cell.ch) {
-        chars.push(cell.ch);
-    }
-    chars.extend(suffix_paint_chars(&cell.suffix));
-    chars
+/// Borrow suffixes and yield directly into the collector without per-cell allocation.
+fn paint_chars(cell: &Cell) -> impl Iterator<Item = char> + '_ {
+    std::iter::once(cell)
+        .filter(|cell| !cell.wide_continuation && !cell.attrs.contains(CellAttrs::CONCEAL))
+        .flat_map(|cell| {
+            [
+                cell.isolated_mark.then_some('\u{25cc}'),
+                (cell.ch != ' ' && !super::box_drawing::is_box_drawing(cell.ch)).then_some(cell.ch),
+            ]
+            .into_iter()
+            .flatten()
+            .chain(suffix_paint_chars(&cell.suffix))
+        })
 }
 
 /// Diagnostic resource counters; never part of the retained terminal model.
@@ -256,7 +260,10 @@ pub struct Text {
     atlas: GlyphAtlas,
     gpu_atlas: GpuGlyphAtlas,
     vertex_buffer: wgpu::Buffer,
-    overlay: VertexBuffer<TexturedVertex>,
+    cell_overlays: CellOverlays,
+    ime_overlay: ImeOverlay,
+    staging: Vec<TexturedVertex>,
+    combined_damage: Vec<DirtyRange>,
     dirty: bool,
     rows: usize,
     cols: usize,
@@ -355,8 +362,11 @@ impl Text {
             pipeline,
             atlas,
             gpu_atlas,
-            overlay: VertexBuffer::new(gpu.device()),
+            cell_overlays: CellOverlays::default(),
+            ime_overlay: ImeOverlay::default(),
             vertex_buffer,
+            staging: Vec::new(),
+            combined_damage: Vec::new(),
             dirty: true,
             rows,
             cols,
@@ -377,9 +387,24 @@ impl Text {
             true,
             true,
         );
-        let verts = layer.build_all_vertices(snap, viewport);
+        let mut verts = std::mem::take(&mut layer.staging);
+        layer.append_all_vertices(snap, viewport, &mut verts);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
+        layer.staging = verts;
         layer.dirty = false;
+        layer.cell_overlays.prepare(
+            gpu,
+            snap,
+            OverlayView {
+                atlas: &layer.atlas,
+                metrics: &layer.metrics,
+                palette: &layer.palette,
+                viewport,
+            },
+            &layer.sequences.tile_cells,
+            &[],
+            true,
+        );
 
         Ok(layer)
     }
@@ -424,31 +449,27 @@ impl Text {
         chars
     }
 
-    fn build_row_vertices(
-        &self,
-        row: usize,
-        snap: &TerminalSnapshot,
-        viewport: &RenderViewport,
-    ) -> Vec<TexturedVertex> {
-        self.build_range_vertices(
-            &DirtyRange {
-                row,
-                start_col: 0,
-                end_col: snap.cols,
-            },
-            snap,
-            viewport,
-        )
-    }
-
+    #[cfg(test)]
     fn build_range_vertices(
         &self,
         range: &DirtyRange,
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
     ) -> Vec<TexturedVertex> {
-        let (surf_w, surf_h) = viewport.surface_dimensions();
         let mut verts = Vec::with_capacity((range.end_col - range.start_col) * 6);
+        self.append_range_vertices(range, snap, viewport, &mut verts);
+        verts
+    }
+
+    fn append_range_vertices(
+        &self,
+        range: &DirtyRange,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+        verts: &mut Vec<TexturedVertex>,
+    ) {
+        let (surf_w, surf_h) = viewport.surface_dimensions();
+        verts.reserve((range.end_col - range.start_col) * 6);
         for col in range.start_col..range.end_col {
             let cell = snap.cell(range.row, col);
             let idx = range.row * snap.cols + col;
@@ -581,18 +602,37 @@ impl Text {
                 6,
             ));
         }
-        verts
     }
 
+    fn append_all_vertices(
+        &self,
+        snap: &TerminalSnapshot,
+        viewport: &RenderViewport,
+        verts: &mut Vec<TexturedVertex>,
+    ) {
+        verts.reserve(snap.rows * snap.cols * 6);
+        for row in 0..snap.rows {
+            self.append_range_vertices(
+                &DirtyRange {
+                    row,
+                    start_col: 0,
+                    end_col: snap.cols,
+                },
+                snap,
+                viewport,
+                verts,
+            );
+        }
+    }
+
+    #[cfg(test)]
     fn build_all_vertices(
         &self,
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
     ) -> Vec<TexturedVertex> {
         let mut verts = Vec::with_capacity(snap.rows * snap.cols * 6);
-        for row in 0..snap.rows {
-            verts.extend(self.build_row_vertices(row, snap, viewport));
-        }
+        self.append_all_vertices(snap, viewport, &mut verts);
         verts
     }
 
@@ -610,7 +650,8 @@ impl Text {
         )
     }
 
-    /// Rebuilds only the transient IME overlay while sharing the base glyph atlas.
+    /// Prepares only transient IME geometry, sharing the base glyph atlas.
+    /// Cell suffix/isolated-mark overlays are retained by `prepare_with_dirty`.
     pub fn prepare_preedit(
         &mut self,
         gpu: TerminalGpuAccess<'_>,
@@ -618,95 +659,17 @@ impl Text {
         snap: &TerminalSnapshot,
         viewport: &RenderViewport,
     ) {
-        let layout = preedit
-            .filter(|preedit| !preedit.is_empty())
-            .map(|preedit| {
-                layout_preedit(
-                    preedit,
-                    (snap.cursor_x, snap.cursor_y),
-                    snap.rows,
-                    snap.cols,
-                )
-            });
-        let (surf_w, surf_h) = viewport.surface_dimensions();
-        let color = glyph_color_with_palette(
-            &self.palette,
-            Color::Default,
-            Color::Default,
-            CellAttrs::default(),
+        self.ime_overlay.prepare(
+            gpu,
+            snap,
+            preedit,
+            OverlayView {
+                atlas: &self.atlas,
+                metrics: &self.metrics,
+                palette: &self.palette,
+                viewport,
+            },
         );
-        let mut vertices = Vec::new();
-        for row in 0..snap.rows {
-            for col in 0..snap.cols {
-                let cell = snap.cell(row, col);
-                if cell.wide_continuation
-                    || cell.attrs.contains(CellAttrs::CONCEAL)
-                    || self.sequences.tile_cells.contains(&(row * snap.cols + col))
-                {
-                    continue;
-                }
-                let (cell_x, cell_y) = viewport.cell_pos(row, col);
-                let baseline = cell_y + self.metrics.ascent.ceil();
-                let cell_view = OverlayCell {
-                    x: cell_x,
-                    baseline,
-                    color: glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs),
-                    surface: (surf_w, surf_h),
-                    width: cell.grid_width(),
-                };
-                if cell.isolated_mark {
-                    append_overlay_glyph(
-                        &self.atlas,
-                        &self.metrics,
-                        &mut vertices,
-                        '\u{25cc}',
-                        &cell_view,
-                        false,
-                    );
-                }
-                for mark in
-                    suffix_paint_chars(&cell.suffix).chain(cell.isolated_mark.then_some(cell.ch))
-                {
-                    append_overlay_glyph(
-                        &self.atlas,
-                        &self.metrics,
-                        &mut vertices,
-                        mark,
-                        &cell_view,
-                        true,
-                    );
-                }
-            }
-        }
-        for positioned in layout.into_iter().flat_map(|layout| layout.glyphs) {
-            let Some(glyph) = self.atlas.glyph_by_char(positioned.ch) else {
-                continue;
-            };
-            if glyph.width == 0 || glyph.height == 0 {
-                continue;
-            }
-            let (cell_x, cell_y) = viewport.cell_pos(positioned.row, positioned.col);
-            let baseline = cell_y + self.metrics.ascent.ceil();
-            let glyph_left = cell_x + glyph.bearing_x as f32;
-            let glyph_bottom = baseline - glyph.bearing_y as f32;
-            let glyph_top = glyph_bottom - glyph.height as f32;
-            let glyph_right = glyph_left + glyph.width as f32;
-            vertices.extend_from_slice(&TexturedVertex::from_pixel_rect(
-                glyph_left,
-                glyph_top,
-                glyph_right,
-                glyph_bottom,
-                glyph.uv.left,
-                glyph.uv.top,
-                glyph.uv.right,
-                glyph.uv.bottom,
-                color,
-                surf_w,
-                surf_h,
-            ));
-        }
-
-        self.overlay.write(gpu, &vertices);
     }
 
     pub fn prepare_with_dirty(
@@ -722,6 +685,9 @@ impl Text {
             super::observations::reset_text();
         }
         let resized = snap.rows != self.rows || snap.cols != self.cols;
+        if resized {
+            self.combined_damage = Vec::new();
+        }
         let bytes_per_cell = 6 * std::mem::size_of::<TexturedVertex>();
 
         let mut requested = if resized {
@@ -757,16 +723,37 @@ impl Text {
             projection_dirty,
             scalar_changed,
         );
-        let mut combined = dirty_ranges.to_vec();
-        for range in extra {
-            if let Some(existing) = combined.iter_mut().find(|r| r.row == range.row) {
-                existing.start_col = existing.start_col.min(range.start_col);
-                existing.end_col = existing.end_col.max(range.end_col);
-            } else {
-                combined.push(range);
+        let dirty_ranges = if extra.is_empty() {
+            dirty_ranges
+        } else {
+            let combined = &mut self.combined_damage;
+            combined.clear();
+            combined.extend_from_slice(dirty_ranges);
+            for range in extra {
+                if let Some(existing) = combined.iter_mut().find(|r| r.row == range.row) {
+                    existing.start_col = existing.start_col.min(range.start_col);
+                    existing.end_col = existing.end_col.max(range.end_col);
+                } else {
+                    combined.push(range);
+                }
             }
-        }
-        let dirty_ranges = combined.as_slice();
+            self.combined_damage.as_slice()
+        };
+        // Observe atlas/global invalidation before ordinary text clears its dirty
+        // flag or returns early. Suppression damage belongs to cell overlays too.
+        self.cell_overlays.prepare(
+            gpu,
+            snap,
+            OverlayView {
+                atlas: &self.atlas,
+                metrics: &self.metrics,
+                palette: &self.palette,
+                viewport,
+            },
+            &self.sequences.tile_cells,
+            dirty_ranges,
+            resized || self.dirty,
+        );
 
         if resized {
             tracing::trace!(rows = snap.rows, cols = snap.cols, "text layer resize");
@@ -799,11 +786,13 @@ impl Text {
             return;
         }
 
+        let mut verts = std::mem::take(&mut self.staging);
+        verts.clear();
         if resized || plan.mode == UploadMode::Full {
             if !resized {
                 tracing::trace!("rebuilding text draw batch (full)");
             }
-            let verts = self.build_all_vertices(snap, viewport);
+            self.append_all_vertices(snap, viewport, &mut verts);
             if resized {
                 debug_assert_eq!(plan.mode, UploadMode::Full);
             }
@@ -819,24 +808,26 @@ impl Text {
         } else {
             tracing::trace!("rebuilding text draw batch (incremental)");
             for range in dirty_ranges {
-                let range_verts = self.build_range_vertices(range, snap, viewport);
+                verts.clear();
+                self.append_range_vertices(range, snap, viewport, &mut verts);
                 let offset = (range.row * snap.cols + range.start_col)
                     * 6
                     * std::mem::size_of::<TexturedVertex>();
                 gpu.write_buffer(
                     &self.vertex_buffer,
                     offset as u64,
-                    bytemuck::cast_slice(&range_verts),
+                    bytemuck::cast_slice(&verts),
                 );
                 #[cfg(test)]
                 {
                     super::observations::record_text_upload(
                         offset,
-                        std::mem::size_of_val(range_verts.as_slice()),
+                        std::mem::size_of_val(verts.as_slice()),
                     );
                 }
             }
         }
+        self.staging = verts;
         self.dirty = false;
     }
 
@@ -861,9 +852,11 @@ impl Text {
             pass.draw(0..vertex_count, 0..1);
         }
         self.sequences.draw(pass);
-        // Transient preedit is above BOTH scalar and complete sequence paint.
-        self.overlay
-            .draw(pass, &self.pipeline, Some(&self.gpu_atlas.bind_group));
+        self.cell_overlays
+            .draw(pass, &self.pipeline, &self.gpu_atlas.bind_group);
+        // IME remains above scalar, sequence and cell-overlay paint.
+        self.ime_overlay
+            .draw(pass, &self.pipeline, &self.gpu_atlas.bind_group);
     }
 }
 
@@ -1007,6 +1000,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ascii_and_space_paint_chars_preserve_base_and_suffix_rules() {
+        let mut cell = Cell {
+            ch: 'x',
+            ..Cell::default()
+        };
+        {
+            let mut chars = paint_chars(&cell);
+            assert_eq!(chars.next(), Some('x'));
+            assert_eq!(chars.next(), None);
+        }
+
+        cell.ch = ' ';
+        assert!(paint_chars(&cell).next().is_none());
+        cell.suffix.push('\u{301}');
+        assert_eq!(paint_chars(&cell).collect::<Vec<_>>(), ['\u{301}']);
+    }
+
+    #[test]
+    fn paint_chars_streams_long_suffix_without_truncation() {
+        let cell = Cell {
+            ch: 'e',
+            suffix: "\u{301}".repeat(128),
+            ..Cell::default()
+        };
+        let mut chars = paint_chars(&cell);
+        assert_eq!(chars.next(), Some('e'));
+        assert_eq!(chars.filter(|&ch| ch == '\u{301}').count(), 128);
+    }
+
+    #[test]
     fn procedural_box_collection_suppresses_only_the_base_and_retains_marks() {
         for scalar in 0x2500..=0x257f {
             let mut cell = Cell {
@@ -1014,7 +1037,7 @@ mod tests {
                 ..Cell::default()
             };
             cell.suffix.push('\u{301}');
-            assert_eq!(paint_chars(&cell), ['\u{301}']);
+            assert_eq!(paint_chars(&cell).collect::<Vec<_>>(), ['\u{301}']);
             assert_eq!(cell.grid_width(), 1);
             assert_eq!(cell.raw_text(), format!("{}\u{301}", cell.ch));
         }
@@ -1029,19 +1052,22 @@ mod tests {
                 .into(),
             ..Cell::default()
         };
-        assert_eq!(paint_chars(&cell), ['e', '\u{301}', '\u{327}', '\u{200b}']);
+        assert_eq!(
+            paint_chars(&cell).collect::<Vec<_>>(),
+            ['e', '\u{301}', '\u{327}', '\u{200b}']
+        );
 
         cell.ch = '\u{301}';
         cell.isolated_mark = true;
         assert_eq!(
-            paint_chars(&cell),
+            paint_chars(&cell).collect::<Vec<_>>(),
             ['\u{25cc}', '\u{301}', '\u{301}', '\u{327}', '\u{200b}']
         );
         cell.wide_continuation = true;
-        assert!(paint_chars(&cell).is_empty());
+        assert!(paint_chars(&cell).next().is_none());
         cell.wide_continuation = false;
         cell.attrs.set(CellAttrs::CONCEAL);
-        assert!(paint_chars(&cell).is_empty());
+        assert!(paint_chars(&cell).next().is_none());
     }
 
     #[test]
@@ -1056,7 +1082,7 @@ mod tests {
         );
         heart.suffix.push('\u{fe0f}');
         heart.width = 2;
-        assert_eq!(paint_chars(&heart), ['♥']);
+        assert_eq!(paint_chars(&heart).collect::<Vec<_>>(), ['♥']);
         assert_eq!(heart.raw_text(), "♥️");
         let mut joined = Cell::default();
         joined.set(
@@ -1067,7 +1093,7 @@ mod tests {
             false,
         );
         joined.suffix.push_str("\u{200d}💻");
-        assert_eq!(paint_chars(&joined), ['👩']);
+        assert_eq!(paint_chars(&joined).collect::<Vec<_>>(), ['👩']);
         assert_eq!(joined.raw_text(), "👩‍💻");
     }
 
@@ -1099,8 +1125,11 @@ mod tests {
             false,
         );
         isolated.isolated_mark = true;
-        assert_eq!(paint_chars(&base), ['e', '\u{0301}']);
-        assert_eq!(paint_chars(&isolated), ['\u{25cc}', '\u{0301}']);
+        assert_eq!(paint_chars(&base).collect::<Vec<_>>(), ['e', '\u{0301}']);
+        assert_eq!(
+            paint_chars(&isolated).collect::<Vec<_>>(),
+            ['\u{25cc}', '\u{0301}']
+        );
         let mut verts = Vec::new();
         let cell_view = OverlayCell {
             x: 0.0,

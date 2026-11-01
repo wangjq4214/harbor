@@ -239,6 +239,8 @@ impl<'frame> TerminalGpuAccess<'frame> {
     }
 
     pub fn write_buffer(self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
+        #[cfg(test)]
+        super::observations::record_buffer_write(data.len());
         self.queue.write_buffer(buffer, offset, data);
     }
 }
@@ -394,6 +396,9 @@ impl ColoredVertex {
             .map(|position| Self { position, color })
     }
 }
+
+mod colored_rows;
+pub(super) use colored_rows::ColoredRows;
 
 /// Grow-on-demand vertex buffer with an explicit draw count.
 ///

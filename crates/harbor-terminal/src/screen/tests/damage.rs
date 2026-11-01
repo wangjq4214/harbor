@@ -24,7 +24,7 @@ fn scroll_up_marks_all_rows() {
     let mut screen = Screen::new(3, 4);
     // Fill all rows, then scroll up via newline on bottom row.
     screen.clear_dirty();
-    screen.cursor.cursor.y = 2; // bottom row
+    screen.active.cursor.cursor.y = 2; // bottom row
     screen.newline(); // triggers scroll_up
     let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
     assert_eq!(dirty.len(), 3, "scroll_up should mark all rows");
@@ -33,7 +33,7 @@ fn scroll_up_marks_all_rows() {
 #[test]
 fn erase_line_marks_cursor_row() {
     let mut screen = Screen::new(4, 4);
-    screen.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.y = 2;
     screen.clear_dirty();
     screen.erase_line(2);
     let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
@@ -70,7 +70,7 @@ fn reset_display_marks_all_rows() {
 fn reverse_index_scroll_marks_all_rows() {
     let mut screen = Screen::new(3, 4);
     screen.clear_dirty();
-    screen.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.y = 0;
     screen.reverse_index(); // triggers scroll
     let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
     assert_eq!(
@@ -83,7 +83,7 @@ fn reverse_index_scroll_marks_all_rows() {
 #[test]
 fn backspace_does_not_mark_dirty() {
     let mut screen = Screen::new(1, 4);
-    screen.cursor.cursor.x = 2;
+    screen.active.cursor.cursor.x = 2;
     screen.clear_dirty();
     screen.backspace();
     assert_eq!(
@@ -96,7 +96,7 @@ fn backspace_does_not_mark_dirty() {
 #[test]
 fn newline_no_scroll_does_not_mark_dirty() {
     let mut screen = Screen::new(3, 4);
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.y = 1;
     screen.clear_dirty();
     screen.newline();
     assert_eq!(
@@ -126,8 +126,8 @@ fn test_write_char_range_dirty() {
 
     screen.clear_dirty();
     // Move cursor to row 1, col 5.
-    screen.cursor.cursor.y = 1;
-    screen.cursor.cursor.x = 5;
+    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 5;
     screen.write_char('y');
     let ranges = screen.dirty_ranges();
     assert_eq!(
@@ -142,12 +142,12 @@ fn test_write_char_range_dirty() {
     // Case 1: Overwriting a wide_continuation cell (splits wide char)
     screen.clear_dirty();
     // Write a double-width char at row 1, col 4 (occupies 4 and 5)
-    screen.cursor.cursor.y = 1;
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 4;
     screen.write_char('中'); // double-width character
     screen.clear_dirty();
     // Now write a normal char at col 5 (overwriting the continuation)
-    screen.cursor.cursor.x = 5;
+    screen.active.cursor.cursor.x = 5;
     screen.write_char('z');
     let ranges = screen.dirty_ranges();
     // Overwriting continuation cell splits the wide character at col 4, so start_col is 4
@@ -163,11 +163,11 @@ fn test_write_char_range_dirty() {
     // Case 2: Overwriting the start of a wide character
     screen.clear_dirty();
     // Write a double-width char at row 1, col 4 (occupies 4 and 5)
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.x = 4;
     screen.write_char('中');
     screen.clear_dirty();
     // Now write a normal char at col 4 (overwriting the base cell)
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.x = 4;
     screen.write_char('w');
     let ranges = screen.dirty_ranges();
     // Overwriting base cell clears its continuation at col 5, so end_col covers col 5 (up to 6)
@@ -182,7 +182,7 @@ fn test_write_char_range_dirty() {
 
     // Case 3: Clamping at end of row
     screen.clear_dirty();
-    screen.cursor.cursor.x = 9; // last column
+    screen.active.cursor.cursor.x = 9; // last column
     screen.write_char('a');
     let ranges = screen.dirty_ranges();
     assert_eq!(
@@ -202,8 +202,8 @@ fn test_mutations_range_dirty() {
 
     // 1. erase_line(0) (cursor to end)
     screen.clear_dirty();
-    screen.cursor.cursor.y = 0;
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.x = 4;
     screen.erase_line(0);
     let ranges = screen.dirty_ranges();
     assert_eq!(
@@ -217,8 +217,8 @@ fn test_mutations_range_dirty() {
 
     // 2. erase_chars(3) (ECH)
     screen.clear_dirty();
-    screen.cursor.cursor.y = 1;
-    screen.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.x = 3;
     screen.erase_chars(3);
     let ranges = screen.dirty_ranges();
     assert_eq!(
@@ -232,8 +232,8 @@ fn test_mutations_range_dirty() {
 
     // 3. insert_chars(2) (ICH)
     screen.clear_dirty();
-    screen.cursor.cursor.y = 2;
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 4;
     screen.insert_chars(2);
     let ranges = screen.dirty_ranges();
     assert_eq!(
@@ -247,8 +247,8 @@ fn test_mutations_range_dirty() {
 
     // 4. delete_chars(2) (DCH)
     screen.clear_dirty();
-    screen.cursor.cursor.y = 2;
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 4;
     screen.delete_chars(2);
     let ranges = screen.dirty_ranges();
     assert_eq!(
@@ -268,8 +268,8 @@ fn test_erase_display_range_dirty() {
 
     // 1. erase_display(0) - cursor to end of screen
     screen.clear_dirty();
-    screen.cursor.cursor.y = 2;
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 4;
     screen.erase_display(0);
     let ranges = screen.dirty_ranges();
     assert_eq!(
@@ -295,8 +295,8 @@ fn test_erase_display_range_dirty() {
 
     // 2. erase_display(1) - start of screen to cursor
     screen.clear_dirty();
-    screen.cursor.cursor.y = 2;
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 4;
     screen.erase_display(1);
     let ranges = screen.dirty_ranges();
     assert_eq!(
@@ -322,8 +322,8 @@ fn test_erase_display_range_dirty() {
 
     // 3. erase_display(2) - entire screen
     screen.clear_dirty();
-    screen.cursor.cursor.y = 2;
-    screen.cursor.cursor.x = 4;
+    screen.active.cursor.cursor.y = 2;
+    screen.active.cursor.cursor.x = 4;
     screen.erase_display(2);
     let ranges = screen.dirty_ranges();
     assert_eq!(
@@ -362,8 +362,8 @@ fn test_erase_display_range_dirty() {
 fn test_scroll_region_operations_damage() {
     use crate::DirtyRange;
     let mut screen = Screen::new(5, 10);
-    screen.cursor.scroll_region.top = 1;
-    screen.cursor.scroll_region.bottom = 3;
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 3;
 
     // 1. scroll_region_up_one
     screen.clear_dirty();
@@ -390,7 +390,7 @@ fn test_scroll_region_operations_damage() {
     );
 
     // 2. reverse_index (triggers scroll down in region [1, 3] when cursor at top)
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.y = 1;
     screen.clear_dirty();
     screen.reverse_index();
     assert_eq!(
@@ -415,7 +415,7 @@ fn test_scroll_region_operations_damage() {
     );
 
     // 3. insert_lines(2) with n > 1
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.y = 1;
     screen.clear_dirty();
     screen.insert_lines(2);
     assert_eq!(
@@ -440,7 +440,7 @@ fn test_scroll_region_operations_damage() {
     );
 
     // 4. delete_lines(2) with n > 1
-    screen.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.y = 1;
     screen.clear_dirty();
     screen.delete_lines(2);
     assert_eq!(
@@ -465,12 +465,12 @@ fn test_scroll_region_operations_damage() {
     );
 
     // 5. cursor outside scroll region -> no-op for insert_lines / delete_lines
-    screen.cursor.cursor.y = 0; // outside [1, 3]
+    screen.active.cursor.cursor.y = 0; // outside [1, 3]
     screen.clear_dirty();
     screen.insert_lines(2);
     assert!(screen.dirty_ranges().is_empty());
 
-    screen.cursor.cursor.y = 0; // outside [1, 3]
+    screen.active.cursor.cursor.y = 0; // outside [1, 3]
     screen.clear_dirty();
     screen.delete_lines(2);
     assert!(screen.dirty_ranges().is_empty());
