@@ -22,4 +22,3 @@ Detached preparation follows the same boundary: local prepared buffers carry no 
 - The ?47 parking, ?1047/?1049 clearing, per-buffer cursor/pen/modes, reply ordering, selection anchors and ConPTY deferred-primary policies remain regression contracts.
 - This is not a shared cursor/pen model and does not adopt xterm behavior where Harbor deliberately differs.
 - The original whole-Screen primitive is replaced, not its observable isolation contract.
-- Current integrated verification and limitations are recorded in the [implementation report](../refactor/terminal-7575ad9-interface-implementation/report.md).
