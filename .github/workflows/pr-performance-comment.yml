@@ -1,0 +1,42 @@
+name: PR performance comment
+
+on:
+  workflow_run:
+    workflows:
+      - PR performance
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+# Serialize publication for each source branch, including reruns. Do not cancel a
+# publisher halfway through create/update; a newer pending run supersedes older ones.
+concurrency:
+  group: performance-comment-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  comment:
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Never check out the PR, execute its scripts, or trust its report Markdown.
+      - name: Check out trusted default-branch publisher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create or update the advisory PR comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/ci/publish_performance_comment.py

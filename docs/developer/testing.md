@@ -42,6 +42,61 @@ For transient failures, use Actions' **Re-run failed jobs** so successful lanes 
 
 This structure targets earlier cheap-error feedback and less serial waiting, not fewer checks. Compare cold and warm hosted runs, including cache restore/save and runner queue time, before claiming a wall-time or cost improvement. It does not add automatic desktop/manual acceptance or performance gates.
 
+## Advisory PR performance report
+
+The [measurement workflow](../../.github/workflows/pr-performance.yml) runs separately
+on every PR to main. It is **not** a dependency of `quality`, and performance changes
+never block merging. Keep the existing required status/rules unchanged; do not add
+the performance jobs as required checks.
+
+The report compares the event's exact base SHA with its candidate merge SHA, not
+two different hosted runners or CI job durations. One shared
+[public-API probe](../../scripts/ci/performance_probe.rs) is copied unchanged into
+both checkouts, compiled sequentially in release/default-feature mode, and the
+executables are staged separately. Compilation finishes before timing begins.
+Four processes per revision per stage alternate A/B then B/A order, with warmups excluded.
+
+The fixed workloads cover ASCII/ANSI/Unicode ingestion (2000 rows), clean/local
+engine updates with one/eight sessions, primary narrowing/widening with populated
+history, alternate resize, and ordinary/emoji text preparation on DX12 WARP.
+They report CPU elapsed time, not native input/output-to-present, ConPTY resize
+latency, physical-GPU performance, memory residency or idle power. The probe is
+not the packaged static-CRT application. Update measurements are batch-average
+times per update. Text-preparation timing excludes GPU completion.
+
+The comment shows base/head/merge SHAs, median and p95 times, signed percentage
+changes, environment, probe fingerprint and between-process median ranges.
+Medians/p95s are computed per process and then summarized across processes.
+Positive changes mean slower; negative changes mean faster. Hosted-runner noise
+is not calibrated, so small differences are not confirmed regressions. No numeric
+regression threshold is applied. Missing, invalid, interrupted or failed
+measurements are explicitly unavailable, never a zero-change or passing result;
+a failed prepare stage can coexist with completed core results.
+
+A [trusted publisher](../../.github/workflows/pr-performance-comment.yml) maintains
+one GitHub Actions bot comment per PR, creating it once and updating it on later
+runs/reruns. It verifies the source run, PR association, current base/head/merge
+SHAs and run attempt. Superseded attempts, stale commits and older results cannot
+replace a newer published report. Use **Re-run all jobs** on **PR performance**
+to repeat measurements; rerunning only the publisher does not remeasure.
+
+The publisher uses `workflow_run` and default-branch code only. The measurement
+workflow runs PR code with a read-only token and no persisted checkout
+credentials. The write-token publisher never executes PR code or artifact
+scripts/Markdown: it validates a bounded JSON payload and regenerates the comment
+from known case names and numeric samples. Fork runs use the same permission
+separation, subject to GitHub's normal approval policy for fork workflows.
+Publication failure does not affect `quality`; inspect the publisher logs if
+repository permissions prevent commenting.
+
+No downloadable report is required. A one-day, attempt-specific internal JSON
+artifact carries data between the two permission boundaries; users read the PR
+comment or measurement job summary. Missing/invalid artifacts produce an
+unavailable notice when the run can still be associated with the current PR.
+**Rollout:** the publisher workflow and its scripts must first exist on the
+default branch before `workflow_run` can publish comments. Local tests do not
+establish that GitHub has actually posted a comment.
+
 ## GPU selection
 
 All offscreen suites share [one test-only device fixture](../../tests/support/gpu.rs). An explicitly selected GPU test **fails** if its adapter/device is unavailable; it never returns early and counts as a pass.
