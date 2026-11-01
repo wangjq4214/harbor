@@ -177,15 +177,145 @@ fn selector_promotes_at_right_edge_without_splitting_or_losing_style() {
 }
 
 #[test]
-fn no_wrap_edge_keeps_selector_text_without_corrupting_neighbors() {
-    let mut screen = Screen::new(1, 4);
+fn no_wrap_edge_promotes_sequence_across_fragmented_input() {
+    for sequence in ["♥️", "♥\u{200d}💻"] {
+        for split in 0..=sequence.len() {
+            let mut screen = Screen::new(3, 4);
+            let mut parser = TerminalParser::default();
+            feed(&mut parser, &mut screen, b"\x1b[?7labc\x1b[31m");
+            feed(&mut parser, &mut screen, &sequence.as_bytes()[..split]);
+            feed(&mut parser, &mut screen, &sequence.as_bytes()[split..]);
+            assert_eq!(screen.cell(0, 2).raw_text(), "c");
+            assert_eq!(screen.cell(0, 3).raw_text(), " ");
+            assert_eq!(screen.cell(1, 0).raw_text(), sequence);
+            assert_eq!(screen.cell(1, 0).grid_width(), 2);
+            assert_eq!(screen.cell(1, 0).fg, crate::Color::Named(1));
+            assert_eq!(
+                screen.cell(1, 1),
+                &crate::Cell::wide_continuation_of(screen.cell(1, 0))
+            );
+            assert_eq!((screen.cursor_x(), screen.cursor_y()), (2, 1));
+            assert!(!screen.pending_wrap());
+            assert_eq!(
+                screen.selected_text(crate::SelectionBounds {
+                    start_row: 0,
+                    start_col: 0,
+                    end_row: 1,
+                    end_col: 1,
+                }),
+                format!("abc{sequence}")
+            );
+            // Promotion must not enable ordinary autowrap or set pending wrap.
+            feed(&mut parser, &mut screen, b"XYZ");
+            assert_eq!(screen.cell(1, 2).raw_text(), "X");
+            assert_eq!(screen.cell(1, 3).raw_text(), "Z");
+            assert_eq!(screen.cell(2, 0).raw_text(), " ");
+            assert_eq!((screen.cursor_x(), screen.cursor_y()), (3, 1));
+            assert!(!screen.pending_wrap());
+        }
+    }
+}
+
+#[test]
+fn no_wrap_edge_promotion_preserves_anchor_metadata_damage_and_reflow() {
+    use crate::content_anchor::Affinity;
+    use crate::selection_model::GenPos;
+    let mut screen = Screen::new(3, 4);
+    screen.set_external_anchor_interest(true);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[?7labc");
-    feed(&mut parser, &mut screen, "♥️".as_bytes());
-    assert_eq!(screen.cell(0, 3).raw_text(), "♥️");
-    assert_eq!(screen.cell(0, 2).raw_text(), "c");
-    // No second cell exists in the active margin; this is a documented limit.
-    assert_eq!(screen.cell(0, 3).grid_width(), 1);
+    feed(
+        &mut parser,
+        &mut screen,
+        b"\x1b[?7labc\x1b[31m\x1b[1\"q\x1b]8;;https://example.test\x07",
+    );
+    feed(&mut parser, &mut screen, "♥".as_bytes());
+    let original = screen.cell(0, 3).clone();
+    let (_, before) = screen.finish_anchor_mutations(None).unwrap();
+    let anchor = before
+        .to_anchor(GenPos::new(0, 3), Affinity::Before)
+        .unwrap();
+    screen.clear_dirty();
+    feed(&mut parser, &mut screen, "️".as_bytes());
+    let (changes, after) = screen.finish_anchor_mutations(Some(&before)).unwrap();
+    assert_eq!(
+        after.resolve_selection(changes.apply(anchor).unwrap()),
+        Some(GenPos::new(1, 0))
+    );
+    assert_eq!(screen.cell(1, 0).fg, original.fg);
+    assert_eq!(screen.cell(1, 0).hyperlink, original.hyperlink);
+    assert!(screen.cell(1, 0).protected);
+    for (row, col) in [(0, 3), (1, 0), (1, 1)] {
+        assert!(
+            screen
+                .dirty_ranges()
+                .iter()
+                .any(|r| r.row == row && r.start_col <= col && r.end_col > col)
+        );
+    }
+    for width in [7, 3, 4] {
+        let prepared = screen.prepare_resize(3, width).unwrap();
+        screen.commit_resize(prepared);
+        let copied = screen.selected_text(crate::SelectionBounds {
+            start_row: screen.history_start(),
+            start_col: 0,
+            end_row: screen.history_start() + screen.scroll_count() as u64 + screen.rows() as u64
+                - 1,
+            end_col: screen.cols() - 1,
+        });
+        assert!(copied.starts_with("abc♥️"), "{copied:?}");
+    }
+}
+
+#[test]
+fn no_wrap_edge_promotion_uses_two_column_margins_in_both_buffers() {
+    for alternate in [false, true] {
+        for insert in [false, true] {
+            let mut screen = Screen::new(3, 6);
+            let mut parser = TerminalParser::default();
+            if alternate {
+                feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
+            }
+            feed(
+                &mut parser,
+                &mut screen,
+                b"L\x1b[6GR\x1b[2;1Hl\x1b[6Gr\x1b[?69h\x1b[3;4s\x1b[?7l\x1b[1;4H",
+            );
+            if insert {
+                feed(&mut parser, &mut screen, b"\x1b[4h");
+            }
+            feed(&mut parser, &mut screen, "♥️\u{301}".as_bytes());
+            assert_eq!(screen.cell(0, 0).raw_text(), "L");
+            assert_eq!(screen.cell(0, 5).raw_text(), "R");
+            assert_eq!(screen.cell(1, 0).raw_text(), "l");
+            assert_eq!(screen.cell(1, 5).raw_text(), "r");
+            assert_eq!(screen.cell(0, 3).raw_text(), " ");
+            assert_eq!(screen.cell(1, 2).raw_text(), "♥️\u{301}");
+            assert_eq!(screen.cell(1, 2).grid_width(), 2);
+            assert!(screen.cell(1, 3).wide_continuation);
+            assert_eq!((screen.cursor_x(), screen.cursor_y()), (3, 1));
+            assert!(!screen.pending_wrap());
+        }
+    }
+}
+
+#[test]
+fn no_wrap_edge_promotion_scrolls_without_splitting_the_pair() {
+    for alternate in [false, true] {
+        let mut screen = Screen::new(2, 2);
+        let mut parser = TerminalParser::default();
+        if alternate {
+            feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
+        }
+        feed(&mut parser, &mut screen, b"\x1b[?7l\x1b[2;1Hx");
+        feed(&mut parser, &mut screen, "♥️\u{301}".as_bytes());
+        assert_eq!(screen.cell(0, 0).raw_text(), "x");
+        assert_eq!(screen.cell(0, 1).raw_text(), " ");
+        assert_eq!(screen.cell(1, 0).raw_text(), "♥️\u{301}");
+        assert_eq!(screen.cell(1, 0).grid_width(), 2);
+        assert!(screen.cell(1, 1).wide_continuation);
+        assert_eq!((screen.cursor_x(), screen.cursor_y()), (1, 1));
+        assert!(!screen.pending_wrap());
+    }
 }
 
 #[test]

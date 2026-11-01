@@ -133,7 +133,7 @@ impl CellWriter {
             }
             if Self::promotes_width(normal.cell(row, base_col), ch) {
                 if !Self::promote_unit(pen_state, normal, cursor, row, base_col) {
-                    // Preserve source text even when DECAWM is disabled at the margin.
+                    // Preserve source text when active margins prevent a valid pair.
                     normal.mutate_cell_semantics(row, base_col, |cell| cell.suffix.push(ch));
                     return true;
                 }
@@ -210,7 +210,7 @@ impl CellWriter {
             (0, normal.cols() - 1)
         };
         if col == right {
-            if !cursor.modes.autowrap || right - left < 1 {
+            if right - left < 1 {
                 return false;
             }
             let mut cell = normal.cell(row, col).clone();
@@ -218,6 +218,9 @@ impl CellWriter {
             cursor.cursor.x = col;
             cursor.modes.pending_wrap = false;
             cursor.last_clamped_write = false;
+            // A promoted sequence keeps its two-cell width even with DECAWM
+            // disabled. Wrap this unit explicitly without changing the mode.
+            Self::wrap_line(pen_state, normal, cursor);
             if !Self::prepare_position(normal, cursor, pen_state, 2, (left, right)) {
                 return false;
             }
