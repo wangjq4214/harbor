@@ -16,10 +16,11 @@ The priority is a correct, stable daily-use Windows terminal. Native Unix PTY su
 - ⚙️ TOML settings with manual/default-on watched reload and configurable application keybindings.
 - ✨ Acrylic/backdrop fallback, reusable text fields, Portal overlays, gradients and local blur/edge refraction.
 - 🔎 Bounded current-session literal search with highlights and previous/next navigation.
+- 🎛️ Command palette for existing tab, configuration reload, clipboard, scrollback and search commands.
 
 Protocol support is scoped, not complete. See the [VT reference](docs/terminal/vt.md) and [compatibility guide](docs/terminal/compatibility.md) for supported behavior and limitations.
 
-Split panes, named profiles, a command palette and Kitty protocols are not implemented. Unicode width, configuration reload and application compatibility have limitations; consult the relevant guides before depending on them.
+Split panes, named profiles and Kitty protocols are not implemented. Unicode width, configuration reload and application compatibility have limitations; consult the relevant guides before depending on them.
 
 ## Build and Run
 

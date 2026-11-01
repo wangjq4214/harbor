@@ -3,6 +3,7 @@
 **Status:** Completed
 **Date:** 2026-09-26
 **Superseded in part by:** [ADR 0073](./0073-session-history-accounting-and-text-unit-overflow.md), only the unqualified source-text retention of exceptionally large text units beyond a fixed protective limit. This newly approved exception is not implemented; ordinary unit/width/fallback policy remains applicable.
+**Refined by:** [ADR 0105](./0105-two-cell-sequence-promotion-wraps-with-decawm-disabled.md), the implemented sequence-promotion exception (integrated runtime acceptance pending) that wraps right-edge two-cell sequence promotion even with DECAWM disabled.
 
 ## Context
 

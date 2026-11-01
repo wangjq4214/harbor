@@ -214,12 +214,14 @@ fn text_admission_pending_wrap_and_no_wrap_margin_do_not_move_on_discard() {
             'Z'
         );
     }
-    // Within-limit no-wrap final-column selector width is deliberately NOT
-    // repaired by this exception (Spec 0015's independent known discrepancy).
+    // Within-limit promotion wraps, unlike a discarded over-limit selector.
     let mut t = Terminal::new_headless(1, 4);
     t.put_str("\x1b[?7labc♥️");
-    assert_eq!(t.screen.cell(0, 3).raw_text(), "♥️");
-    assert_eq!(t.screen.cell(0, 3).grid_width(), 1);
+    assert_eq!(t.screen.scroll_count(), 1);
+    assert_eq!(t.screen.cell(0, 0).raw_text(), "♥️");
+    assert_eq!(t.screen.cell(0, 0).grid_width(), 2);
+    assert!(t.screen.cell(0, 1).wide_continuation);
+    assert_eq!(read_text(&t), "abc♥️");
 }
 
 #[test]

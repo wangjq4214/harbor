@@ -419,7 +419,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Synonyms:** Draw ID
 
 ### Autowrap (DECAWM)
-- **Definition:** DEC private ?7: reaching the right margin sets Pending-Wrap; the next printable first wraps to the next line.
+- **Definition:** DEC private ?7: when enabled, reaching the right margin sets Pending-Wrap and the next printable first wraps to the next line. The sequence-promotion exception moves a one-cell unit promoted to two cells at the right edge onto the next line even when DECAWM is disabled; it does not enable ordinary autowrap or overwrite preceding content. See [ADR 0105](./adr/0105-two-cell-sequence-promotion-wraps-with-decawm-disabled.md).
 - **Synonyms:** DECAWM, auto-wrap, autowrap mode
 
 ### Pending-Wrap
