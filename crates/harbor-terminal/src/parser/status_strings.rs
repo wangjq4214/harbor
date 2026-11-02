@@ -280,19 +280,15 @@ mod tests {
     }
 
     #[test]
-    fn should_prefer_failure_when_success_frame_exceeds_reply_cap() {
-        // Arrange — status alone long enough that framed success exceeds MAX_REPLY.
+    fn success_frame_preserves_long_payload_and_delimiters() {
         let status = vec![b'x'; MAX_REPLY];
 
-        // Act
+        // Framing alone does not apply build_reply's cap policy.
         let framed = success_frame(&status);
-        let chosen = Some(status)
-            .map(|status| success_frame(&status))
-            .filter(|frame| frame.len() <= MAX_REPLY)
-            .unwrap_or_else(failure_frame);
 
-        // Assert
         assert!(framed.len() > MAX_REPLY);
-        assert_eq!(chosen, failure_frame());
+        assert!(framed.starts_with(b"\x1bP1$r"));
+        assert!(framed.ends_with(b"\x1b\\"));
+        assert_eq!(&framed[5..framed.len() - 2], status.as_slice());
     }
 }

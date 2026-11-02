@@ -1,5 +1,26 @@
 use super::*;
 
+fn search_button_rects(runtime: &Runtime) -> Vec<Rect> {
+    let panel = search_panel_rect(runtime);
+    let delta = runtime.pending_delta().unwrap();
+    let mut buttons: Vec<_> = delta
+        .added
+        .iter()
+        .chain(&delta.modified)
+        .filter_map(|item| match item.primitive {
+            Primitive::Quad { rect, .. }
+                if panel.contains(rect.min)
+                    && rect.size() == harbor_widget::layout::Size::new(32.0, 32.0) =>
+            {
+                Some(rect)
+            }
+            _ => None,
+        })
+        .collect();
+    buttons.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+    buttons
+}
+
 #[test]
 fn search_editor_publishes_initial_no_result_instead_of_an_immediate_busy_hint() {
     let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
@@ -208,20 +229,7 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
                 .iter()
                 .all(|(_, rect)| rect.size() == Size::new(18.0, 18.0))
         );
-        let mut buttons: Vec<_> = delta
-            .added
-            .iter()
-            .chain(&delta.modified)
-            .filter_map(|item| match item.primitive {
-                Primitive::Quad { rect, .. }
-                    if panel.contains(rect.min) && rect.size() == Size::new(32.0, 32.0) =>
-                {
-                    Some(rect)
-                }
-                _ => None,
-            })
-            .collect();
-        buttons.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+        let buttons = search_button_rects(&runtime);
         assert_eq!(buttons.len(), 3);
         assert_eq!(buttons[1].min.x - buttons[0].max.x, 4.0);
         assert_eq!(buttons[2].min.x - buttons[1].max.x, 4.0);
@@ -352,7 +360,7 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
 
 #[test]
 fn search_buttons_show_transient_glass_without_geometry_cursor_or_command_regressions() {
-    use harbor_widget::{CursorEffect, CursorShape, layout::Size};
+    use harbor_widget::{CursorEffect, CursorShape};
     for (width, height, scale) in [(1000, 500, 1.0), (1200, 800, 1.5), (1200, 800, 2.0)] {
         let controller = controller(
             width as f64 / scale as f64,
@@ -366,21 +374,7 @@ fn search_buttons_show_transient_glass_without_geometry_cursor_or_command_regres
         runtime.update(Instant::now());
         let panel = search_panel_rect(&runtime);
         let allocation = controller.latest_terminal_allocation();
-        let delta = runtime.pending_delta().unwrap();
-        let mut buttons: Vec<_> = delta
-            .added
-            .iter()
-            .chain(&delta.modified)
-            .filter_map(|item| match item.primitive {
-                Primitive::Quad { rect, .. }
-                    if panel.contains(rect.min) && rect.size() == Size::new(32.0, 32.0) =>
-                {
-                    Some(rect)
-                }
-                _ => None,
-            })
-            .collect();
-        buttons.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+        let buttons = search_button_rects(&runtime);
         assert_eq!(buttons.len(), 3);
         assert!(search_button_surfaces(&runtime).is_empty());
 

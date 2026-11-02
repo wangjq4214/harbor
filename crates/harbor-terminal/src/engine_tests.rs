@@ -95,17 +95,16 @@ impl Write for RecordingWriter {
     }
 }
 
+fn terminal_with_recorded_output() -> (Terminal, RecordingWriter) {
+    let writer = RecordingWriter(Arc::new(Mutex::new(Vec::new())));
+    let terminal = Terminal::new_headless_with_io(3, 8, std::io::empty(), writer.clone(), || true);
+    (terminal, writer)
+}
+
 #[test]
 fn escape_without_local_selection_reaches_primary_and_alternate_pty() {
     for alternate in [false, true] {
-        let written = Arc::new(Mutex::new(Vec::new()));
-        let mut terminal = Terminal::new_headless_with_io(
-            3,
-            8,
-            std::io::empty(),
-            RecordingWriter(Arc::clone(&written)),
-            || true,
-        );
+        let (mut terminal, RecordingWriter(written)) = terminal_with_recorded_output();
         if alternate {
             terminal.put_bytes(b"\x1b[?1049h");
         }
@@ -138,14 +137,7 @@ fn escape_consumes_local_selection_or_drag_then_next_escape_reaches_pty() {
         RenderViewport, TerminalPointerButton, TerminalPointerEvent, TerminalPointerPhase,
     };
     for (dragged, released) in [(false, false), (true, false), (true, true)] {
-        let written = Arc::new(Mutex::new(Vec::new()));
-        let mut terminal = Terminal::new_headless_with_io(
-            3,
-            8,
-            std::io::empty(),
-            RecordingWriter(Arc::clone(&written)),
-            || true,
-        );
+        let (mut terminal, RecordingWriter(written)) = terminal_with_recorded_output();
         terminal.put_str("abcdefgh");
         terminal
             .pointer
@@ -199,14 +191,7 @@ fn escape_consumes_local_selection_or_drag_then_next_escape_reaches_pty() {
 }
 #[test]
 fn event_dispatch_preserves_escape_passthrough_ime_focus_and_keyup_policy() {
-    let written = Arc::new(Mutex::new(Vec::new()));
-    let mut terminal = Terminal::new_headless_with_io(
-        3,
-        8,
-        std::io::empty(),
-        RecordingWriter(Arc::clone(&written)),
-        || true,
-    );
+    let (mut terminal, RecordingWriter(written)) = terminal_with_recorded_output();
     let now = Instant::now();
     let key = |key| {
         TerminalEvent::Keyboard(TerminalKeyboardEvent::KeyDown {

@@ -653,34 +653,35 @@ fn ime_enabled_without_preedit_does_not_suppress_character_keydown() {
 }
 
 #[test]
-fn disabled_ime_restores_character_key_dispatch_from_active_preedit() {
-    let mut runtime = external_surface_runtime(20);
-    let mut adapter = WinitAdapter::new();
-    adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
-    adapter.handle_event(
-        &mut runtime,
-        &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
-    );
-    // Transitioning to Disabled from active preedit restores direct typing
-    adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Disabled));
-
-    assert!(
-        adapter
-            .handle_keyboard_input(
+fn disabled_ime_restores_typing_and_empty_commit_respects_composition_state() {
+    for composing in [false, true] {
+        let mut runtime = external_surface_runtime(20);
+        let mut adapter = WinitAdapter::new();
+        let mut expected = Vec::new();
+        adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
+        if composing {
+            adapter.handle_event(
                 &mut runtime,
-                &Key::Character("a".into()),
-                ElementState::Pressed,
-                KeyLocation::Standard,
-            )
-            .is_handled()
-    );
-    assert_eq!(
-        runtime.drain_external_input(),
-        vec![
-            (
+                &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
+            );
+            expected.push((
                 ExternalDrawId::new(20),
                 UiEvent::ImePreedit(ImePreedit::new("draft", Some((0, 5)))),
-            ),
+            ));
+        }
+        adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Disabled));
+        assert!(
+            adapter
+                .handle_keyboard_input(
+                    &mut runtime,
+                    &Key::Character("a".into()),
+                    ElementState::Pressed,
+                    KeyLocation::Standard,
+                )
+                .is_handled(),
+            "composing before disable: {composing}"
+        );
+        expected.extend([
             (
                 ExternalDrawId::new(20),
                 UiEvent::ImePreedit(ImePreedit::default()),
@@ -692,68 +693,37 @@ fn disabled_ime_restores_character_key_dispatch_from_active_preedit() {
                     modifiers: Default::default(),
                 }),
             ),
-        ]
-    );
+        ]);
+        assert_eq!(
+            runtime.drain_external_input(),
+            expected,
+            "composing: {composing}"
+        );
 
-    let empty = adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit(String::new())));
-    assert!(empty.is_handled());
-    assert!(empty.effects.is_noop());
-    assert!(runtime.drain_external_input().is_empty());
-}
+        let empty =
+            adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit(String::new())));
+        assert!(empty.is_handled(), "composing: {composing}");
+        assert!(empty.effects.is_noop(), "composing: {composing}");
+        assert!(runtime.drain_external_input().is_empty());
 
-#[test]
-fn disabled_ime_restores_character_key_dispatch_and_empty_commit_is_a_handled_noop() {
-    let mut runtime = external_surface_runtime(20);
-    let mut adapter = WinitAdapter::new();
-    adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));
-    adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Disabled));
-
-    assert!(
-        adapter
-            .handle_keyboard_input(
-                &mut runtime,
-                &Key::Character("a".into()),
-                ElementState::Pressed,
-                KeyLocation::Standard,
-            )
-            .is_handled()
-    );
-    assert_eq!(
-        runtime.drain_external_input(),
-        vec![
-            (
+        adapter.handle_event(
+            &mut runtime,
+            &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
+        );
+        let _ = runtime.drain_external_input();
+        let cancel =
+            adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit(String::new())));
+        assert!(cancel.is_handled(), "composing: {composing}");
+        assert_eq!(
+            runtime.drain_external_input(),
+            vec![(
                 ExternalDrawId::new(20),
-                UiEvent::ImePreedit(ImePreedit::default()),
-            ),
-            (
-                ExternalDrawId::new(20),
-                UiEvent::Keyboard(KeyboardEvent::KeyDown {
-                    key: harbor_widget::input::event::Key::Character('a'),
-                    modifiers: Default::default(),
-                }),
-            ),
-        ]
-    );
-
-    let empty = adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit(String::new())));
-    assert!(empty.is_handled());
-    assert!(empty.effects.is_noop());
-
-    adapter.handle_event(
-        &mut runtime,
-        &WindowEvent::Ime(Ime::Preedit("draft".into(), Some((0, 5)))),
-    );
-    let _ = runtime.drain_external_input();
-    let cancel = adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Commit(String::new())));
-    assert!(cancel.is_handled());
-    assert_eq!(
-        runtime.drain_external_input(),
-        vec![(
-            ExternalDrawId::new(20),
-            UiEvent::ImePreedit(ImePreedit::default()),
-        )]
-    );
-    assert!(runtime.drain_external_input().is_empty());
+                UiEvent::ImePreedit(ImePreedit::default())
+            )],
+            "composing: {composing}",
+        );
+        assert!(runtime.drain_external_input().is_empty());
+    }
 }
 
 #[test]
@@ -980,42 +950,18 @@ fn adapter_routes_right_and_middle_button_down_up_events() {
 
     let events = runtime.drain_external_input();
     assert_eq!(events.len(), 5); // cursor move plus two button pairs
-    assert!(matches!(
-        events[1].1,
-        UiEvent::Pointer(PointerEvent {
-            button: PointerButton::Right,
-            phase: PointerPhase::Down,
-            pointer_id: 0,
-            ..
-        })
-    ));
-    assert!(matches!(
-        events[2].1,
-        UiEvent::Pointer(PointerEvent {
-            button: PointerButton::Right,
-            phase: PointerPhase::Up,
-            pointer_id: 0,
-            ..
-        })
-    ));
-    assert!(matches!(
-        events[3].1,
-        UiEvent::Pointer(PointerEvent {
-            button: PointerButton::Middle,
-            phase: PointerPhase::Down,
-            pointer_id: 0,
-            ..
-        })
-    ));
-    assert!(matches!(
-        events[4].1,
-        UiEvent::Pointer(PointerEvent {
-            button: PointerButton::Middle,
-            phase: PointerPhase::Up,
-            pointer_id: 0,
-            ..
-        })
-    ));
+    for (event, (button, phase)) in events[1..].iter().zip([
+        (PointerButton::Right, PointerPhase::Down),
+        (PointerButton::Right, PointerPhase::Up),
+        (PointerButton::Middle, PointerPhase::Down),
+        (PointerButton::Middle, PointerPhase::Up),
+    ]) {
+        assert!(
+            matches!(&event.1, UiEvent::Pointer(pointer)
+                if pointer.button == button && pointer.phase == phase && pointer.pointer_id == 0),
+            "{button:?} {phase:?}: {event:?}"
+        );
+    }
 }
 
 #[test]

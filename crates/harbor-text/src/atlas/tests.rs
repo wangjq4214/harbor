@@ -399,11 +399,8 @@ fn should_pack_cjk_when_available_via_fallback() {
         GlyphResolution::Available(key) => {
             assert_eq!(result.new_keys, vec![key]);
             assert!(!result.evicted);
-            if key.face_id != 0 || atlas.glyph_by_char('中').is_some() {
-                let glyph = atlas.glyph_by_char('中');
-                if let Some(glyph) = glyph {
-                    assert_eq!(glyph.key, key);
-                }
+            if let Some(glyph) = atlas.glyph_by_char('中') {
+                assert_eq!(glyph.key, key);
             }
         }
         GlyphResolution::Unavailable => {
@@ -569,156 +566,76 @@ fn rasterize_new_handles_empty_char_slice() {
 
 // ── GlyphKey tests ───────────────────────────────────────────────
 
+// Preserve raw size bits, including the non-font fixtures used by ordering tests.
+fn test_key(face: u64, glyph: u32, size_bits: u32, style: u8) -> GlyphKey {
+    GlyphKey {
+        face_id: FaceId::new(face),
+        glyph_id: GlyphId::new(glyph),
+        size: FontSize::from_bits(size_bits),
+        style: FontStyle::new(style),
+    }
+}
+
 #[test]
 fn should_equal_when_all_fields_match() {
-    let k1 = GlyphKey {
-        face_id: FaceId::new(1),
-        glyph_id: GlyphId::new(42),
-        size: FontSize::from_bits(0x41800000),
-        style: FontStyle::new(0),
-    };
-    let k2 = GlyphKey {
-        face_id: FaceId::new(1),
-        glyph_id: GlyphId::new(42),
-        size: FontSize::from_bits(0x41800000),
-        style: FontStyle::new(0),
-    };
+    let k1 = test_key(1, 42, 0x41800000, 0);
+    let k2 = test_key(1, 42, 0x41800000, 0);
     assert_eq!(k1, k2, "identical keys should be equal");
 }
 
 #[test]
 fn should_not_equal_when_face_id_differs() {
-    let k1 = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(0),
-    };
-    let k2 = GlyphKey {
-        face_id: FaceId::new(1),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(0),
-    };
+    let k1 = test_key(0, 1, 10, 0);
+    let k2 = test_key(1, 1, 10, 0);
     assert_ne!(k1, k2, "different face_id should produce inequality");
 }
 
 #[test]
 fn should_not_equal_when_glyph_index_differs() {
-    let k1 = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(0),
-    };
-    let k2 = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(2),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(0),
-    };
+    let k1 = test_key(0, 1, 10, 0);
+    let k2 = test_key(0, 2, 10, 0);
     assert_ne!(k1, k2, "different glyph_index should produce inequality");
 }
 
 #[test]
 fn should_not_equal_when_size_bits_differs() {
-    let k1 = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(0),
-    };
-    let k2 = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(20),
-        style: FontStyle::new(0),
-    };
+    let k1 = test_key(0, 1, 10, 0);
+    let k2 = test_key(0, 1, 20, 0);
     assert_ne!(k1, k2, "different size_bits should produce inequality");
 }
 
 #[test]
 fn should_not_equal_when_style_bits_differs() {
-    let k1 = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(0),
-    };
-    let k2 = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(1),
-    };
+    let k1 = test_key(0, 1, 10, 0);
+    let k2 = test_key(0, 1, 10, 1);
     assert_ne!(k1, k2, "different style_bits should produce inequality");
 }
 
 #[test]
 fn should_order_by_face_id_first() {
-    let k_small = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(100),
-        size: FontSize::from_bits(0),
-        style: FontStyle::new(0),
-    };
-    let k_large = GlyphKey {
-        face_id: FaceId::new(1),
-        glyph_id: GlyphId::new(0),
-        size: FontSize::from_bits(0),
-        style: FontStyle::new(0),
-    };
+    let k_small = test_key(0, 100, 0, 0);
+    let k_large = test_key(1, 0, 0, 0);
     assert!(k_small < k_large, "lower face_id should come first");
 }
 
 #[test]
 fn should_order_by_glyph_index_when_face_ids_equal() {
-    let k_small = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(5),
-        size: FontSize::from_bits(0),
-        style: FontStyle::new(0),
-    };
-    let k_large = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(10),
-        size: FontSize::from_bits(0),
-        style: FontStyle::new(0),
-    };
+    let k_small = test_key(0, 5, 0, 0);
+    let k_large = test_key(0, 10, 0, 0);
     assert!(k_small < k_large, "lower glyph_index should come first");
 }
 
 #[test]
 fn should_order_by_size_bits_when_prev_fields_equal() {
-    let k_small = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(0),
-    };
-    let k_large = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(20),
-        style: FontStyle::new(0),
-    };
+    let k_small = test_key(0, 1, 10, 0);
+    let k_large = test_key(0, 1, 20, 0);
     assert!(k_small < k_large, "lower size_bits should come first");
 }
 
 #[test]
 fn should_order_by_style_bits_when_all_prev_equal() {
-    let k_small = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(0),
-    };
-    let k_large = GlyphKey {
-        face_id: FaceId::new(0),
-        glyph_id: GlyphId::new(1),
-        size: FontSize::from_bits(10),
-        style: FontStyle::new(1),
-    };
+    let k_small = test_key(0, 1, 10, 0);
+    let k_large = test_key(0, 1, 10, 1);
     assert!(k_small < k_large, "lower style_bits should come first");
 }
 
@@ -727,18 +644,8 @@ fn should_hash_consistently_with_equality() {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let k1 = GlyphKey {
-        face_id: FaceId::new(3),
-        glyph_id: GlyphId::new(7),
-        size: FontSize::from_bits(0x41800000),
-        style: FontStyle::new(2),
-    };
-    let k2 = GlyphKey {
-        face_id: FaceId::new(3),
-        glyph_id: GlyphId::new(7),
-        size: FontSize::from_bits(0x41800000),
-        style: FontStyle::new(2),
-    };
+    let k1 = test_key(3, 7, 0x41800000, 2);
+    let k2 = test_key(3, 7, 0x41800000, 2);
 
     let mut h1 = DefaultHasher::new();
     k1.hash(&mut h1);

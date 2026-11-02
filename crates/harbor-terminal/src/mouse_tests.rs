@@ -182,20 +182,17 @@ fn mouse_all_buttons_modifiers_and_event_codes() {
             (TerminalPointerButton::Middle, 1),
             (TerminalPointerButton::Right, 2),
         ] {
-            for bits in 0..16 {
+            // Literal wire modifier codes, independent of the encoder's bit formula.
+            for (bits, modifier_code) in [0, 4, 8, 12, 8, 12, 8, 12, 16, 20, 24, 28, 24, 28, 24, 28]
+                .into_iter()
+                .enumerate()
+            {
                 let modifiers = TerminalModifiers {
                     shift: bits & 1 != 0,
                     alt: bits & 2 != 0,
                     meta: bits & 4 != 0,
                     ctrl: bits & 8 != 0,
                 };
-                let modifier_code = (if modifiers.shift { 4 } else { 0 })
-                    | (if modifiers.alt || modifiers.meta {
-                        8
-                    } else {
-                        0
-                    })
-                    | (if modifiers.ctrl { 16 } else { 0 });
                 for (phase, code, release) in [
                     (TerminalPointerPhase::Down, identity, false),
                     (
@@ -569,14 +566,14 @@ fn mouse_encoding_flags_queries_fallback_ris_and_tracking_off() {
 #[test]
 fn mouse_fragmented_mode_query_reset_and_cancellation_streams() {
     let stream = b"\x1b[?1000;1005;1015;1016h\x1b[?1005$p\x1b[?1015$p\x1b[?1016$p\x1b[?1016l\x1b[?1006h\x1b[?1015$p\x1b[?1005l\x1b[?1016;9h\x1b[?9$p\x1bc\x1b[?1016$p\x1b[?101\x18\x1b[?1016h";
-    let run = |chunks: Vec<&[u8]>| {
+    fn run<'a>(chunks: impl IntoIterator<Item = &'a [u8]>) -> (InputModes, Vec<u8>) {
         let mut t = Terminal::new_headless(10, 20);
         for chunk in chunks {
             t.put_bytes(chunk);
         }
         (t.screen.input_modes(), t.screen.drain_replies())
-    };
-    let expected = run(vec![stream]);
+    }
+    let expected = run([stream.as_slice()]);
     assert_eq!(expected.0.mouse_encoding(), MouseEncoding::SgrPixel);
     assert_eq!(expected.0.mouse_tracking, MouseTrackingMode::Disabled);
     assert_eq!(
@@ -585,12 +582,12 @@ fn mouse_fragmented_mode_query_reset_and_cancellation_streams() {
     );
     for split in 0..=stream.len() {
         assert_eq!(
-            run(vec![&stream[..split], &stream[split..]]),
+            run([&stream[..split], &stream[split..]]),
             expected,
             "split {split}"
         );
     }
-    assert_eq!(run(stream.chunks(1).collect()), expected);
+    assert_eq!(run(stream.chunks(1)), expected);
     for command in [
         &b"\x1b[?1000;1005h"[..],
         &b"\x1b[?1000;1015h"[..],

@@ -217,13 +217,18 @@ impl<T> Signal<T> {
 mod tests {
     use super::*;
 
-    fn dummy_fiber_id() -> FiberId {
-        // Create a temporary arena and fiber to get a valid FiberId
+    fn dummy_fiber_ids<const N: usize>() -> [FiberId; N] {
+        // IDs from separate arenas can compare equal; allocate each scenario's
+        // subscribers together so multi-subscriber tests use distinct keys.
         let mut arena = crate::fiber::FiberArena::new();
-        let fiber = crate::fiber::Fiber::new(None, std::any::TypeId::of::<()>(), None);
-        arena.insert(fiber)
+        std::array::from_fn(|_| {
+            arena.insert(crate::fiber::Fiber::new(
+                None,
+                std::any::TypeId::of::<()>(),
+                None,
+            ))
+        })
     }
-
     fn clear_dirty_queue() {
         PENDING_DIRTY.with(|q| q.borrow_mut().clear());
     }
@@ -245,35 +250,42 @@ mod tests {
 
     #[test]
     fn multiple_subscribers() {
+        clear_dirty_queue();
         let signal = Signal::new(0u32);
-        let f1 = dummy_fiber_id();
-        let f2 = dummy_fiber_id();
+        let [f1, f2] = dummy_fiber_ids();
+        assert_ne!(f1, f2);
         signal.subscribe(f1);
         signal.subscribe(f2);
         signal.set(42);
         assert_eq!(*signal.read(), 42);
+        assert_eq!(take_dirty(DEFAULT_RUNTIME_ID), HashSet::from_iter([f1, f2]));
     }
 
     #[test]
     fn unsubscribe_removes_subscriber() {
+        clear_dirty_queue();
         let signal = Signal::new(0u32);
-        let f1 = dummy_fiber_id();
-        let f2 = dummy_fiber_id();
+        let [f1, f2] = dummy_fiber_ids();
+        assert_ne!(f1, f2);
         signal.subscribe(f1);
         signal.subscribe(f2);
         signal.unsubscribe(f1);
         signal.set(99);
         assert_eq!(*signal.read(), 99);
+        assert_eq!(take_dirty(DEFAULT_RUNTIME_ID), HashSet::from_iter([f2]));
     }
 
     #[test]
     fn duplicate_subscribe_idempotent() {
+        clear_dirty_queue();
         let signal = Signal::new(0u32);
-        let fid = dummy_fiber_id();
+        let [fid] = dummy_fiber_ids();
         signal.subscribe(fid);
         signal.subscribe(fid);
         signal.set(55);
         assert_eq!(*signal.read(), 55);
+        assert_eq!(signal.data.borrow().subscribers.len(), 1);
+        clear_dirty_queue();
     }
 
     #[test]
@@ -281,17 +293,12 @@ mod tests {
         clear_dirty_queue();
 
         let signal = Signal::new(0u32);
-        let fid = dummy_fiber_id();
+        let [fid] = dummy_fiber_ids();
         signal.subscribe(fid);
         signal.subscribe(fid);
         signal.set(1);
 
-        let dirty = PENDING_DIRTY.with(|q| {
-            q.borrow()
-                .get(&DEFAULT_RUNTIME_ID)
-                .cloned()
-                .unwrap_or_default()
-        });
+        let dirty = take_dirty(DEFAULT_RUNTIME_ID);
         assert!(dirty.contains(&fid));
         assert_eq!(dirty.len(), 1);
         clear_dirty_queue();
@@ -308,20 +315,13 @@ mod tests {
     fn distinct_signal_ignores_equal_writes() {
         clear_dirty_queue();
         let signal = Signal::new_distinct(7u32);
-        let fid = dummy_fiber_id();
+        let [fid] = dummy_fiber_ids();
         signal.subscribe(fid);
 
         signal.set(7);
 
         assert_eq!(signal.version(), 0);
-        let dirty = PENDING_DIRTY.with(|queues| {
-            queues
-                .borrow()
-                .get(&DEFAULT_RUNTIME_ID)
-                .cloned()
-                .unwrap_or_default()
-        });
-        assert!(dirty.is_empty());
+        assert!(take_dirty(DEFAULT_RUNTIME_ID).is_empty());
     }
     #[test]
     fn clone_shares_state() {
@@ -336,13 +336,16 @@ mod tests {
 
     #[test]
     fn hook_trait_unsubscribe_all() {
+        clear_dirty_queue();
         let signal = Signal::new(0u32);
-        let fid = dummy_fiber_id();
+        let [fid] = dummy_fiber_ids();
         signal.subscribe(fid);
 
         let hook: &dyn Hook = &signal;
         hook.unsubscribe_all(fid);
         // Unsubscribing again is a no-op
         hook.unsubscribe_all(fid);
+        signal.set(1);
+        assert!(take_dirty(DEFAULT_RUNTIME_ID).is_empty());
     }
 }

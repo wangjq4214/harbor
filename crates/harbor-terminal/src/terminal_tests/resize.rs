@@ -1,5 +1,16 @@
 use super::*;
 
+fn retained_text(terminal: &Terminal) -> String {
+    let screen = terminal.screen();
+    let retained_rows = screen.scroll_count() + screen.rows();
+    screen.selected_text(crate::SelectionBounds {
+        start_row: screen.history_start(),
+        start_col: 0,
+        end_row: screen.history_start() + retained_rows as u64 - 1,
+        end_col: screen.cols() - 1,
+    })
+}
+
 #[test]
 fn padded_table_rows_do_not_gain_empty_continuations_on_primary_resize() {
     let mut terminal = Terminal::new_headless(6, 8);
@@ -157,12 +168,7 @@ fn selection_of_discarded_tail_does_not_alias_other_rows_after_resize() {
         (TerminalPointerPhase::Up, (75.0, 10.0)),
     ] {
         terminal
-            .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
-                position,
-                phase,
-                TerminalPointerButton::Left,
-                8,
-            )))
+            .handle_event(left_pointer_event(position, phase, 8))
             .unwrap();
     }
     assert_eq!(terminal.selection_text(), "a       ");
@@ -181,14 +187,7 @@ fn one_row_autowrap_keeps_scrolled_source_metadata() {
 
     terminal.put_str("abcd界ef");
 
-    let screen = terminal.screen();
-    let retained_rows = screen.scroll_count() + screen.rows();
-    let text = screen.selected_text(crate::SelectionBounds {
-        start_row: screen.history_start(),
-        start_col: 0,
-        end_row: screen.history_start() + retained_rows as u64 - 1,
-        end_col: screen.cols() - 1,
-    });
+    let text = retained_text(&terminal);
     assert_eq!(text, "abcd界ef");
 }
 
@@ -257,14 +256,7 @@ fn pty_failure_preserves_active_selection_state() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("abc");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            65,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 65);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 11.0))
         .unwrap();
@@ -323,14 +315,7 @@ fn repeated_mixed_resize_preserves_selection_and_primary_across_alt_and_retry() 
     terminal.put_bytes(b"\x1b[31mABC\x1b[0m");
     terminal.put_str("界DEF  \r\n\r\nTAIL");
 
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            70,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 70);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 1.0))
         .unwrap();
@@ -400,17 +385,6 @@ fn sgr_sets_fg_color_on_written_cells() {
 
 #[test]
 fn live_bottom_resize_round_trip_preserves_every_scrollback_view() {
-    fn retained_text(terminal: &Terminal) -> String {
-        let screen = terminal.screen();
-        let retained_rows = screen.scroll_count() + screen.rows();
-        screen.selected_text(crate::SelectionBounds {
-            start_row: screen.history_start(),
-            start_col: 0,
-            end_row: screen.history_start() + retained_rows as u64 - 1,
-            end_col: screen.cols() - 1,
-        })
-    }
-
     fn reviewed_text(terminal: &Terminal) -> String {
         let screen = terminal.screen();
         let top = screen.history_start() + (screen.scroll_count() - screen.view_offset()) as u64;
@@ -482,7 +456,7 @@ fn live_bottom_resize_round_trip_preserves_every_scrollback_view() {
 }
 
 #[test]
-fn narrow_resize_near_capacity_does_not_duplicate_logical_lines() {
+fn repeated_narrow_resize_does_not_duplicate_or_reorder_logical_lines() {
     use std::collections::HashSet;
 
     let mut terminal = Terminal::new_headless(6, 24);
@@ -493,16 +467,7 @@ fn narrow_resize_near_capacity_does_not_duplicate_logical_lines() {
     for cols in [18, 12, 6] {
         assert!(terminal.resize_if_changed(TerminalSize { rows: 4, cols }));
     }
-    let text = {
-        let screen = terminal.screen();
-        let retained_rows = screen.scroll_count() + screen.rows();
-        screen.selected_text(crate::SelectionBounds {
-            start_row: screen.history_start(),
-            start_col: 0,
-            end_row: screen.history_start() + retained_rows as u64 - 1,
-            end_col: screen.cols() - 1,
-        })
-    };
+    let text = retained_text(&terminal);
     let markers: Vec<_> = text
         .lines()
         .filter_map(|line| line.strip_prefix('L'))
@@ -552,13 +517,6 @@ fn mixed_resize_keeps_review_content_and_cursor_meaning_for_short_lines() {
     assert_eq!(reviewed_first_line(&terminal), reviewed_line);
     assert!(terminal.screen().view_offset() > 0);
     terminal.put_str("Z");
-    let screen = terminal.screen();
-    let retained_rows = screen.scroll_count() + screen.rows();
-    let text = screen.selected_text(crate::SelectionBounds {
-        start_row: screen.history_start(),
-        start_col: 0,
-        end_row: screen.history_start() + retained_rows as u64 - 1,
-        end_col: screen.cols() - 1,
-    });
+    let text = retained_text(&terminal);
     assert!(text.contains("L4Z"));
 }

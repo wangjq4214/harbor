@@ -628,18 +628,6 @@ mod tests {
     }
 
     #[test]
-    fn should_prefer_wasdk_tier_for_known_builds() {
-        // Unknown builds remain opaque per the plan's failure matrix.
-        for build in [1, 19_045, 26_100, u32::MAX] {
-            assert_eq!(
-                selected_tier(build, true),
-                BackdropTier::WasdkAcrylic,
-                "build {build}"
-            );
-        }
-    }
-
-    #[test]
     fn should_enable_transparency_without_changing_chrome_when_acrylic_backend_is_selected() {
         for build in [1, 19_045, 22_620, 22_621, 26_100, u32::MAX] {
             for wasdk_ok in [false, true] {

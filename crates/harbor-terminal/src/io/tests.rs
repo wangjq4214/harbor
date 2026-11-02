@@ -1,5 +1,18 @@
 use super::*;
 
+struct RecordingWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for RecordingWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[test]
 fn snapped_reader_output_at_live_bottom_preserves_local_damage() {
     let mut io = TerminalIo::new_headless();
@@ -293,23 +306,12 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
             assert_eq!(command_rx.recv().unwrap(), ReaderCommand::Resume(epoch));
         });
         full_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        #[derive(Clone)]
-        struct Writer(Arc<std::sync::Mutex<Vec<u8>>>);
-        impl Write for Writer {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
         let replies = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
             output,
             recycle: ReaderRecycle::default(),
             commands,
-            writer: Box::new(Writer(Arc::clone(&replies))),
+            writer: Box::new(RecordingWriter(Arc::clone(&replies))),
             reader: Some(reader),
             control: None,
             wake_pending: Arc::new(AtomicBool::new(true)),
@@ -680,17 +682,6 @@ fn reader_spawn_failure_releases_unstarted_endpoints() {
 
 #[test]
 fn empty_reader_chunk_drains_pending_replies_without_snapping_review() {
-    struct Writer(Arc<Mutex<Vec<u8>>>);
-    impl Write for Writer {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     let (tx, output) = mpsc::sync_channel(2);
     let (commands, _command_rx) = mpsc::channel();
     let replies = Arc::new(Mutex::new(Vec::new()));
@@ -698,7 +689,7 @@ fn empty_reader_chunk_drains_pending_replies_without_snapping_review() {
         output,
         recycle: ReaderRecycle::default(),
         commands,
-        writer: Box::new(Writer(Arc::clone(&replies))),
+        writer: Box::new(RecordingWriter(Arc::clone(&replies))),
         reader: None,
         control: None,
         wake_pending: Arc::new(AtomicBool::new(true)),

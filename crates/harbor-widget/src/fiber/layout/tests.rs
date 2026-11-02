@@ -85,6 +85,24 @@ fn insert(arena: &mut FiberArena, view: impl AnyView, children: Vec<FiberId>) ->
     id
 }
 
+fn insert_stretch(arena: &mut FiberArena, horizontal: bool, children: Vec<FiberId>) -> FiberId {
+    use crate::layout::CrossAxisAlignment;
+    use crate::widgets::{column::Column, row::Row};
+    if horizontal {
+        insert(
+            arena,
+            Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
+            children,
+        )
+    } else {
+        insert(
+            arena,
+            Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
+            children,
+        )
+    }
+}
+
 fn run(arena: &mut FiberArena, root: FiberId) {
     layout_fiber(
         arena,
@@ -1067,9 +1085,6 @@ fn ordinary_wide_tree_fits_shared_budget() {
 
 #[test]
 fn built_in_unbounded_cross_stretch_chains_stay_within_shared_budget() {
-    use crate::layout::CrossAxisAlignment;
-    use crate::widgets::column::Column;
-    use crate::widgets::row::Row;
     use crate::widgets::sized_box::SizedBox;
 
     for horizontal in [false, true] {
@@ -1103,19 +1118,7 @@ fn built_in_unbounded_cross_stretch_chains_stay_within_shared_budget() {
                     SizedBox::new(axis_size(2.0, cross)).unwrap(),
                     vec![],
                 );
-                root = if horizontal {
-                    insert(
-                        &mut arena,
-                        Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
-                        vec![root, sibling],
-                    )
-                } else {
-                    insert(
-                        &mut arena,
-                        Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
-                        vec![root, sibling],
-                    )
-                };
+                root = insert_stretch(&mut arena, horizontal, vec![root, sibling]);
             }
             layout_fiber(
                 &mut arena,
@@ -1166,9 +1169,6 @@ fn measured_work(arena: &FiberArena, root: FiberId, constraints: BoxConstraints)
 
 #[test]
 fn deep_staggered_builtin_stretch_chains_use_one_natural_and_one_final_traversal() {
-    use crate::layout::CrossAxisAlignment;
-    use crate::widgets::column::Column;
-    use crate::widgets::row::Row;
     use crate::widgets::sized_box::SizedBox;
 
     for horizontal in [false, true] {
@@ -1193,19 +1193,7 @@ fn deep_staggered_builtin_stretch_chains_use_one_natural_and_one_final_traversal
                     SizedBox::new(axis_size(1.0, level as f32)).unwrap(),
                     vec![],
                 );
-                root = if horizontal {
-                    insert(
-                        &mut arena,
-                        Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
-                        vec![root, sibling],
-                    )
-                } else {
-                    insert(
-                        &mut arena,
-                        Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
-                        vec![root, sibling],
-                    )
-                };
+                root = insert_stretch(&mut arena, horizontal, vec![root, sibling]);
             }
             let constraints = BoxConstraints::loose(axis_size(100.0, f32::INFINITY));
             let nodes = reachable_nodes(&arena, root);
@@ -1251,9 +1239,6 @@ fn deep_staggered_builtin_stretch_chains_use_one_natural_and_one_final_traversal
 
 #[test]
 fn alternating_axis_stretch_chains_finalize_both_axes_within_budget() {
-    use crate::layout::CrossAxisAlignment;
-    use crate::widgets::column::Column;
-    use crate::widgets::row::Row;
     use crate::widgets::sized_box::SizedBox;
 
     for depth in [16, 64] {
@@ -1269,19 +1254,7 @@ fn alternating_axis_stretch_chains_finalize_both_axes_within_budget() {
                 SizedBox::new(Size::new(level as f32, level as f32)).unwrap(),
                 vec![],
             );
-            root = if level % 2 == 0 {
-                insert(
-                    &mut arena,
-                    Row::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
-                    vec![root, sibling],
-                )
-            } else {
-                insert(
-                    &mut arena,
-                    Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch),
-                    vec![root, sibling],
-                )
-            };
+            root = insert_stretch(&mut arena, level % 2 == 0, vec![root, sibling]);
         }
         let constraints = BoxConstraints::loose(Size::new(f32::INFINITY, f32::INFINITY));
         let nodes = reachable_nodes(&arena, root);

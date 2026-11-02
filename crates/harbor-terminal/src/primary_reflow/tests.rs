@@ -6,15 +6,10 @@ use crate::selection_model::GenPos;
 
 use super::*;
 
-fn write(normal: &mut NormalBuf, row: usize, col: usize, cell: Cell) {
-    normal.write_meaningful_cell(row, col, cell);
-}
-
 #[test]
 fn normalizes_width_and_moves_complete_wide_atoms_past_edge_padding() {
     let mut normal = NormalBuf::new(1, 4);
-    write(
-        &mut normal,
+    normal.write_meaningful_cell(
         0,
         0,
         Cell {
@@ -29,10 +24,9 @@ fn normalizes_width_and_moves_complete_wide_atoms_past_edge_padding() {
         hyperlink: Some(hyperlink),
         ..Cell::default()
     };
-    write(&mut normal, 0, 1, wide.clone());
-    write(&mut normal, 0, 2, Cell::wide_continuation_of(&wide));
-    write(
-        &mut normal,
+    normal.write_meaningful_cell(0, 1, wide.clone());
+    normal.write_meaningful_cell(0, 2, Cell::wide_continuation_of(&wide));
+    normal.write_meaningful_cell(
         0,
         3,
         Cell {
@@ -77,7 +71,7 @@ fn preserves_meaningful_trailing_blanks_and_hyperlink_payload() {
     .into_iter()
     .enumerate()
     {
-        write(&mut normal, 0, col, cell);
+        normal.write_meaningful_cell(0, col, cell);
     }
 
     let prepared = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 2).unwrap();
@@ -94,8 +88,7 @@ fn preserves_meaningful_trailing_blanks_and_hyperlink_payload() {
 fn preserves_explicit_empty_lines_and_is_deterministic() {
     let mut normal = NormalBuf::new(3, 4);
     for (col, ch) in "abc".chars().enumerate() {
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             col,
             Cell {
@@ -104,8 +97,7 @@ fn preserves_explicit_empty_lines_and_is_deterministic() {
             },
         );
     }
-    write(
-        &mut normal,
+    normal.write_meaningful_cell(
         2,
         0,
         Cell {
@@ -134,8 +126,7 @@ fn preserves_explicit_empty_lines_and_is_deterministic() {
 fn cursor_projection_derives_pending_wrap_from_new_width() {
     let mut normal = NormalBuf::new(1, 4);
     for (col, ch) in "abcd".chars().enumerate() {
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             col,
             Cell {
@@ -221,11 +212,11 @@ fn narrow_and_wide_preparations_preserve_logical_payload_without_padding() {
             ..Cell::default()
         },
     ];
-    write(&mut normal, 0, 0, cells[0].clone());
-    write(&mut normal, 0, 1, cells[1].clone());
-    write(&mut normal, 0, 2, cells[2].clone());
-    write(&mut normal, 0, 3, Cell::wide_continuation_of(&cells[2]));
-    write(&mut normal, 0, 4, cells[3].clone());
+    normal.write_meaningful_cell(0, 0, cells[0].clone());
+    normal.write_meaningful_cell(0, 1, cells[1].clone());
+    normal.write_meaningful_cell(0, 2, cells[2].clone());
+    normal.write_meaningful_cell(0, 3, Cell::wide_continuation_of(&cells[2]));
+    normal.write_meaningful_cell(0, 4, cells[3].clone());
 
     let narrow = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 3).unwrap();
     let wide = PreparedPrimaryResize::prepare_geometry(&normal, normal.rows(), 8).unwrap();
@@ -280,8 +271,7 @@ fn capacity_evicts_prefix_when_oversized_line_reaches_live_viewport() {
     let mut ch = b'a';
     for row in 0..3 {
         for col in 0..4 {
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 row,
                 col,
                 Cell {
@@ -350,8 +340,7 @@ fn capacity_retains_head_truncated_historical_suffix() {
     let mut normal = NormalBuf::new_for_test(4, 4, 2);
     for (row, text) in ["abcd", "efgh", "x", "y"].into_iter().enumerate() {
         for (col, ch) in text.chars().enumerate() {
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 row,
                 col,
                 Cell {
@@ -390,8 +379,7 @@ fn capacity_retains_head_truncated_historical_suffix() {
 fn preparation_preserves_semantic_order_after_source_ring_wrap() {
     let mut normal = NormalBuf::new_for_test(2, 4, 2);
     for index in 0..5 {
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             0,
             Cell {
@@ -494,12 +482,11 @@ fn conpty_already_wrapped_blank_prefix_is_geometry_even_without_style() {
         };
         for row in 0..2 {
             for col in 0..12 {
-                write(&mut normal, row, col, blank.clone());
+                normal.write_meaningful_cell(row, col, blank.clone());
             }
         }
         for (col, ch) in "AB".chars().enumerate() {
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 0,
                 col,
                 Cell {
@@ -509,8 +496,7 @@ fn conpty_already_wrapped_blank_prefix_is_geometry_even_without_style() {
             );
         }
         normal.continue_logical_line(1, normal.live_row_metadata(0), 12);
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             2,
             0,
             Cell {
@@ -547,8 +533,7 @@ fn conpty_clips_tail_at_exact_text_edge_without_splitting_wide_units() {
                 width: 2,
                 ..Cell::default()
             };
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 0,
                 0,
                 Cell {
@@ -556,12 +541,11 @@ fn conpty_clips_tail_at_exact_text_edge_without_splitting_wide_units() {
                     ..Cell::default()
                 },
             );
-            write(&mut normal, 0, 1, cell.clone());
-            write(&mut normal, 0, 2, Cell::wide_continuation_of(&cell));
+            normal.write_meaningful_cell(0, 1, cell.clone());
+            normal.write_meaningful_cell(0, 2, Cell::wide_continuation_of(&cell));
         } else {
             for (col, ch) in "ABCDE".chars().enumerate() {
-                write(
-                    &mut normal,
+                normal.write_meaningful_cell(
                     0,
                     col,
                     Cell {
@@ -572,10 +556,9 @@ fn conpty_clips_tail_at_exact_text_edge_without_splitting_wide_units() {
             }
         }
         for col in cols..12 {
-            write(&mut normal, 0, col, overlined_blank());
+            normal.write_meaningful_cell(0, col, overlined_blank());
         }
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             1,
             0,
             Cell {
@@ -620,8 +603,7 @@ fn conpty_live_styled_tail_fits_last_row_and_drops_overflow_anchors() {
     for erased in [false, true] {
         let mut normal = NormalBuf::new(4, 12);
         for (col, ch) in "AB".chars().enumerate() {
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 0,
                 col,
                 Cell {
@@ -634,12 +616,11 @@ fn conpty_live_styled_tail_fits_last_row_and_drops_overflow_anchors() {
             if erased {
                 normal.erase_cell(0, col, overlined_blank());
             } else {
-                write(&mut normal, 0, col, overlined_blank());
+                normal.write_meaningful_cell(0, col, overlined_blank());
             }
         }
         for (col, ch) in "END".chars().enumerate() {
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 1,
                 col,
                 Cell {
@@ -648,8 +629,7 @@ fn conpty_live_styled_tail_fits_last_row_and_drops_overflow_anchors() {
                 },
             );
         }
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             2,
             0,
             Cell {
@@ -692,8 +672,7 @@ fn conpty_live_styled_tail_fits_last_row_and_drops_overflow_anchors() {
 fn conpty_erase_only_row_remains_one_decorated_hard_line() {
     let mut normal = NormalBuf::new(3, 12);
     normal.fill_row_with(0, overlined_blank());
-    write(
-        &mut normal,
+    normal.write_meaningful_cell(
         1,
         0,
         Cell {
@@ -731,11 +710,10 @@ fn conpty_tail_clipping_keeps_interior_spaces_protection_and_links() {
     ] {
         let mut normal = NormalBuf::new(4, 12);
         for col in 0..12 {
-            write(&mut normal, 0, col, overlined_blank());
+            normal.write_meaningful_cell(0, col, overlined_blank());
         }
-        write(&mut normal, 0, 8, significant.clone());
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(0, 8, significant.clone());
+        normal.write_meaningful_cell(
             1,
             0,
             Cell {
@@ -755,8 +733,7 @@ fn conpty_styled_history_is_not_clipped_and_live_top_stays_separate() {
     let mut normal = NormalBuf::new(3, 12);
     normal.fill_row_with(0, overlined_blank());
     normal.fill_row_with(1, overlined_blank());
-    write(
-        &mut normal,
+    normal.write_meaningful_cell(
         2,
         0,
         Cell {
@@ -778,8 +755,7 @@ fn conpty_styled_history_is_not_clipped_and_live_top_stays_separate() {
 fn conpty_tail_crossing_history_keeps_history_atoms_and_live_boundary() {
     let mut normal = NormalBuf::new(3, 12);
     for (col, ch) in "abcdefghijkl".chars().enumerate() {
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             col,
             Cell {
@@ -790,8 +766,7 @@ fn conpty_tail_crossing_history_keeps_history_atoms_and_live_boundary() {
     }
     normal.fill_row_with(1, overlined_blank());
     normal.continue_logical_line(1, normal.live_row_metadata(0), 12);
-    write(
-        &mut normal,
+    normal.write_meaningful_cell(
         2,
         0,
         Cell {
@@ -859,8 +834,7 @@ fn empty_line_anchors_distinguish_evicted_and_retained_rows() {
 fn conpty_empty_live_boundary_survives_history_eviction() {
     let mut normal = NormalBuf::new_for_test(3, 4, 1);
     for (col, ch) in "abcd".chars().enumerate() {
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             col,
             Cell {
@@ -868,11 +842,10 @@ fn conpty_empty_live_boundary_survives_history_eviction() {
                 ..Cell::default()
             },
         );
-        write(&mut normal, 1, col, Cell::default());
+        normal.write_meaningful_cell(1, col, Cell::default());
     }
     normal.continue_logical_line(1, normal.live_row_metadata(0), 4);
-    write(
-        &mut normal,
+    normal.write_meaningful_cell(
         2,
         0,
         Cell {
@@ -919,8 +892,7 @@ fn conpty_empty_live_boundary_survives_history_eviction() {
 fn cursor_floor_preserves_each_viewports_distinct_tail_policy() {
     for styled in [false, true] {
         let mut normal = NormalBuf::new_for_test(3, 8, 4);
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             0,
             Cell {
@@ -929,8 +901,7 @@ fn cursor_floor_preserves_each_viewports_distinct_tail_policy() {
             },
         );
         for col in 1..8 {
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 0,
                 col,
                 if styled {
@@ -940,8 +911,7 @@ fn cursor_floor_preserves_each_viewports_distinct_tail_policy() {
                 },
             );
         }
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             1,
             0,
             Cell {

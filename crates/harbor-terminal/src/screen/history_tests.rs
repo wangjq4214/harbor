@@ -2,6 +2,19 @@ use super::*;
 use crate::{Terminal, TerminalAppearance, TerminalSize};
 use harbor_config::HistoryLimits;
 
+fn left_pointer_event(
+    position: (f32, f32),
+    phase: crate::TerminalPointerPhase,
+    pointer_id: u64,
+) -> crate::TerminalEvent {
+    crate::TerminalEvent::Pointer(crate::TerminalPointerEvent::new(
+        position,
+        phase,
+        crate::TerminalPointerButton::Left,
+        pointer_id,
+    ))
+}
+
 fn terminal(rows: usize, cols: usize, max_rows: usize, max_bytes: usize) -> Terminal {
     Terminal::new_headless_with_history(
         rows,
@@ -261,10 +274,7 @@ fn history_resize_height_width_and_ring_churn_always_agree_with_source_bytes() {
 #[test]
 fn history_lost_endpoint_clears_whole_active_or_saved_selection_and_read_targets() {
     use crate::read_model::{ReadBudget, ReadScope};
-    use crate::{
-        RenderViewport, TerminalEvent, TerminalPointerButton, TerminalPointerEvent,
-        TerminalPointerPhase,
-    };
+    use crate::{RenderViewport, TerminalPointerPhase};
     for saved in [false, true] {
         let mut t = terminal(2, 8, 20, 100);
         t.pointer
@@ -275,13 +285,8 @@ fn history_lost_endpoint_clears_whole_active_or_saved_selection_and_read_targets
             (TerminalPointerPhase::Move, 61.0),
             (TerminalPointerPhase::Up, 61.0),
         ] {
-            t.handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
-                (x, 1.0),
-                phase,
-                TerminalPointerButton::Left,
-                70,
-            )))
-            .unwrap();
+            t.handle_event(left_pointer_event((x, 1.0), phase, 70))
+                .unwrap();
         }
         assert_eq!(t.selection_text(), "OLD-END");
         t.put_str("\r\nnew\r\nlive");
@@ -531,10 +536,7 @@ fn csi_3j_preserves_saved_primary_and_private_3j_does_not_erase_history() {
 
 #[test]
 fn csi_3j_reconciles_history_and_live_selection_endpoints() {
-    use crate::{
-        RenderViewport, TerminalEvent, TerminalPointerButton, TerminalPointerEvent,
-        TerminalPointerPhase,
-    };
+    use crate::{RenderViewport, TerminalPointerPhase};
 
     // Independent hard lines and one soft line spanning history/live must agree.
     for (cols, text, output) in [
@@ -557,13 +559,8 @@ fn csi_3j_reconciles_history_and_live_selection_endpoints() {
                 (TerminalPointerPhase::Move, end_x, end_y),
                 (TerminalPointerPhase::Up, end_x, end_y),
             ] {
-                t.handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
-                    (x, y),
-                    phase,
-                    TerminalPointerButton::Left,
-                    70,
-                )))
-                .unwrap();
+                t.handle_event(left_pointer_event((x, y), phase, 70))
+                    .unwrap();
             }
             assert!(t.has_non_empty_selection());
             t.put_str(output);

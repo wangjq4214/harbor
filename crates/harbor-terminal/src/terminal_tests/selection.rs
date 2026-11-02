@@ -114,16 +114,15 @@ fn copy_selection_returns_text_and_clears_completed_selection() {
         TerminalPointerPhase::Up,
     ] {
         terminal
-            .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+            .handle_event(left_pointer_event(
                 if matches!(phase, TerminalPointerPhase::Down) {
                     (1.0, 1.0)
                 } else {
                     (21.0, 1.0)
                 },
                 phase,
-                TerminalPointerButton::Left,
                 80,
-            )))
+            ))
             .unwrap();
     }
     assert_eq!(terminal.selection_text(), "sel");
@@ -144,20 +143,18 @@ fn copy_selection_returns_text_clears_highlight_and_releases_pointer() {
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("selection");
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (1.0, 1.0),
             TerminalPointerPhase::Down,
-            TerminalPointerButton::Left,
             81,
-        )))
+        ))
         .unwrap();
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (21.0, 1.0),
             TerminalPointerPhase::Move,
-            TerminalPointerButton::Left,
             81,
-        )))
+        ))
         .unwrap();
     assert_eq!(terminal.selection_text(), "sel");
 
@@ -239,20 +236,18 @@ fn explicit_scroll_command_clears_selection_even_at_viewport_boundary() {
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("selection");
     terminal
-        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event_with_outcome(left_pointer_event(
             (1.0, 1.0),
             TerminalPointerPhase::Down,
-            TerminalPointerButton::Left,
             41,
-        )))
+        ))
         .unwrap();
     terminal
-        .handle_event_with_outcome(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event_with_outcome(left_pointer_event(
             (25.0, 1.0),
             TerminalPointerPhase::Move,
-            TerminalPointerButton::Left,
             41,
-        )))
+        ))
         .unwrap();
     assert!(terminal.has_non_empty_selection());
 
@@ -270,14 +265,7 @@ fn parser_insert_before_selection_reprojects_canonical_endpoints() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("abcdefgh");
-    let now = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            71,
-        ))
-    };
+    let now = |phase, x| left_pointer_event((x, 1.0), phase, 71);
     terminal
         .handle_event(now(TerminalPointerPhase::Down, 41.0))
         .unwrap();
@@ -334,14 +322,7 @@ fn replacing_one_selected_logical_line_clears_the_whole_selection() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("abcdefgh");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            72,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 72);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 11.0))
         .unwrap();
@@ -363,14 +344,7 @@ fn trailing_blank_selection_preserves_columns_when_its_row_moves() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("abc");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            69,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 69);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 51.0))
         .unwrap();
@@ -401,14 +375,7 @@ fn trailing_blank_selection_keeps_its_physical_projection_after_unrelated_ingest
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("abc");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            73,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 73);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 51.0))
         .unwrap();
@@ -433,14 +400,7 @@ fn repeated_content_insert_uses_semantic_transform_not_payload_diffing() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("aaaaB");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            74,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 74);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 11.0))
         .unwrap();
@@ -474,14 +434,7 @@ fn equal_boundary_insertion_is_drag_direction_independent() {
             .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
         terminal.put_str("abcdefgh");
         let (start, end) = if reverse { (61.0, 41.0) } else { (41.0, 61.0) };
-        let event = |phase, x| {
-            TerminalEvent::Pointer(TerminalPointerEvent::new(
-                (x, 1.0),
-                phase,
-                TerminalPointerButton::Left,
-                pointer_id,
-            ))
-        };
+        let event = |phase, x| left_pointer_event((x, 1.0), phase, pointer_id);
         terminal
             .handle_event(event(TerminalPointerPhase::Down, start))
             .unwrap();
@@ -563,14 +516,7 @@ fn rectangular_alt_resize_preserves_retained_soft_wrapped_selection_identity() {
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_bytes(b"\x1b[?47h");
     terminal.put_str("abcdef");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 21.0),
-            phase,
-            TerminalPointerButton::Left,
-            67,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 21.0), phase, 67);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 1.0))
         .unwrap();
@@ -595,14 +541,7 @@ fn rectangular_alt_resize_clears_selection_when_one_endpoint_is_clipped() {
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_bytes(b"\x1b[?47h");
     terminal.put_str("abcdef");
-    let event = |phase, position| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            position,
-            phase,
-            TerminalPointerButton::Left,
-            68,
-        ))
-    };
+    let event = |phase, position| left_pointer_event(position, phase, 68);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, (31.0, 1.0)))
         .unwrap();
@@ -627,14 +566,7 @@ fn ris_drops_parked_alternate_selection_before_fresh_reentry() {
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_bytes(b"\x1b[?47h");
     terminal.put_str("old");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            66,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 66);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 1.0))
         .unwrap();
@@ -659,14 +591,7 @@ fn primary_selection_is_parked_reflowed_and_restored_across_alt_resize() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("primary");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            69,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 69);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 1.0))
         .unwrap();
@@ -704,12 +629,7 @@ fn conpty_deferred_primary_resize_preserves_selection_until_alt_exit() {
             (TerminalPointerPhase::Up, 111.0),
         ] {
             terminal
-                .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
-                    (x, 1.0),
-                    phase,
-                    TerminalPointerButton::Left,
-                    69,
-                )))
+                .handle_event(left_pointer_event((x, 1.0), phase, 69))
                 .unwrap();
         }
         assert_eq!(terminal.selection_text(), "abcdefghijkl");
@@ -740,14 +660,7 @@ fn default_blank_insert_reprojects_selection_to_shifted_source_cells() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("abcde");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            70,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 70);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 21.0))
         .unwrap();
@@ -779,14 +692,7 @@ fn margin_insert_drops_margin_tail_without_aliasing_fixed_exterior_selection() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("ABCDEFGH");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            71,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 71);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 61.0))
         .unwrap();
@@ -818,21 +724,11 @@ fn output_between_pointer_down_and_up_keeps_click_zero_width() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("abcdef");
-    let down = TerminalEvent::Pointer(TerminalPointerEvent::new(
-        (21.0, 1.0),
-        TerminalPointerPhase::Down,
-        TerminalPointerButton::Left,
-        72,
-    ));
+    let down = left_pointer_event((21.0, 1.0), TerminalPointerPhase::Down, 72);
     terminal.handle_event(down).unwrap();
 
     terminal.put_bytes(b"\x1b[1;3H\x1b[4hX\x1b[4l");
-    let up = TerminalEvent::Pointer(TerminalPointerEvent::new(
-        (21.0, 1.0),
-        TerminalPointerPhase::Up,
-        TerminalPointerButton::Left,
-        72,
-    ));
+    let up = left_pointer_event((21.0, 1.0), TerminalPointerPhase::Up, 72);
     terminal.handle_event(up).unwrap();
 
     assert!(!terminal.has_non_empty_selection());
@@ -850,22 +746,20 @@ fn wheel_line_and_pixel_convert_to_viewport_lines() {
     }
 
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 3);
 
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelPixel { dx: 0.0, dy: 40.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 5);
     assert!(written.lock().unwrap().is_empty());
@@ -882,12 +776,11 @@ fn wheel_on_alt_screen_or_zero_delta_is_consumed_without_pty_write() {
     }
 
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelPixel { dx: 0.0, dy: 10.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 0);
     assert!(written.lock().unwrap().is_empty());
@@ -895,12 +788,11 @@ fn wheel_on_alt_screen_or_zero_delta_is_consumed_without_pty_write() {
     terminal.process_output(b"\x1b[?1049h");
     let offset_before = terminal.screen().view_offset();
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelLine { dx: 0.0, dy: 2.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), offset_before);
     assert!(written.lock().unwrap().is_empty());
@@ -920,12 +812,11 @@ fn should_leave_view_offset_unchanged_when_wheel_hits_scroll_bound() {
 
     // Act
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
 
     // Assert — clamped: Host would skip redraw wake
@@ -935,24 +826,22 @@ fn should_leave_view_offset_unchanged_when_wheel_hits_scroll_bound() {
     // Arrange — scroll to top, then wheel further up
     let scroll_count = terminal.screen().scroll_count();
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelLine { dx: 0.0, dy: 40.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
     let at_top = terminal.screen().view_offset();
     assert_eq!(at_top, scroll_count);
 
     // Act
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelLine { dx: 0.0, dy: 1.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
 
     // Assert
@@ -971,33 +860,30 @@ fn should_scroll_viewport_down_when_wheel_dy_is_negative() {
         terminal.process_output(b"line\r\n");
     }
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelLine { dx: 0.0, dy: 2.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 6);
 
     // Act — line delta -1 → 3 rows down; pixel -20 → 1 row down
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelLine { dx: 0.0, dy: -1.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
     assert_eq!(terminal.screen().view_offset(), 3);
 
     terminal
-        .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
+        .handle_event(left_pointer_event(
             (0.0, 0.0),
             TerminalPointerPhase::WheelPixel { dx: 0.0, dy: -20.0 },
-            TerminalPointerButton::Left,
             0,
-        )))
+        ))
         .unwrap();
 
     // Assert
@@ -1082,14 +968,7 @@ fn irm_wide_wrap_does_not_mutate_anchors_on_the_source_row() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("abcd");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            67,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 67);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 21.0))
         .unwrap();
@@ -1123,14 +1002,7 @@ fn width_changing_overwrite_preserves_selection_of_later_content() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("界xy");
-    let event = |phase, x| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, 1.0),
-            phase,
-            TerminalPointerButton::Left,
-            68,
-        ))
-    };
+    let event = |phase, x| left_pointer_event((x, 1.0), phase, 68);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 21.0))
         .unwrap();
@@ -1187,14 +1059,7 @@ fn trailing_blank_drag_survives_row_movement_and_a_new_commit() {
         .pointer
         .set_viewport(crate::RenderViewport::with_padding(10.0, 20.0, 0.0));
     terminal.put_str("abc");
-    let event = |phase, x, y| {
-        TerminalEvent::Pointer(TerminalPointerEvent::new(
-            (x, y),
-            phase,
-            TerminalPointerButton::Left,
-            91,
-        ))
-    };
+    let event = |phase, x, y| left_pointer_event((x, y), phase, 91);
     terminal
         .handle_event(event(TerminalPointerPhase::Down, 61.0, 1.0))
         .unwrap();
@@ -1244,12 +1109,7 @@ fn unchanged_selection_reconciliation_still_invalidates_update_provenance() {
         (TerminalPointerPhase::Up, 41.0),
     ] {
         terminal
-            .handle_event(TerminalEvent::Pointer(TerminalPointerEvent::new(
-                (x, 1.0),
-                phase,
-                TerminalPointerButton::Left,
-                92,
-            )))
+            .handle_event(left_pointer_event((x, 1.0), phase, 92))
             .unwrap();
     }
     let now = std::time::Instant::now();

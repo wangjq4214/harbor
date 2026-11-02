@@ -145,13 +145,22 @@ fn should_move_complete_wide_pairs_when_lines_and_scroll_regions_change() {
 
     screen.active.cursor.cursor.y = 2;
     screen.delete_lines(1);
+    assert_eq!(screen.cell(2, 3), &Cell::default());
+    assert_eq!(screen.cell(2, 4), &Cell::default());
     assert_wide_cell_invariant(&screen);
 
-    screen.active.cursor.cursor.y = 1;
+    screen.active.cursor.cursor.y = 2;
     screen.active.cursor.cursor.x = 3;
     screen.write_char('中');
+    assert_eq!(screen.cell(2, 3).ch, '中');
+    assert!(screen.cell(2, 4).wide_continuation);
     screen.scroll_up_region(1);
+    assert_eq!(screen.cell(1, 3).ch, '中');
+    assert!(screen.cell(1, 4).wide_continuation);
+    assert_wide_cell_invariant(&screen);
     screen.scroll_down_region(1);
+    assert_eq!(screen.cell(2, 3).ch, '中');
+    assert!(screen.cell(2, 4).wide_continuation);
     assert_wide_cell_invariant(&screen);
     assert!(screen.dirty_ranges().iter().any(|range| range.row >= 1));
 }
@@ -204,7 +213,12 @@ fn should_normalize_wide_pairs_when_dec_rectangles_touch_or_overlap() {
     assert_wide_cell_invariant(&screen);
 
     // An overlapping complete source is snapshot-safe and keeps the pair intact.
+    assert_eq!(screen.cell(0, 2).ch, '中');
+    assert!(screen.cell(0, 3).wide_continuation);
     parser.put_bytes(&mut screen, b"\x1b[1;3;1;4;;1;4$v");
+    assert_eq!(screen.cell(0, 2), &Cell::default());
+    assert_eq!(screen.cell(0, 3).ch, '中');
+    assert!(screen.cell(0, 4).wide_continuation);
     assert_wide_cell_invariant(&screen);
 
     let mut screen = Screen::new(1, 8);
@@ -379,10 +393,14 @@ fn wide_cell_insert_delete_and_scroll_normalize_rows() {
     screen.delete_chars(1);
     assert_wide_cell_invariant(&screen);
 
-    screen.active.cursor.cursor.y = 0;
+    screen.active.cursor.cursor.y = 1;
     screen.active.cursor.cursor.x = 2;
     screen.write_char('中');
+    assert_eq!(screen.cell(1, 2).ch, '中');
+    assert!(screen.cell(1, 3).wide_continuation);
     screen.scroll_up_region(1);
+    assert_eq!(screen.cell(0, 2).ch, '中');
+    assert!(screen.cell(0, 3).wide_continuation);
     assert_wide_cell_invariant(&screen);
 }
 
@@ -448,12 +466,27 @@ fn deccra_rejects_partial_wide_source_and_handles_overlapping_snapshot() {
             .any(|range| { range.row == 1 && range.start_col == 0 && range.end_col > 0 })
     );
 
-    // Act — copy a complete source over an overlapping destination.
-    parser.put_bytes(&mut screen, b"\x1b[1;3;1;4;;1;3$v");
-
-    // Assert — the snapshot prevents source corruption and preserves the pair.
-    assert_eq!(screen.cell(0, 2).ch, '中');
+    // Seed distinguishable data adjacent to the complete source before shifting it.
+    screen.active.cursor.cursor.x = 4;
+    screen.write_char('x');
+    assert_eq!(screen.row_text(0), "  中 x   ");
     assert!(screen.cell(0, 3).wide_continuation);
+    screen.clear_dirty();
+
+    // Act — shift source columns 3..5 one column right, overlapping both halves.
+    parser.put_bytes(&mut screen, b"\x1b[1;3;1;5;;1;4$v");
+
+    // The source snapshot must survive destination normalization and in-place overlap.
+    assert_eq!(screen.row_text(0), "   中 x  ");
+    assert_eq!(screen.cell(0, 3).ch, '中');
+    assert!(screen.cell(0, 4).wide_continuation);
+    assert_eq!(screen.cell(0, 5).ch, 'x');
+    assert!(
+        screen
+            .dirty_ranges()
+            .iter()
+            .any(|range| { range.row == 0 && range.start_col <= 3 && range.end_col >= 6 })
+    );
     assert_wide_cell_invariant(&screen);
 }
 

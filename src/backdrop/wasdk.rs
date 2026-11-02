@@ -269,18 +269,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn should_configure_lower_backdrop_target_as_non_topmost_when_on_windows() {
-        // Arrange
-        let expected = false;
-
-        // Act
-        let is_topmost = BACKDROP_TARGET_IS_TOPMOST;
-
-        // Assert
-        assert_eq!(is_topmost, expected);
-    }
-
-    #[test]
     fn should_occupy_distinct_composition_layers_when_stacked_with_renderer() {
         // Arrange
         let backdrop_topmost = BACKDROP_TARGET_IS_TOPMOST;

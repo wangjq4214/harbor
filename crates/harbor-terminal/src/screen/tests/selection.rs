@@ -114,32 +114,19 @@ fn selected_text_across_scrollback_generations() {
     set_semantic_cell(&mut screen, 0, 0, 'X'); // gen 3
     set_semantic_cell(&mut screen, 1, 0, 'Y'); // gen 4
 
-    // Select gens 0-4 — spans scrollback + visible.
-    let result = screen.selected_text(SelectionBounds {
-        start_row: 0,
-        start_col: 0,
-        end_row: 4,
-        end_col: 0,
-    });
-    assert_eq!(result, "A\nB\nC\nX\nY", "scrollback+visible selection");
-
-    // Select just visible range (gens 3-4).
-    let result = screen.selected_text(SelectionBounds {
-        start_row: 3,
-        start_col: 0,
-        end_row: 4,
-        end_col: 0,
-    });
-    assert_eq!(result, "X\nY", "visible-only selection via generation");
-
-    // Select just scrollback (gens 0-1).
-    let result = screen.selected_text(SelectionBounds {
-        start_row: 0,
-        start_col: 0,
-        end_row: 1,
-        end_col: 0,
-    });
-    assert_eq!(result, "A\nB", "scrollback-only selection via generation");
+    for (case, start_row, end_row, expected) in [
+        ("scrollback+visible selection", 0, 4, "A\nB\nC\nX\nY"),
+        ("visible-only selection via generation", 3, 4, "X\nY"),
+        ("scrollback-only selection via generation", 0, 1, "A\nB"),
+    ] {
+        let result = screen.selected_text(SelectionBounds {
+            start_row,
+            start_col: 0,
+            end_row,
+            end_col: 0,
+        });
+        assert_eq!(result, expected, "{case}");
+    }
 }
 
 #[test]

@@ -35,15 +35,16 @@ fn press_single_click_creates_character_selection() {
 #[test]
 fn double_click_selects_word() {
     let screen = test_screen(3, 10);
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
     // First click.
-    model.press((0, 3), now, &screen.terminal_snapshot());
+    model.press((0, 3), now, &snapshot);
     model.release();
 
     // Second click (within timeout) at same cell.
-    let outcome = model.press((0, 3), now, &screen.terminal_snapshot());
+    let outcome = model.press((0, 3), now, &snapshot);
 
     assert_eq!(outcome, SelectionOutcome::DragActive);
     assert_eq!(model.granularity, SelectionGranularity::Word);
@@ -56,17 +57,18 @@ fn double_click_selects_word() {
 #[test]
 fn triple_click_selects_full_line() {
     let screen = test_screen(3, 10);
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
     // Click 1.
-    model.press((0, 3), now, &screen.terminal_snapshot());
+    model.press((0, 3), now, &snapshot);
     model.release();
     // Click 2.
-    model.press((0, 3), now, &screen.terminal_snapshot());
+    model.press((0, 3), now, &snapshot);
     model.release();
     // Click 3.
-    let outcome = model.press((0, 3), now, &screen.terminal_snapshot());
+    let outcome = model.press((0, 3), now, &snapshot);
 
     assert_eq!(outcome, SelectionOutcome::DragActive);
     assert_eq!(model.granularity, SelectionGranularity::Line);
@@ -78,14 +80,15 @@ fn triple_click_selects_full_line() {
 #[test]
 fn click_on_different_cell_resets_click_chain() {
     let screen = test_screen(3, 10);
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
-    model.press((0, 3), now, &screen.terminal_snapshot());
+    model.press((0, 3), now, &snapshot);
     model.release();
 
     // Different cell — should reset to single click.
-    let outcome = model.press((1, 5), now, &screen.terminal_snapshot());
+    let outcome = model.press((1, 5), now, &snapshot);
     assert_eq!(model.click_count, 1);
     assert_eq!(outcome, SelectionOutcome::DragActive);
     let bounds = model.bounds().unwrap();
@@ -106,12 +109,13 @@ fn drag_to_without_press_is_noop() {
 #[test]
 fn drag_to_updates_cursor() {
     let screen = test_screen(3, 10);
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
-    model.press((0, 2), now, &screen.terminal_snapshot());
+    model.press((0, 2), now, &snapshot);
 
-    let changed = model.drag_to((0, 7), &screen.terminal_snapshot());
+    let changed = model.drag_to((0, 7), &snapshot);
     assert!(changed);
 
     let bounds = model.bounds().unwrap();
@@ -124,23 +128,25 @@ fn drag_to_updates_cursor() {
 #[test]
 fn drag_to_same_cell_returns_false() {
     let screen = test_screen(3, 10);
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
-    model.press((0, 2), now, &screen.terminal_snapshot());
-    let changed = model.drag_to((0, 2), &screen.terminal_snapshot());
+    model.press((0, 2), now, &snapshot);
+    let changed = model.drag_to((0, 2), &snapshot);
     assert!(!changed);
 }
 
 #[test]
 fn drag_in_reverse_swaps_normalized_range() {
     let screen = test_screen(3, 10);
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
     // Press at col 7, drag left to col 2.
-    model.press((0, 7), now, &screen.terminal_snapshot());
-    model.drag_to((0, 2), &screen.terminal_snapshot());
+    model.press((0, 7), now, &snapshot);
+    model.drag_to((0, 2), &snapshot);
 
     let bounds = model.bounds().unwrap();
     assert_eq!(bounds.start_col, 2);
@@ -150,12 +156,13 @@ fn drag_in_reverse_swaps_normalized_range() {
 #[test]
 fn release_during_drag_ends_drag() {
     let screen = test_screen(3, 10);
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
-    model.press((0, 2), now, &screen.terminal_snapshot());
+    model.press((0, 2), now, &snapshot);
     assert!(model.is_dragging());
-    model.drag_to((0, 5), &screen.terminal_snapshot()); // extend to non-zero-width
+    model.drag_to((0, 5), &snapshot); // extend to non-zero-width
 
     let outcome = model.release();
     assert_eq!(outcome, SelectionOutcome::DragEnded);
@@ -206,11 +213,12 @@ fn cancel_without_drag_returns_none() {
 #[test]
 fn clear_resets_everything() {
     let screen = test_screen(3, 10);
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
-    model.press((0, 2), now, &screen.terminal_snapshot());
-    model.drag_to((0, 5), &screen.terminal_snapshot());
+    model.press((0, 2), now, &snapshot);
+    model.drag_to((0, 5), &snapshot);
     assert!(model.has_selection());
     assert!(model.is_dragging());
 
@@ -243,6 +251,8 @@ fn on_key_press_without_selection_returns_false() {
 fn bounds_returns_none_when_no_selection() {
     let model = SelectionModel::new();
     assert!(model.bounds().is_none());
+    assert!(!model.has_selection());
+    assert!(!model.is_range_empty()); // No range is distinct from an empty range.
 }
 
 #[test]
@@ -252,17 +262,20 @@ fn is_range_empty_true_when_anchor_equals_cursor() {
     let now = Instant::now();
 
     model.press((0, 2), now, &screen.terminal_snapshot());
+    assert!(model.has_selection());
     assert!(model.is_range_empty());
 }
 
 #[test]
 fn is_range_empty_false_after_drag() {
     let screen = test_screen(3, 10);
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
-    model.press((0, 2), now, &screen.terminal_snapshot());
-    model.drag_to((0, 5), &screen.terminal_snapshot());
+    model.press((0, 2), now, &snapshot);
+    model.drag_to((0, 5), &snapshot);
+    assert!(model.has_selection());
     assert!(!model.is_range_empty());
 }
 
@@ -382,12 +395,13 @@ fn find_word_range_cjk_stops_at_separator() {
 fn find_word_range_cjk_stops_at_latin() {
     // "hello世界" — Latin then CJK.
     let screen = screen_with_text("hello世界");
+    let snapshot = screen.terminal_snapshot();
     // Click '世' (col 5) — CJK group: only cols 5-6.
-    let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 5);
+    let (start, end) = SelectionModel::find_word_range(&snapshot, 0, 5);
     assert_eq!(start, (0, 5));
     assert_eq!(end, (0, 6));
     // Click 'o' (col 4) — Latin group: cols 0-4.
-    let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 4);
+    let (start, end) = SelectionModel::find_word_range(&snapshot, 0, 4);
     assert_eq!(start, (0, 0));
     assert_eq!(end, (0, 4));
 }
@@ -396,12 +410,13 @@ fn find_word_range_cjk_stops_at_latin() {
 fn find_word_range_latin_stops_at_cjk() {
     // "你好world" — CJK then Latin.
     let screen = screen_with_text("你好world");
+    let snapshot = screen.terminal_snapshot();
     // Click '你' (col 0) — CJK group: cols 0-1.
-    let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 0);
+    let (start, end) = SelectionModel::find_word_range(&snapshot, 0, 0);
     assert_eq!(start, (0, 0));
     assert_eq!(end, (0, 1));
     // Click 'w' (col 2) — Latin group: cols 2-6.
-    let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 2);
+    let (start, end) = SelectionModel::find_word_range(&snapshot, 0, 2);
     assert_eq!(start, (0, 2));
     assert_eq!(end, (0, 6));
 }
@@ -458,14 +473,15 @@ fn snap_word_cursor_cjk_backward_stays_at_char() {
 fn double_click_cjk_selects_consecutive_run() {
     // "你好世界hello"
     let screen = screen_with_text("你好世界hello");
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
     // First click: char selection.
-    model.press((0, 1), now, &screen.terminal_snapshot()); // click '好'
+    model.press((0, 1), now, &snapshot); // click '好'
     // Second click within timeout at same cell → double-click → Word mode.
     let now2 = now + Duration::from_millis(200);
-    let outcome = model.press((0, 1), now2, &screen.terminal_snapshot());
+    let outcome = model.press((0, 1), now2, &snapshot);
     assert_eq!(outcome, SelectionOutcome::DragActive);
 
     let bounds = model.bounds().unwrap();
@@ -480,32 +496,33 @@ fn double_click_cjk_selects_consecutive_run() {
 fn double_click_cjk_then_drag_char_by_char() {
     // "你好世界"
     let screen = screen_with_text("你好世界");
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
     // Double-click '好' (col 1).
-    model.press((0, 1), now, &screen.terminal_snapshot());
+    model.press((0, 1), now, &snapshot);
     let now2 = now + Duration::from_millis(200);
-    model.press((0, 1), now2, &screen.terminal_snapshot());
+    model.press((0, 1), now2, &snapshot);
 
     // Initial: entire "你好世界" (0..3).
     assert_eq!(model.bounds().unwrap().start_col, 0);
     assert_eq!(model.bounds().unwrap().end_col, 3);
 
     // Drag to col 2 (世) — forward snap, CJK stays at 2.
-    model.drag_to((0, 2), &screen.terminal_snapshot());
+    model.drag_to((0, 2), &snapshot);
     let bounds = model.bounds().unwrap();
     assert_eq!(bounds.start_col, 0);
     assert_eq!(bounds.end_col, 2);
 
     // Drag to col 1 (好) — selection should be 0..1.
-    model.drag_to((0, 1), &screen.terminal_snapshot());
+    model.drag_to((0, 1), &snapshot);
     let bounds = model.bounds().unwrap();
     assert_eq!(bounds.start_col, 0);
     assert_eq!(bounds.end_col, 1);
 
     // Drag to col 0 (你) — zero-width (anchor == cursor).
-    model.drag_to((0, 0), &screen.terminal_snapshot());
+    model.drag_to((0, 0), &snapshot);
     assert!(model.is_range_empty());
 }
 
@@ -580,12 +597,13 @@ fn find_word_range_wide_cjk_stops_at_separator() {
 fn find_word_range_wide_cjk_stops_at_latin() {
     // "hello世" — "hello" cols 0-4, "世" cols 5-6.
     let screen = screen_with_wide_text("hello世");
+    let snapshot = screen.terminal_snapshot();
     // Click '世' (col 5) → CJK group: cols 5-6 only.
-    let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 5);
+    let (start, end) = SelectionModel::find_word_range(&snapshot, 0, 5);
     assert_eq!(start, (0, 5));
     assert_eq!(end, (0, 6));
     // Click 'o' (col 4) → Latin group: cols 0-4.
-    let (start, end) = SelectionModel::find_word_range(&screen.terminal_snapshot(), 0, 4);
+    let (start, end) = SelectionModel::find_word_range(&snapshot, 0, 4);
     assert_eq!(start, (0, 0));
     assert_eq!(end, (0, 4));
 }
@@ -612,12 +630,13 @@ fn snap_word_cursor_wide_cjk_backward_stays_at_char_start() {
 #[test]
 fn double_click_wide_cjk_selects_full_run() {
     let screen = screen_with_wide_text("你好世界");
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
-    model.press((0, 2), now, &screen.terminal_snapshot()); // click '好' at col 2
+    model.press((0, 2), now, &snapshot); // click '好' at col 2
     let now2 = now + Duration::from_millis(200);
-    let outcome = model.press((0, 2), now2, &screen.terminal_snapshot());
+    let outcome = model.press((0, 2), now2, &snapshot);
     assert_eq!(outcome, SelectionOutcome::DragActive);
 
     let bounds = model.bounds().unwrap();
@@ -629,57 +648,36 @@ fn double_click_wide_cjk_selects_full_run() {
 fn double_click_wide_cjk_then_drag_char_by_char() {
     // "你好世界" → 8 cells.
     let screen = screen_with_wide_text("你好世界");
+    let snapshot = screen.terminal_snapshot();
     let mut model = SelectionModel::new();
     let now = Instant::now();
 
     // Double-click '好' (col 2).
-    model.press((0, 2), now, &screen.terminal_snapshot());
+    model.press((0, 2), now, &snapshot);
     let now2 = now + Duration::from_millis(200);
-    model.press((0, 2), now2, &screen.terminal_snapshot());
+    model.press((0, 2), now2, &snapshot);
 
     // Initial: entire run (0..7).
     assert_eq!(model.bounds().unwrap().start_col, 0);
     assert_eq!(model.bounds().unwrap().end_col, 7);
 
     // Drag to col 4 (世) → snaps to col 5 (wc).
-    model.drag_to((0, 4), &screen.terminal_snapshot());
+    model.drag_to((0, 4), &snapshot);
     let bounds = model.bounds().unwrap();
     assert_eq!(bounds.start_col, 0);
     assert_eq!(bounds.end_col, 5); // 你好世
 
     // Drag to col 2 (好) → snaps to col 3 (wc).
-    model.drag_to((0, 2), &screen.terminal_snapshot());
+    model.drag_to((0, 2), &snapshot);
     let bounds = model.bounds().unwrap();
     assert_eq!(bounds.start_col, 0);
     assert_eq!(bounds.end_col, 3); // 你好
 
     // Drag to col 0 (你) → snaps to col 1 (wc).
-    model.drag_to((0, 0), &screen.terminal_snapshot());
+    model.drag_to((0, 0), &snapshot);
     let bounds = model.bounds().unwrap();
     assert_eq!(bounds.start_col, 0);
     assert_eq!(bounds.end_col, 1); // 你
-}
-
-#[test]
-fn test_selection_model_states() {
-    let screen = test_screen(3, 10);
-    let mut model = SelectionModel::new();
-    let now = Instant::now();
-    let snapshot = screen.terminal_snapshot();
-
-    // 1. Initially (range = None)
-    assert!(!model.has_selection());
-    assert!(!model.is_range_empty()); // range is None, so is_range_empty returns false!
-
-    // 2. Pressed but not dragged (range is Some and empty)
-    model.press((0, 2), now, &snapshot);
-    assert!(model.has_selection());
-    assert!(model.is_range_empty());
-
-    // 3. Dragged (range is Some and not empty)
-    model.drag_to((0, 5), &snapshot);
-    assert!(model.has_selection());
-    assert!(!model.is_range_empty());
 }
 
 fn anchor_test_screen() -> Screen {

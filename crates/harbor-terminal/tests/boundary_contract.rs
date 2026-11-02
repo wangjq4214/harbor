@@ -509,72 +509,30 @@ fn should_clear_all_flags_when_default() {
     assert!(!none.meta);
 }
 
-#[test]
-fn should_compare_unequal_when_only_shift_is_set() {
-    // Arrange
-    let none = TerminalModifiers::default();
-    let shift = TerminalModifiers {
-        shift: true,
-        ..TerminalModifiers::default()
+// Named cases retain separate test-runner failures for each public modifier.
+macro_rules! single_modifier_cases {
+    ($($name:ident: $field:ident, $expected:expr;)+) => {
+        $(
+            #[test]
+            fn $name() {
+                let none = TerminalModifiers::default();
+                let modifiers = TerminalModifiers { $field: true, ..none };
+                assert_ne!(none, modifiers, stringify!($field));
+                assert_eq!(
+                    (modifiers.shift, modifiers.ctrl, modifiers.alt, modifiers.meta),
+                    $expected,
+                    stringify!($field),
+                );
+            }
+        )+
     };
-
-    // Act / Assert
-    assert_ne!(none, shift);
-    assert!(shift.shift);
-    assert!(!shift.ctrl);
-    assert!(!shift.alt);
-    assert!(!shift.meta);
 }
 
-#[test]
-fn should_compare_unequal_when_only_ctrl_is_set() {
-    // Arrange
-    let none = TerminalModifiers::default();
-    let ctrl = TerminalModifiers {
-        ctrl: true,
-        ..TerminalModifiers::default()
-    };
-
-    // Act / Assert
-    assert_ne!(none, ctrl);
-    assert!(!ctrl.shift);
-    assert!(ctrl.ctrl);
-    assert!(!ctrl.alt);
-    assert!(!ctrl.meta);
-}
-
-#[test]
-fn should_compare_unequal_when_only_alt_is_set() {
-    // Arrange
-    let none = TerminalModifiers::default();
-    let alt = TerminalModifiers {
-        alt: true,
-        ..TerminalModifiers::default()
-    };
-
-    // Act / Assert
-    assert_ne!(none, alt);
-    assert!(!alt.shift);
-    assert!(!alt.ctrl);
-    assert!(alt.alt);
-    assert!(!alt.meta);
-}
-
-#[test]
-fn should_compare_unequal_when_only_meta_is_set() {
-    // Arrange
-    let none = TerminalModifiers::default();
-    let meta = TerminalModifiers {
-        meta: true,
-        ..TerminalModifiers::default()
-    };
-
-    // Act / Assert
-    assert_ne!(none, meta);
-    assert!(!meta.shift);
-    assert!(!meta.ctrl);
-    assert!(!meta.alt);
-    assert!(meta.meta);
+single_modifier_cases! {
+    should_compare_unequal_when_only_shift_is_set: shift, (true, false, false, false);
+    should_compare_unequal_when_only_ctrl_is_set: ctrl, (false, true, false, false);
+    should_compare_unequal_when_only_alt_is_set: alt, (false, false, true, false);
+    should_compare_unequal_when_only_meta_is_set: meta, (false, false, false, true);
 }
 
 #[test]

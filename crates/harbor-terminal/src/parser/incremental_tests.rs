@@ -104,11 +104,8 @@ fn feed_all(parser: &mut TerminalParser, screen: &mut Screen, data: &[u8]) {
 /// Feed `data` in fixed-size chunks, each chunk processed with alt-split handling.
 fn feed_chunks(parser: &mut TerminalParser, screen: &mut Screen, data: &[u8], chunk: usize) {
     assert!(chunk > 0);
-    let mut i = 0;
-    while i < data.len() {
-        let end = (i + chunk).min(data.len());
-        feed_all(parser, screen, &data[i..end]);
-        i = end;
+    for bytes in data.chunks(chunk) {
+        feed_all(parser, screen, bytes);
     }
 }
 
@@ -257,11 +254,7 @@ fn chunk_equiv_apc_pm_sos_then_text() {
 #[test]
 fn chunk_equiv_utf8_multibyte() {
     // "你" = E4 BD A0; cut at every offset covered by chunk sizes 1/2/3/7.
-    let mut data = Vec::new();
-    data.extend_from_slice("hi".as_bytes());
-    data.extend_from_slice("你".as_bytes());
-    data.extend_from_slice("x".as_bytes());
-    assert_chunk_equiv(5, 40, &data);
+    assert_chunk_equiv(5, 40, "hi你x".as_bytes());
 }
 
 #[test]
@@ -323,21 +316,7 @@ fn put_result_reports_alt_boundary_before_suffix_and_consumes_request() {
 
 #[test]
 fn should_preserve_device_attribute_replies_when_stream_is_chunked() {
-    // Arrange
-    let data = b"\x1b[c\x1b[>0c\x1bZ";
-    let chunk_sizes = [1usize, 2, 3, 7];
-
-    // Act
-    let bulk = run_bulk(5, 40, data);
-    let chunked = chunk_sizes
-        .iter()
-        .map(|chunk| run_chunked(5, 40, data, *chunk))
-        .collect::<Vec<_>>();
-
-    // Assert
-    for (chunk, result) in chunk_sizes.iter().zip(chunked) {
-        assert_eq!(result, bulk, "chunk size {chunk} diverged from bulk");
-    }
+    assert_chunk_equiv(5, 40, b"\x1b[c\x1b[>0c\x1bZ");
 }
 
 #[test]

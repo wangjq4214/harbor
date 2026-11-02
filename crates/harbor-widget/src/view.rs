@@ -772,15 +772,7 @@ mod tests {
 
     #[test]
     fn use_state_persists_across_rebuilds() {
-        let hooks: Vec<Box<dyn Hook>> = vec![];
-        let mut cx = BuildCx {
-            current_fiber: None,
-            hooks,
-            subscriptions: Vec::new(),
-            hook_index: 0,
-            externals: ExternalRegistrations::default(),
-            theme: Arc::new(Theme::default()),
-        };
+        let mut cx = BuildCx::stub();
 
         // First build: creates a new signal
         let s1 = cx.use_state(|| 42u32);
@@ -789,12 +781,8 @@ mod tests {
 
         // Second build (simulated): hooks are preserved
         let mut cx2 = BuildCx {
-            current_fiber: None,
             hooks: cx.hooks,
-            subscriptions: Vec::new(),
-            hook_index: 0,
-            externals: ExternalRegistrations::default(),
-            theme: Arc::new(Theme::default()),
+            ..BuildCx::stub()
         };
         let s2 = cx2.use_state(|| 0u32); // init is ignored — existing signal used
         assert_eq!(*s2.read(), 100); // preserved value
@@ -803,14 +791,7 @@ mod tests {
 
     #[test]
     fn use_state_multiple_hooks() {
-        let mut cx = BuildCx {
-            current_fiber: None,
-            hooks: vec![],
-            subscriptions: Vec::new(),
-            hook_index: 0,
-            externals: ExternalRegistrations::default(),
-            theme: Arc::new(Theme::default()),
-        };
+        let mut cx = BuildCx::stub();
 
         let s1 = cx.use_state(|| "hello".to_string());
         let s2 = cx.use_state(|| 42u32);
@@ -822,26 +803,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "hook type mismatch")]
     fn use_state_type_mismatch_panics() {
-        let mut cx = BuildCx {
-            current_fiber: None,
-            hooks: vec![],
-            subscriptions: Vec::new(),
-            hook_index: 0,
-            externals: ExternalRegistrations::default(),
-            theme: Arc::new(Theme::default()),
-        };
+        let mut cx = BuildCx::stub();
 
         // First build with u32
         let _s1 = cx.use_state(|| 42u32);
 
         // Second build tries to read it as String
         let mut cx2 = BuildCx {
-            current_fiber: None,
             hooks: cx.hooks,
-            subscriptions: Vec::new(),
-            hook_index: 0,
-            externals: ExternalRegistrations::default(),
-            theme: Arc::new(Theme::default()),
+            ..BuildCx::stub()
         };
         let _s2 = cx2.use_state(|| "oops".to_string());
     }
@@ -865,14 +835,6 @@ mod tests {
     }
 
     #[test]
-    fn sized_box_build() {
-        let sized_box = SizedBox::new(Size::new(100.0, 50.0)).unwrap();
-        let mut cx = BuildCx::stub();
-        let view = sized_box.build(&mut cx);
-        assert_eq!(view.children.len(), 0);
-    }
-
-    #[test]
     fn should_preserve_parent_constraints_when_view_uses_default_child_constraints() {
         use crate::widgets::text_label::TextLabel;
 
@@ -888,24 +850,5 @@ mod tests {
 
         // Assert
         assert_eq!(child_constraints, constraints);
-    }
-
-    #[test]
-    fn anyview_intrinsic_size() {
-        use crate::widgets::sized_box::SizedBox;
-        let sb = SizedBox::new(Size::new(100.0, 50.0)).unwrap();
-        let constraints = BoxConstraints::loose(Size::new(800.0, 600.0));
-        let size = sb.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
-        assert_eq!(size, Size::new(100.0, 50.0));
-    }
-
-    #[test]
-    fn anyview_intrinsic_size_clamped() {
-        use crate::widgets::sized_box::SizedBox;
-        let sb = SizedBox::new(Size::new(1000.0, 50.0)).unwrap();
-        let constraints = BoxConstraints::tight(Size::new(500.0, 500.0));
-        let size = sb.intrinsic_size(constraints, &crate::runtime::DEFAULT_TEXT_METRICS);
-        // Both dimensions clamped to tight 500x500 constraint
-        assert_eq!(size, Size::new(500.0, 500.0));
     }
 }

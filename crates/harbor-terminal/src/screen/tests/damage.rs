@@ -1,4 +1,13 @@
 use super::*;
+use crate::DirtyRange;
+
+fn dirty_range(row: usize, columns: std::ops::Range<usize>) -> DirtyRange {
+    DirtyRange {
+        row,
+        start_col: columns.start,
+        end_col: columns.end,
+    }
+}
 
 #[test]
 fn write_char_marks_its_row() {
@@ -6,7 +15,7 @@ fn write_char_marks_its_row() {
     // After new, all rows are dirty.
     screen.clear_dirty();
     screen.write_char('x');
-    let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
+    let dirty = screen.dirty_rows();
     assert_eq!(dirty, vec![0], "write_char at row 0 should mark row 0");
 }
 
@@ -26,7 +35,7 @@ fn scroll_up_marks_all_rows() {
     screen.clear_dirty();
     screen.active.cursor.cursor.y = 2; // bottom row
     screen.newline(); // triggers scroll_up
-    let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
+    let dirty = screen.dirty_rows();
     assert_eq!(dirty.len(), 3, "scroll_up should mark all rows");
 }
 
@@ -36,7 +45,7 @@ fn erase_line_marks_cursor_row() {
     screen.active.cursor.cursor.y = 2;
     screen.clear_dirty();
     screen.erase_line(2);
-    let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
+    let dirty = screen.dirty_rows();
     assert_eq!(dirty, vec![2], "erase_line should mark only cursor row");
 }
 
@@ -62,7 +71,7 @@ fn reset_display_marks_all_rows() {
     let mut screen = Screen::new(3, 4);
     screen.clear_dirty();
     screen.reset_display();
-    let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
+    let dirty = screen.dirty_rows();
     assert_eq!(dirty.len(), 3, "reset_display should mark all rows");
 }
 
@@ -72,7 +81,7 @@ fn reverse_index_scroll_marks_all_rows() {
     screen.clear_dirty();
     screen.active.cursor.cursor.y = 0;
     screen.reverse_index(); // triggers scroll
-    let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
+    let dirty = screen.dirty_rows();
     assert_eq!(
         dirty.len(),
         3,
@@ -108,21 +117,13 @@ fn newline_no_scroll_does_not_mark_dirty() {
 
 #[test]
 fn test_write_char_range_dirty() {
-    use crate::DirtyRange;
     let mut screen = Screen::new(3, 10);
     screen.clear_dirty();
 
     // Write a character at row 0, col 0.
     screen.write_char('x');
     let ranges = screen.dirty_ranges();
-    assert_eq!(
-        ranges,
-        vec![DirtyRange {
-            row: 0,
-            start_col: 0,
-            end_col: 2
-        }]
-    );
+    assert_eq!(ranges, vec![dirty_range(0, 0..2)]);
 
     screen.clear_dirty();
     // Move cursor to row 1, col 5.
@@ -130,14 +131,7 @@ fn test_write_char_range_dirty() {
     screen.active.cursor.cursor.x = 5;
     screen.write_char('y');
     let ranges = screen.dirty_ranges();
-    assert_eq!(
-        ranges,
-        vec![DirtyRange {
-            row: 1,
-            start_col: 5,
-            end_col: 7
-        }]
-    );
+    assert_eq!(ranges, vec![dirty_range(1, 5..7)]);
 
     // Case 1: Overwriting a wide_continuation cell (splits wide char)
     screen.clear_dirty();
@@ -151,14 +145,7 @@ fn test_write_char_range_dirty() {
     screen.write_char('z');
     let ranges = screen.dirty_ranges();
     // Overwriting continuation cell splits the wide character at col 4, so start_col is 4
-    assert_eq!(
-        ranges,
-        vec![DirtyRange {
-            row: 1,
-            start_col: 4,
-            end_col: 7
-        }]
-    );
+    assert_eq!(ranges, vec![dirty_range(1, 4..7)]);
 
     // Case 2: Overwriting the start of a wide character
     screen.clear_dirty();
@@ -171,33 +158,18 @@ fn test_write_char_range_dirty() {
     screen.write_char('w');
     let ranges = screen.dirty_ranges();
     // Overwriting base cell clears its continuation at col 5, so end_col covers col 5 (up to 6)
-    assert_eq!(
-        ranges,
-        vec![DirtyRange {
-            row: 1,
-            start_col: 4,
-            end_col: 6
-        }]
-    );
+    assert_eq!(ranges, vec![dirty_range(1, 4..6)]);
 
     // Case 3: Clamping at end of row
     screen.clear_dirty();
     screen.active.cursor.cursor.x = 9; // last column
     screen.write_char('a');
     let ranges = screen.dirty_ranges();
-    assert_eq!(
-        ranges,
-        vec![DirtyRange {
-            row: 1,
-            start_col: 9,
-            end_col: 10
-        }]
-    );
+    assert_eq!(ranges, vec![dirty_range(1, 9..10)]);
 }
 
 #[test]
 fn test_mutations_range_dirty() {
-    use crate::DirtyRange;
     let mut screen = Screen::new(3, 10);
 
     // 1. erase_line(0) (cursor to end)
@@ -206,14 +178,7 @@ fn test_mutations_range_dirty() {
     screen.active.cursor.cursor.x = 4;
     screen.erase_line(0);
     let ranges = screen.dirty_ranges();
-    assert_eq!(
-        ranges,
-        vec![DirtyRange {
-            row: 0,
-            start_col: 3,
-            end_col: 10
-        }]
-    );
+    assert_eq!(ranges, vec![dirty_range(0, 3..10)]);
 
     // 2. erase_chars(3) (ECH)
     screen.clear_dirty();
@@ -221,14 +186,7 @@ fn test_mutations_range_dirty() {
     screen.active.cursor.cursor.x = 3;
     screen.erase_chars(3);
     let ranges = screen.dirty_ranges();
-    assert_eq!(
-        ranges,
-        vec![DirtyRange {
-            row: 1,
-            start_col: 2,
-            end_col: 7
-        }]
-    );
+    assert_eq!(ranges, vec![dirty_range(1, 2..7)]);
 
     // 3. insert_chars(2) (ICH)
     screen.clear_dirty();
@@ -236,14 +194,7 @@ fn test_mutations_range_dirty() {
     screen.active.cursor.cursor.x = 4;
     screen.insert_chars(2);
     let ranges = screen.dirty_ranges();
-    assert_eq!(
-        ranges,
-        vec![DirtyRange {
-            row: 2,
-            start_col: 3,
-            end_col: 10
-        }]
-    );
+    assert_eq!(ranges, vec![dirty_range(2, 3..10)]);
 
     // 4. delete_chars(2) (DCH)
     screen.clear_dirty();
@@ -251,19 +202,11 @@ fn test_mutations_range_dirty() {
     screen.active.cursor.cursor.x = 4;
     screen.delete_chars(2);
     let ranges = screen.dirty_ranges();
-    assert_eq!(
-        ranges,
-        vec![DirtyRange {
-            row: 2,
-            start_col: 3,
-            end_col: 10
-        }]
-    );
+    assert_eq!(ranges, vec![dirty_range(2, 3..10)]);
 }
 
 #[test]
 fn test_erase_display_range_dirty() {
-    use crate::DirtyRange;
     let mut screen = Screen::new(5, 10);
 
     // 1. erase_display(0) - cursor to end of screen
@@ -275,21 +218,9 @@ fn test_erase_display_range_dirty() {
     assert_eq!(
         ranges,
         vec![
-            DirtyRange {
-                row: 2,
-                start_col: 4,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 3,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 4,
-                start_col: 0,
-                end_col: 10
-            },
+            dirty_range(2, 4..10),
+            dirty_range(3, 0..10),
+            dirty_range(4, 0..10),
         ]
     );
 
@@ -302,21 +233,9 @@ fn test_erase_display_range_dirty() {
     assert_eq!(
         ranges,
         vec![
-            DirtyRange {
-                row: 0,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 1,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 2,
-                start_col: 0,
-                end_col: 5
-            },
+            dirty_range(0, 0..10),
+            dirty_range(1, 0..10),
+            dirty_range(2, 0..5),
         ]
     );
 
@@ -329,38 +248,17 @@ fn test_erase_display_range_dirty() {
     assert_eq!(
         ranges,
         vec![
-            DirtyRange {
-                row: 0,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 1,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 2,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 3,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 4,
-                start_col: 0,
-                end_col: 10
-            },
+            dirty_range(0, 0..10),
+            dirty_range(1, 0..10),
+            dirty_range(2, 0..10),
+            dirty_range(3, 0..10),
+            dirty_range(4, 0..10),
         ]
     );
 }
 
 #[test]
 fn test_scroll_region_operations_damage() {
-    use crate::DirtyRange;
     let mut screen = Screen::new(5, 10);
     screen.active.cursor.scroll_region.top = 1;
     screen.active.cursor.scroll_region.bottom = 3;
@@ -371,21 +269,9 @@ fn test_scroll_region_operations_damage() {
     assert_eq!(
         screen.dirty_ranges(),
         vec![
-            DirtyRange {
-                row: 1,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 2,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 3,
-                start_col: 0,
-                end_col: 10
-            },
+            dirty_range(1, 0..10),
+            dirty_range(2, 0..10),
+            dirty_range(3, 0..10),
         ]
     );
 
@@ -396,21 +282,9 @@ fn test_scroll_region_operations_damage() {
     assert_eq!(
         screen.dirty_ranges(),
         vec![
-            DirtyRange {
-                row: 1,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 2,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 3,
-                start_col: 0,
-                end_col: 10
-            },
+            dirty_range(1, 0..10),
+            dirty_range(2, 0..10),
+            dirty_range(3, 0..10),
         ]
     );
 
@@ -421,21 +295,9 @@ fn test_scroll_region_operations_damage() {
     assert_eq!(
         screen.dirty_ranges(),
         vec![
-            DirtyRange {
-                row: 1,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 2,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 3,
-                start_col: 0,
-                end_col: 10
-            },
+            dirty_range(1, 0..10),
+            dirty_range(2, 0..10),
+            dirty_range(3, 0..10),
         ]
     );
 
@@ -446,21 +308,9 @@ fn test_scroll_region_operations_damage() {
     assert_eq!(
         screen.dirty_ranges(),
         vec![
-            DirtyRange {
-                row: 1,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 2,
-                start_col: 0,
-                end_col: 10
-            },
-            DirtyRange {
-                row: 3,
-                start_col: 0,
-                end_col: 10
-            },
+            dirty_range(1, 0..10),
+            dirty_range(2, 0..10),
+            dirty_range(3, 0..10),
         ]
     );
 
@@ -478,67 +328,30 @@ fn test_scroll_region_operations_damage() {
 
 #[test]
 fn test_damage_accumulation_multi_frame() {
-    use crate::DirtyRange;
     let mut screen = Screen::new(3, 10);
     screen.clear_dirty();
 
     // Step 1: Mark a single cell range at row 0, cols [2, 3)
     screen.mark_range_dirty(0, 2, 3);
-    assert_eq!(
-        screen.dirty_ranges(),
-        vec![DirtyRange {
-            row: 0,
-            start_col: 2,
-            end_col: 3
-        }]
-    );
+    assert_eq!(screen.dirty_ranges(), vec![dirty_range(0, 2..3)]);
 
     // Step 2: Without clearing dirty flags, mark a range at row 0, cols [5, 6)
     screen.mark_range_dirty(0, 5, 6);
     assert_eq!(
         screen.dirty_ranges(),
-        vec![
-            DirtyRange {
-                row: 0,
-                start_col: 2,
-                end_col: 3
-            },
-            DirtyRange {
-                row: 0,
-                start_col: 5,
-                end_col: 6
-            },
-        ]
+        vec![dirty_range(0, 2..3), dirty_range(0, 5..6),]
     );
 
     // Step 3: Mark a range at row 0, cols [3, 4), which is adjacent to [2, 3), so they merge into [2, 4)
     screen.mark_range_dirty(0, 3, 4);
     assert_eq!(
         screen.dirty_ranges(),
-        vec![
-            DirtyRange {
-                row: 0,
-                start_col: 2,
-                end_col: 4
-            },
-            DirtyRange {
-                row: 0,
-                start_col: 5,
-                end_col: 6
-            },
-        ]
+        vec![dirty_range(0, 2..4), dirty_range(0, 5..6),]
     );
 
     // Step 4: Mark a range at row 0, cols [4, 5), bridging the gap -> they all merge into [2, 6)
     screen.mark_range_dirty(0, 4, 5);
-    assert_eq!(
-        screen.dirty_ranges(),
-        vec![DirtyRange {
-            row: 0,
-            start_col: 2,
-            end_col: 6
-        }]
-    );
+    assert_eq!(screen.dirty_ranges(), vec![dirty_range(0, 2..6)]);
 
     // Step 5: Clear dirty flags, verify empty
     screen.clear_dirty();

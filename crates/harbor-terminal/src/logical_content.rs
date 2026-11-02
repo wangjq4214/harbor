@@ -387,16 +387,11 @@ mod tests {
     use super::*;
     use crate::model::{CellAttrs, HyperlinkId};
 
-    fn write(normal: &mut NormalBuf, row: usize, col: usize, cell: Cell) {
-        normal.write_meaningful_cell(row, col, cell);
-    }
-
     #[test]
     fn selection_validates_corruption_outside_bounds_without_partial_success() {
         for invalid_row in [0, 2] {
             let mut normal = NormalBuf::new(3, 4);
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 1,
                 0,
                 Cell {
@@ -404,8 +399,7 @@ mod tests {
                     ..Cell::default()
                 },
             );
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 invalid_row,
                 0,
                 Cell {
@@ -444,11 +438,10 @@ mod tests {
             ..Cell::default()
         };
         cell.suffix = "\u{301}".into();
-        write(&mut normal, 0, 0, cell);
-        write(&mut normal, 0, 1, Cell::default());
+        normal.write_meaningful_cell(0, 0, cell);
+        normal.write_meaningful_cell(0, 1, Cell::default());
         let source = normal.live_row_metadata(0);
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             1,
             0,
             Cell {
@@ -469,8 +462,7 @@ mod tests {
     #[test]
     fn bounded_line_decode_handles_empty_prefix_and_later_invalid_rows() {
         let mut normal = NormalBuf::new(2, 4);
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             0,
             Cell {
@@ -478,8 +470,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             1,
             0,
             Cell {
@@ -517,11 +508,10 @@ mod tests {
             hyperlink: Some(hyperlink),
             ..Cell::default()
         };
-        write(&mut normal, 0, 0, styled.clone());
-        write(&mut normal, 0, 1, Cell::default());
+        normal.write_meaningful_cell(0, 0, styled.clone());
+        normal.write_meaningful_cell(0, 1, Cell::default());
         let source = normal.live_row_metadata(0);
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             1,
             0,
             Cell {
@@ -529,8 +519,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             1,
             1,
             Cell {
@@ -620,8 +609,7 @@ mod tests {
     #[test]
     fn decode_rejects_wide_corruption_and_inconsistent_soft_wraps() {
         let mut orphan = NormalBuf::new(1, 2);
-        write(
-            &mut orphan,
+        orphan.write_meaningful_cell(
             0,
             0,
             Cell {
@@ -639,8 +627,7 @@ mod tests {
         );
 
         let mut missing = NormalBuf::new(1, 2);
-        write(
-            &mut missing,
+        missing.write_meaningful_cell(
             0,
             0,
             Cell {
@@ -667,8 +654,7 @@ mod tests {
         let mut costs = Vec::new();
         for suffix in ["", "\u{301}".repeat(128).as_str()] {
             let mut normal = NormalBuf::new(2, 4);
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 0,
                 0,
                 Cell {
@@ -676,8 +662,7 @@ mod tests {
                     ..Cell::default()
                 },
             );
-            write(
-                &mut normal,
+            normal.write_meaningful_cell(
                 1,
                 0,
                 Cell {
@@ -702,8 +687,7 @@ mod tests {
     #[test]
     fn decode_preserves_absolute_atom_offsets_for_truncated_mixed_width_suffix() {
         let mut normal = NormalBuf::new(2, 4);
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             0,
             Cell {
@@ -711,8 +695,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             1,
             Cell {
@@ -720,8 +703,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             2,
             Cell {
@@ -733,8 +715,7 @@ mod tests {
         normal.set_head_truncated(0, true);
         normal.set_logical_starts(0, 5, 3);
         let source = normal.live_row_metadata(0);
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             1,
             0,
             Cell {
@@ -764,8 +745,7 @@ mod tests {
     #[test]
     fn physical_selection_uses_wide_lead_and_preserves_empty_line_count() {
         let mut normal = NormalBuf::new(3, 3);
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             0,
             Cell {
@@ -773,8 +753,7 @@ mod tests {
                 ..Cell::default()
             },
         );
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             0,
             1,
             Cell {
@@ -810,8 +789,7 @@ mod tests {
     #[test]
     fn selected_text_decodes_generation_order_after_ring_eviction() {
         let mut normal = NormalBuf::new(3, 2);
-        write(
-            &mut normal,
+        normal.write_meaningful_cell(
             1,
             0,
             Cell {

@@ -1,82 +1,35 @@
 use super::*;
 
-#[test]
-fn sgr_bold_sets_attr() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[1ma");
-    assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::BOLD));
+// Keep each case independently runnable while sharing the parser/setup assertion.
+macro_rules! sgr_attribute_cases {
+    ($($name:ident: $input:literal, $col:literal, $attr:expr, $enabled:literal;)+) => {
+        $(
+            #[test]
+            fn $name() {
+                let mut terminal = Terminal::new_headless(1, 4);
+                terminal.put_bytes($input);
+                assert_eq!(
+                    terminal.screen().cell(0, $col).attrs.contains($attr),
+                    $enabled,
+                    "{}: attribute {} at column {}", stringify!($name), $attr, $col,
+                );
+            }
+        )+
+    };
 }
 
-#[test]
-fn sgr_dim_sets_attr() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[2ma");
-    assert!(terminal.screen().cell(0, 0).attrs.contains(CellAttrs::DIM));
-}
-
-#[test]
-fn sgr_italic_sets_attr() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[3ma");
-    assert!(
-        terminal
-            .screen()
-            .cell(0, 0)
-            .attrs
-            .contains(CellAttrs::ITALIC)
-    );
-}
-
-#[test]
-fn sgr_underline_sets_attr() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[4ma");
-    assert!(
-        terminal
-            .screen()
-            .cell(0, 0)
-            .attrs
-            .contains(CellAttrs::UNDERLINE)
-    );
-}
-
-#[test]
-fn sgr_blink_sets_attr() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[5ma");
-    assert!(
-        terminal
-            .screen()
-            .cell(0, 0)
-            .attrs
-            .contains(CellAttrs::BLINK)
-    );
-}
-
-#[test]
-fn sgr_inverse_sets_attr() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[7ma");
-    assert!(
-        terminal
-            .screen()
-            .cell(0, 0)
-            .attrs
-            .contains(CellAttrs::INVERSE)
-    );
-}
-
-#[test]
-fn sgr_strikethrough_sets_attr() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[9ma");
-    assert!(
-        terminal
-            .screen()
-            .cell(0, 0)
-            .attrs
-            .contains(CellAttrs::STRIKETHROUGH)
-    );
+sgr_attribute_cases! {
+    sgr_bold_sets_attr: b"\x1b[1ma", 0, CellAttrs::BOLD, true;
+    sgr_dim_sets_attr: b"\x1b[2ma", 0, CellAttrs::DIM, true;
+    sgr_italic_sets_attr: b"\x1b[3ma", 0, CellAttrs::ITALIC, true;
+    sgr_underline_sets_attr: b"\x1b[4ma", 0, CellAttrs::UNDERLINE, true;
+    sgr_blink_sets_attr: b"\x1b[5ma", 0, CellAttrs::BLINK, true;
+    sgr_inverse_sets_attr: b"\x1b[7ma", 0, CellAttrs::INVERSE, true;
+    sgr_strikethrough_sets_attr: b"\x1b[9ma", 0, CellAttrs::STRIKETHROUGH, true;
+    sgr_24_clears_underline: b"\x1b[4ma\x1b[24mb", 1, CellAttrs::UNDERLINE, false;
+    sgr_25_clears_blink: b"\x1b[5ma\x1b[25mb", 1, CellAttrs::BLINK, false;
+    sgr_27_clears_inverse: b"\x1b[7ma\x1b[27mb", 1, CellAttrs::INVERSE, false;
+    sgr_29_clears_strikethrough: b"\x1b[9ma\x1b[29mb", 1, CellAttrs::STRIKETHROUGH, false;
 }
 
 #[test]
@@ -221,38 +174,6 @@ fn sgr_22_clears_bold_and_dim() {
     let cell = terminal.screen().cell(0, 1);
     assert!(!cell.attrs.contains(CellAttrs::BOLD));
     assert!(!cell.attrs.contains(CellAttrs::DIM));
-}
-
-#[test]
-fn sgr_24_clears_underline() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[4ma\x1b[24mb");
-    let cell = terminal.screen().cell(0, 1);
-    assert!(!cell.attrs.contains(CellAttrs::UNDERLINE));
-}
-
-#[test]
-fn sgr_25_clears_blink() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[5ma\x1b[25mb");
-    let cell = terminal.screen().cell(0, 1);
-    assert!(!cell.attrs.contains(CellAttrs::BLINK));
-}
-
-#[test]
-fn sgr_27_clears_inverse() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[7ma\x1b[27mb");
-    let cell = terminal.screen().cell(0, 1);
-    assert!(!cell.attrs.contains(CellAttrs::INVERSE));
-}
-
-#[test]
-fn sgr_29_clears_strikethrough() {
-    let mut terminal = Terminal::new_headless(1, 4);
-    terminal.put_bytes(b"\x1b[9ma\x1b[29mb");
-    let cell = terminal.screen().cell(0, 1);
-    assert!(!cell.attrs.contains(CellAttrs::STRIKETHROUGH));
 }
 
 #[test]

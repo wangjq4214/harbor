@@ -42,20 +42,13 @@ fn create_render_pass<'a>(
     device: &wgpu::Device,
     encoder: &'a mut wgpu::CommandEncoder,
 ) -> wgpu::RenderPass<'a> {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("test-render-target"),
-        size: wgpu::Extent3d {
-            width: 256,
-            height: 256,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let texture = test_gpu::readback::target(
+        device,
+        "test-render-target",
+        256,
+        256,
+        wgpu::TextureFormat::Bgra8Unorm,
+    );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("test-pass"),
@@ -148,50 +141,15 @@ fn read_texture_sized(
     texture: &wgpu::Texture,
     size: u32,
 ) -> Vec<u8> {
-    const BYTES_PER_ROW: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("custom-paint clipping test readback"),
-        size: (size * BYTES_PER_ROW) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(BYTES_PER_ROW),
-                rows_per_image: Some(size),
-            },
-        },
-        wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit(Some(encoder.finish()));
-
-    let slice = buffer.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        sender.send(result).unwrap();
-    });
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    receiver.recv().unwrap().unwrap();
-    let bytes = slice
-        .get_mapped_range()
-        .expect("readback buffer should be mapped")
-        .to_vec();
-    buffer.unmap();
-    bytes
+    assert_eq!((texture.width(), texture.height()), (size, size));
+    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    test_gpu::readback::read(
+        device,
+        queue,
+        encoder,
+        texture,
+        test_gpu::readback::Rows::Padded(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+    )
 }
 
 fn make_quad_item(id: u64, order: u32, x: f32, y: f32, w: f32, h: f32) -> SceneItem {
@@ -286,20 +244,13 @@ fn render_retained_quads(
     target_size: u32,
     paint_order: &[u64],
 ) -> Vec<u8> {
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("quad primitive render target"),
-        size: wgpu::Extent3d {
-            width: target_size,
-            height: target_size,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let target = test_gpu::readback::target(
+        device,
+        "quad primitive render target",
+        target_size,
+        target_size,
+        wgpu::TextureFormat::Bgra8Unorm,
+    );
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -337,22 +288,6 @@ fn test_gradient(start: Point, end: Point, stops: &[(f32, Color)]) -> harbor_wid
 
 // ── Runtime::encode with External primitives ────────────────────────────────
 
-#[test]
-fn should_compute_scissor_at_1x_scale() {
-    let viewport = Viewport::new(800, 600, 1.0);
-    let rect = Rect::from_min_size(Point::new(200.0, 150.0), Size::new(400.0, 300.0));
-
-    let phys_x = (rect.min.x * viewport.scale_factor) as u32;
-    let phys_y = (rect.min.y * viewport.scale_factor) as u32;
-    let phys_w = ((rect.size().width * viewport.scale_factor).ceil() as u32).max(1);
-    let phys_h = ((rect.size().height * viewport.scale_factor).ceil() as u32).max(1);
-
-    assert_eq!(phys_x, 200);
-    assert_eq!(phys_y, 150);
-    assert_eq!(phys_w, 400);
-    assert_eq!(phys_h, 300);
-}
-
 fn encode_root_to_pixels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -360,20 +295,13 @@ fn encode_root_to_pixels(
     viewport: Viewport,
     size: u32,
 ) -> Vec<u8> {
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("custom-paint rounded clip target"),
-        size: wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let target = test_gpu::readback::target(
+        device,
+        "custom-paint rounded clip target",
+        size,
+        size,
+        wgpu::TextureFormat::Bgra8Unorm,
+    );
     let mut runtime = Runtime::new();
     runtime.init_renderer(device, wgpu::TextureFormat::Bgra8Unorm);
     runtime.set_root(root);
@@ -456,20 +384,7 @@ fn encode_filter_frame_format(
     format: wgpu::TextureFormat,
 ) -> Vec<u8> {
     let size = viewport.physical_size.0;
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("backdrop pixel evidence"),
-        size: wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let target = test_gpu::readback::target(device, "backdrop pixel evidence", size, size, format);
     let view = target.create_view(&Default::default());
     let mut encoder = device.create_command_encoder(&Default::default());
     runtime.encode_frame(

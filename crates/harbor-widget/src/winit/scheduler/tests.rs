@@ -1,16 +1,12 @@
 use super::*;
 use std::time::Duration;
 
-fn redraw_effects() -> RuntimeEffects {
-    RuntimeEffects::request_redraw()
-}
-
 #[test]
 fn coalesces_wakes_until_frame_starts() {
     let mut scheduler = FrameScheduler::default();
 
-    let first = scheduler.schedule(redraw_effects());
-    let second = scheduler.schedule(redraw_effects());
+    let first = scheduler.schedule(RuntimeEffects::request_redraw());
+    let second = scheduler.schedule(RuntimeEffects::request_redraw());
     assert!(first.request_redraw);
     assert!(!second.request_redraw);
     assert!(scheduler.redraw_pending());
@@ -22,7 +18,7 @@ fn coalesces_wakes_until_frame_starts() {
     assert!(!started.request_redraw);
     assert!(!scheduler.redraw_pending());
 
-    let again = scheduler.schedule(redraw_effects());
+    let again = scheduler.schedule(RuntimeEffects::request_redraw());
     assert!(again.request_redraw);
 }
 
@@ -31,8 +27,15 @@ fn independent_schedulers_do_not_suppress_each_other() {
     let mut main = FrameScheduler::default();
     let mut confirmation = FrameScheduler::default();
 
-    assert!(main.schedule(redraw_effects()).request_redraw);
-    assert!(confirmation.schedule(redraw_effects()).request_redraw);
+    assert!(
+        main.schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
+    assert!(
+        confirmation
+            .schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
 
     let _ = main.frame_started(RuntimeEffects::default());
     assert!(!main.redraw_pending());
@@ -43,18 +46,35 @@ fn independent_schedulers_do_not_suppress_each_other() {
 fn each_scheduler_can_rewake_after_only_its_own_frame_start() {
     let mut main = FrameScheduler::default();
     let mut confirmation = FrameScheduler::default();
-    assert!(main.schedule(redraw_effects()).request_redraw);
-    assert!(confirmation.schedule(redraw_effects()).request_redraw);
+    assert!(
+        main.schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
+    assert!(
+        confirmation
+            .schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
 
     let _ = main.frame_started(RuntimeEffects::default());
-    assert!(main.schedule(redraw_effects()).request_redraw);
+    assert!(
+        main.schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
 
-    assert!(!confirmation.schedule(redraw_effects()).request_redraw);
+    assert!(
+        !confirmation
+            .schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
     let _ = confirmation.frame_started(RuntimeEffects::default());
-    assert!(confirmation.schedule(redraw_effects()).request_redraw);
+    assert!(
+        confirmation
+            .schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
     assert!(main.redraw_pending());
 }
-
 #[test]
 fn host_retry_rewakes_after_frame_start() {
     let mut scheduler = FrameScheduler::default();
@@ -180,11 +200,19 @@ fn should_consume_due_deadline_before_next_phase_replaces_it() {
 #[test]
 fn suspended_scheduler_drops_pending_redraw_and_rewakes_on_restore() {
     let mut scheduler = FrameScheduler::default();
-    assert!(scheduler.schedule(redraw_effects()).request_redraw);
+    assert!(
+        scheduler
+            .schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
 
     let _ = scheduler.set_drawable(false);
     assert!(!scheduler.redraw_pending());
-    assert!(!scheduler.schedule(redraw_effects()).request_redraw);
+    assert!(
+        !scheduler
+            .schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
     assert_eq!(
         scheduler.about_to_wait(Instant::now(), None).control_flow,
         Some(ControlFlowEffect::Wait)
@@ -259,7 +287,11 @@ fn host_deadline_does_not_overwrite_runtime_deadline() {
 #[test]
 fn frame_start_consumes_dirty_redraw_without_second_edge() {
     let mut scheduler = FrameScheduler::default();
-    assert!(scheduler.schedule(redraw_effects()).request_redraw);
+    assert!(
+        scheduler
+            .schedule(RuntimeEffects::request_redraw())
+            .request_redraw
+    );
 
     let started = scheduler.frame_started(RuntimeEffects {
         request_redraw: true,

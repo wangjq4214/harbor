@@ -156,6 +156,8 @@ fn alt_screen_exit_marks_all_dirty() {
     assert!(screen.dirty_ranges().is_empty());
 
     screen.enter_alt(true);
+    screen.clear_dirty();
+    assert!(screen.dirty_ranges().is_empty());
     screen.exit_alt();
 
     let ranges = screen.dirty_ranges();

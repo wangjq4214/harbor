@@ -14,20 +14,13 @@ fn create_render_pass<'a>(
     device: &wgpu::Device,
     encoder: &'a mut wgpu::CommandEncoder,
 ) -> wgpu::RenderPass<'a> {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("test-render-target"),
-        size: wgpu::Extent3d {
-            width: 256,
-            height: 256,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let texture = crate::test_gpu::readback::target(
+        device,
+        "test-render-target",
+        256,
+        256,
+        wgpu::TextureFormat::Bgra8Unorm,
+    );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("test-pass"),

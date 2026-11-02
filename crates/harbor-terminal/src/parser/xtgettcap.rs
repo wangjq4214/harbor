@@ -263,19 +263,15 @@ mod tests {
         // Arrange — a first request already retained a payload.
         let params = Params::from(&[None][..]);
         let mut request = hooked();
-        request.put(b'5');
-        request.put(b'4');
-        request.put(b'4');
-        request.put(b'E');
+        for &byte in b"544E" {
+            request.put(byte);
+        }
 
         // Act — a fresh `DCS + q` introducer hooks again.
         request.hook(&params, b"+", b'q');
-        request.put(b'5');
-        request.put(b'2');
-        request.put(b'4');
-        request.put(b'7');
-        request.put(b'4');
-        request.put(b'2');
+        for &byte in b"524742" {
+            request.put(byte);
+        }
 
         // Assert — the old payload must not leak into the new reply.
         let mut screen = Screen::new(10, 20);

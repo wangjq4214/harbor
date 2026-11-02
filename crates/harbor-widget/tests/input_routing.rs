@@ -1,6 +1,4 @@
-use harbor_widget::input::event::{
-    Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
-};
+use harbor_widget::input::event::{Key, PointerButton, PointerEvent, PointerPhase, UiEvent};
 use harbor_widget::layout::{Point, Size};
 use harbor_widget::runtime::Runtime;
 use harbor_widget::widgets::button::Button;
@@ -14,25 +12,9 @@ use std::time::Instant;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn now() -> Instant {
-    Instant::now()
-}
-
-fn pointer_event(
-    position: Point,
-    phase: PointerPhase,
-    button: PointerButton,
-    pointer_id: u64,
-) -> UiEvent {
-    UiEvent::Pointer(PointerEvent::new(position, phase, button, pointer_id))
-}
-
-fn key_down(key: Key) -> UiEvent {
-    UiEvent::Keyboard(KeyboardEvent::KeyDown {
-        key,
-        modifiers: Modifiers::default(),
-    })
-}
+#[path = "support/input_events.rs"]
+mod input_events;
+use input_events::{key_down, pointer_event};
 
 /// Build a Button that sets `flag` to true when its onClick fires.
 fn test_button(label: &str, flag: Arc<AtomicBool>) -> Button {
@@ -69,7 +51,7 @@ fn should_fire_onclick_on_pointer_up_after_down() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Dispatch pointer down inside button bounds (~92x32 at origin)
     rt.dispatch(pointer_event(
@@ -101,7 +83,7 @@ fn should_not_fire_onclick_when_pointer_down_outside_button() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Dispatch pointer down far outside button bounds
     rt.dispatch(pointer_event(
@@ -129,7 +111,7 @@ fn should_capture_pointer_on_down_and_release_on_up() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Down: button captures pointer 0
     rt.dispatch(pointer_event(
@@ -162,7 +144,7 @@ fn should_deliver_events_to_captor_regardless_of_position() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Capture the pointer with Down inside the button
     rt.dispatch(pointer_event(
@@ -202,7 +184,7 @@ fn should_route_pointer_to_topmost_overlapping_widget() {
 
     let mut rt = Runtime::new();
     rt.set_root(stack);
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Button "Bottom" 6 chars → ~92x32; "Top" 3 chars → ~62x32
     // Both at origin. Click at (50, 16) hits both; topmost (Top, last child) should win.
@@ -241,7 +223,7 @@ fn should_route_to_underlying_widget_when_point_outside_topmost_bounds() {
 
     let mut rt = Runtime::new();
     rt.set_root(stack);
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Top button is ~62px wide, Bottom is ~92px wide.
     // Click at (80, 16) — outside Top bounds but inside Bottom.
@@ -276,7 +258,7 @@ fn should_activate_button_on_enter_when_focused() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // The root IS the button — set focus on it
     let root_id = rt.root_id().unwrap();
@@ -294,7 +276,7 @@ fn should_activate_button_on_space_when_focused() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
@@ -311,7 +293,7 @@ fn should_not_activate_button_on_key_when_not_focused() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // No focus set — keyboard events have no target
     rt.dispatch(key_down(Key::Enter));
@@ -336,7 +318,7 @@ fn should_deliver_pointer_events_inside_non_modal_focus_scope() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(focus_scope_with_button(false, "OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Click inside the FocusScope/Button bounds
     rt.dispatch(pointer_event(
@@ -371,7 +353,7 @@ fn should_only_fire_targeted_button_in_stack() {
 
     let mut rt = Runtime::new();
     rt.set_root(stack);
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Click inside Second only (~62px) — should only fire Second
     rt.dispatch(pointer_event(
@@ -411,7 +393,7 @@ fn should_return_needs_redraw_false_when_no_handler_requests_paint() {
     let mut rt = Runtime::new();
     // Use SizedBox (no event handlers at all) instead of Button
     rt.set_root(SizedBox::new(Size::new(100.0, 32.0)).unwrap());
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Dispatch a move event — SizedBox ignores all events
     let req = rt.dispatch(pointer_event(
@@ -432,7 +414,7 @@ fn should_honor_pointer_id_isolation() {
 
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Pointer 0: Down captures, no Up
     rt.dispatch(pointer_event(
@@ -466,7 +448,7 @@ fn should_clear_capture_when_set_root_replaces_tree() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("Old", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Capture pointer on old tree
     rt.dispatch(pointer_event(
@@ -479,7 +461,7 @@ fn should_clear_capture_when_set_root_replaces_tree() {
 
     // Replace root — capture cleared since old fiber is gone
     rt.set_root(Button::text("New"));
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(
         rt.input().captor(5).is_none(),
         "capture should be cleared when tree is replaced"
@@ -507,7 +489,7 @@ fn should_block_keyboard_events_when_modal_is_active_and_nothing_focused() {
 
     let mut rt = Runtime::new();
     rt.set_root(root);
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Keyboard event with no focused widget —
     // path is [root_id], and modal blocks it
@@ -526,17 +508,17 @@ fn should_block_keyboard_events_when_modal_is_active_and_nothing_focused() {
 fn should_detect_modal_in_tree() {
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(!rt.has_modal());
 
     // Add modal scope
     rt.set_root(FocusScope::new().modal(true).child(Button::text("OK")));
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(rt.has_modal());
 
     // Non-modal scope
     rt.set_root(FocusScope::new().child(Button::text("OK")));
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(!rt.has_modal());
 }
 
@@ -553,7 +535,7 @@ fn should_deliver_focus_gained_to_focused_button() {
 
     let mut rt = Runtime::new();
     rt.set_root(btn);
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
@@ -568,7 +550,7 @@ fn should_deliver_focus_gained_to_focused_button() {
 fn should_deliver_focus_lost_to_button() {
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
@@ -586,7 +568,7 @@ fn should_handle_pointer_cancel_and_release_capture() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Down: capture pointer 0
     rt.dispatch(pointer_event(
@@ -621,7 +603,7 @@ fn should_ignore_right_click_activation() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(test_button("OK", clicked.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     rt.dispatch(pointer_event(
         Point::new(46.0, 16.0),
@@ -647,7 +629,7 @@ fn should_ignore_right_click_activation() {
 fn should_not_crash_on_wheel_event() {
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     let req = rt.dispatch(UiEvent::Pointer(PointerEvent::new(
         Point::new(46.0, 16.0),
@@ -667,7 +649,7 @@ fn should_not_crash_on_wheel_event() {
 fn should_route_move_event_to_button_without_crashing() {
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Move inside the button bounds — button handles it (sets hover state)
     let req = rt.dispatch(pointer_event(
@@ -689,7 +671,7 @@ fn should_route_move_event_to_button_without_crashing() {
 fn should_start_root_focus_traversal_when_unfocused() {
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Root-level traversal is available even before a node is focused.
     let req = rt.dispatch(key_down(Key::Tab));
@@ -706,16 +688,16 @@ fn should_trigger_relayout_on_viewport_change() {
 
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    let req1 = rt.update(now());
+    let req1 = rt.update(Instant::now());
     assert!(req1.request_redraw);
 
     // Second update without changes
-    let req2 = rt.update(now());
+    let req2 = rt.update(Instant::now());
     assert!(!req2.request_redraw);
 
     // Change viewport — should mark root dirty
     rt.set_viewport(Viewport::new(1024, 768, 1.0));
-    let req3 = rt.update(now());
+    let req3 = rt.update(Instant::now());
     assert!(
         req3.request_redraw,
         "viewport change should trigger relayout and redraw"
@@ -728,7 +710,7 @@ fn should_trigger_relayout_on_viewport_change() {
 fn should_clear_focus_programmatically() {
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
@@ -743,7 +725,7 @@ fn should_clear_focus_programmatically() {
 #[test]
 fn should_ignore_update_with_no_root() {
     let mut rt = Runtime::new();
-    let req = rt.update(now());
+    let req = rt.update(Instant::now());
     assert!(!req.request_redraw);
 }
 
@@ -759,7 +741,7 @@ fn should_miss_clipped_child_when_pointer_is_in_corner_cutout() {
         clicked.clone(),
         ClipBehavior::HardEdge,
     ));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Act
     click(&mut rt, Point::new(0.0, 0.0));
@@ -781,7 +763,7 @@ fn should_hit_clipped_child_when_pointer_is_inside_rounded_shape() {
         clicked.clone(),
         ClipBehavior::HardEdge,
     ));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Act
     click(&mut rt, Point::new(26.0, 16.0));
@@ -803,7 +785,7 @@ fn should_deliver_to_captor_when_pointer_moves_into_corner_cutout() {
         clicked.clone(),
         ClipBehavior::HardEdge,
     ));
-    rt.update(now());
+    rt.update(Instant::now());
     rt.dispatch(pointer_event(
         Point::new(26.0, 16.0),
         PointerPhase::Down,
@@ -843,7 +825,7 @@ fn should_hit_sibling_behind_cutout_when_front_child_is_clipped() {
         .push_child(clipped_button("Hi", front.clone(), ClipBehavior::HardEdge));
     let mut rt = Runtime::new();
     rt.set_root(stack);
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Act
     click(&mut rt, Point::new(0.0, 0.0));
@@ -865,7 +847,7 @@ fn should_hit_rectangular_child_when_clip_policy_is_none() {
     let clicked = Arc::new(AtomicBool::new(false));
     let mut rt = Runtime::new();
     rt.set_root(clipped_button("OK", clicked.clone(), ClipBehavior::None));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Act
     click(&mut rt, Point::new(0.0, 0.0));

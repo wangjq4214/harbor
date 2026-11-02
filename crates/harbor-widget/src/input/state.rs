@@ -97,17 +97,6 @@ impl InputState {
         needs_paint
     }
 
-    /// Clears the focused fiber if it is no longer present in the arena.
-    #[cfg(test)]
-    pub(crate) fn clear_focus_if_dead(&mut self, arena: &FiberArena) {
-        if let Some(fid) = self.focused
-            && !arena.contains(fid)
-        {
-            self.focused = None;
-            self.focus_visible = false;
-        }
-    }
-
     /// Clears focus when the current live target no longer satisfies its contract.
     pub(crate) fn clear_focus_if(&mut self, should_clear: impl FnOnce(FiberId) -> bool) -> bool {
         if self.focused.is_some_and(should_clear) {
@@ -117,12 +106,6 @@ impl InputState {
         } else {
             false
         }
-    }
-
-    /// Removes pointer captures for fibers that are no longer in the arena.
-    #[cfg(test)]
-    pub(crate) fn clear_capture_if_dead(&mut self, arena: &FiberArena) {
-        self.pointer_captures.retain(|_, fid| arena.contains(*fid));
     }
 
     /// Removes captures whose still-live targets have become ineligible.
@@ -211,12 +194,16 @@ mod tests {
         let fid = make_fiber(&mut arena);
 
         state.focused = Some(fid);
-        state.clear_focus_if_dead(&arena);
-        assert_eq!(state.focused, Some(fid)); // still alive
+        state.focus_visible = true;
+        assert!(!state.clear_focus_if(|id| !arena.contains(id)));
+        assert_eq!(state.focused, Some(fid));
+        assert!(state.focus_visible());
 
         arena.remove(fid);
-        state.clear_focus_if_dead(&arena);
+        assert!(state.clear_focus_if(|id| !arena.contains(id)));
         assert!(state.focused.is_none());
+        assert!(!state.focus_visible());
+        assert!(!state.clear_focus_if(|_| panic!("empty focus must not invoke the predicate")));
     }
 
     #[test]
@@ -224,19 +211,29 @@ mod tests {
         let mut state = InputState::new();
         let mut arena = FiberArena::new();
         let fid = make_fiber(&mut arena);
+        let live = make_fiber(&mut arena);
 
         state.apply(
-            vec![EventCommand::CapturePointer {
-                pointer_id: 1,
-                captor: fid,
-            }],
+            vec![
+                EventCommand::CapturePointer {
+                    pointer_id: 1,
+                    captor: fid,
+                },
+                EventCommand::CapturePointer {
+                    pointer_id: 2,
+                    captor: live,
+                },
+            ],
             &arena,
         );
+        state.clear_capture_if(|id| arena.contains(id));
         assert_eq!(state.captor(1), Some(fid));
+        assert_eq!(state.captor(2), Some(live));
 
         arena.remove(fid);
-        state.clear_capture_if_dead(&arena);
+        state.clear_capture_if(|id| arena.contains(id));
         assert!(state.captor(1).is_none());
+        assert_eq!(state.captor(2), Some(live));
     }
 
     #[test]

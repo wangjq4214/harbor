@@ -160,20 +160,13 @@ fn should_encode_raw_shadow_order_when_it_differs_from_slot_order() {
 #[ignore = "gpu: run the matching explicit test recipe"]
 fn should_preserve_shadow_fill_external_border_order_across_flushes() {
     let (device, queue) = gpu_device();
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("shadow flush order target"),
-        size: wgpu::Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let target = test_gpu::readback::target(
+        &device,
+        "shadow flush order target",
+        32,
+        32,
+        wgpu::TextureFormat::Bgra8Unorm,
+    );
     let pipeline = create_solid_pipeline(&device);
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, pass, _| {
         pass.set_pipeline(&pipeline);
@@ -332,20 +325,13 @@ fn should_render_a_visible_hard_edge_for_a_zero_blur_decorated_shadow() {
     let viewport = Viewport::new(32, 32, 1.0);
     runtime.set_viewport(viewport.clone());
     runtime.update(Instant::now());
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("decorated hard shadow test target"),
-        size: wgpu::Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let target = test_gpu::readback::target(
+        &device,
+        "decorated hard shadow test target",
+        32,
+        32,
+        wgpu::TextureFormat::Bgra8Unorm,
+    );
 
     // Act
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

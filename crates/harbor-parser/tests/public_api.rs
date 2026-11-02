@@ -143,24 +143,19 @@ fn should_preserve_each_csi_private_marker_when_prefix_is_present_or_absent() {
         (b"\x1b[=0m".as_slice(), Some(b'=')),
     ];
 
-    // Act — parse each sequence through the public parser and recording handler.
-    let observed_markers = cases
-        .iter()
-        .map(|(sequence, _)| {
-            let mut parser = Parser::default();
-            let mut handler = RecordingHandler::default();
-            feed(&mut parser, &mut handler, sequence);
+    for (sequence, expected_marker) in cases {
+        let mut parser = Parser::default();
+        let mut handler = RecordingHandler::default();
+        feed(&mut parser, &mut handler, sequence);
 
-            let [Callback::Csi { private_marker, .. }] = handler.callbacks.as_slice() else {
-                panic!("expected one CSI callback, got {:?}", handler.callbacks);
-            };
-            *private_marker
-        })
-        .collect::<Vec<_>>();
-
-    // Assert — the callback preserves None, '?', '>', '<', and '=' exactly.
-    let expected_markers = cases.iter().map(|(_, marker)| *marker).collect::<Vec<_>>();
-    assert_eq!(observed_markers, expected_markers);
+        let [Callback::Csi { private_marker, .. }] = handler.callbacks.as_slice() else {
+            panic!(
+                "expected one CSI callback for {sequence:?}, got {:?}",
+                handler.callbacks
+            );
+        };
+        assert_eq!(*private_marker, expected_marker, "sequence: {sequence:?}");
+    }
 }
 
 #[test]
@@ -213,22 +208,18 @@ fn should_consume_malformed_dcs_when_private_marker_is_late_or_repeated() {
         b"\x1bP>>0qpayload\x1b\\Z".as_slice(),
     ];
 
-    // Act
-    let callbacks = malformed_sequences
-        .iter()
-        .map(|sequence| {
-            let mut parser = Parser::default();
-            let mut handler = RecordingHandler::default();
-            feed(&mut parser, &mut handler, sequence);
-            handler.callbacks
-        })
-        .collect::<Vec<_>>();
+    for sequence in malformed_sequences {
+        let mut parser = Parser::default();
+        let mut handler = RecordingHandler::default();
+        feed(&mut parser, &mut handler, sequence);
 
-    // Assert — malformed DCS payloads are swallowed through ST, then text resumes.
-    assert_eq!(
-        callbacks,
-        vec![vec![Callback::Print('Z')], vec![Callback::Print('Z')]]
-    );
+        // Malformed DCS payloads are swallowed through ST, then text resumes.
+        assert_eq!(
+            handler.callbacks,
+            vec![Callback::Print('Z')],
+            "sequence: {sequence:?}"
+        );
+    }
 }
 
 #[test]

@@ -917,14 +917,6 @@ fn should_omit_zero_width_and_transparent_borders() {
 }
 
 #[test]
-fn malformed_layout_geometry_does_not_panic_when_clip_policy_is_active() {
-    let widget = DecoratedBox::new(BoxDecoration::new()).clip_behavior(ClipBehavior::HardEdge);
-    // The wrapper no longer constructs a fallible rounded clip during paint;
-    // malformed geometry is therefore handled by the renderer boundary.
-    let _ = widget;
-}
-
-#[test]
 fn should_emit_no_clip_when_policy_is_none() {
     // Arrange
     let widget = rounded_box(

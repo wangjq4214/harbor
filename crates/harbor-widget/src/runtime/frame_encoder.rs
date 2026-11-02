@@ -669,19 +669,17 @@ mod tests {
         let clip_rect = Rect::from_min_size(Point::new(15.0, 0.0), Size::new(20.0, 40.0));
         let clips = [clip(clip_rect, 4.0, ClipBehavior::AntiAlias)];
 
-        match ExternalClipPlan::from(rect, &clips, &Viewport::new(800, 600, 2.0)) {
-            ExternalClipPlan::Draw { scissor, .. } => {
-                assert_eq!(scissor, (30, 20, 30, 40));
+        for (scale, expected) in [
+            (2.0, (30, 20, 30, 40)),
+            // Fractional clip edges round outward: 22.5 -> 22, 52.5 -> 53.
+            (1.5, (22, 15, 23, 30)),
+        ] {
+            match ExternalClipPlan::from(rect, &clips, &Viewport::new(800, 600, scale)) {
+                ExternalClipPlan::Draw { scissor, .. } => {
+                    assert_eq!(scissor, expected, "scale={scale}");
+                }
+                ExternalClipPlan::Skip => panic!("{scale}x overlapping clip must remain drawable"),
             }
-            ExternalClipPlan::Skip => panic!("2x overlapping clip must remain drawable"),
-        }
-
-        match ExternalClipPlan::from(rect, &clips, &Viewport::new(800, 600, 1.5)) {
-            ExternalClipPlan::Draw { scissor, .. } => {
-                // 10*1.5=15, 30*1.5=45; clip left 15*1.5=22.5鈫?2, right 35*1.5=52.5鈫?3
-                assert_eq!(scissor, (22, 15, 23, 30));
-            }
-            ExternalClipPlan::Skip => panic!("1.5x overlapping clip must remain drawable"),
         }
     }
 

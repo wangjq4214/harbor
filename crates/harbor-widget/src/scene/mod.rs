@@ -554,23 +554,6 @@ mod tests {
     }
 
     #[test]
-    fn items_returns_same_reference_after_multiple_diffs() {
-        let mut graph = SceneGraph::new();
-        let incoming = vec![make_quad(0, 0, 0.0, 0.0)];
-        graph.diff(incoming);
-        let first = graph.items().as_ptr();
-
-        // Diff again with same item (no structural changes)
-        let id = graph.items()[0].id;
-        graph.diff(vec![make_quad(id, 0, 0.0, 0.0)]);
-        let second = graph.items().as_ptr();
-        // items is replaced wholesale by diff, so pointer may differ
-        // but contents are consistent
-        assert_eq!(graph.items().len(), 1);
-        let _ = (first, second);
-    }
-
-    #[test]
     fn items_after_clear_is_empty() {
         let mut graph = SceneGraph::new();
         let incoming = vec![make_quad(0, 0, 0.0, 0.0), make_quad(0, 1, 100.0, 0.0)];

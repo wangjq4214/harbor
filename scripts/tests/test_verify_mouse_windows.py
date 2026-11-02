@@ -309,43 +309,35 @@ class ProbeTests(unittest.TestCase):
 
 
 class CleanupTests(unittest.TestCase):
-    def test_native_restoration_attempts_all_saved_properties(self):
+    @staticmethod
+    def restoration_console(*, restore_code_page):
         console = probe.Console.__new__(probe.Console)
         console.stop, console.reader = threading.Event(), None
         console.stdin, console.stdout = 123, 456
         console.old_in, console.old_out = probe.w.DWORD(7), probe.w.DWORD(3)
         console.old_cp = 437
         calls = []
+
         class Api:
             def SetConsoleCP(self, value):
                 calls.append(("cp", value))
-                return True
+                return restore_code_page
+
             def SetConsoleMode(self, handle, value):
                 calls.append(("mode", handle, value))
                 return True
+
         console.api = Api()
+        return console, calls
+
+    def test_native_restoration_attempts_all_saved_properties(self):
+        console, calls = self.restoration_console(restore_code_page=True)
         console.close()
         self.assertEqual(calls, [("cp", 437), ("mode", 456, 3), ("mode", 123, 7)])
         self.assertTrue(console.stop.is_set())
 
     def test_native_restoration_failure_does_not_skip_other_properties(self):
-        console = probe.Console.__new__(probe.Console)
-        console.stop, console.reader = threading.Event(), None
-        console.stdin, console.stdout = 123, 456
-        console.old_in, console.old_out = probe.w.DWORD(7), probe.w.DWORD(3)
-        console.old_cp = 437
-        calls = []
-
-        class Api:
-            def SetConsoleCP(self, value):
-                calls.append(("cp", value))
-                return False
-
-            def SetConsoleMode(self, handle, value):
-                calls.append(("mode", handle, value))
-                return True
-
-        console.api = Api()
+        console, calls = self.restoration_console(restore_code_page=False)
         with patch.object(probe.ctypes, "get_last_error", return_value=5, create=True):
             with self.assertRaisesRegex(OSError, "restoration errors"):
                 console.close()

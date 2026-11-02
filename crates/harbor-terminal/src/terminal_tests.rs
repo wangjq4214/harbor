@@ -28,6 +28,19 @@ use harbor_config::{Palette, Rgba};
 use std::borrow::Cow;
 use std::time::Instant;
 
+fn left_pointer_event(
+    position: (f32, f32),
+    phase: TerminalPointerPhase,
+    pointer_id: u64,
+) -> TerminalEvent {
+    TerminalEvent::Pointer(TerminalPointerEvent::new(
+        position,
+        phase,
+        TerminalPointerButton::Left,
+        pointer_id,
+    ))
+}
+
 //
 // `put_bytes` must NOT snap the viewport; `process_output` must.
 

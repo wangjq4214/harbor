@@ -1,22 +1,9 @@
 //! T0002: conceal is presentation, not redaction; overline is independent styling.
-use harbor_terminal::{
-    AltScreenAction, Cell, CellAttrs, Color, Screen, SelectionBounds, TerminalParser,
-};
+use harbor_terminal::{Cell, CellAttrs, Color, Screen, SelectionBounds, TerminalParser};
 
-fn feed(parser: &mut TerminalParser, screen: &mut Screen, bytes: &[u8]) {
-    let mut offset = 0;
-    while offset < bytes.len() {
-        let result = parser.put_bytes(screen, &bytes[offset..]);
-        assert!(result.consumed > 0);
-        offset += result.consumed;
-        if let Some(action) = result.alt_request {
-            match action {
-                AltScreenAction::Enter { clear } => screen.enter_alt(clear),
-                AltScreenAction::Exit => screen.exit_alt(),
-            }
-        }
-    }
-}
+#[path = "support/parser_feed.rs"]
+mod parser_feed;
+use parser_feed::feed;
 
 fn cell_after(sgr: &str) -> Cell {
     let mut screen = Screen::new(2, 20);

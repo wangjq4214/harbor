@@ -16,25 +16,9 @@ use std::time::Instant;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn now() -> Instant {
-    Instant::now()
-}
-
-fn pointer_event(
-    position: Point,
-    phase: PointerPhase,
-    button: PointerButton,
-    pointer_id: u64,
-) -> UiEvent {
-    UiEvent::Pointer(PointerEvent::new(position, phase, button, pointer_id))
-}
-
-fn key_down(key: Key) -> UiEvent {
-    UiEvent::Keyboard(KeyboardEvent::KeyDown {
-        key,
-        modifiers: Modifiers::default(),
-    })
-}
+#[path = "support/input_events.rs"]
+mod input_events;
+use input_events::{key_down, pointer_event};
 
 // ── External input queue (unit-level via public trampoline) ─────────────────
 
@@ -44,7 +28,7 @@ fn should_queue_and_drain_external_input_round_trip() {
     let event = key_down(Key::Enter);
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(42));
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
     rt.dispatch(event.clone());
@@ -63,7 +47,7 @@ fn should_drain_clears_queue() {
     // Arrange: queue two events during one Runtime dispatch sequence.
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(1));
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
     rt.dispatch(key_down(Key::Tab));
@@ -83,7 +67,7 @@ fn should_support_multiple_draw_ids() {
     // Arrange: two Runtime instances queue independently on the same thread.
     let mut first = Runtime::new();
     first.set_root(ExternalSurface::new(10));
-    first.update(now());
+    first.update(Instant::now());
     assert!(first.focus_first_focusable());
     first.drain_external_input();
     first.dispatch(key_down(Key::ArrowUp));
@@ -91,7 +75,7 @@ fn should_support_multiple_draw_ids() {
 
     let mut second = Runtime::new();
     second.set_root(ExternalSurface::new(20));
-    second.update(now());
+    second.update(Instant::now());
     assert!(second.focus_first_focusable());
     second.drain_external_input();
     second.dispatch(key_down(Key::ArrowDown));
@@ -123,7 +107,7 @@ fn should_support_pointer_events() {
     );
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(99));
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
     rt.dispatch(pe.clone());
@@ -140,7 +124,7 @@ fn should_queue_event_when_external_surface_dispatches_through_runtime() {
     // Arrange: Runtime with ExternalSurface root, focused to receive keyboard events
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(77));
-    rt.update(now());
+    rt.update(Instant::now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
     rt.drain_external_input();
@@ -167,7 +151,7 @@ fn should_queue_event_when_external_surface_dispatches_through_runtime() {
 fn should_focus_external_surface_at_startup_and_after_pointer_down() {
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(12));
-    rt.update(now());
+    rt.update(Instant::now());
     let root_id = rt.root_id().unwrap();
 
     assert!(rt.focus_first_focusable());
@@ -196,7 +180,7 @@ fn should_focus_external_surface_at_startup_and_after_pointer_down() {
 fn should_forward_tab_and_shift_tab_from_pointer_focused_external_surface() {
     let mut rt = Runtime::new();
     rt.set_root(FocusScope::new().child(Focus::new().child(ExternalSurface::new(21))));
-    rt.update(now());
+    rt.update(Instant::now());
     rt.clear_focus();
 
     rt.dispatch(pointer_event(
@@ -210,7 +194,7 @@ fn should_forward_tab_and_shift_tab_from_pointer_focused_external_surface() {
         .focused()
         .expect("pointer-down focuses the nested ExternalSurface");
     rt.drain_external_input();
-    rt.update(now());
+    rt.update(Instant::now());
 
     let tab = key_down(Key::Tab);
     let shift_tab = UiEvent::Keyboard(KeyboardEvent::KeyDown {
@@ -237,7 +221,7 @@ fn should_forward_tab_and_shift_tab_from_pointer_focused_external_surface() {
 fn should_queue_multiple_external_surface_events_across_dispatch() {
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(5));
-    rt.update(now());
+    rt.update(Instant::now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
     rt.drain_external_input();
@@ -265,7 +249,7 @@ fn should_queue_multiple_external_surface_events_across_dispatch() {
 fn should_queue_pointer_events_from_external_surface() {
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(3));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Dispatch pointer down + up
     rt.dispatch(pointer_event(
@@ -295,7 +279,7 @@ fn should_not_queue_when_no_external_surface_in_tree() {
     use harbor_widget::widgets::sized_box::SizedBox;
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Act: dispatch events
     rt.dispatch(key_down(Key::Enter));
@@ -318,7 +302,7 @@ fn should_not_queue_when_no_external_surface_in_tree() {
 fn should_drain_empty_between_dispatches_when_already_drained() {
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(1));
-    rt.update(now());
+    rt.update(Instant::now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
     rt.drain_external_input();
@@ -340,7 +324,7 @@ fn should_drain_empty_between_dispatches_when_already_drained() {
 fn should_queue_wheel_events_from_external_surface() {
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(8));
-    rt.update(now());
+    rt.update(Instant::now());
 
     let wheel = UiEvent::Pointer(PointerEvent::new(
         Point::ZERO,
@@ -360,7 +344,7 @@ fn should_queue_wheel_events_from_external_surface() {
 fn should_queue_focus_events_from_external_surface() {
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(2));
-    rt.update(now());
+    rt.update(Instant::now());
     let root_id = rt.root_id().unwrap();
     rt.set_focus(root_id);
     rt.drain_external_input();
@@ -378,7 +362,7 @@ fn should_queue_focus_events_from_external_surface() {
 fn should_queue_move_events_from_external_surface() {
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(9));
-    rt.update(now());
+    rt.update(Instant::now());
 
     let move_evt = pointer_event(
         Point::new(300.0, 200.0),
@@ -408,7 +392,7 @@ fn should_support_child_widgets_in_runtime() {
     use harbor_widget::widgets::sized_box::SizedBox;
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(7).child(SizedBox::new(Size::new(50.0, 30.0)).unwrap()));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Verify the tree built without panicking and has expected structure
     let root_id = rt.root_id().unwrap();
@@ -434,7 +418,7 @@ fn should_support_child_widgets_in_runtime() {
 fn should_handle_external_surface_without_children() {
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(1));
-    let req = rt.update(now());
+    let req = rt.update(Instant::now());
 
     assert!(req.request_redraw, "first update should request redraw");
 
@@ -452,7 +436,7 @@ fn should_only_queue_for_focused_external_surface() {
     // When a ExternalSurface is focused, keyboard events target it directly
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(11));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Set focus on the root (which is ExternalSurface)
     let root_id = rt.root_id().unwrap();
@@ -479,7 +463,7 @@ fn should_leave_external_queue_empty_when_on_input_is_set() {
             EventHandled::Handled
         })),
     );
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
 
@@ -500,7 +484,7 @@ fn should_request_focus_on_pointer_down_when_on_input_is_set() {
     // Arrange
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(12).on_input(Arc::new(|_event, _ctx| EventHandled::Handled)));
-    rt.update(now());
+    rt.update(Instant::now());
     let root_id = rt.root_id().unwrap();
     rt.clear_focus();
     assert_eq!(rt.input().focused(), None);
