@@ -651,6 +651,16 @@ mod tests {
         RenderViewport::with_padding(10.0, 20.0, 0.0)
     }
 
+    fn selection_fixture() -> (Screen, PointerInteraction) {
+        let mut screen = Screen::new(2, 10);
+        for ch in "abcdefghij".chars() {
+            screen.write_char(ch);
+        }
+        let mut pointer = PointerInteraction::new();
+        pointer.set_viewport(viewport());
+        (screen, pointer)
+    }
+
     fn pointer_event(
         position: (f32, f32),
         phase: TerminalPointerPhase,
@@ -661,12 +671,7 @@ mod tests {
 
     #[test]
     fn visible_bounds_preserve_zero_width_and_resize_provenance() {
-        let mut screen = Screen::new(2, 10);
-        for ch in "abcdefghij".chars() {
-            screen.write_char(ch);
-        }
-        let mut pointer = PointerInteraction::new();
-        pointer.set_viewport(viewport());
+        let (mut screen, mut pointer) = selection_fixture();
         let prepared_screen = screen.prepare_resize(2, 10).unwrap();
         let initial_revision = pointer.mutation_revision();
         assert_eq!(pointer.bounds(), None);
@@ -746,12 +751,7 @@ mod tests {
 
     #[test]
     fn alternate_entry_discards_orphaned_selection_without_losing_release_or_vt_capture() {
-        let mut screen = Screen::new(2, 10);
-        for ch in "abcdefghij".chars() {
-            screen.write_char(ch);
-        }
-        let mut pointer = PointerInteraction::new();
-        pointer.set_viewport(viewport());
+        let (mut screen, mut pointer) = selection_fixture();
         let now = Instant::now();
         let down = pointer_event((11.0, 1.0), TerminalPointerPhase::Down, 7);
         pointer.handle_pointer(&mut screen, down, now);
@@ -901,12 +901,7 @@ mod tests {
     #[test]
     fn should_select_cells_when_a_local_pointer_drag_moves_between_cells() {
         // Arrange
-        let mut screen = Screen::new(2, 10);
-        for ch in "abcdefghij".chars() {
-            screen.write_char(ch);
-        }
-        let mut pointer = PointerInteraction::new();
-        pointer.set_viewport(viewport());
+        let (mut screen, mut pointer) = selection_fixture();
         let now = Instant::now();
 
         // Act
@@ -944,12 +939,7 @@ mod tests {
 
     #[test]
     fn invalidated_active_selection_releases_capture_on_followup_up() {
-        let mut screen = Screen::new(2, 10);
-        for ch in "abcdefghij".chars() {
-            screen.write_char(ch);
-        }
-        let mut pointer = PointerInteraction::new();
-        pointer.set_viewport(viewport());
+        let (mut screen, mut pointer) = selection_fixture();
         let now = Instant::now();
         pointer.handle_pointer(
             &mut screen,
@@ -980,12 +970,7 @@ mod tests {
     #[test]
     fn should_select_a_word_when_the_same_cell_is_double_clicked_locally() {
         // Arrange
-        let mut screen = Screen::new(2, 10);
-        for ch in "abcdefghij".chars() {
-            screen.write_char(ch);
-        }
-        let mut pointer = PointerInteraction::new();
-        pointer.set_viewport(viewport());
+        let (mut screen, mut pointer) = selection_fixture();
         let now = Instant::now();
         let event = pointer_event((31.0, 1.0), TerminalPointerPhase::Down, 1);
         let release = pointer_event((31.0, 1.0), TerminalPointerPhase::Up, 1);
@@ -1011,12 +996,7 @@ mod tests {
     #[test]
     fn should_select_the_full_line_when_the_same_cell_is_triple_clicked_locally() {
         // Arrange
-        let mut screen = Screen::new(2, 10);
-        for ch in "abcdefghij".chars() {
-            screen.write_char(ch);
-        }
-        let mut pointer = PointerInteraction::new();
-        pointer.set_viewport(viewport());
+        let (mut screen, mut pointer) = selection_fixture();
         let now = Instant::now();
         let event = pointer_event((31.0, 1.0), TerminalPointerPhase::Down, 1);
         let release = pointer_event((31.0, 1.0), TerminalPointerPhase::Up, 1);

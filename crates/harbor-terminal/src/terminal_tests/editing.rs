@@ -1,5 +1,15 @@
 use super::*;
 
+fn terminal_with_scroll_region() -> Terminal {
+    let mut terminal = Terminal::new_headless(5, 4);
+    terminal.put_bytes(b"\x1b[1;1Haaaa");
+    terminal.put_bytes(b"\x1b[2;1Hbbbb");
+    terminal.put_bytes(b"\x1b[3;1Hcccc");
+    terminal.put_bytes(b"\x1b[4;1Hdddd");
+    terminal.put_bytes(b"\x1b[2;4r"); // region rows 2-4 (1-based)
+    terminal
+}
+
 #[test]
 fn ich_via_csi_at_shifts_cells_right() {
     let mut terminal = Terminal::new_headless(1, 8);
@@ -20,12 +30,7 @@ fn dch_via_csi_p_shifts_cells_left() {
 
 #[test]
 fn il_via_csi_l_inserts_lines() {
-    let mut terminal = Terminal::new_headless(5, 4);
-    terminal.put_bytes(b"\x1b[1;1Haaaa");
-    terminal.put_bytes(b"\x1b[2;1Hbbbb");
-    terminal.put_bytes(b"\x1b[3;1Hcccc");
-    terminal.put_bytes(b"\x1b[4;1Hdddd");
-    terminal.put_bytes(b"\x1b[2;4r"); // CSI r: region rows 2-4 (1-based)
+    let mut terminal = terminal_with_scroll_region();
     terminal.put_bytes(b"\x1b[2;1H"); // cursor to row 2
     terminal.put_bytes(b"\x1b[1L"); // IL 1
     assert_eq!(terminal.row_text(0), "aaaa");
@@ -37,12 +42,7 @@ fn il_via_csi_l_inserts_lines() {
 
 #[test]
 fn dl_via_csi_m_deletes_lines() {
-    let mut terminal = Terminal::new_headless(5, 4);
-    terminal.put_bytes(b"\x1b[1;1Haaaa");
-    terminal.put_bytes(b"\x1b[2;1Hbbbb");
-    terminal.put_bytes(b"\x1b[3;1Hcccc");
-    terminal.put_bytes(b"\x1b[4;1Hdddd");
-    terminal.put_bytes(b"\x1b[2;4r"); // CSI r: region rows 2-4
+    let mut terminal = terminal_with_scroll_region();
     terminal.put_bytes(b"\x1b[2;1H"); // cursor to row 2
     terminal.put_bytes(b"\x1b[1M"); // DL 1
     assert_eq!(terminal.row_text(0), "aaaa");
@@ -54,12 +54,7 @@ fn dl_via_csi_m_deletes_lines() {
 
 #[test]
 fn su_via_csi_s_scrolls_up() {
-    let mut terminal = Terminal::new_headless(5, 4);
-    terminal.put_bytes(b"\x1b[1;1Haaaa");
-    terminal.put_bytes(b"\x1b[2;1Hbbbb");
-    terminal.put_bytes(b"\x1b[3;1Hcccc");
-    terminal.put_bytes(b"\x1b[4;1Hdddd");
-    terminal.put_bytes(b"\x1b[2;4r"); // CSI r: region rows 2-4
+    let mut terminal = terminal_with_scroll_region();
     terminal.put_bytes(b"\x1b[2S"); // SU 2
     assert_eq!(terminal.row_text(0), "aaaa");
     assert_eq!(terminal.row_text(1), "dddd"); // shifted up by 2
@@ -70,12 +65,7 @@ fn su_via_csi_s_scrolls_up() {
 
 #[test]
 fn sd_via_csi_t_scrolls_down() {
-    let mut terminal = Terminal::new_headless(5, 4);
-    terminal.put_bytes(b"\x1b[1;1Haaaa");
-    terminal.put_bytes(b"\x1b[2;1Hbbbb");
-    terminal.put_bytes(b"\x1b[3;1Hcccc");
-    terminal.put_bytes(b"\x1b[4;1Hdddd");
-    terminal.put_bytes(b"\x1b[2;4r"); // CSI r: region rows 2-4
+    let mut terminal = terminal_with_scroll_region();
     terminal.put_bytes(b"\x1b[2T"); // SD 2
     assert_eq!(terminal.row_text(0), "aaaa");
     assert_eq!(terminal.row_text(1), "    ");

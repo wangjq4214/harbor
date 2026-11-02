@@ -1,5 +1,10 @@
 //! Required offscreen GPU fixture, shared by test targets only.
 //! Resource suites are ignored by default; explicitly selected GPU tests fail closed.
+
+// Some test targets only need the device fixture.
+#[allow(dead_code)]
+#[path = "readback.rs"]
+pub mod readback;
 pub fn device() -> (wgpu::Device, wgpu::Queue) {
     let selection = std::env::var("HARBOR_TEST_GPU")
         .or_else(|_| std::env::var("HARBOR_TEST_BACKEND"))

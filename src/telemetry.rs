@@ -147,10 +147,6 @@ impl<S: FrameLifecycleSink> FrameState<S> {
 mod tests {
     use super::*;
 
-    fn empty_frame() -> FrameState {
-        FrameState::new()
-    }
-
     fn recording_frame() -> (
         FrameState<RecordingFrameLifecycleSink>,
         RecordingFrameLifecycleSink,
@@ -253,7 +249,7 @@ mod tests {
     #[test]
     fn should_return_no_deadline_when_steady_state_already_emitted() {
         // Arrange
-        let mut frame = empty_frame();
+        let mut frame = FrameState::new();
         let presented_at = Instant::now();
         let after_dwell = presented_at + FONT_STEADY_STATE_DWELL + Duration::from_millis(50);
         frame.mark_first_present_at(presented_at);

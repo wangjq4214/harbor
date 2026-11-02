@@ -164,11 +164,7 @@ fn bgra(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     ]
 }
 
-fn render_text_item(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    item: SceneItem,
-) -> Option<Vec<u8>> {
+fn render_text_item(device: &wgpu::Device, queue: &wgpu::Queue, item: SceneItem) -> Vec<u8> {
     let atlas = create_atlas_texture(device);
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
@@ -204,20 +200,13 @@ fn render_text_item(
     let viewport = Viewport::new(32, 32, 1.0);
     renderer.update(queue, &graph, &cache, &viewport);
 
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("text clip render target"),
-        size: wgpu::Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let target = test_gpu::readback::target(
+        device,
+        "text clip render target",
+        32,
+        32,
+        wgpu::TextureFormat::Bgra8Unorm,
+    );
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -241,49 +230,14 @@ fn render_text_item(
     }
     queue.submit(Some(encoder.finish()));
 
-    const BYTES_PER_ROW: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("text clip readback"),
-        size: (32 * BYTES_PER_ROW) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: &target,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(BYTES_PER_ROW),
-                rows_per_image: Some(32),
-            },
-        },
-        wgpu::Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit(Some(encoder.finish()));
-    let slice = buffer.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        sender.send(result).unwrap();
-    });
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    receiver.recv().unwrap().unwrap();
-    let bytes = slice
-        .get_mapped_range()
-        .expect("readback buffer should be mapped")
-        .to_vec();
-    buffer.unmap();
-    Some(bytes)
+    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    test_gpu::readback::read(
+        device,
+        queue,
+        encoder,
+        &target,
+        test_gpu::readback::Rows::Padded(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+    )
 }
 
 fn paint_text(clip_behavior: ClipBehavior) -> harbor_widget::scene::SceneDelta {

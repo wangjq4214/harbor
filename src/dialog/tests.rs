@@ -114,70 +114,6 @@ fn build_confirmation_root_produces_valid_view() {
 }
 
 #[test]
-fn paste_callback_sets_confirmed_flag_only() {
-    // Replicates the exact closure pattern used in build_confirmation_root.
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let confirmed = Arc::new(AtomicBool::new(false));
-
-    let c = Arc::clone(&confirmed);
-    let on_paste = move |_ctx: &mut harbor_widget::input::event_ctx::EventCtx| {
-        c.store(true, Ordering::SeqCst);
-    };
-
-    let mut ctx = harbor_widget::input::event_ctx::EventCtx::new();
-    on_paste(&mut ctx);
-
-    assert!(confirmed.load(Ordering::SeqCst));
-    assert!(!cancelled.load(Ordering::SeqCst));
-}
-
-#[test]
-fn cancel_callback_sets_cancelled_flag_only() {
-    // Replicates the exact closure pattern used in build_confirmation_root.
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let confirmed = Arc::new(AtomicBool::new(false));
-
-    let c = Arc::clone(&cancelled);
-    let on_cancel = move |_ctx: &mut harbor_widget::input::event_ctx::EventCtx| {
-        c.store(true, Ordering::SeqCst);
-    };
-
-    let mut ctx = harbor_widget::input::event_ctx::EventCtx::new();
-    on_cancel(&mut ctx);
-
-    assert!(!confirmed.load(Ordering::SeqCst));
-    assert!(cancelled.load(Ordering::SeqCst));
-}
-
-#[test]
-fn paste_and_cancel_flags_are_independent() {
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let confirmed = Arc::new(AtomicBool::new(false));
-
-    confirmed.store(true, Ordering::SeqCst);
-    assert!(confirmed.load(Ordering::SeqCst));
-    assert!(!cancelled.load(Ordering::SeqCst));
-
-    confirmed.store(false, Ordering::SeqCst);
-    cancelled.store(true, Ordering::SeqCst);
-    assert!(!confirmed.load(Ordering::SeqCst));
-    assert!(cancelled.load(Ordering::SeqCst));
-}
-
-#[test]
-fn should_preserve_raw_text_verbatim() {
-    // ConfirmationWindow::raw_text() returns the original paste text
-    // unchanged. Verify the data-flow contract: String in → &str out,
-    // multi-line with mixed line endings preserved.
-    let text = String::from("hello\nworld\r\n");
-    let stored = text.clone();
-    // Simulate the accessor contract: stored text matches original.
-    assert_eq!(stored.as_str(), "hello\nworld\r\n");
-    assert!(stored.contains('\n'));
-    assert!(stored.contains('\r'));
-}
-
-#[test]
 fn should_center_at_origin_when_main_window_is_zero_sized() {
     // When the main window has zero area, the dialog is still
     // positioned relative to the main window origin.
@@ -671,17 +607,19 @@ fn clipboard_confirmation_root_routes_real_deny_and_allow_buttons() {
 
 #[test]
 fn confirmed_paste_writes_unchanged_raw_text_with_current_modes() {
-    let outcome = DialogOutcome::Confirmed("first\r\nsecond\t\x1b[A".to_owned());
-    let mut writes = Vec::new();
+    for text in ["first\r\nsecond\t\x1b[A", "hello\nworld\r\n"] {
+        let outcome = DialogOutcome::Confirmed(text.to_owned());
+        let mut writes = Vec::new();
 
-    let wrote = write_confirmation_outcome(&outcome, InputModes::default(), |bytes| {
-        writes.push(bytes.to_vec());
-        Ok::<_, ()>(())
-    })
-    .expect("capture writer succeeds");
+        let wrote = write_confirmation_outcome(&outcome, InputModes::default(), |bytes| {
+            writes.push(bytes.to_vec());
+            Ok::<_, ()>(())
+        })
+        .expect("capture writer succeeds");
 
-    assert!(wrote);
-    assert_eq!(writes, vec![b"first\r\nsecond\t\x1b[A".to_vec()]);
+        assert!(wrote, "{text:?}");
+        assert_eq!(writes, vec![text.as_bytes().to_vec()], "{text:?}");
+    }
 }
 
 #[test]

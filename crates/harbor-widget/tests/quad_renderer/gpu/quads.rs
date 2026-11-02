@@ -106,47 +106,7 @@ fn should_render_rounded_fill_inside_shape_and_leave_corner_outside_shape_empty(
         },
         &viewport,
     );
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("rounded fill test target"),
-        size: wgpu::Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-
-    // Act
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("rounded fill test pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-        renderer.encode_ordered(&mut pass, [1]);
-    }
-    queue.submit(Some(encoder.finish()));
-
-    // Assert
-    let pixels = read_texture(&device, &queue, &target);
+    let pixels = render_retained_quads(&device, &queue, &renderer, 32, &[1]);
     let pixel = |x: u32, y: u32| {
         let offset = (y * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT + x * 4) as usize;
         &pixels[offset..offset + 4]
@@ -180,47 +140,7 @@ fn should_render_rounded_border_only_on_outer_ring() {
         },
         &viewport,
     );
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("rounded border test target"),
-        size: wgpu::Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-
-    // Act
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("rounded border test pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-        renderer.encode_ordered(&mut pass, [1]);
-    }
-    queue.submit(Some(encoder.finish()));
-
-    // Assert
-    let pixels = read_texture(&device, &queue, &target);
+    let pixels = render_retained_quads(&device, &queue, &renderer, 32, &[1]);
     let pixel = |x: u32, y: u32| {
         let offset = (y * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT + x * 4) as usize;
         &pixels[offset..offset + 4]
@@ -256,47 +176,7 @@ fn should_render_collapsed_inner_border_as_a_bounded_outer_shape() {
         },
         &viewport,
     );
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("collapsed border test target"),
-        size: wgpu::Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-
-    // Act
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("collapsed border test pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-        renderer.encode_ordered(&mut pass, [1]);
-    }
-    queue.submit(Some(encoder.finish()));
-
-    // Assert
-    let pixels = read_texture(&device, &queue, &target);
+    let pixels = render_retained_quads(&device, &queue, &renderer, 32, &[1]);
     let pixel = |x: u32, y: u32| {
         let offset = (y * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT + x * 4) as usize;
         &pixels[offset..offset + 4]
@@ -333,44 +213,7 @@ fn rounded_fill_keeps_straight_edges_and_selects_asymmetric_corner_radii() {
         },
         &viewport,
     );
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("asymmetric rounded fill test target"),
-        size: wgpu::Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("asymmetric rounded fill test pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-        renderer.encode_ordered(&mut pass, [1]);
-    }
-    queue.submit(Some(encoder.finish()));
-
-    let pixels = read_texture(&device, &queue, &target);
+    let pixels = render_retained_quads(&device, &queue, &renderer, 32, &[1]);
     let pixel = |x: u32, y: u32| {
         let offset = (y * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT + x * 4) as usize;
         &pixels[offset..offset + 4]

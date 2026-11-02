@@ -127,31 +127,6 @@ fn parser_input() -> impl Strategy<Value = Vec<u8>> {
     prop::collection::vec(any::<u8>(), 0..=16 * 1024)
 }
 
-fn feed_scheduled(input: &[u8], schedule: &[usize], c1_enabled: bool) -> RecordingHandler {
-    let mut parser = Parser::default();
-    parser.set_c1_enabled(c1_enabled);
-    let mut handler = RecordingHandler::default();
-    let mut offset = 0;
-    let mut schedule_index = 0;
-    let mut completed_calls = 0;
-
-    while offset < input.len() {
-        let requested = schedule.get(schedule_index).copied().unwrap_or(1).max(1);
-        let end = offset.saturating_add(requested).min(input.len());
-        for &byte in &input[offset..end] {
-            parser.advance(&mut handler, byte);
-            completed_calls += 1;
-            assert!(parser.retained_state_within_limits());
-        }
-        offset = end;
-        schedule_index += 1;
-    }
-
-    assert_eq!(completed_calls, input.len());
-    assert!(handler.max_string_bytes <= 4096);
-    handler
-}
-
 proptest! {
     #![proptest_config(Config {
         cases: 256,
@@ -164,18 +139,6 @@ proptest! {
         for c1_enabled in [false, true] {
             let result = feed_contiguous(&input, c1_enabled);
             prop_assert!(result.max_string_bytes <= 4096);
-        }
-    }
-
-    #[test]
-    fn scheduled_input_has_same_callback_trace_as_contiguous_input(
-        input in parser_input(),
-        schedule in prop::collection::vec(1usize..=64, 0..=512),
-    ) {
-        for c1_enabled in [false, true] {
-            let contiguous = feed_contiguous(&input, c1_enabled);
-            let scheduled = feed_scheduled(&input, &schedule, c1_enabled);
-            prop_assert_eq!(scheduled.events, contiguous.events);
         }
     }
 

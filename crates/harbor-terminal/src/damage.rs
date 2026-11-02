@@ -144,6 +144,14 @@ impl DamageTracker {
 mod tests {
     use super::*;
 
+    fn dirty_range(row: usize, columns: std::ops::Range<usize>) -> DirtyRange {
+        DirtyRange {
+            row,
+            start_col: columns.start,
+            end_col: columns.end,
+        }
+    }
+
     #[test]
     fn test_damage_tracker() {
         let mut tracker = DamageTracker::new(3, 4);
@@ -151,21 +159,9 @@ mod tests {
         assert_eq!(
             tracker.dirty_ranges(),
             vec![
-                DirtyRange {
-                    row: 0,
-                    start_col: 0,
-                    end_col: 4
-                },
-                DirtyRange {
-                    row: 1,
-                    start_col: 0,
-                    end_col: 4
-                },
-                DirtyRange {
-                    row: 2,
-                    start_col: 0,
-                    end_col: 4
-                }
+                dirty_range(0, 0..4),
+                dirty_range(1, 0..4),
+                dirty_range(2, 0..4)
             ]
         );
 
@@ -174,60 +170,24 @@ mod tests {
 
         // Mark single cell dirty using range
         tracker.mark_range_dirty(1, 2, 3);
-        assert_eq!(
-            tracker.dirty_ranges(),
-            vec![DirtyRange {
-                row: 1,
-                start_col: 2,
-                end_col: 3
-            }]
-        );
+        assert_eq!(tracker.dirty_ranges(), vec![dirty_range(1, 2..3)]);
 
         // Mark range dirty
         tracker.mark_range_dirty(1, 1, 3);
-        assert_eq!(
-            tracker.dirty_ranges(),
-            vec![DirtyRange {
-                row: 1,
-                start_col: 1,
-                end_col: 3
-            }]
-        );
+        assert_eq!(tracker.dirty_ranges(), vec![dirty_range(1, 1..3)]);
 
         // Mark row dirty
         tracker.mark_row_dirty(0);
         assert_eq!(
             tracker.dirty_ranges(),
-            vec![
-                DirtyRange {
-                    row: 0,
-                    start_col: 0,
-                    end_col: 4
-                },
-                DirtyRange {
-                    row: 1,
-                    start_col: 1,
-                    end_col: 3
-                }
-            ]
+            vec![dirty_range(0, 0..4), dirty_range(1, 1..3)]
         );
 
         // Resize tracker
         tracker.resize(2, 2);
         assert_eq!(
             tracker.dirty_ranges(),
-            vec![
-                DirtyRange {
-                    row: 0,
-                    start_col: 0,
-                    end_col: 2
-                },
-                DirtyRange {
-                    row: 1,
-                    start_col: 0,
-                    end_col: 2
-                }
-            ]
+            vec![dirty_range(0, 0..2), dirty_range(1, 0..2)]
         );
     }
 
@@ -238,18 +198,7 @@ mod tests {
         tracker.mark_rows_dirty(1, 3);
         assert_eq!(
             tracker.dirty_ranges(),
-            vec![
-                DirtyRange {
-                    row: 1,
-                    start_col: 0,
-                    end_col: 4
-                },
-                DirtyRange {
-                    row: 2,
-                    start_col: 0,
-                    end_col: 4
-                },
-            ]
+            vec![dirty_range(1, 0..4), dirty_range(2, 0..4),]
         );
 
         // Test empty range (length = 0)
@@ -266,14 +215,7 @@ mod tests {
         // Test out of bounds clamping
         tracker.clear();
         tracker.mark_rows_dirty(4, 10);
-        assert_eq!(
-            tracker.dirty_ranges(),
-            vec![DirtyRange {
-                row: 4,
-                start_col: 0,
-                end_col: 4
-            },]
-        );
+        assert_eq!(tracker.dirty_ranges(), vec![dirty_range(4, 0..4),]);
 
         // Test crossing 64-bit word boundary (rows 60 to 66)
         let mut large_tracker = DamageTracker::new(70, 4);

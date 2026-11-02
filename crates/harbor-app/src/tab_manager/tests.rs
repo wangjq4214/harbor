@@ -648,22 +648,10 @@ fn close_inactive_requests_redraw_while_stale_ids_are_noops() {
 fn terminals_keep_independent_screen_state() {
     let mut manager = TabManager::new();
     let (a, _) = create(&mut manager);
-    let terminal_a = manager
-        .tabs
-        .iter()
-        .find(|tab| tab.id == a)
-        .unwrap()
-        .terminal
-        .clone();
+    let terminal_a = terminal(&manager, a);
     terminal_a.lock().unwrap().process_output(b"alpha");
     let (b, _) = create(&mut manager);
-    let terminal_b = manager
-        .tabs
-        .iter()
-        .find(|tab| tab.id == b)
-        .unwrap()
-        .terminal
-        .clone();
+    let terminal_b = terminal(&manager, b);
     terminal_b.lock().unwrap().process_output(b"beta");
 
     assert!(terminal_a.lock().unwrap().row_text(0).contains("alpha"));
@@ -708,12 +696,7 @@ fn runtime_mount_and_schedule_follow_only_the_selected_bridge() {
 
     let mut manager = TabManager::new();
     let (a, draw_a) = create(&mut manager);
-    manager
-        .tabs
-        .iter()
-        .find(|tab| tab.id == a)
-        .unwrap()
-        .terminal
+    terminal(&manager, a)
         .lock()
         .unwrap()
         .process_output(b"\x1b[?2026hhidden");

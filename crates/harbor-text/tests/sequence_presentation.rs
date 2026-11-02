@@ -114,33 +114,24 @@ fn source_size_dpi_style_intent_and_generation_separate_cache_entries() {
     let fonts = fonts();
     let r = request("invalid unit"); // deterministic negative path, no installed font assumption
     let old = fonts.present_sequence(&r);
-    let mut variants = Vec::new();
-    let mut v = r.clone();
-    v.source.push('!');
-    variants.push(v);
-    let mut v = r.clone();
-    v.size = FontSize::new(33.0).unwrap();
-    variants.push(v);
-    let mut v = r.clone();
-    v.dpi = FontSize::new(120.0).unwrap();
-    variants.push(v);
-    let mut v = r.clone();
-    v.style.bold = true;
-    variants.push(v);
-    let mut v = r.clone();
-    v.style.italic = true;
-    variants.push(v);
-    let mut v = r.clone();
-    v.intent = PresentationIntent::Text;
-    variants.push(v);
-    let mut v = r.clone();
-    v.foreground = [255, 0, 0, 128];
-    variants.push(v);
-    let mut v = r.clone();
-    v.palette = 1;
-    variants.push(v);
-    for v in variants {
-        assert!(!Arc::ptr_eq(&old, &fonts.present_sequence(&v)));
+    type RequestChange = fn(&mut SequenceRequest);
+    let variants: [(&str, RequestChange); 8] = [
+        ("source", |v| v.source.push('!')),
+        ("size", |v| v.size = FontSize::new(33.0).unwrap()),
+        ("dpi", |v| v.dpi = FontSize::new(120.0).unwrap()),
+        ("bold", |v| v.style.bold = true),
+        ("italic", |v| v.style.italic = true),
+        ("intent", |v| v.intent = PresentationIntent::Text),
+        ("foreground", |v| v.foreground = [255, 0, 0, 128]),
+        ("palette", |v| v.palette = 1),
+    ];
+    for (name, change) in variants {
+        let mut variant = r.clone();
+        change(&mut variant);
+        assert!(
+            !Arc::ptr_eq(&old, &fonts.present_sequence(&variant)),
+            "{name} must separate raster cache entries"
+        );
     }
     assert_eq!(fonts.sequence_cache_stats().shape_calls, 7); // foreground/palette share shape
     assert_eq!(fonts.sequence_cache_stats().rasters, 9);

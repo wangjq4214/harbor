@@ -220,20 +220,13 @@ fn raster_draw(
     queue: &wgpu::Queue,
     draw: impl FnOnce(&mut wgpu::RenderPass),
 ) -> Vec<u8> {
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("T0001 readback"),
-        size: wgpu::Extent3d {
-            width: 256,
-            height: 192,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let target = crate::test_gpu::readback::target(
+        device,
+        "T0001 readback",
+        256,
+        192,
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
@@ -256,42 +249,13 @@ fn raster_draw(
         pass.set_scissor_rect(0, 0, 128, 160);
         draw(&mut pass);
     }
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("T0001 pixels"),
-        size: 256 * 192 * 4,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: &target,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(1024),
-                rows_per_image: Some(192),
-            },
-        },
-        wgpu::Extent3d {
-            width: 256,
-            height: 192,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit(Some(encoder.finish()));
-    let slice = buffer.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    rx.recv().unwrap().unwrap();
-    let pixels = slice.get_mapped_range().expect("mapped pixels").to_vec();
-    buffer.unmap();
-    pixels
+    crate::test_gpu::readback::read(
+        device,
+        queue,
+        encoder,
+        &target,
+        crate::test_gpu::readback::Rows::Tight,
+    )
 }
 
 #[test]

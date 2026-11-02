@@ -246,20 +246,13 @@ fn should_clip_external_surface_and_restore_scissor_for_following_widget_primiti
     let (device, queue) = gpu_device();
 
     // Arrange: draw a full-target triangle through a ExternalSurface padded into a 16×16 region.
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("custom-paint clipping test target"),
-        size: wgpu::Extent3d {
-            width: 32,
-            height: 32,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+    let target = test_gpu::readback::target(
+        &device,
+        "custom-paint clipping test target",
+        32,
+        32,
+        wgpu::TextureFormat::Bgra8Unorm,
+    );
     let pipeline = create_solid_pipeline(&device);
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(move |_, _, _, pass, _| {
         pass.set_pipeline(&pipeline);

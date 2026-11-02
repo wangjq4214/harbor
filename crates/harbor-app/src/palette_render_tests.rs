@@ -55,28 +55,13 @@ fn render(
     format: wgpu::TextureFormat,
 ) -> Vec<u8> {
     let (width, height) = viewport.physical_size;
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("palette rounded glass regression"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
+    let target = crate::test_gpu::readback::target(
+        device,
+        "palette rounded glass regression",
+        width,
+        height,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let stride = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("palette pixels"),
-        size: u64::from(stride * height),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
+    );
     let view = target.create_view(&Default::default());
     let mut encoder = device.create_command_encoder(&Default::default());
     runtime.encode_frame(
@@ -89,37 +74,11 @@ fn render(
         viewport,
         false,
     );
-    encoder.copy_texture_to_buffer(
-        target.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(stride),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit(Some(encoder.finish()));
-    let (send, receive) = std::sync::mpsc::channel();
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, move |result| {
-            send.send(result).unwrap()
-        });
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    receive.recv().unwrap().unwrap();
-    let mapped = buffer.slice(..).get_mapped_range().unwrap();
-    let pixels = mapped
-        .chunks_exact(stride as usize)
-        .flat_map(|row| row[..(width * 4) as usize].iter().copied())
-        .collect();
-    drop(mapped);
-    buffer.unmap();
-    pixels
+    crate::test_gpu::readback::read(
+        device,
+        queue,
+        encoder,
+        &target,
+        crate::test_gpu::readback::Rows::Tight,
+    )
 }

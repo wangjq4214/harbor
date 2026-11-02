@@ -5,7 +5,7 @@ fn resize_rebuilds_dirty_all_true() {
     let mut screen = Screen::new(2, 4);
     screen.clear_dirty();
     screen.resize(4, 4);
-    let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
+    let dirty = screen.dirty_rows();
     assert_eq!(
         dirty.len(),
         4,
@@ -277,12 +277,19 @@ fn should_project_pending_wrap_on_resize_and_preserve_surviving_marker() {
 fn prepared_alt_resize_is_rectangular_repairs_wide_edge_and_keeps_zero_history() {
     let mut screen = Screen::new(2, 4);
     screen.enter_alt(false);
-    screen.set_cursor_position(1, 3);
-    screen.write_char('界');
     for _ in 0..4 {
         screen.newline();
     }
     assert_eq!(screen.scroll_count(), 0);
+
+    screen.set_cursor_position(1, 3);
+    screen.write_char('界');
+    assert_eq!(
+        screen.cell(0, 2).ch,
+        '界',
+        "wide lead must survive until resize"
+    );
+    assert!(screen.cell(0, 3).wide_continuation);
 
     let prepared = screen.prepare_resize(1, 3).unwrap();
     screen.commit_resize(prepared);
@@ -705,8 +712,6 @@ fn narrowing_past_viewport_into_scrollback_and_widening_restores_clean_history()
     for ch in "(c) Microsoft Corporation. All rights reserved.".chars() {
         screen.write_char(ch);
     }
-    screen.active.cursor.cursor.y = 2;
-    screen.active.cursor.cursor.x = 0;
 
     screen.active.cursor.cursor.y = 3;
     screen.active.cursor.cursor.x = 0;
@@ -806,8 +811,6 @@ fn narrowing_past_viewport_into_scrollback_and_widening_restores_chinese_windows
     for ch in "(c) Microsoft Corporation。保留所有权利。".chars() {
         screen.write_char(ch);
     }
-    screen.active.cursor.cursor.y = 2;
-    screen.active.cursor.cursor.x = 0;
 
     screen.active.cursor.cursor.y = 3;
     screen.active.cursor.cursor.x = 0;

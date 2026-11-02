@@ -4,6 +4,7 @@ use crate::input::event::{
 };
 use crate::input::event_ctx::EventCtx;
 use crate::scene::primitive::ExternalScheduleDemand;
+use crate::signal::Signal;
 use crate::view::{Component, View};
 use crate::widgets::button::Button;
 use crate::widgets::column::Column;
@@ -13,13 +14,11 @@ use crate::widgets::focus_scope::FocusScope;
 use crate::widgets::layout_observer::LayoutObserver;
 use crate::widgets::sized_box::SizedBox;
 use crate::widgets::text_label::TextLabel;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-
-fn now() -> Instant {
-    Instant::now()
-}
 
 struct TeardownProbeRoot {
     drops: Arc<AtomicUsize>,
@@ -68,7 +67,7 @@ fn clear_root_drops_tree_callbacks_and_resets_root_derived_state() {
         drops: Arc::clone(&drops),
         callback_probe,
     });
-    assert!(rt.update(now()).request_redraw);
+    assert!(rt.update(Instant::now()).request_redraw);
     assert!(rt.focus_first_focusable());
     assert!(rt.has_external_draws());
     assert!(weak_callback.upgrade().is_some());
@@ -165,7 +164,7 @@ fn dispatch_does_not_attribute_pending_focus_redraw_to_consumed_keyboard_event()
             EventHandled::Handled
         })),
     );
-    assert!(rt.update(now()).request_redraw);
+    assert!(rt.update(Instant::now()).request_redraw);
     assert!(rt.focus_first_focusable());
     let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::PageUp,
@@ -175,10 +174,10 @@ fn dispatch_does_not_attribute_pending_focus_redraw_to_consumed_keyboard_event()
     assert_eq!(rt.dispatch(event.clone()), RuntimeEffects::default());
     assert_eq!(deliveries.load(Ordering::SeqCst), 1);
     assert!(rt.pending_effects.request_redraw);
-    assert!(rt.update(now()).request_redraw);
-    assert!(!rt.update(now()).request_redraw);
+    assert!(rt.update(Instant::now()).request_redraw);
+    assert!(!rt.update(Instant::now()).request_redraw);
     assert_eq!(rt.dispatch(event), RuntimeEffects::default());
-    assert!(!rt.update(now()).request_redraw);
+    assert!(!rt.update(Instant::now()).request_redraw);
 }
 
 #[test]
@@ -232,7 +231,7 @@ fn consumed_resize_delta_only_modifies_content_and_preserves_registrations() {
     let mut rt = Runtime::new();
     rt.set_viewport(Viewport::new(1000, 80, 1.0));
     rt.set_root(RegisteredRoot(builds.clone()));
-    rt.update(now());
+    rt.update(Instant::now());
     let initial = rt.pending_delta.take().unwrap();
     assert_eq!(initial.added.len(), 3);
     let initial_ids = initial.added.iter().map(|item| item.id).collect::<Vec<_>>();
@@ -278,11 +277,11 @@ fn consumed_resize_delta_only_modifies_content_and_preserves_registrations() {
     assert!(Arc::ptr_eq(&schedule, &rt.external_schedules[&42]));
 
     assert!(!rt.set_viewport(Viewport::new(1200, 80, 1.0)));
-    assert!(rt.update(now()).request_redraw);
-    assert!(!rt.update(now()).request_redraw);
+    assert!(rt.update(Instant::now()).request_redraw);
+    assert!(!rt.update(Instant::now()).request_redraw);
     assert!(rt.pending_delta.is_none());
     assert!(rt.set_viewport(Viewport::new(2400, 160, 2.0)));
-    assert!(rt.update(now()).request_redraw);
+    assert!(rt.update(Instant::now()).request_redraw);
     assert!(rt.pending_delta.take().unwrap().is_empty());
     assert_eq!(builds.get(), 1);
     assert!(Arc::ptr_eq(&draw, &rt.external_draws[&42]));
@@ -342,7 +341,7 @@ fn failed_layout_attempt_clears_tree_flags_and_waits_for_new_invalidation() {
         fail: fail.clone(),
         measurements: measurements.clone(),
     }));
-    rt.update(now());
+    rt.update(Instant::now());
     let committed = snapshot(&rt);
     let child = committed[1].0;
     fail.set(true);
@@ -362,7 +361,7 @@ fn failed_layout_attempt_clears_tree_flags_and_waits_for_new_invalidation() {
         .flags
         .insert(DirtyFlags::HIT_TEST_DIRTY);
     rt.set_viewport(Viewport::new(100, 100, 1.0));
-    assert!(rt.update(now()).request_redraw);
+    assert!(rt.update(Instant::now()).request_redraw);
     assert_eq!(snapshot(&rt), committed);
     assert!(
         rt.arena
@@ -372,7 +371,7 @@ fn failed_layout_attempt_clears_tree_flags_and_waits_for_new_invalidation() {
             .is_some()
     );
     let failed_measurements = measurements.get();
-    assert!(!rt.update(now()).request_redraw);
+    assert!(!rt.update(Instant::now()).request_redraw);
     rt.dispatch(UiEvent::Pointer(PointerEvent::new(
         Point::ZERO,
         PointerPhase::Move,
@@ -386,7 +385,7 @@ fn failed_layout_attempt_clears_tree_flags_and_waits_for_new_invalidation() {
         line_height: 21.0,
         ..DEFAULT_TEXT_METRICS
     });
-    assert!(rt.update(now()).request_redraw);
+    assert!(rt.update(Instant::now()).request_redraw);
     assert_eq!(snapshot(&rt), committed);
     assert!(
         rt.arena
@@ -396,7 +395,7 @@ fn failed_layout_attempt_clears_tree_flags_and_waits_for_new_invalidation() {
             .is_none()
     );
     assert_eq!(measurements.get(), failed_measurements + 1);
-    assert!(!rt.update(now()).request_redraw);
+    assert!(!rt.update(Instant::now()).request_redraw);
 }
 
 #[test]
@@ -462,7 +461,7 @@ fn unencoded_modified_item_remains_added_with_its_latest_contents() {
 
     blue.set(true);
     rt.invalidate_external(ExternalInvalidation::new());
-    rt.update(now());
+    rt.update(Instant::now());
 
     let delta = rt.pending_delta().unwrap();
     assert_eq!(delta.added.len(), 1);
@@ -472,47 +471,40 @@ fn unencoded_modified_item_remains_added_with_its_latest_contents() {
     assert!(delta.modified.is_empty());
 }
 
+#[derive(Clone)]
+struct KeyedChildren {
+    signal: Rc<RefCell<Option<Signal<Vec<&'static str>>>>>,
+}
+
+impl Component for KeyedChildren {
+    fn build(&self, cx: &mut BuildCx) -> View {
+        use crate::construction::ComponentExt;
+        use crate::scene::primitive::Color;
+        let items_state = cx.use_state(|| vec!["a", "b", "c"]);
+        *self.signal.borrow_mut() = Some(items_state.clone());
+        let items = items_state.read();
+        let mut col = Column::new();
+        for key in items.iter() {
+            col = col.push_child(
+                SizedBox::new(Size::new(50.0, 20.0))
+                    .unwrap()
+                    .background(Color::RED)
+                    .expect("valid color")
+                    .keyed(*key),
+            );
+        }
+        col.build(cx)
+    }
+}
+
 #[test]
 fn keyed_children_middle_removal_preserves_retained_scene_item_identity() {
-    use crate::construction::ComponentExt;
-    use crate::scene::primitive::Color;
-    use crate::signal::Signal;
-    use crate::view::View;
-    use crate::widgets::column::Column;
-
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    #[derive(Clone)]
-    struct TabContainer {
-        signal: Rc<RefCell<Option<Signal<Vec<&'static str>>>>>,
-    }
-
-    impl Component for TabContainer {
-        fn build(&self, cx: &mut BuildCx) -> View {
-            let items_state = cx.use_state(|| vec!["a", "b", "c"]);
-            *self.signal.borrow_mut() = Some(items_state.clone());
-            let items = items_state.read();
-            let mut col = Column::new();
-            for key in items.iter() {
-                col = col.push_child(
-                    SizedBox::new(Size::new(50.0, 20.0))
-                        .unwrap()
-                        .background(Color::RED)
-                        .expect("valid color")
-                        .keyed(*key),
-                );
-            }
-            col.build(cx)
-        }
-    }
-
     let signal_holder = Rc::new(RefCell::new(None));
     let mut rt = Runtime::new();
-    rt.set_root(TabContainer {
+    rt.set_root(KeyedChildren {
         signal: signal_holder.clone(),
     });
-    rt.update(now());
+    rt.update(Instant::now());
 
     let initial_items: Vec<_> = rt.scene_graph.items().to_vec();
     assert_eq!(initial_items.len(), 3);
@@ -524,7 +516,7 @@ fn keyed_children_middle_removal_preserves_retained_scene_item_identity() {
 
     // Remove child B by updating parent's items signal: ["a", "c"]
     signal_holder.borrow().as_ref().unwrap().set(vec!["a", "c"]);
-    rt.update(now());
+    rt.update(Instant::now());
 
     let remaining_items = rt.scene_graph.items();
     assert_eq!(remaining_items.len(), 2);
@@ -556,44 +548,12 @@ fn keyed_children_middle_removal_preserves_retained_scene_item_identity() {
 
 #[test]
 fn keyed_children_reorder_preserves_scene_item_identities() {
-    use crate::construction::ComponentExt;
-    use crate::scene::primitive::Color;
-    use crate::signal::Signal;
-    use crate::view::View;
-    use crate::widgets::column::Column;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    #[derive(Clone)]
-    struct ReorderContainer {
-        order: Rc<RefCell<Option<Signal<Vec<&'static str>>>>>,
-    }
-
-    impl Component for ReorderContainer {
-        fn build(&self, cx: &mut BuildCx) -> View {
-            let state = cx.use_state(|| vec!["a", "b", "c"]);
-            *self.order.borrow_mut() = Some(state.clone());
-            let items = state.read();
-            let mut col = Column::new();
-            for key in items.iter() {
-                col = col.push_child(
-                    SizedBox::new(Size::new(50.0, 20.0))
-                        .unwrap()
-                        .background(Color::RED)
-                        .expect("valid color")
-                        .keyed(*key),
-                );
-            }
-            col.build(cx)
-        }
-    }
-
     let order_holder = Rc::new(RefCell::new(None));
     let mut rt = Runtime::new();
-    rt.set_root(ReorderContainer {
-        order: order_holder.clone(),
+    rt.set_root(KeyedChildren {
+        signal: order_holder.clone(),
     });
-    rt.update(now());
+    rt.update(Instant::now());
 
     let initial_items: Vec<_> = rt.scene_graph.items().to_vec();
     assert_eq!(initial_items.len(), 3);
@@ -610,7 +570,7 @@ fn keyed_children_reorder_preserves_scene_item_identities() {
         .as_ref()
         .unwrap()
         .set(vec!["c", "a", "b"]);
-    rt.update(now());
+    rt.update(Instant::now());
 
     let new_items = rt.scene_graph.items();
     assert_eq!(new_items.len(), 3);
@@ -684,7 +644,7 @@ fn nested_deferred_component_preserves_state_and_subscribes_its_fiber() {
 
     let state = signal.borrow().as_ref().unwrap().clone();
     state.set(7);
-    let effects = rt.update(now());
+    let effects = rt.update(Instant::now());
 
     assert!(
         effects.request_redraw,
@@ -715,7 +675,7 @@ fn is_descendant_of_direct_child() {
         .unwrap()
         .child(SizedBox::new(Size::new(100.0, 50.0)).unwrap()),
     );
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     let padding_fiber = rt.arena().get(root_id).unwrap();
@@ -728,7 +688,7 @@ fn is_descendant_of_direct_child() {
 fn is_descendant_of_self_is_true() {
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     assert!(rt.is_descendant_of(Some(root_id), root_id));
@@ -738,7 +698,7 @@ fn is_descendant_of_self_is_true() {
 fn is_descendant_of_none_is_false() {
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     assert!(!rt.is_descendant_of(None, root_id));
@@ -757,7 +717,7 @@ fn build_ancestor_path_none() {
 fn build_ancestor_path_root_is_singleton() {
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     let path = rt.build_ancestor_path(Some(root_id));
@@ -784,7 +744,7 @@ fn tree_has_modal_detects_modal_at_root() {
             .modal(true)
             .child(SizedBox::new(Size::new(100.0, 50.0)).unwrap()),
     );
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     assert!(rt.tree_has_modal(root_id));
@@ -812,7 +772,7 @@ fn tree_has_modal_detects_modal_in_deep_subtree() {
             ),
         ),
     );
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     // tree_has_modal recursively scans the entire subtree of the given fiber.
@@ -823,7 +783,7 @@ fn tree_has_modal_detects_modal_in_deep_subtree() {
     // A separate non-modal SVG or SizedBox root returns false
     let mut rt2 = Runtime::new();
     rt2.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    rt2.update(now());
+    rt2.update(Instant::now());
     let root2_id = rt2.root_id().unwrap();
     assert!(!rt2.tree_has_modal(root2_id));
 }
@@ -832,7 +792,7 @@ fn tree_has_modal_detects_modal_in_deep_subtree() {
 fn tree_has_modal_returns_false_for_non_modal_tree() {
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     assert!(!rt.tree_has_modal(root_id));
@@ -861,7 +821,7 @@ fn finish_event_returns_true_when_invalidate_paint_called() {
 fn route_to_single_with_live_fiber() {
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
@@ -889,7 +849,7 @@ fn runtime_with_external_surface_root_reports_external_draws() {
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(77).on_draw(handler));
-    rt.update(now());
+    rt.update(Instant::now());
 
     assert!(rt.has_external_draws());
 }
@@ -898,7 +858,7 @@ fn runtime_with_external_surface_root_reports_external_draws() {
 fn should_report_no_external_draws_when_external_surface_has_no_handler() {
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(77));
-    rt.update(now());
+    rt.update(Instant::now());
 
     assert!(!rt.has_external_draws());
 }
@@ -908,7 +868,7 @@ fn should_report_no_external_draws_when_external_surface_registers_only_a_schedu
     let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(78).schedule_with(schedule));
-    rt.update(now());
+    rt.update(Instant::now());
 
     assert!(!rt.has_external_draws());
 }
@@ -918,7 +878,7 @@ fn should_report_external_draws_when_handler_is_nested_in_subtree() {
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
     let mut rt = Runtime::new();
     rt.set_root(Column::new().push_child(ExternalSurface::new(79).on_draw(handler)));
-    rt.update(now());
+    rt.update(Instant::now());
 
     assert!(rt.has_external_draws());
 }
@@ -928,12 +888,12 @@ fn should_drop_external_draws_when_root_is_replaced_with_plain_widget() {
     let handler: Arc<ExternalDrawFn<'static>> = Arc::new(|_, _, _, _, _| {});
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(80).on_draw(handler));
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(rt.has_external_draws());
 
     // Act — replacing the root rebuilds and reinstalls the external bag.
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Assert
     assert!(!rt.has_external_draws());
@@ -951,11 +911,11 @@ fn focused_external_ime_provider_tracks_layout_and_disables_after_focus_leaves()
     rt.set_viewport(Viewport::new(100, 40, 1.0));
     rt.set_root(ExternalSurface::new(81).ime_with(provider));
 
-    let initial = rt.update(now());
+    let initial = rt.update(Instant::now());
     assert!(initial.ime.is_none());
 
     assert!(rt.focus_first_focusable());
-    let focused = rt.update(now());
+    let focused = rt.update(Instant::now());
     assert_eq!(
         focused.ime,
         Some(ImeEffect {
@@ -965,14 +925,14 @@ fn focused_external_ime_provider_tracks_layout_and_disables_after_focus_leaves()
     );
 
     rt.set_viewport(Viewport::new(160, 60, 1.0));
-    let resized = rt.update(now());
+    let resized = rt.update(Instant::now());
     assert_eq!(
         resized.ime.and_then(|effect| effect.position),
         Some(Point::new(160.0, 60.0))
     );
 
     rt.clear_focus();
-    let unfocused = rt.update(now());
+    let unfocused = rt.update(Instant::now());
     assert_eq!(unfocused.ime, Some(ImeEffect::set_allowed(false)));
 }
 
@@ -998,11 +958,11 @@ fn external_schedule_refreshes_state_before_focused_ime_is_collected() {
             .schedule_with(schedule)
             .ime_with(ime),
     );
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(rt.focus_first_focusable());
     state.store(0, Ordering::SeqCst);
 
-    let effects = rt.update(now());
+    let effects = rt.update(Instant::now());
 
     assert_eq!(
         effects.ime.and_then(|effect| effect.position),
@@ -1074,12 +1034,12 @@ fn should_dirty_layout_when_scale_only_viewport_changes() {
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(crate::layout::Size::new(100.0, 50.0)).unwrap());
     rt.set_viewport(Viewport::new(800, 600, 1.0));
-    assert!(rt.update(now()).request_redraw);
-    assert!(!rt.update(now()).request_redraw);
+    assert!(rt.update(Instant::now()).request_redraw);
+    assert!(!rt.update(Instant::now()).request_redraw);
 
     // Act
     assert!(rt.set_viewport(Viewport::new(800, 600, 2.0)));
-    let effects = rt.update(now());
+    let effects = rt.update(Instant::now());
 
     // Assert
     assert!(effects.request_redraw);
@@ -1095,7 +1055,7 @@ fn focus_transition_notifies_old_and_new_fibers_and_requests_redraw() {
                 .push_child(Focus::new().child(ExternalSurface::new(2))),
         ),
     );
-    rt.update(now());
+    rt.update(Instant::now());
     assert!(rt.focus_first_focusable());
     rt.drain_external_input();
 
@@ -1124,7 +1084,7 @@ fn focus_transition_notifies_old_and_new_fibers_and_requests_redraw() {
 fn set_focus_and_clear_focus() {
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     let root_id = rt.root_id().unwrap();
     assert!(rt.input().focused.is_none());
@@ -1142,7 +1102,7 @@ fn set_focus_and_clear_focus() {
 fn route_event_keyboard_no_focused_returns_false() {
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    rt.update(now());
+    rt.update(Instant::now());
 
     let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::Enter,
@@ -1159,7 +1119,7 @@ fn route_event_keyboard_no_focused_returns_false() {
 fn route_event_pointer_cancel_without_capture_returns_false() {
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     let event = UiEvent::Pointer(PointerEvent::new(
         Point::new(50.0, 16.0),
@@ -1189,7 +1149,7 @@ fn route_event_dead_captor_falls_through_to_hit_test() {
     rt.set_root(Button::text("OK").on_click(move |_ctx| {
         clicked.store(true, Ordering::SeqCst);
     }));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Down to capture pointer 99
     rt.dispatch(UiEvent::Pointer(PointerEvent::new(
@@ -1205,7 +1165,7 @@ fn route_event_dead_captor_falls_through_to_hit_test() {
 
     // Replace tree — old fibers are unmounted, captures cleared
     rt.set_root(Button::text("Replacement"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // After tree replacement, capture should be cleared
     assert!(
@@ -1223,26 +1183,7 @@ fn route_event_dead_captor_falls_through_to_hit_test() {
     let _ = req;
 }
 
-// ── layout_fiber edge cases ────────────────────────────────────────
-
-#[test]
-fn layout_fiber_with_stale_fiber_id_does_not_panic() {
-    let mut arena = FiberArena::new();
-    let id = arena.insert(Fiber::new(None, std::any::TypeId::of::<()>(), None));
-    arena.remove(id);
-    // Calling layout_fiber with a stale id should be a no-op
-    layout_fiber(
-        &mut arena,
-        id,
-        BoxConstraints::loose(Size::new(800.0, 600.0)),
-        Point::ZERO,
-        &DEFAULT_TEXT_METRICS,
-    );
-    // No panic = pass
-}
-
 // ── has_modal with no root ─────────────────────────────────────────
-
 #[test]
 fn has_modal_returns_false_with_no_root() {
     let rt = Runtime::new();
@@ -1255,7 +1196,7 @@ fn should_focus_button_when_it_is_focusable() {
     // Arrange
     let mut rt = Runtime::new();
     rt.set_root(Button::text("OK"));
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Act
     let found = rt.focus_first_focusable();
@@ -1278,7 +1219,7 @@ fn should_skip_non_focusable_sized_box_and_focus_button() {
             .push_child(SizedBox::new(Size::new(100.0, 50.0)).unwrap())
             .push_child(Button::text("Next")),
     );
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Act
     let found = rt.focus_first_focusable();
@@ -1314,7 +1255,7 @@ fn should_return_false_when_no_focusable_widgets_exist() {
     // Arrange
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    rt.update(now());
+    rt.update(Instant::now());
 
     // Act
     let found = rt.focus_first_focusable();
@@ -1458,7 +1399,7 @@ fn text_metrics_are_isolated_per_runtime_and_relayout_the_owner() {
     );
 
     first.set_text_metrics(wide);
-    assert!(first.update(now()).request_redraw);
+    assert!(first.update(Instant::now()).request_redraw);
     assert_eq!(
         first
             .arena()
@@ -1486,10 +1427,10 @@ fn should_emit_wait_until_on_idle_when_schedule_reports_deadline() {
     });
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(1).schedule_with(schedule));
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
     // Act
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     // Assert
     assert!(!idle.request_redraw);
@@ -1520,10 +1461,10 @@ fn should_select_earliest_deadline_when_multiple_schedules_report() {
             .push_child(ExternalSurface::new(1).schedule_with(late_schedule))
             .push_child(ExternalSurface::new(2).schedule_with(early_schedule)),
     );
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
     // Act
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     // Assert
     assert_eq!(idle.control_flow, Some(ControlFlowEffect::WaitUntil(early)));
@@ -1539,10 +1480,10 @@ fn should_request_redraw_when_schedule_reports_redraw_now() {
     });
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(4).schedule_with(schedule));
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
     // Act
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     // Assert
     assert!(idle.request_redraw);
@@ -1562,10 +1503,10 @@ fn should_merge_redraw_and_wait_until_when_schedule_reports_both() {
     });
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(5).schedule_with(schedule));
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
     // Act
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     // Assert
     assert!(idle.request_redraw);
@@ -1581,10 +1522,10 @@ fn should_not_emit_poll_when_external_schedule_is_empty() {
     let schedule: Arc<ExternalScheduleFn> = Arc::new(|_, _| ExternalScheduleDemand::empty());
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(6).schedule_with(schedule));
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
     // Act
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     // Assert
     assert!(!idle.request_redraw);
@@ -1605,10 +1546,10 @@ fn should_pass_registered_draw_id_when_collecting_external_schedule() {
     });
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(42).schedule_with(schedule));
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
     // Act
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
     // Assert
     assert_eq!(seen.load(Ordering::SeqCst), 42);
@@ -1625,16 +1566,16 @@ fn should_clear_external_schedules_when_root_no_longer_registers_them() {
     });
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(1).schedule_with(schedule));
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
     assert_eq!(
-        rt.update(now()).control_flow,
+        rt.update(Instant::now()).control_flow,
         Some(ControlFlowEffect::WaitUntil(deadline))
     );
 
     // Act — rebuild without a schedule provider
     rt.set_root(SizedBox::new(Size::new(20.0, 20.0)).unwrap());
-    let _ = rt.update(now());
-    let idle = rt.update(now());
+    let _ = rt.update(Instant::now());
+    let idle = rt.update(Instant::now());
 
     // Assert
     assert!(idle.control_flow.is_none());
@@ -1653,9 +1594,9 @@ fn should_not_request_redraw_when_schedule_defers_ordinary_present() {
     });
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(7).schedule_with(schedule));
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     assert!(!idle.request_redraw);
     assert!(idle.ordinary_present_eligible);
@@ -1673,9 +1614,9 @@ fn should_keep_wait_until_when_schedule_defers_ordinary_present() {
     });
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(8).schedule_with(schedule));
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     assert!(!idle.request_redraw);
     assert!(idle.ordinary_present_eligible);
@@ -1703,9 +1644,9 @@ fn should_keep_window_eligible_when_any_schedule_reports_ineligible() {
             .push_child(ExternalSurface::new(1).schedule_with(eligible))
             .push_child(ExternalSurface::new(2).schedule_with(deferred)),
     );
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     assert!(idle.request_redraw);
     assert!(idle.ordinary_present_eligible);
@@ -1718,10 +1659,10 @@ fn should_remain_eligible_when_no_external_schedule_is_registered() {
     // Arrange
     let mut rt = Runtime::new();
     rt.set_root(SizedBox::new(Size::new(20.0, 20.0)).unwrap());
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
     // Act
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     // Assert
     assert!(idle.ordinary_present_eligible);
@@ -1741,7 +1682,7 @@ fn should_keep_dirty_redraw_deferred_when_schedule_is_ineligible() {
     rt.set_root(ExternalSurface::new(9).schedule_with(schedule));
 
     // Act — first update rebuilds dirty Fibers and then folds schedule demand
-    let first = rt.update(now());
+    let first = rt.update(Instant::now());
 
     // Assert
     assert!(first.request_redraw);
@@ -1765,10 +1706,10 @@ fn should_ignore_deferred_redraw_when_eligible_sibling_reports_none() {
             .push_child(ExternalSurface::new(10).schedule_with(eligible))
             .push_child(ExternalSurface::new(11).schedule_with(deferred)),
     );
-    let _ = rt.update(now());
+    let _ = rt.update(Instant::now());
 
     // Act
-    let idle = rt.update(now());
+    let idle = rt.update(Instant::now());
 
     // Assert
     assert!(!idle.request_redraw);
@@ -1786,13 +1727,13 @@ fn should_clear_deferred_externals_when_ineligible_schedule_is_removed() {
     });
     let mut rt = Runtime::new();
     rt.set_root(ExternalSurface::new(12).schedule_with(schedule));
-    let _ = rt.update(now());
-    assert!(rt.update(now()).has_deferred_externals);
+    let _ = rt.update(Instant::now());
+    assert!(rt.update(Instant::now()).has_deferred_externals);
 
     // Act
     rt.set_root(SizedBox::new(Size::new(20.0, 20.0)).unwrap());
-    let _ = rt.update(now());
-    let idle = rt.update(now());
+    let _ = rt.update(Instant::now());
+    let idle = rt.update(Instant::now());
 
     // Assert
     assert!(!idle.has_deferred_externals);

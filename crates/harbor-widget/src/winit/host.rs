@@ -939,11 +939,4 @@ mod tests {
             assert!(std::error::Error::source(&error).is_some());
         }
     }
-
-    #[test]
-    fn gpu_source_expresses_bootstrap_and_reuse_at_the_type_boundary() {
-        fn accepts(_: HostGpuSource) {}
-        accepts(HostGpuSource::Bootstrap);
-        let _ = accepts;
-    }
 }

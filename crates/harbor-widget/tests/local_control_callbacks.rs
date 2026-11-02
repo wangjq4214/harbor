@@ -1,6 +1,7 @@
-use harbor_widget::input::event::{
-    Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
-};
+#[path = "support/control_input.rs"]
+mod control_input;
+use control_input::{key, pointer, update};
+use harbor_widget::input::event::{Key, PointerPhase};
 use harbor_widget::layout::{Point, Rect, Size};
 use harbor_widget::renderer::Viewport;
 use harbor_widget::runtime::Runtime;
@@ -14,28 +15,6 @@ use harbor_widget::{
 };
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
-use std::time::Instant;
-
-fn update(runtime: &mut Runtime) {
-    runtime.update(Instant::now());
-}
-fn pointer(runtime: &mut Runtime, position: Point, phase: PointerPhase) {
-    runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
-        position,
-        phase,
-        PointerButton::Left,
-        0,
-    )));
-}
-fn key(runtime: &mut Runtime, key: Key, shift: bool) {
-    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-        key,
-        modifiers: Modifiers {
-            shift,
-            ..Default::default()
-        },
-    }));
-}
 fn icon(runtime: &Runtime) -> (Rect, Color) {
     runtime
         .pending_delta()

@@ -28,6 +28,19 @@ impl Component for Wrapper {
     }
 }
 
+#[derive(Clone)]
+struct StatefulWidget {
+    state: Rc<RefCell<Option<Signal<u32>>>>,
+    size: Size,
+}
+
+impl Component for StatefulWidget {
+    fn build(&self, cx: &mut BuildCx) -> View {
+        let state = cx.use_state(|| 0u32);
+        *self.state.borrow_mut() = Some(state);
+        SizedBox::new(self.size).unwrap().build(cx)
+    }
+}
 // ── Integration Tests ────────────────────────────────────────────────────────
 
 #[test]
@@ -64,6 +77,7 @@ fn second_update_without_changes_no_redraw() {
         !req2.request_redraw,
         "second update without changes should skip redraw"
     );
+    assert!(!rt.update(Instant::now()).request_redraw);
 }
 
 #[test]
@@ -115,33 +129,12 @@ fn nested_sized_box_produces_correct_layout_rects() {
 }
 
 #[test]
-fn empty_tree_no_crash() {
-    let mut rt = Runtime::new();
-    rt.set_root(SizedBox::new(Size::new(100.0, 50.0)).unwrap());
-    rt.update(Instant::now());
-    rt.update(Instant::now());
-    rt.update(Instant::now());
-}
-
-#[test]
 fn signal_write_triggers_rebuild() {
-    #[derive(Clone)]
-    struct StatefulWidget {
-        state: Rc<RefCell<Option<Signal<u32>>>>,
-    }
-
-    impl Component for StatefulWidget {
-        fn build(&self, cx: &mut BuildCx) -> View {
-            let state: Signal<u32> = cx.use_state(|| 0u32);
-            *self.state.borrow_mut() = Some(state.clone());
-            SizedBox::new(Size::new(100.0, 50.0)).unwrap().build(cx)
-        }
-    }
-
     let shared_state: Rc<RefCell<Option<Signal<u32>>>> = Rc::new(RefCell::new(None));
     let mut rt = Runtime::new();
     rt.set_root(StatefulWidget {
         state: shared_state.clone(),
+        size: Size::new(100.0, 50.0),
     });
 
     let req1 = rt.update(Instant::now());
@@ -162,20 +155,6 @@ fn signal_write_triggers_rebuild() {
 
 #[test]
 fn runtimes_consume_only_their_own_signal_dirty_notifications() {
-    #[derive(Clone)]
-    struct StatefulWidget {
-        state: Rc<RefCell<Option<Signal<u32>>>>,
-        size: Size,
-    }
-
-    impl Component for StatefulWidget {
-        fn build(&self, cx: &mut BuildCx) -> View {
-            let state = cx.use_state(|| 0u32);
-            *self.state.borrow_mut() = Some(state);
-            SizedBox::new(self.size).unwrap().build(cx)
-        }
-    }
-
     let first_state = Rc::new(RefCell::new(None));
     let second_state = Rc::new(RefCell::new(None));
     let mut first = Runtime::new();
@@ -279,32 +258,20 @@ fn viewport_change_preserves_correct_layout_rect() {
 
 #[test]
 fn signal_write_after_root_replacement_triggers_rebuild() {
-    #[derive(Clone)]
-    struct CountingWidget {
-        counter: Rc<RefCell<Option<Signal<u32>>>>,
-    }
-
-    impl Component for CountingWidget {
-        fn build(&self, cx: &mut BuildCx) -> View {
-            let state: Signal<u32> = cx.use_state(|| 0u32);
-            *self.counter.borrow_mut() = Some(state.clone());
-            SizedBox::new(Size::new(100.0, 50.0)).unwrap().build(cx)
-        }
-    }
-
     let shared: Rc<RefCell<Option<Signal<u32>>>> = Rc::new(RefCell::new(None));
     let mut rt = Runtime::new();
-
     // First root
-    rt.set_root(CountingWidget {
-        counter: shared.clone(),
+    rt.set_root(StatefulWidget {
+        state: shared.clone(),
+        size: Size::new(100.0, 50.0),
     });
     rt.update(Instant::now());
     let sig1 = shared.borrow().as_ref().unwrap().clone();
 
     // Replace root with same type
-    rt.set_root(CountingWidget {
-        counter: shared.clone(),
+    rt.set_root(StatefulWidget {
+        state: shared.clone(),
+        size: Size::new(100.0, 50.0),
     });
     rt.update(Instant::now());
     let sig2 = shared.borrow().as_ref().unwrap().clone();

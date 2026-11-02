@@ -159,20 +159,6 @@ mod tests {
     }
 
     #[test]
-    fn focus_scope_handles_tab() {
-        let scope = FocusScope::new();
-        let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0));
-        let event = UiEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: Key::Tab,
-            modifiers: Default::default(),
-        });
-        let mut ctx = EventCtx::new();
-        ctx.set_current_fiber(dummy_fiber_id());
-        let result = scope.handle_event(&event, &mut ctx, rect);
-        assert_eq!(result, EventHandled::Handled);
-    }
-
-    #[test]
     fn focus_scope_does_not_consume_tab_when_navigation_cannot_be_queued() {
         let scope = FocusScope::new();
         let rect = Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0));

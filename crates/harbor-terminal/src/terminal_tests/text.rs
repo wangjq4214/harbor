@@ -1,5 +1,13 @@
 use super::*;
 
+#[track_caller]
+fn assert_cursor(terminal: &Terminal, expected: (usize, usize)) {
+    assert_eq!(
+        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
+        expected
+    );
+}
+
 #[test]
 fn writes_plain_characters_and_tracks_cursor() {
     let mut terminal = Terminal::new_headless(2, 4);
@@ -8,10 +16,7 @@ fn writes_plain_characters_and_tracks_cursor() {
 
     assert_eq!(terminal.row_text(0), "ab  ");
     assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (2, 4));
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (2, 0)
-    );
+    assert_cursor(&terminal, (2, 0));
 }
 
 #[test]
@@ -22,10 +27,7 @@ fn crlf_moves_to_next_row_start() {
 
     assert_eq!(terminal.row_text(0), "a   ");
     assert_eq!(terminal.row_text(1), "b   ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (1, 1)
-    );
+    assert_cursor(&terminal, (1, 1));
 }
 
 #[test]
@@ -35,10 +37,7 @@ fn carriage_return_overwrites_from_row_start() {
     terminal.put_str("ab\rc");
 
     assert_eq!(terminal.row_text(0), "cb  ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (1, 0)
-    );
+    assert_cursor(&terminal, (1, 0));
 }
 
 #[test]
@@ -48,10 +47,7 @@ fn backspace_is_non_destructive() {
     terminal.put_str("ab\u{8}");
 
     assert_eq!(terminal.row_text(0), "ab  ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (1, 0)
-    );
+    assert_cursor(&terminal, (1, 0));
 }
 
 #[test]
@@ -61,10 +57,7 @@ fn backspace_erases_previous_cell() {
     terminal.put_str("ab\u{8}c");
 
     assert_eq!(terminal.row_text(0), "ac  ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (2, 0)
-    );
+    assert_cursor(&terminal, (2, 0));
 }
 
 #[test]
@@ -75,10 +68,7 @@ fn scrolls_when_writing_past_last_row() {
 
     assert_eq!(terminal.row_text(0), "two ");
     assert_eq!(terminal.row_text(1), "thr ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (3, 1)
-    );
+    assert_cursor(&terminal, (3, 1));
 }
 
 #[test]
@@ -90,10 +80,7 @@ fn resize_reflows_primary_and_keeps_the_live_cursor_suffix() {
 
     assert_eq!(terminal.row_text(0), "def");
     assert_eq!((terminal.screen().rows(), terminal.screen().cols()), (1, 3));
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (2, 0)
-    );
+    assert_cursor(&terminal, (2, 0));
 }
 
 #[test]
@@ -103,10 +90,7 @@ fn csi_erase_line_clears_selected_range() {
     terminal.put_bytes(b"abcd\x1b[1;3H\x1b[K");
 
     assert_eq!(terminal.row_text(0), "ab  ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (2, 0)
-    );
+    assert_cursor(&terminal, (2, 0));
 }
 
 #[test]
@@ -118,10 +102,7 @@ fn csi_erase_display_mode_two_clears_and_homes() {
 
     assert_eq!(terminal.row_text(0), "x   ");
     assert_eq!(terminal.row_text(1), "    ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (1, 0)
-    );
+    assert_cursor(&terminal, (1, 0));
 }
 
 #[test]
@@ -135,10 +116,7 @@ fn keeps_incomplete_escape_sequence_across_chunks() {
     terminal.put_bytes(b"2CZ");
 
     assert_eq!(terminal.row_text(0), "a  Z ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (4, 0)
-    );
+    assert_cursor(&terminal, (4, 0));
 }
 
 #[test]
@@ -150,10 +128,7 @@ fn keeps_incomplete_utf8_sequence_across_chunks() {
     terminal.put_bytes(&bytes[1..]);
 
     assert_eq!(terminal.row_text(0), "中   ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (2, 0)
-    );
+    assert_cursor(&terminal, (2, 0));
 }
 
 #[test]
@@ -163,10 +138,7 @@ fn treats_cjk_characters_as_double_width_cells() {
     terminal.put_str("中a");
 
     assert_eq!(terminal.row_text(0), "中 a ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (3, 0)
-    );
+    assert_cursor(&terminal, (3, 0));
 }
 
 #[test]
@@ -177,10 +149,7 @@ fn overwrites_both_cells_of_double_width_character() {
     terminal.put_bytes(b"\x1b[1;2HX");
 
     assert_eq!(terminal.row_text(0), " Xb ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (2, 0)
-    );
+    assert_cursor(&terminal, (2, 0));
 }
 
 #[test]
@@ -190,10 +159,7 @@ fn backspace_on_double_width_character_is_non_destructive() {
     terminal.put_str("中\u{8}");
 
     assert_eq!(terminal.row_text(0), "中   ");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (0, 0)
-    );
+    assert_cursor(&terminal, (0, 0));
 }
 
 #[test]
@@ -270,19 +236,13 @@ fn alt_screen_enter_exit_preserves_normal_screen() {
     let mut terminal = Terminal::new_headless(3, 20);
     terminal.put_str("normal");
     assert_eq!(terminal.row_text(0).trim(), "normal");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (6, 0)
-    );
+    assert_cursor(&terminal, (6, 0));
 
     // Enter alt screen
     terminal.put_str("\x1b[?1049h");
     // Alt screen starts blank with default cursor
     assert!(terminal.row_text(0).trim().is_empty());
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (0, 0)
-    );
+    assert_cursor(&terminal, (0, 0));
 
     // Write to alt screen
     terminal.put_str("alt");
@@ -292,9 +252,6 @@ fn alt_screen_enter_exit_preserves_normal_screen() {
     terminal.put_str("\x1b[?1049l");
     // Normal screen restored, alt content gone, cursor restored
     assert_eq!(terminal.row_text(0).trim(), "normal");
-    assert_eq!(
-        (terminal.screen().cursor_x(), terminal.screen().cursor_y()),
-        (6, 0)
-    );
+    assert_cursor(&terminal, (6, 0));
     assert!(!terminal.is_alt_screen());
 }

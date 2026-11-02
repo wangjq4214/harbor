@@ -18,6 +18,8 @@ fn should_use_absolute_column_when_origin_is_on_but_margins_are_disabled() {
     assert_eq!(screen.active.cursor.cursor.x, 0);
 
     // Act
+    screen.set_cursor_position(2, 3);
+    assert_eq!((screen.cursor_x(), screen.cursor_y()), (2, 2));
     screen.home_cursor();
     // Assert
     assert_eq!(screen.active.cursor.cursor.y, 1);

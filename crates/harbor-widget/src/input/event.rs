@@ -216,14 +216,29 @@ mod tests {
 
     #[test]
     fn is_pointer_phase_match() {
-        let event = UiEvent::Pointer(PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::Up,
-            PointerButton::Left,
-            1,
-        ));
-        assert!(event.is_pointer_phase(PointerPhase::Up));
-        assert!(!event.is_pointer_phase(PointerPhase::Down));
+        for (phase, mismatch) in [
+            (PointerPhase::Up, PointerPhase::Down),
+            (
+                PointerPhase::WheelLine { dx: 0.0, dy: 10.5 },
+                PointerPhase::WheelLine { dx: 0.0, dy: 10.0 },
+            ),
+            (
+                PointerPhase::WheelPixel { dx: 1.0, dy: 40.0 },
+                PointerPhase::WheelPixel { dx: 0.0, dy: 40.0 },
+            ),
+        ] {
+            let event = UiEvent::Pointer(PointerEvent::new(
+                Point::ZERO,
+                phase,
+                PointerButton::Left,
+                1,
+            ));
+            assert!(event.is_pointer_phase(phase), "{phase:?}");
+            assert!(
+                !event.is_pointer_phase(mismatch),
+                "{phase:?} vs {mismatch:?}"
+            );
+        }
     }
 
     #[test]
@@ -233,19 +248,5 @@ mod tests {
         assert!(!m.ctrl);
         assert!(!m.alt);
         assert!(!m.meta);
-    }
-
-    #[test]
-    fn key_variants() {
-        assert_eq!(Key::Tab, Key::Tab);
-        assert_ne!(Key::Enter, Key::Space);
-    }
-
-    #[test]
-    fn pointer_phase_wheel_line_and_pixel_carry_delta() {
-        let line = PointerPhase::WheelLine { dx: 0.0, dy: 10.5 };
-        assert_eq!(line, PointerPhase::WheelLine { dx: 0.0, dy: 10.5 });
-        let pixel = PointerPhase::WheelPixel { dx: 1.0, dy: 40.0 };
-        assert_eq!(pixel, PointerPhase::WheelPixel { dx: 1.0, dy: 40.0 });
     }
 }

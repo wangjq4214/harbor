@@ -41,6 +41,8 @@ fn normalized_values_preserve_modifiers_key_variants_and_hash_equality() {
             Key::NumpadCharacter('É'),
             Key::F6,
             Key::Enter,
+            Key::Tab,
+            Key::Space,
             Key::NumpadEnter,
         ] {
             assert_eq!(KeyChord::new(key, modifiers).key(), key);
@@ -56,6 +58,10 @@ fn normalized_values_preserve_modifiers_key_variants_and_hash_equality() {
         assert_ne!(
             KeyChord::new(Key::Enter, modifiers),
             KeyChord::new(Key::NumpadEnter, modifiers)
+        );
+        assert_ne!(
+            KeyChord::new(Key::Enter, modifiers),
+            KeyChord::new(Key::Space, modifiers)
         );
         for other in 0..16 {
             let other = Modifiers {

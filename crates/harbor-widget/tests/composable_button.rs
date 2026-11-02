@@ -1,11 +1,12 @@
 //! Spec 0037: exercise actual mounted slots, layout, scenes and routed input.
+#[path = "support/control_input.rs"]
+mod control_input;
+use control_input::{key, pointer, update};
 use harbor_widget::{
     Button, Children, Column, ComponentExt, ConstrainedBox, FocusHandle, IconButton, IntoChildView,
     LucideIcon, Theme, ThemeProvider, WithChildren,
     fiber::FiberId,
-    input::event::{
-        Key, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,
-    },
+    input::event::{Key, PointerPhase},
     layout::{Point, Size},
     renderer::Viewport,
     runtime::Runtime,
@@ -18,12 +19,8 @@ use harbor_widget::{
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Instant,
 };
 
-fn update(rt: &mut Runtime) {
-    rt.update(Instant::now());
-}
 fn runtime(tree: impl IntoChildView + 'static, width: u32) -> Runtime {
     let mut rt = Runtime::new();
     rt.set_viewport(Viewport::new(width, 160, 1.0));
@@ -48,23 +45,6 @@ fn texts(rt: &Runtime) -> Vec<String> {
             _ => None,
         })
         .collect()
-}
-fn pointer(rt: &mut Runtime, point: Point, phase: PointerPhase) {
-    rt.dispatch(UiEvent::Pointer(PointerEvent::new(
-        point,
-        phase,
-        PointerButton::Left,
-        0,
-    )));
-}
-fn key(rt: &mut Runtime, key: Key, shift: bool) {
-    rt.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
-        key,
-        modifiers: Modifiers {
-            shift,
-            ..Modifiers::default()
-        },
-    }));
 }
 fn ids(rt: &Runtime) -> Vec<FiberId> {
     let mut pending = vec![rt.root_id().unwrap()];

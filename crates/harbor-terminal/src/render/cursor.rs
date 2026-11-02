@@ -164,27 +164,22 @@ mod cursor_gpu_tests;
 #[cfg(test)]
 mod tests {
     use super::should_render_cursor;
-    use crate::model::TerminalSnapshot;
     use crate::render::CursorBlinkState;
     use crate::{FrameDemand, Terminal};
     use harbor_config::BLINK_INTERVAL_MS;
     use std::time::{Duration, Instant};
 
     fn demand_from_blink(
-        snap: &TerminalSnapshot,
+        mut terminal: Terminal,
         blink: &CursorBlinkState,
         now: Instant,
     ) -> FrameDemand {
-        let deadline = if snap.cursor_visible && snap.cursor_blink {
-            Some(blink.next_deadline(now))
-        } else {
-            None
-        };
-        FrameDemand {
-            redraw_now: blink.pending_redraw(),
-            deadline,
-            ordinary_present_eligible: true,
-        }
+        // Acknowledge setup output, then install a controlled blink clock.
+        // Exercise the engine's real scheduling policy, not a test-side formula.
+        let update = terminal.read_update(now);
+        assert!(terminal.acknowledge_update(&update));
+        terminal.blink = blink.clone().into();
+        terminal.frame_demand(now)
     }
 
     #[test]
@@ -215,7 +210,7 @@ mod tests {
         let blink = CursorBlinkState::new(t0);
 
         // Act
-        let demand = demand_from_blink(&terminal.snapshot(), &blink, t0);
+        let demand = demand_from_blink(terminal, &blink, t0);
 
         // Assert
         assert!(!demand.redraw_now);
@@ -235,7 +230,7 @@ mod tests {
         terminal.put_bytes(b"\x1b[2 q"); // steady block
 
         // Act
-        let demand = demand_from_blink(&terminal.snapshot(), &blink, t0);
+        let demand = demand_from_blink(terminal, &blink, t0);
 
         // Assert
         assert!(demand.deadline.is_none());
@@ -252,7 +247,7 @@ mod tests {
         terminal.put_bytes(b"\x1b[?25l");
 
         // Act
-        let demand = demand_from_blink(&terminal.snapshot(), &blink, t0);
+        let demand = demand_from_blink(terminal, &blink, t0);
 
         // Assert
         assert!(demand.deadline.is_none());
@@ -266,10 +261,10 @@ mod tests {
         let mut blink = CursorBlinkState::new(t0);
         let hidden_at = t0 + Duration::from_millis(BLINK_INTERVAL_MS);
         blink.reset(hidden_at);
-        let snap = Terminal::new_headless(3, 3).snapshot();
+        let terminal = Terminal::new_headless(3, 3);
 
         // Act
-        let demand = demand_from_blink(&snap, &blink, hidden_at);
+        let demand = demand_from_blink(terminal, &blink, hidden_at);
 
         // Assert
         assert!(demand.redraw_now);

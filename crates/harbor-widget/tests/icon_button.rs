@@ -76,17 +76,15 @@ fn icon_button_tint_follows_pointer_interaction_states() {
     runtime.update(Instant::now());
     assert_eq!(icon_primitive(&runtime).unwrap().2, Color::RED);
 
-    runtime.dispatch(pointer(Point::new(8.0, 8.0), PointerPhase::Move));
-    runtime.update(Instant::now());
-    assert_eq!(icon_primitive(&runtime).unwrap().2, Color::GREEN);
-
-    runtime.dispatch(pointer(Point::new(8.0, 8.0), PointerPhase::Down));
-    runtime.update(Instant::now());
-    assert_eq!(icon_primitive(&runtime).unwrap().2, Color::BLUE);
-
-    runtime.dispatch(pointer(Point::new(8.0, 8.0), PointerPhase::Up));
-    runtime.update(Instant::now());
-    assert_eq!(icon_primitive(&runtime).unwrap().2, Color::GREEN);
+    for (phase, expected) in [
+        (PointerPhase::Move, Color::GREEN),
+        (PointerPhase::Down, Color::BLUE),
+        (PointerPhase::Up, Color::GREEN),
+    ] {
+        runtime.dispatch(pointer(Point::new(8.0, 8.0), phase));
+        runtime.update(Instant::now());
+        assert_eq!(icon_primitive(&runtime).unwrap().2, expected, "{phase:?}");
+    }
 }
 
 #[test]

@@ -1,5 +1,12 @@
 use super::*;
 
+fn soft_line_with_partial_scroll_region() -> Screen {
+    let mut screen = screen_with_soft_line(4);
+    screen.active.cursor.scroll_region.top = 1;
+    screen.active.cursor.scroll_region.bottom = 3;
+    screen
+}
+
 #[test]
 fn selected_text_joins_long_colored_hyperlinked_soft_wraps() {
     let mut screen = Screen::new(3, 3);
@@ -298,9 +305,7 @@ fn should_preserve_wrapped_markers_when_soft_reset() {
 
 #[test]
 fn insert_lines_severs_only_the_moved_soft_wrap_boundary() {
-    let mut screen = screen_with_soft_line(4);
-    screen.active.cursor.scroll_region.top = 1;
-    screen.active.cursor.scroll_region.bottom = 3;
+    let mut screen = soft_line_with_partial_scroll_region();
     screen.active.cursor.cursor.y = 1;
 
     screen.insert_lines(1);
@@ -311,9 +316,7 @@ fn insert_lines_severs_only_the_moved_soft_wrap_boundary() {
 
 #[test]
 fn delete_lines_severs_only_the_moved_soft_wrap_boundary() {
-    let mut screen = screen_with_soft_line(4);
-    screen.active.cursor.scroll_region.top = 1;
-    screen.active.cursor.scroll_region.bottom = 3;
+    let mut screen = soft_line_with_partial_scroll_region();
     screen.active.cursor.cursor.y = 1;
 
     screen.delete_lines(1);
@@ -324,9 +327,7 @@ fn delete_lines_severs_only_the_moved_soft_wrap_boundary() {
 
 #[test]
 fn scroll_up_region_severs_only_the_moved_soft_wrap_boundary() {
-    let mut screen = screen_with_soft_line(4);
-    screen.active.cursor.scroll_region.top = 1;
-    screen.active.cursor.scroll_region.bottom = 3;
+    let mut screen = soft_line_with_partial_scroll_region();
 
     screen.scroll_up_region(1);
 
@@ -339,9 +340,7 @@ fn scroll_up_region_severs_only_the_moved_soft_wrap_boundary() {
 
 #[test]
 fn scroll_down_region_severs_only_the_moved_soft_wrap_boundary() {
-    let mut screen = screen_with_soft_line(4);
-    screen.active.cursor.scroll_region.top = 1;
-    screen.active.cursor.scroll_region.bottom = 3;
+    let mut screen = soft_line_with_partial_scroll_region();
 
     screen.scroll_down_region(1);
 
@@ -351,9 +350,7 @@ fn scroll_down_region_severs_only_the_moved_soft_wrap_boundary() {
 
 #[test]
 fn index_scroll_severs_the_partial_region_soft_wrap_boundary() {
-    let mut screen = screen_with_soft_line(4);
-    screen.active.cursor.scroll_region.top = 1;
-    screen.active.cursor.scroll_region.bottom = 3;
+    let mut screen = soft_line_with_partial_scroll_region();
     screen.active.cursor.cursor.y = 3;
 
     screen.index();
@@ -364,9 +361,7 @@ fn index_scroll_severs_the_partial_region_soft_wrap_boundary() {
 
 #[test]
 fn autowrap_scroll_rebases_the_continuation_after_severing_the_region_boundary() {
-    let mut screen = screen_with_soft_line(4);
-    screen.active.cursor.scroll_region.top = 1;
-    screen.active.cursor.scroll_region.bottom = 3;
+    let mut screen = soft_line_with_partial_scroll_region();
     screen.active.cursor.cursor.y = 3;
     screen.active.cursor.cursor.x = 3;
     screen.active.cursor.modes.pending_wrap = true;
@@ -383,9 +378,7 @@ fn autowrap_scroll_rebases_the_continuation_after_severing_the_region_boundary()
 
 #[test]
 fn reverse_index_severs_the_partial_region_soft_wrap_boundary() {
-    let mut screen = screen_with_soft_line(4);
-    screen.active.cursor.scroll_region.top = 1;
-    screen.active.cursor.scroll_region.bottom = 3;
+    let mut screen = soft_line_with_partial_scroll_region();
     screen.active.cursor.cursor.y = 1;
 
     screen.reverse_index();

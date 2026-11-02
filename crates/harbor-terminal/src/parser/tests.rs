@@ -3,10 +3,6 @@ use crate::screen::{AltScreenAction, CursorShape, DefaultColorSlot, Screen};
 use harbor_config::{Palette, Rgba};
 use harbor_parser::Params;
 
-fn feed(parser: &mut TerminalParser, screen: &mut Screen, seq: &[u8]) {
-    parser.put_bytes(screen, seq);
-}
-
 fn feed_with_alt_transitions(parser: &mut TerminalParser, screen: &mut Screen, seq: &[u8]) {
     let mut remaining = seq;
     while !remaining.is_empty() {
@@ -23,13 +19,13 @@ fn feed_with_alt_transitions(parser: &mut TerminalParser, screen: &mut Screen, s
 fn replies_for(query: &[u8]) -> Vec<u8> {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, query);
+    parser.put_bytes(&mut screen, query);
     screen.drain_replies()
 }
 
 /// Move cursor to (row, col) 1-based via `CSI row;col H`.
 fn move_to(parser: &mut TerminalParser, screen: &mut Screen, row: usize, col: usize) {
-    feed(parser, screen, format!("\x1b[{row};{col}H").as_bytes());
+    parser.put_bytes(screen, format!("\x1b[{row};{col}H").as_bytes());
 }
 
 #[test]
@@ -37,11 +33,11 @@ fn combining_utf8_split_across_reads_extends_base_and_dirties_it() {
     use crate::SelectionBounds;
     let mut screen = Screen::new(2, 3);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"abc");
+    parser.put_bytes(&mut screen, b"abc");
     screen.clear_dirty();
-    feed(&mut parser, &mut screen, &[0xcc]);
+    parser.put_bytes(&mut screen, &[0xcc]);
     assert!(screen.dirty_ranges().is_empty());
-    feed(&mut parser, &mut screen, &[0x81]);
+    parser.put_bytes(&mut screen, &[0x81]);
     assert_eq!(screen.cell(0, 2).raw_text(), "c\u{0301}");
     assert_eq!((screen.cursor_x(), screen.cursor_y()), (2, 0));
     assert!(
@@ -59,7 +55,7 @@ fn combining_utf8_split_across_reads_extends_base_and_dirties_it() {
         }),
         "abc\u{0301}"
     );
-    feed(&mut parser, &mut screen, b"d");
+    parser.put_bytes(&mut screen, b"d");
     assert_eq!(screen.cell(1, 0).raw_text(), "d");
 }
 
@@ -67,15 +63,15 @@ fn combining_utf8_split_across_reads_extends_base_and_dirties_it() {
 fn combining_mark_at_clamped_right_margin_extends_written_base() {
     let mut screen = Screen::new(1, 4);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[?7labcd");
-    feed(&mut parser, &mut screen, "\u{0301}".as_bytes());
+    parser.put_bytes(&mut screen, b"\x1b[?7labcd");
+    parser.put_bytes(&mut screen, "\u{0301}".as_bytes());
     assert_eq!(screen.cell(0, 3).raw_text(), "d\u{0301}");
     assert_eq!(screen.cell(0, 2).raw_text(), "c");
     assert_eq!(screen.cursor_x(), 3);
     // After an ordinary advance *to* the occupied margin, the preceding
     // freshly written cell is still the attachment target.
-    feed(&mut parser, &mut screen, b"\rabc");
-    feed(&mut parser, &mut screen, "\u{0301}".as_bytes());
+    parser.put_bytes(&mut screen, b"\rabc");
+    parser.put_bytes(&mut screen, "\u{0301}".as_bytes());
     assert_eq!(screen.cell(0, 2).raw_text(), "c\u{0301}");
     assert_eq!(screen.cell(0, 3).raw_text(), "d\u{0301}");
 }
@@ -84,13 +80,13 @@ fn combining_mark_at_clamped_right_margin_extends_written_base() {
 fn zero_width_format_is_ignored_but_isolated_selector_is_retained() {
     let mut screen = Screen::new(1, 4);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, "\u{200b}\u{e0100}".as_bytes());
+    parser.put_bytes(&mut screen, "\u{200b}\u{e0100}".as_bytes());
     assert_eq!(screen.cursor_x(), 1);
     assert_eq!(screen.cell(0, 0).raw_text(), "\u{e0100}");
     assert!(!screen.cell(0, 0).isolated_mark);
-    feed(&mut parser, &mut screen, "e\u{0301}\u{200b}".as_bytes());
+    parser.put_bytes(&mut screen, "e\u{0301}\u{200b}".as_bytes());
     assert_eq!(screen.cell(0, 1).raw_text(), "e\u{0301}");
-    feed(&mut parser, &mut screen, "\r\u{200d}".as_bytes());
+    parser.put_bytes(&mut screen, "\r\u{200d}".as_bytes());
     assert_eq!(screen.cell(0, 0).raw_text(), "\u{200d}");
     assert_eq!(screen.cell(0, 0).grid_width(), 1);
 }
@@ -100,13 +96,13 @@ fn emoji_sequences_preserve_width_copy_and_dirty_across_split_reads() {
     use crate::SelectionBounds;
     let mut screen = Screen::new(2, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, "♥".as_bytes());
+    parser.put_bytes(&mut screen, "♥".as_bytes());
     assert_eq!(screen.cell(0, 0).grid_width(), 1);
-    feed(&mut parser, &mut screen, "♥".as_bytes());
+    parser.put_bytes(&mut screen, "♥".as_bytes());
     screen.clear_dirty();
-    feed(&mut parser, &mut screen, &[0xef, 0xb8]);
+    parser.put_bytes(&mut screen, &[0xef, 0xb8]);
     assert!(screen.dirty_ranges().is_empty());
-    feed(&mut parser, &mut screen, &[0x8f]);
+    parser.put_bytes(&mut screen, &[0x8f]);
     assert_eq!(screen.cell(0, 1).raw_text(), "♥️");
     assert_eq!(screen.cell(0, 1).grid_width(), 2);
     assert!(screen.cell(0, 2).wide_continuation);
@@ -116,9 +112,9 @@ fn emoji_sequences_preserve_width_copy_and_dirty_across_split_reads() {
             .iter()
             .any(|r| r.row == 0 && r.start_col <= 1 && r.end_col >= 3)
     );
-    feed(&mut parser, &mut screen, "👩".as_bytes());
+    parser.put_bytes(&mut screen, "👩".as_bytes());
     screen.clear_dirty();
-    feed(&mut parser, &mut screen, "‍".as_bytes());
+    parser.put_bytes(&mut screen, "‍".as_bytes());
     assert!(
         screen
             .dirty_ranges()
@@ -126,7 +122,7 @@ fn emoji_sequences_preserve_width_copy_and_dirty_across_split_reads() {
             .any(|r| r.row == 0 && r.start_col <= 3 && r.end_col > 3)
     );
     screen.clear_dirty();
-    feed(&mut parser, &mut screen, "💻".as_bytes());
+    parser.put_bytes(&mut screen, "💻".as_bytes());
     assert!(
         screen
             .dirty_ranges()
@@ -151,9 +147,9 @@ fn emoji_sequences_preserve_width_copy_and_dirty_across_split_reads() {
 fn selector_promotes_at_right_edge_without_splitting_or_losing_style() {
     let mut screen = Screen::new(2, 4);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"abc\x1b[31m");
-    feed(&mut parser, &mut screen, "♥".as_bytes());
-    feed(&mut parser, &mut screen, "️".as_bytes());
+    parser.put_bytes(&mut screen, b"abc\x1b[31m");
+    parser.put_bytes(&mut screen, "♥".as_bytes());
+    parser.put_bytes(&mut screen, "️".as_bytes());
     assert_eq!(screen.cell(0, 3).raw_text(), " ");
     assert_eq!(screen.cell(1, 0).raw_text(), "♥️");
     assert_eq!(screen.cell(1, 0).grid_width(), 2);
@@ -163,7 +159,7 @@ fn selector_promotes_at_right_edge_without_splitting_or_losing_style() {
         screen.cell(1, 1),
         &crate::Cell::wide_continuation_of(screen.cell(1, 0))
     );
-    feed(&mut parser, &mut screen, b"Z");
+    parser.put_bytes(&mut screen, b"Z");
     assert_eq!(screen.cell(1, 2).raw_text(), "Z");
     assert_eq!(
         screen.selected_text(crate::SelectionBounds {
@@ -182,9 +178,9 @@ fn no_wrap_edge_promotes_sequence_across_fragmented_input() {
         for split in 0..=sequence.len() {
             let mut screen = Screen::new(3, 4);
             let mut parser = TerminalParser::default();
-            feed(&mut parser, &mut screen, b"\x1b[?7labc\x1b[31m");
-            feed(&mut parser, &mut screen, &sequence.as_bytes()[..split]);
-            feed(&mut parser, &mut screen, &sequence.as_bytes()[split..]);
+            parser.put_bytes(&mut screen, b"\x1b[?7labc\x1b[31m");
+            parser.put_bytes(&mut screen, &sequence.as_bytes()[..split]);
+            parser.put_bytes(&mut screen, &sequence.as_bytes()[split..]);
             assert_eq!(screen.cell(0, 2).raw_text(), "c");
             assert_eq!(screen.cell(0, 3).raw_text(), " ");
             assert_eq!(screen.cell(1, 0).raw_text(), sequence);
@@ -206,7 +202,7 @@ fn no_wrap_edge_promotes_sequence_across_fragmented_input() {
                 format!("abc{sequence}")
             );
             // Promotion must not enable ordinary autowrap or set pending wrap.
-            feed(&mut parser, &mut screen, b"XYZ");
+            parser.put_bytes(&mut screen, b"XYZ");
             assert_eq!(screen.cell(1, 2).raw_text(), "X");
             assert_eq!(screen.cell(1, 3).raw_text(), "Z");
             assert_eq!(screen.cell(2, 0).raw_text(), " ");
@@ -223,19 +219,18 @@ fn no_wrap_edge_promotion_preserves_anchor_metadata_damage_and_reflow() {
     let mut screen = Screen::new(3, 4);
     screen.set_external_anchor_interest(true);
     let mut parser = TerminalParser::default();
-    feed(
-        &mut parser,
+    parser.put_bytes(
         &mut screen,
         b"\x1b[?7labc\x1b[31m\x1b[1\"q\x1b]8;;https://example.test\x07",
     );
-    feed(&mut parser, &mut screen, "♥".as_bytes());
+    parser.put_bytes(&mut screen, "♥".as_bytes());
     let original = screen.cell(0, 3).clone();
     let (_, before) = screen.finish_anchor_mutations(None).unwrap();
     let anchor = before
         .to_anchor(GenPos::new(0, 3), Affinity::Before)
         .unwrap();
     screen.clear_dirty();
-    feed(&mut parser, &mut screen, "️".as_bytes());
+    parser.put_bytes(&mut screen, "️".as_bytes());
     let (changes, after) = screen.finish_anchor_mutations(Some(&before)).unwrap();
     assert_eq!(
         after.resolve_selection(changes.apply(anchor).unwrap()),
@@ -275,15 +270,14 @@ fn no_wrap_edge_promotion_uses_two_column_margins_in_both_buffers() {
             if alternate {
                 feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
             }
-            feed(
-                &mut parser,
+            parser.put_bytes(
                 &mut screen,
                 b"L\x1b[6GR\x1b[2;1Hl\x1b[6Gr\x1b[?69h\x1b[3;4s\x1b[?7l\x1b[1;4H",
             );
             if insert {
-                feed(&mut parser, &mut screen, b"\x1b[4h");
+                parser.put_bytes(&mut screen, b"\x1b[4h");
             }
-            feed(&mut parser, &mut screen, "♥️\u{301}".as_bytes());
+            parser.put_bytes(&mut screen, "♥️\u{301}".as_bytes());
             assert_eq!(screen.cell(0, 0).raw_text(), "L");
             assert_eq!(screen.cell(0, 5).raw_text(), "R");
             assert_eq!(screen.cell(1, 0).raw_text(), "l");
@@ -306,8 +300,8 @@ fn no_wrap_edge_promotion_scrolls_without_splitting_the_pair() {
         if alternate {
             feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
         }
-        feed(&mut parser, &mut screen, b"\x1b[?7l\x1b[2;1Hx");
-        feed(&mut parser, &mut screen, "♥️\u{301}".as_bytes());
+        parser.put_bytes(&mut screen, b"\x1b[?7l\x1b[2;1Hx");
+        parser.put_bytes(&mut screen, "♥️\u{301}".as_bytes());
         assert_eq!(screen.cell(0, 0).raw_text(), "x");
         assert_eq!(screen.cell(0, 1).raw_text(), " ");
         assert_eq!(screen.cell(1, 0).raw_text(), "♥️\u{301}");
@@ -327,13 +321,13 @@ fn promotion_reports_neighbor_deletion_to_content_anchors() {
     // edit anchor, which requires a registered anchor consumer.
     screen.set_external_anchor_interest(true);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"abX");
+    parser.put_bytes(&mut screen, b"abX");
     let (_, before) = screen.finish_anchor_mutations(None).unwrap();
     let x = before
         .to_anchor(GenPos::new(0, 2), Affinity::Before)
         .unwrap();
-    feed(&mut parser, &mut screen, b"\r\x1b[2G");
-    feed(&mut parser, &mut screen, "♥️".as_bytes());
+    parser.put_bytes(&mut screen, b"\r\x1b[2G");
+    parser.put_bytes(&mut screen, "♥️".as_bytes());
     let (changes, _) = screen.finish_anchor_mutations(Some(&before)).unwrap();
     assert!(changes.iter().any(|change| matches!(change,
         AnchorMutation::Delete { line_id, start, end }
@@ -346,9 +340,9 @@ fn insert_mode_promotion_keeps_the_neighboring_atom() {
     use crate::SelectionBounds;
     let mut screen = Screen::new(1, 7);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"aX");
-    feed(&mut parser, &mut screen, b"\r\x1b[2G\x1b[4h");
-    feed(&mut parser, &mut screen, "♥".as_bytes());
+    parser.put_bytes(&mut screen, b"aX");
+    parser.put_bytes(&mut screen, b"\r\x1b[2G\x1b[4h");
+    parser.put_bytes(&mut screen, "♥".as_bytes());
     let (_, before) = screen.finish_anchor_mutations(None).unwrap();
     let x = before
         .to_anchor(
@@ -356,7 +350,7 @@ fn insert_mode_promotion_keeps_the_neighboring_atom() {
             crate::content_anchor::Affinity::Before,
         )
         .unwrap();
-    feed(&mut parser, &mut screen, "️".as_bytes());
+    parser.put_bytes(&mut screen, "️".as_bytes());
     let (changes, after) = screen.finish_anchor_mutations(Some(&before)).unwrap();
     assert_eq!(
         after.resolve_selection(changes.apply(x).unwrap()),
@@ -380,7 +374,7 @@ fn insert_mode_promotion_keeps_the_neighboring_atom() {
 fn joined_emoji_survives_reflow_and_whole_unit_erase() {
     let mut screen = Screen::new(3, 6);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, "ab👩‍💻z".as_bytes());
+    parser.put_bytes(&mut screen, "ab👩‍💻z".as_bytes());
     for width in [4, 7, 5] {
         let prepared = screen.prepare_resize(3, width).unwrap();
         screen.commit_resize(prepared);
@@ -398,7 +392,7 @@ fn joined_emoji_survives_reflow_and_whole_unit_erase() {
         end_col: screen.cols() - 1,
     });
     assert!(copied.contains("👩‍💻"), "reflowed copy: {copied:?}");
-    feed(&mut parser, &mut screen, b"\r\x1b[3G\x1b[2X");
+    parser.put_bytes(&mut screen, b"\r\x1b[3G\x1b[2X");
     assert_eq!(screen.cell(0, 2).raw_text(), " ");
     assert!(!screen.cell(0, 3).wide_continuation);
 }
@@ -407,20 +401,19 @@ fn joined_emoji_survives_reflow_and_whole_unit_erase() {
 fn emoji_units_keep_metadata_across_insert_and_alternate_resize() {
     let mut screen = Screen::new(2, 7);
     let mut parser = TerminalParser::default();
-    feed(
-        &mut parser,
+    parser.put_bytes(
         &mut screen,
         b"\x1b[31m\x1b[1\"q\x1b]8;;https://example.test\x07",
     );
-    feed(&mut parser, &mut screen, "a♥️👩‍💻".as_bytes());
-    feed(&mut parser, &mut screen, b"\r\x1b[2G\x1b[@");
+    parser.put_bytes(&mut screen, "a♥️👩‍💻".as_bytes());
+    parser.put_bytes(&mut screen, b"\r\x1b[2G\x1b[@");
     assert_eq!(screen.cell(0, 2).raw_text(), "♥️");
     assert_eq!(screen.cell(0, 2).grid_width(), 2);
     assert!(screen.cell(0, 2).protected);
     assert!(screen.cell(0, 2).hyperlink.is_some());
     assert_eq!(screen.cell(0, 4).raw_text(), "👩‍💻");
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
-    feed(&mut parser, &mut screen, "♥️".as_bytes());
+    parser.put_bytes(&mut screen, "♥️".as_bytes());
     let prepared = screen.prepare_resize(2, 5).unwrap();
     screen.commit_resize(prepared);
     assert_eq!(screen.cell(0, 0).raw_text(), "♥️");
@@ -437,8 +430,8 @@ fn insert_before_combined_wide_unit_preserves_atomic_text_and_style() {
     use crate::SelectionBounds;
     let mut screen = Screen::new(1, 7);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, "ab界\u{0301}z".as_bytes());
-    feed(&mut parser, &mut screen, b"\r\x1b[3G\x1b[@");
+    parser.put_bytes(&mut screen, "ab界\u{0301}z".as_bytes());
+    parser.put_bytes(&mut screen, b"\r\x1b[3G\x1b[@");
     assert_eq!(screen.cell(0, 3).raw_text(), "界\u{0301}");
     assert_eq!(screen.cell(0, 3).grid_width(), 2);
     assert!(screen.cell(0, 4).wide_continuation);
@@ -458,7 +451,7 @@ fn isolated_mark_is_cued_but_copies_only_source_and_erases_whole_unit() {
     use crate::SelectionBounds;
     let mut screen = Screen::new(1, 4);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, "\u{0301}".as_bytes());
+    parser.put_bytes(&mut screen, "\u{0301}".as_bytes());
     assert!(screen.cell(0, 0).isolated_mark);
     assert_eq!(screen.cell(0, 0).width, 1);
     assert_eq!(
@@ -470,7 +463,7 @@ fn isolated_mark_is_cued_but_copies_only_source_and_erases_whole_unit() {
         }),
         "\u{0301}"
     );
-    feed(&mut parser, &mut screen, b"\r\x1b[X");
+    parser.put_bytes(&mut screen, b"\r\x1b[X");
     assert_eq!(screen.cell(0, 0).raw_text(), " ");
     assert!(!screen.cell(0, 0).isolated_mark);
 }
@@ -479,7 +472,7 @@ fn combining_unit_survives_primary_reflow_and_alternate_rectangular_resize() {
     use crate::SelectionBounds;
     let mut screen = Screen::new(2, 5);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, "ab界\u{0301}z".as_bytes());
+    parser.put_bytes(&mut screen, "ab界\u{0301}z".as_bytes());
     assert_eq!(screen.cell(0, 2).raw_text(), "界\u{0301}");
     for cols in [3, 6, 5] {
         let prepared = screen.prepare_resize(2, cols).unwrap();
@@ -502,7 +495,7 @@ fn combining_unit_survives_primary_reflow_and_alternate_rectangular_resize() {
             .contains("界\u{0301}")
     );
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
-    feed(&mut parser, &mut screen, "e\u{0301}".as_bytes());
+    parser.put_bytes(&mut screen, "e\u{0301}".as_bytes());
     let prepared = screen.prepare_resize(2, 3).unwrap();
     screen.commit_resize(prepared);
     assert_eq!(screen.cell(0, 0).raw_text(), "e\u{0301}");
@@ -514,10 +507,10 @@ fn overwrite_and_erase_do_not_leave_detached_marks() {
     use crate::SelectionBounds;
     let mut screen = Screen::new(2, 5);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, "e\u{0301}界\u{0301}".as_bytes());
+    parser.put_bytes(&mut screen, "e\u{0301}界\u{0301}".as_bytes());
     assert_eq!(screen.cell(0, 1).width, 2);
     assert_eq!(screen.cell(0, 1).raw_text(), "界\u{0301}");
-    feed(&mut parser, &mut screen, b"\rZ");
+    parser.put_bytes(&mut screen, b"\rZ");
     assert_eq!(screen.cell(0, 0).raw_text(), "Z");
     assert_eq!(
         screen.selected_text(SelectionBounds {
@@ -528,7 +521,7 @@ fn overwrite_and_erase_do_not_leave_detached_marks() {
         }),
         "Z界\u{0301}"
     );
-    feed(&mut parser, &mut screen, b"\r\x1b[2G\x1b[2X");
+    parser.put_bytes(&mut screen, b"\r\x1b[2G\x1b[2X");
     assert_eq!(screen.cell(0, 1).raw_text(), " ");
     assert_eq!(
         screen.selected_text(SelectionBounds {
@@ -545,7 +538,7 @@ fn overwrite_and_erase_do_not_leave_detached_marks() {
 fn decaln_fills_active_screen_and_preserves_saved_primary_screen() {
     let mut screen = Screen::new(2, 4);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"primary");
+    parser.put_bytes(&mut screen, b"primary");
     let primary = screen.row_text(0);
 
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h\x1b#8");
@@ -562,10 +555,10 @@ fn unknown_escape_intermediate_pair_is_consumed_without_visible_effect() {
     for sequence in [b"\x1b#9Z".as_slice(), b"\x1b##9Z".as_slice()] {
         let mut screen = Screen::new(2, 4);
         let mut parser = TerminalParser::default();
-        feed(&mut parser, &mut screen, b"A");
+        parser.put_bytes(&mut screen, b"A");
         let before_cursor = (screen.cursor_x(), screen.cursor_y());
 
-        feed(&mut parser, &mut screen, sequence);
+        parser.put_bytes(&mut screen, sequence);
 
         assert_eq!(screen.row_text(0), "AZ  ");
         assert_eq!(screen.cursor_y(), before_cursor.1);
@@ -579,7 +572,7 @@ fn oversized_param_skips_dispatch() {
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 4, 4);
     assert_eq!(screen.cursor_y(), 3);
-    feed(&mut parser, &mut screen, b"\x1b[999999A");
+    parser.put_bytes(&mut screen, b"\x1b[999999A");
     assert_eq!(screen.cursor_y(), 3, "oversized param should skip dispatch");
 }
 
@@ -587,7 +580,7 @@ fn oversized_param_skips_dispatch() {
 fn normal_param_still_dispatches() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[5B");
+    parser.put_bytes(&mut screen, b"\x1b[5B");
     assert_eq!(screen.cursor_y(), 5);
 }
 
@@ -595,7 +588,7 @@ fn normal_param_still_dispatches() {
 fn max_valid_param_dispatches_and_clamps() {
     let mut screen = Screen::new(100, 100);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[65535B");
+    parser.put_bytes(&mut screen, b"\x1b[65535B");
     assert_eq!(
         screen.cursor_y(),
         screen.rows() - 1,
@@ -608,7 +601,7 @@ fn saturated_oversized_param_still_rejected() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 4, 4);
-    feed(&mut parser, &mut screen, b"\x1b[99999999999999999999A");
+    parser.put_bytes(&mut screen, b"\x1b[99999999999999999999A");
     assert_eq!(
         screen.cursor_y(),
         3,
@@ -621,7 +614,7 @@ fn intermediate_byte_cancels_sequence() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 4, 4);
-    feed(&mut parser, &mut screen, b"\x1b[!A");
+    parser.put_bytes(&mut screen, b"\x1b[!A");
     assert_eq!(screen.cursor_y(), 3, "intermediate byte should cancel CSI");
 }
 
@@ -632,7 +625,7 @@ fn private_markers_and_colons_parsed() {
         let mut screen = Screen::new(10, 10);
         let mut parser = TerminalParser::default();
         move_to(&mut parser, &mut screen, 4, 4);
-        feed(&mut parser, &mut screen, b"\x1b[:A");
+        parser.put_bytes(&mut screen, b"\x1b[:A");
         assert_eq!(
             screen.cursor_y(),
             2,
@@ -646,7 +639,7 @@ fn private_markers_and_colons_parsed() {
         let mut parser = TerminalParser::default();
         move_to(&mut parser, &mut screen, 4, 4);
         let seq = [b'\x1b', b'[', byte, b'A'];
-        feed(&mut parser, &mut screen, &seq);
+        parser.put_bytes(&mut screen, &seq);
         assert_eq!(
             screen.cursor_y(),
             3,
@@ -663,7 +656,7 @@ fn csi_overflow_limits_cancel_sequence() {
         let mut screen = Screen::new(10, 10);
         let mut parser = TerminalParser::default();
         move_to(&mut parser, &mut screen, 4, 4);
-        feed(&mut parser, &mut screen, b"\x1b[1:2:3:4:5:6:7:8:9A");
+        parser.put_bytes(&mut screen, b"\x1b[1:2:3:4:5:6:7:8:9A");
         assert_eq!(
             screen.cursor_y(),
             3,
@@ -676,7 +669,7 @@ fn csi_overflow_limits_cancel_sequence() {
         let mut screen = Screen::new(10, 10);
         let mut parser = TerminalParser::default();
         move_to(&mut parser, &mut screen, 4, 4);
-        feed(&mut parser, &mut screen, b"\x1b[   A"); // 3 spaces -> 3 intermediates
+        parser.put_bytes(&mut screen, b"\x1b[   A"); // 3 spaces -> 3 intermediates
         assert_eq!(
             screen.cursor_y(),
             3,
@@ -690,7 +683,7 @@ fn many_empty_params_does_not_panic() {
     let mut screen = Screen::new(5, 5);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 3, 3);
-    feed(&mut parser, &mut screen, b"\x1b[;;;;;;;;;;;;;;;;;H");
+    parser.put_bytes(&mut screen, b"\x1b[;;;;;;;;;;;;;;;;;H");
     // Sequence still dispatches (empty params → defaults → cursor home).
     assert_eq!(screen.cursor_y(), 0, "overflow should not panic");
     assert_eq!(screen.cursor_x(), 0);
@@ -701,7 +694,7 @@ fn empty_params_use_defaults() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 5, 5);
-    feed(&mut parser, &mut screen, b"\x1b[;;;;H");
+    parser.put_bytes(&mut screen, b"\x1b[;;;;H");
     assert_eq!(screen.cursor_y(), 0, "empty params should use defaults");
     assert_eq!(screen.cursor_x(), 0);
 }
@@ -710,7 +703,7 @@ fn empty_params_use_defaults() {
 fn decscusr_ps5_is_blinking_bar() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[5 q");
+    parser.put_bytes(&mut screen, b"\x1b[5 q");
     assert_eq!(screen.cursor_shape(), CursorShape::Bar);
     assert!(screen.cursor_blink());
 }
@@ -719,7 +712,7 @@ fn decscusr_ps5_is_blinking_bar() {
 fn decscusr_ps2_is_steady_block() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[2 q");
+    parser.put_bytes(&mut screen, b"\x1b[2 q");
     assert_eq!(screen.cursor_shape(), CursorShape::Block);
     assert!(!screen.cursor_blink());
 }
@@ -728,7 +721,7 @@ fn decscusr_ps2_is_steady_block() {
 fn decscusr_ps0_is_blinking_block() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[0 q");
+    parser.put_bytes(&mut screen, b"\x1b[0 q");
     assert_eq!(screen.cursor_shape(), CursorShape::Block);
     assert!(screen.cursor_blink());
 }
@@ -737,7 +730,7 @@ fn decscusr_ps0_is_blinking_block() {
 fn decscusr_ps1_is_blinking_block() {
     let mut screen = Screen::new(10, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[1 q");
+    parser.put_bytes(&mut screen, b"\x1b[1 q");
     assert_eq!(screen.cursor_shape(), CursorShape::Block);
     assert!(screen.cursor_blink());
 }
@@ -756,7 +749,7 @@ fn cha_sets_column_keeps_row() {
     let mut screen = Screen::new(5, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 3, 5);
-    feed(&mut parser, &mut screen, b"\x1b[12G");
+    parser.put_bytes(&mut screen, b"\x1b[12G");
     assert_eq!(screen.cursor_y(), 2, "CHA should keep row unchanged");
     assert_eq!(screen.cursor_x(), 11, "CHA should set column (0-based)");
 }
@@ -766,7 +759,7 @@ fn cha_default_param_is_one() {
     let mut screen = Screen::new(5, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 2, 8);
-    feed(&mut parser, &mut screen, b"\x1b[G");
+    parser.put_bytes(&mut screen, b"\x1b[G");
     assert_eq!(screen.cursor_x(), 0, "default CHA param = 1 → col 0");
 }
 
@@ -774,7 +767,7 @@ fn cha_default_param_is_one() {
 fn cha_clamps_to_cols() {
     let mut screen = Screen::new(5, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[999G");
+    parser.put_bytes(&mut screen, b"\x1b[999G");
     assert_eq!(screen.cursor_x(), 9, "CHA clamps to cols-1");
 }
 
@@ -785,7 +778,7 @@ fn vpa_sets_row_keeps_col() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 5, 7);
-    feed(&mut parser, &mut screen, b"\x1b[3d");
+    parser.put_bytes(&mut screen, b"\x1b[3d");
     assert_eq!(screen.cursor_y(), 2, "VPA should set row (0-based)");
     assert_eq!(screen.cursor_x(), 6, "VPA should keep col unchanged");
 }
@@ -795,7 +788,7 @@ fn vpa_default_param_is_one() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 5, 5);
-    feed(&mut parser, &mut screen, b"\x1b[d");
+    parser.put_bytes(&mut screen, b"\x1b[d");
     assert_eq!(screen.cursor_y(), 0, "default VPA param = 1 → row 0");
 }
 
@@ -803,7 +796,7 @@ fn vpa_default_param_is_one() {
 fn vpa_clamps_to_rows() {
     let mut screen = Screen::new(5, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[999d");
+    parser.put_bytes(&mut screen, b"\x1b[999d");
     assert_eq!(screen.cursor_y(), 4, "VPA clamps to rows-1");
 }
 
@@ -814,7 +807,7 @@ fn hpa_sets_column_keeps_row() {
     let mut screen = Screen::new(5, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 3, 5);
-    feed(&mut parser, &mut screen, b"\x1b[12`");
+    parser.put_bytes(&mut screen, b"\x1b[12`");
     assert_eq!(screen.cursor_y(), 2, "HPA should keep row unchanged");
     assert_eq!(screen.cursor_x(), 11, "HPA should set column (0-based)");
 }
@@ -824,7 +817,7 @@ fn hpa_default_param_is_one() {
     let mut screen = Screen::new(5, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 2, 8);
-    feed(&mut parser, &mut screen, b"\x1b[`");
+    parser.put_bytes(&mut screen, b"\x1b[`");
     assert_eq!(screen.cursor_x(), 0, "default HPA param = 1 → col 0");
 }
 
@@ -832,7 +825,7 @@ fn hpa_default_param_is_one() {
 fn hpa_clamps_to_cols() {
     let mut screen = Screen::new(5, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[999`");
+    parser.put_bytes(&mut screen, b"\x1b[999`");
     assert_eq!(screen.cursor_x(), 9, "HPA clamps to cols-1");
 }
 
@@ -843,7 +836,7 @@ fn hpr_moves_right() {
     let mut screen = Screen::new(5, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 3, 5);
-    feed(&mut parser, &mut screen, b"\x1b[4a");
+    parser.put_bytes(&mut screen, b"\x1b[4a");
     assert_eq!(screen.cursor_y(), 2, "HPR should keep row unchanged");
     assert_eq!(screen.cursor_x(), 8, "HPR 4 from col 5 → col 9 (0-based 8)");
 }
@@ -853,7 +846,7 @@ fn hpr_default_param_is_one() {
     let mut screen = Screen::new(5, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 2, 8);
-    feed(&mut parser, &mut screen, b"\x1b[a");
+    parser.put_bytes(&mut screen, b"\x1b[a");
     assert_eq!(
         screen.cursor_x(),
         8,
@@ -866,7 +859,7 @@ fn hpr_clamps_to_cols() {
     let mut screen = Screen::new(5, 10);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 2, 3);
-    feed(&mut parser, &mut screen, b"\x1b[999a");
+    parser.put_bytes(&mut screen, b"\x1b[999a");
     assert_eq!(screen.cursor_x(), 9, "HPR clamps to cols-1");
 }
 
@@ -877,7 +870,7 @@ fn vpr_moves_down() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 3, 5);
-    feed(&mut parser, &mut screen, b"\x1b[3e");
+    parser.put_bytes(&mut screen, b"\x1b[3e");
     assert_eq!(screen.cursor_y(), 5, "VPR 3 from row 3 → row 6 (0-based 5)");
     assert_eq!(screen.cursor_x(), 4, "VPR should keep col unchanged");
 }
@@ -887,7 +880,7 @@ fn vpr_default_param_is_one() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 5, 5);
-    feed(&mut parser, &mut screen, b"\x1b[e");
+    parser.put_bytes(&mut screen, b"\x1b[e");
     assert_eq!(
         screen.cursor_y(),
         5,
@@ -900,7 +893,7 @@ fn vpr_clamps_to_rows() {
     let mut screen = Screen::new(5, 10);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 2, 3);
-    feed(&mut parser, &mut screen, b"\x1b[999e");
+    parser.put_bytes(&mut screen, b"\x1b[999e");
     assert_eq!(screen.cursor_y(), 4, "VPR clamps to rows-1");
 }
 
@@ -910,16 +903,16 @@ fn vpr_clamps_to_rows() {
 fn hpa_relative_to_margins_in_origin_mode() {
     let mut screen = Screen::new(5, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[?69h"); // DECLRMM
-    feed(&mut parser, &mut screen, b"\x1b[3;7s"); // margins cols 3..7 (1-based)
-    feed(&mut parser, &mut screen, b"\x1b[?6h"); // DECOM
-    feed(&mut parser, &mut screen, b"\x1b[3`");
+    parser.put_bytes(&mut screen, b"\x1b[?69h"); // DECLRMM
+    parser.put_bytes(&mut screen, b"\x1b[3;7s"); // margins cols 3..7 (1-based)
+    parser.put_bytes(&mut screen, b"\x1b[?6h"); // DECOM
+    parser.put_bytes(&mut screen, b"\x1b[3`");
     assert_eq!(
         screen.cursor_x(),
         4,
         "HPA col is relative to margin left (0-based 2 + 2)"
     );
-    feed(&mut parser, &mut screen, b"\x1b[999`");
+    parser.put_bytes(&mut screen, b"\x1b[999`");
     assert_eq!(screen.cursor_x(), 6, "HPA clamps to margin right");
 }
 
@@ -927,10 +920,10 @@ fn hpa_relative_to_margins_in_origin_mode() {
 fn hpr_clamps_to_right_margin() {
     let mut screen = Screen::new(5, 10);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[?69h");
-    feed(&mut parser, &mut screen, b"\x1b[3;7s");
+    parser.put_bytes(&mut screen, b"\x1b[?69h");
+    parser.put_bytes(&mut screen, b"\x1b[3;7s");
     move_to(&mut parser, &mut screen, 1, 4); // x = 3, inside margins
-    feed(&mut parser, &mut screen, b"\x1b[999a");
+    parser.put_bytes(&mut screen, b"\x1b[999a");
     assert_eq!(
         screen.cursor_x(),
         6,
@@ -942,9 +935,9 @@ fn hpr_clamps_to_right_margin() {
 fn vpr_clamps_to_scroll_region_bottom() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[2;6r"); // scroll region rows 2..6
+    parser.put_bytes(&mut screen, b"\x1b[2;6r"); // scroll region rows 2..6
     move_to(&mut parser, &mut screen, 2, 1); // y = 1, inside region
-    feed(&mut parser, &mut screen, b"\x1b[999e");
+    parser.put_bytes(&mut screen, b"\x1b[999e");
     assert_eq!(
         screen.cursor_y(),
         5,
@@ -956,9 +949,9 @@ fn vpr_clamps_to_scroll_region_bottom() {
 fn hpa_clears_pending_wrap() {
     let mut screen = Screen::new(3, 5);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"abcde"); // pending wrap at last col
-    feed(&mut parser, &mut screen, b"\x1b[2`");
-    feed(&mut parser, &mut screen, b"Z");
+    parser.put_bytes(&mut screen, b"abcde"); // pending wrap at last col
+    parser.put_bytes(&mut screen, b"\x1b[2`");
+    parser.put_bytes(&mut screen, b"Z");
     assert_eq!(
         screen.cursor_y(),
         0,
@@ -971,9 +964,9 @@ fn hpa_clears_pending_wrap() {
 fn hpr_clears_pending_wrap() {
     let mut screen = Screen::new(3, 5);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"abcde");
-    feed(&mut parser, &mut screen, b"\x1b[1a");
-    feed(&mut parser, &mut screen, b"Z");
+    parser.put_bytes(&mut screen, b"abcde");
+    parser.put_bytes(&mut screen, b"\x1b[1a");
+    parser.put_bytes(&mut screen, b"Z");
     assert_eq!(
         screen.cursor_y(),
         0,
@@ -986,9 +979,9 @@ fn hpr_clears_pending_wrap() {
 fn vpr_clears_pending_wrap() {
     let mut screen = Screen::new(3, 5);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"abcde");
-    feed(&mut parser, &mut screen, b"\x1b[1e");
-    feed(&mut parser, &mut screen, b"Z");
+    parser.put_bytes(&mut screen, b"abcde");
+    parser.put_bytes(&mut screen, b"\x1b[1e");
+    parser.put_bytes(&mut screen, b"Z");
     assert_eq!(
         screen.cursor_y(),
         1,
@@ -1009,7 +1002,7 @@ fn cnl_moves_down_and_cr() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 3, 8);
-    feed(&mut parser, &mut screen, b"\x1b[2E");
+    parser.put_bytes(&mut screen, b"\x1b[2E");
     assert_eq!(screen.cursor_y(), 4, "CNL 2 from row 3 → row 5 (0-based 4)");
     assert_eq!(screen.cursor_x(), 0, "CNL resets column to 0");
 }
@@ -1019,7 +1012,7 @@ fn cpl_moves_up_and_cr() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 6, 5);
-    feed(&mut parser, &mut screen, b"\x1b[3F");
+    parser.put_bytes(&mut screen, b"\x1b[3F");
     assert_eq!(screen.cursor_y(), 2, "CPL 3 from row 6 → row 3 (0-based 2)");
     assert_eq!(screen.cursor_x(), 0, "CPL resets column to 0");
 }
@@ -1031,9 +1024,9 @@ fn csi_save_restore_cursor() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     move_to(&mut parser, &mut screen, 4, 6);
-    feed(&mut parser, &mut screen, b"\x1b[s");
+    parser.put_bytes(&mut screen, b"\x1b[s");
     move_to(&mut parser, &mut screen, 8, 12);
-    feed(&mut parser, &mut screen, b"\x1b[u");
+    parser.put_bytes(&mut screen, b"\x1b[u");
     assert_eq!(screen.cursor_y(), 3, "RCP should restore row");
     assert_eq!(screen.cursor_x(), 5, "RCP should restore col");
 }
@@ -1044,7 +1037,7 @@ fn csi_save_restore_cursor() {
 fn dsr_status_report_replies_ok() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[5n");
+    parser.put_bytes(&mut screen, b"\x1b[5n");
     let replies = screen.drain_replies();
     assert_eq!(replies, b"\x1b[0n");
 }
@@ -1055,7 +1048,7 @@ fn cpr_standard_report_absolute_coordinates() {
     let mut parser = TerminalParser::default();
     // Place cursor at 0-based (y=3, x=5) -> 1-based (row=4, col=6)
     move_to(&mut parser, &mut screen, 4, 6);
-    feed(&mut parser, &mut screen, b"\x1b[6n");
+    parser.put_bytes(&mut screen, b"\x1b[6n");
     let replies = screen.drain_replies();
     assert_eq!(replies, b"\x1b[4;6R");
 }
@@ -1066,7 +1059,7 @@ fn cpr_private_report_absolute_coordinates() {
     let mut parser = TerminalParser::default();
     // Place cursor at 0-based (y=2, x=7) -> 1-based (row=3, col=8)
     move_to(&mut parser, &mut screen, 3, 8);
-    feed(&mut parser, &mut screen, b"\x1b[?6n");
+    parser.put_bytes(&mut screen, b"\x1b[?6n");
     let replies = screen.drain_replies();
     assert_eq!(replies, b"\x1b[?3;8R");
 }
@@ -1077,49 +1070,49 @@ fn cpr_with_decom_and_margins_combos() {
     let mut parser = TerminalParser::default();
 
     // 1. Enable vertical scroll margins (rows 5 to 15, 1-based)
-    feed(&mut parser, &mut screen, b"\x1b[5;15r");
+    parser.put_bytes(&mut screen, b"\x1b[5;15r");
 
     // 2. Enable left/right margins (cols 8 to 22, 1-based)
     // First enable Declrmm mode 69 (margin_mode)
-    feed(&mut parser, &mut screen, b"\x1b[?69h");
-    feed(&mut parser, &mut screen, b"\x1b[8;22s");
+    parser.put_bytes(&mut screen, b"\x1b[?69h");
+    parser.put_bytes(&mut screen, b"\x1b[8;22s");
 
     // 3. Enable Origin Mode (DECOM, private mode 6)
-    feed(&mut parser, &mut screen, b"\x1b[?6h");
+    parser.put_bytes(&mut screen, b"\x1b[?6h");
 
     // Origin mode is now active, so cursor homed to top-left of margins (y=4, x=7, 0-based)
     assert_eq!(screen.cursor_y(), 4);
     assert_eq!(screen.cursor_x(), 7);
 
     // CPR should report (1, 1) relative to margin origins
-    feed(&mut parser, &mut screen, b"\x1b[6n");
+    parser.put_bytes(&mut screen, b"\x1b[6n");
     assert_eq!(screen.drain_replies(), b"\x1b[1;1R");
 
     // Move cursor relative to margins (row 3, col 4 relative to margins, which is y=6, x=10 absolute)
-    feed(&mut parser, &mut screen, b"\x1b[3;4H");
+    parser.put_bytes(&mut screen, b"\x1b[3;4H");
     assert_eq!(screen.cursor_y(), 6);
     assert_eq!(screen.cursor_x(), 10);
 
     // CPR should report relative coords (3, 4)
-    feed(&mut parser, &mut screen, b"\x1b[6n");
+    parser.put_bytes(&mut screen, b"\x1b[6n");
     assert_eq!(screen.drain_replies(), b"\x1b[3;4R");
 
     // 4. Disable Left/Right Margin mode (Declrmm mode 69)
-    feed(&mut parser, &mut screen, b"\x1b[?69l");
+    parser.put_bytes(&mut screen, b"\x1b[?69l");
 
     // Disabling mode 69 homes the cursor (in DECOM -> y=scroll_region.top, x=left_margin=0)
     assert_eq!(screen.cursor_y(), 4);
     assert_eq!(screen.cursor_x(), 0);
 
     // Move cursor to relative (3, 11) -> absolute (y=6, x=10) since left margin is now 0.
-    feed(&mut parser, &mut screen, b"\x1b[3;11H");
+    parser.put_bytes(&mut screen, b"\x1b[3;11H");
     assert_eq!(screen.cursor_y(), 6);
     assert_eq!(screen.cursor_x(), 10);
 
     // Now left/right margin mode is inactive, but DECOM is still active.
     // So vertical is relative (y=6 - top=4 + 1 = 3).
     // Horizontal is absolute (x=10 + 1 = 11).
-    feed(&mut parser, &mut screen, b"\x1b[6n");
+    parser.put_bytes(&mut screen, b"\x1b[6n");
     assert_eq!(screen.drain_replies(), b"\x1b[3;11R");
 }
 
@@ -1130,7 +1123,7 @@ fn should_reply_with_primary_device_attributes_when_query_is_omitted() {
     let mut parser = TerminalParser::default();
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[c");
+    parser.put_bytes(&mut screen, b"\x1b[c");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"\x1b[?62;6;17;22;28c");
@@ -1143,7 +1136,7 @@ fn should_reply_with_primary_device_attributes_when_query_parameter_is_zero() {
     let mut parser = TerminalParser::default();
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[0c");
+    parser.put_bytes(&mut screen, b"\x1b[0c");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"\x1b[?62;6;17;22;28c");
@@ -1156,7 +1149,7 @@ fn should_reply_with_secondary_device_attributes_when_query_is_omitted() {
     let mut parser = TerminalParser::default();
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[>c");
+    parser.put_bytes(&mut screen, b"\x1b[>c");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"\x1b[>1;1;0c");
@@ -1169,7 +1162,7 @@ fn should_reply_with_secondary_device_attributes_when_query_parameter_is_zero() 
     let mut parser = TerminalParser::default();
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[>0c");
+    parser.put_bytes(&mut screen, b"\x1b[>0c");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"\x1b[>1;1;0c");
@@ -1180,14 +1173,9 @@ fn should_produce_no_reply_when_device_attributes_parameter_is_nonzero() {
     // Arrange
     let queries = [b"\x1b[1c".as_slice(), b"\x1b[>1c".as_slice()];
 
-    // Act
-    let replies = queries
-        .iter()
-        .map(|query| replies_for(query))
-        .collect::<Vec<_>>();
-
-    // Assert
-    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+    for query in queries {
+        assert_eq!(replies_for(query), b"", "query: {query:?}");
+    }
 }
 
 #[test]
@@ -1195,14 +1183,9 @@ fn should_produce_no_reply_when_device_attributes_parameters_are_multiple() {
     // Arrange
     let queries = [b"\x1b[0;0c".as_slice(), b"\x1b[>0;0c".as_slice()];
 
-    // Act
-    let replies = queries
-        .iter()
-        .map(|query| replies_for(query))
-        .collect::<Vec<_>>();
-
-    // Assert
-    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+    for query in queries {
+        assert_eq!(replies_for(query), b"", "query: {query:?}");
+    }
 }
 
 #[test]
@@ -1210,14 +1193,9 @@ fn should_produce_no_reply_when_device_attributes_parameter_has_subparameters() 
     // Arrange
     let queries = [b"\x1b[0:0c".as_slice(), b"\x1b[>0:0c".as_slice()];
 
-    // Act
-    let replies = queries
-        .iter()
-        .map(|query| replies_for(query))
-        .collect::<Vec<_>>();
-
-    // Assert
-    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+    for query in queries {
+        assert_eq!(replies_for(query), b"", "query: {query:?}");
+    }
 }
 
 #[test]
@@ -1225,14 +1203,9 @@ fn should_produce_no_reply_when_device_attributes_query_is_malformed() {
     // Arrange
     let queries = [b"\x1b[999999c".as_slice(), b"\x1b[>999999c".as_slice()];
 
-    // Act
-    let replies = queries
-        .iter()
-        .map(|query| replies_for(query))
-        .collect::<Vec<_>>();
-
-    // Assert
-    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+    for query in queries {
+        assert_eq!(replies_for(query), b"", "query: {query:?}");
+    }
 }
 
 #[test]
@@ -1240,14 +1213,9 @@ fn should_not_dispatch_late_or_duplicate_private_markers() {
     // Arrange
     let queries = [b"\x1b[0>c".as_slice(), b"\x1b[>>0c".as_slice()];
 
-    // Act
-    let replies = queries
-        .iter()
-        .map(|query| replies_for(query))
-        .collect::<Vec<_>>();
-
-    // Assert
-    assert_eq!(replies, vec![Vec::new(), Vec::new()]);
+    for query in queries {
+        assert_eq!(replies_for(query), b"", "query: {query:?}");
+    }
 }
 
 #[test]
@@ -1255,11 +1223,11 @@ fn should_leave_screen_unchanged_when_tertiary_device_attributes_is_requested() 
     // Arrange
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"visible");
+    parser.put_bytes(&mut screen, b"visible");
     let before = (screen.row_text(0), screen.cursor_x(), screen.cursor_y());
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[=c");
+    parser.put_bytes(&mut screen, b"\x1b[=c");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"");
@@ -1276,7 +1244,7 @@ fn should_produce_no_reply_when_unsupported_device_attributes_marker_is_used() {
     let mut parser = TerminalParser::default();
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[<c");
+    parser.put_bytes(&mut screen, b"\x1b[<c");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"");
@@ -1289,9 +1257,9 @@ fn should_match_primary_device_attributes_reply_when_decid_is_requested() {
     let mut parser = TerminalParser::default();
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[c");
+    parser.put_bytes(&mut screen, b"\x1b[c");
     let primary_reply = screen.drain_replies();
-    feed(&mut parser, &mut screen, b"\x1bZ");
+    parser.put_bytes(&mut screen, b"\x1bZ");
     let decid_reply = screen.drain_replies();
 
     // Assert
@@ -1307,14 +1275,10 @@ fn should_produce_no_reply_when_eight_bit_device_attributes_is_received_in_defau
         b"\x9b=c".as_slice(),
     ];
 
-    // Act
-    let replies = queries
-        .iter()
-        .map(|query| replies_for(query))
-        .collect::<Vec<_>>();
-
-    // Assert — 8-bit primary, secondary, and tertiary forms are unrecognized here.
-    assert_eq!(replies, vec![Vec::new(), Vec::new(), Vec::new()]);
+    // 8-bit primary, secondary, and tertiary forms are unrecognized here.
+    for query in queries {
+        assert_eq!(replies_for(query), b"", "query: {query:?}");
+    }
 }
 
 #[test]
@@ -1331,8 +1295,8 @@ fn should_ignore_late_or_repeated_markers_when_sequence_is_split_across_chunks()
         .map(|(first, second)| {
             let mut screen = Screen::new(10, 20);
             let mut parser = TerminalParser::default();
-            feed(&mut parser, &mut screen, first);
-            feed(&mut parser, &mut screen, second);
+            parser.put_bytes(&mut screen, first);
+            parser.put_bytes(&mut screen, second);
             (screen.drain_replies(), screen.row_text(0))
         })
         .collect::<Vec<_>>();
@@ -1352,8 +1316,8 @@ fn should_treat_eight_bit_device_attributes_as_unrecognized_and_resume_text() {
     let c1_csi = [0x9b];
 
     // Act — feed the unrecognized 8-bit introducer separately from its final byte.
-    feed(&mut parser, &mut screen, &c1_csi);
-    feed(&mut parser, &mut screen, b"cVISIBLE");
+    parser.put_bytes(&mut screen, &c1_csi);
+    parser.put_bytes(&mut screen, b"cVISIBLE");
 
     // Assert — no DA reply is generated and subsequent printable input is preserved.
     assert_eq!(screen.drain_replies(), Vec::new());
@@ -1369,7 +1333,7 @@ fn osc_color_reply_is_atomic_at_capacity_boundary() {
         let mut parser = TerminalParser::default();
         screen.push_reply(&prefix);
 
-        feed(&mut parser, &mut screen, b"\x1b]10;?\x07");
+        parser.put_bytes(&mut screen, b"\x1b]10;?\x07");
 
         let replies = screen.drain_replies();
         if accepted {
@@ -1391,7 +1355,7 @@ fn should_accept_primary_reply_when_buffer_has_exact_remaining_capacity() {
     screen.push_reply(&prefix);
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[c");
+    parser.put_bytes(&mut screen, b"\x1b[c");
 
     // Assert
     let replies = screen.drain_replies();
@@ -1410,7 +1374,7 @@ fn should_drop_primary_reply_when_buffer_is_one_byte_short() {
     screen.push_reply(&prefix);
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[c");
+    parser.put_bytes(&mut screen, b"\x1b[c");
 
     // Assert
     assert_eq!(screen.drain_replies(), prefix);
@@ -1428,7 +1392,7 @@ fn replies_buffer_exceeding_cap_discards() {
     for _ in 0..300 {
         sequence.extend_from_slice(b"\x1b[5n");
     }
-    feed(&mut parser, &mut screen, &sequence);
+    parser.put_bytes(&mut screen, &sequence);
     let replies = screen.drain_replies();
     assert_eq!(replies.len(), 1024);
     assert_eq!(screen.drain_replies().len(), 0);
@@ -1478,7 +1442,12 @@ impl harbor_parser::VtHandler for DcsRecorder {
     fn start_string(&mut self, _kind: u8) {}
 }
 
-fn assert_decrqss_round_trip(reply: &[u8], expected_ps: usize, expected_payload: &[u8]) {
+fn assert_dcs_round_trip(
+    reply: &[u8],
+    expected_intermediate: &[u8],
+    expected_ps: usize,
+    expected_payload: &[u8],
+) {
     let mut parser = harbor_parser::Parser::default();
     let mut recorder = DcsRecorder::default();
     for &byte in reply {
@@ -1488,7 +1457,7 @@ fn assert_decrqss_round_trip(reply: &[u8], expected_ps: usize, expected_payload:
     assert_eq!(recorder.unhook_count, 1);
     assert_eq!(recorder.terminated, Some(true));
     assert_eq!(recorder.action, Some(b'r'));
-    assert_eq!(recorder.intermediates, b"$");
+    assert_eq!(recorder.intermediates, expected_intermediate);
     let params = recorder.params.expect("DCS hook params");
     assert_eq!(params.len(), 1);
     assert_eq!(params.get(0), Some(expected_ps));
@@ -1515,22 +1484,18 @@ const FAILURE_REPLY: &[u8] = b"\x1bP0$r\x1b\\";
 fn decrqss_default_sgr_returns_reset() {
     let reply = replies_for(&decrqss(b"m"));
     assert_eq!(reply, success_reply(b"0m"));
-    assert_decrqss_round_trip(&reply, 1, b"0m");
+    assert_dcs_round_trip(&reply, b"$", 1, b"0m");
 }
 
 #[test]
 fn decrqss_sgr_reports_attrs_and_color_families() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1b[1;2;3;4;5;7;9;38;2;1;2;3;48;5;9m",
-    );
-    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    parser.put_bytes(&mut screen, b"\x1b[1;2;3;4;5;7;9;38;2;1;2;3;48;5;9m");
+    parser.put_bytes(&mut screen, &decrqss(b"m"));
     let reply = screen.drain_replies();
     assert_eq!(reply, success_reply(b"0;1;2;3;4;5;7;9;38;2;1;2;3;48;5;9m"));
-    assert_decrqss_round_trip(&reply, 1, b"0;1;2;3;4;5;7;9;38;2;1;2;3;48;5;9m");
+    assert_dcs_round_trip(&reply, b"$", 1, b"0;1;2;3;4;5;7;9;38;2;1;2;3;48;5;9m");
 }
 
 #[test]
@@ -1538,20 +1503,20 @@ fn decrqss_reports_regions_margins_cursor_and_protection() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
 
-    feed(&mut parser, &mut screen, b"\x1b[2;8r");
-    feed(&mut parser, &mut screen, &decrqss(b"r"));
+    parser.put_bytes(&mut screen, b"\x1b[2;8r");
+    parser.put_bytes(&mut screen, &decrqss(b"r"));
     let reply = screen.drain_replies();
     assert_eq!(reply, success_reply(b"2;8r"));
-    assert_decrqss_round_trip(&reply, 1, b"2;8r");
+    assert_dcs_round_trip(&reply, b"$", 1, b"2;8r");
 
-    feed(&mut parser, &mut screen, b"\x1b[?69h\x1b[3;15s");
-    feed(&mut parser, &mut screen, &decrqss(b"s"));
+    parser.put_bytes(&mut screen, b"\x1b[?69h\x1b[3;15s");
+    parser.put_bytes(&mut screen, &decrqss(b"s"));
     let reply = screen.drain_replies();
     assert_eq!(reply, success_reply(b"3;15s"));
 
     // Saved margins remain queryable after mode 69 is disabled.
-    feed(&mut parser, &mut screen, b"\x1b[?69l");
-    feed(&mut parser, &mut screen, &decrqss(b"s"));
+    parser.put_bytes(&mut screen, b"\x1b[?69l");
+    parser.put_bytes(&mut screen, &decrqss(b"s"));
     assert_eq!(screen.drain_replies(), success_reply(b"3;15s"));
 
     for (seq, status) in [
@@ -1562,16 +1527,16 @@ fn decrqss_reports_regions_margins_cursor_and_protection() {
         (b"\x1b[5 q", b"5 q"),
         (b"\x1b[6 q", b"6 q"),
     ] {
-        feed(&mut parser, &mut screen, seq);
-        feed(&mut parser, &mut screen, &decrqss(b" q"));
+        parser.put_bytes(&mut screen, seq);
+        parser.put_bytes(&mut screen, &decrqss(b" q"));
         assert_eq!(screen.drain_replies(), success_reply(status));
     }
 
-    feed(&mut parser, &mut screen, b"\x1b[1\"q");
-    feed(&mut parser, &mut screen, &decrqss(b"\"q"));
+    parser.put_bytes(&mut screen, b"\x1b[1\"q");
+    parser.put_bytes(&mut screen, &decrqss(b"\"q"));
     assert_eq!(screen.drain_replies(), success_reply(b"1\"q"));
-    feed(&mut parser, &mut screen, b"\x1b[0\"q");
-    feed(&mut parser, &mut screen, &decrqss(b"\"q"));
+    parser.put_bytes(&mut screen, b"\x1b[0\"q");
+    parser.put_bytes(&mut screen, &decrqss(b"\"q"));
     assert_eq!(screen.drain_replies(), success_reply(b"0\"q"));
 }
 
@@ -1579,17 +1544,17 @@ fn decrqss_reports_regions_margins_cursor_and_protection() {
 fn decrqss_unsupported_or_empty_pt_returns_failure_without_state_change() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[1;4;31m\x1b[2;8r\x1b[5 q");
+    parser.put_bytes(&mut screen, b"\x1b[1;4;31m\x1b[2;8r\x1b[5 q");
     let before_shape = screen.cursor_shape();
     let before_blink = screen.cursor_blink();
     let before_x = screen.cursor_x();
     let before_y = screen.cursor_y();
 
     for pt in [b"".as_slice(), b"x".as_slice(), b"mm".as_slice()] {
-        feed(&mut parser, &mut screen, &decrqss(pt));
+        parser.put_bytes(&mut screen, &decrqss(pt));
         let reply = screen.drain_replies();
         assert_eq!(reply, FAILURE_REPLY);
-        assert_decrqss_round_trip(&reply, 0, b"");
+        assert_dcs_round_trip(&reply, b"$", 0, b"");
         assert_eq!(screen.cursor_shape(), before_shape);
         assert_eq!(screen.cursor_blink(), before_blink);
         assert_eq!(screen.cursor_x(), before_x);
@@ -1603,7 +1568,7 @@ fn decrqss_nonmatching_dcs_is_consume_only() {
     assert_eq!(reply, Vec::<u8>::new());
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1bPqpayload\x1b\\Z");
+    parser.put_bytes(&mut screen, b"\x1bPqpayload\x1b\\Z");
     assert_eq!(screen.drain_replies(), Vec::<u8>::new());
     assert!(screen.row_text(0).contains('Z'));
 }
@@ -1612,11 +1577,11 @@ fn decrqss_nonmatching_dcs_is_consume_only() {
 fn decrqss_cancellation_produces_no_reply() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1bP$qm\x18OK");
+    parser.put_bytes(&mut screen, b"\x1bP$qm\x18OK");
     assert_eq!(screen.drain_replies(), Vec::<u8>::new());
     assert!(screen.row_text(0).contains("OK"));
 
-    feed(&mut parser, &mut screen, b"\x1bP$qm\x1aOK");
+    parser.put_bytes(&mut screen, b"\x1bP$qm\x1aOK");
     assert_eq!(screen.drain_replies(), Vec::<u8>::new());
 }
 
@@ -1627,12 +1592,31 @@ fn decrqss_pt_overflow_and_followup_query_do_not_succeed_from_prefix() {
     let mut oversized = b"\x1bP$q".to_vec();
     oversized.extend(std::iter::repeat_n(b'm', 17));
     oversized.extend_from_slice(b"\x1b\\");
-    feed(&mut parser, &mut screen, &oversized);
+    parser.put_bytes(&mut screen, &oversized);
     assert_eq!(screen.drain_replies(), FAILURE_REPLY);
 
     // A later DECRQSS after failure still succeeds from live state, not the truncated Pt.
-    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    parser.put_bytes(&mut screen, &decrqss(b"m"));
     assert_eq!(screen.drain_replies(), success_reply(b"0m"));
+}
+
+#[track_caller]
+fn assert_reply_across_chunks(request: &[u8], expected: &[u8]) {
+    for chunk in [1usize, 2, 3, 7] {
+        let mut screen = Screen::new(10, 20);
+        let mut parser = TerminalParser::default();
+        for part in request.chunks(chunk) {
+            parser.put_bytes(&mut screen, part);
+        }
+        assert_eq!(screen.drain_replies(), expected, "chunk={chunk}");
+    }
+
+    let mut screen = Screen::new(10, 20);
+    let mut parser = TerminalParser::default();
+    let split_at = request.len() - 1; // before final '\\'
+    parser.put_bytes(&mut screen, &request[..split_at]);
+    parser.put_bytes(&mut screen, &request[split_at..]);
+    assert_eq!(screen.drain_replies(), expected, "split ST");
 }
 
 #[test]
@@ -1640,21 +1624,7 @@ fn decrqss_chunking_matches_bulk_including_split_st() {
     let request = decrqss(b"m");
     let expected = success_reply(b"0m");
 
-    for chunk in [1usize, 2, 3, 7] {
-        let mut screen = Screen::new(10, 20);
-        let mut parser = TerminalParser::default();
-        for part in request.chunks(chunk) {
-            feed(&mut parser, &mut screen, part);
-        }
-        assert_eq!(screen.drain_replies(), expected);
-    }
-
-    let mut screen = Screen::new(10, 20);
-    let mut parser = TerminalParser::default();
-    let split_at = request.len() - 1; // before final '\\'
-    feed(&mut parser, &mut screen, &request[..split_at]);
-    feed(&mut parser, &mut screen, &request[split_at..]);
-    assert_eq!(screen.drain_replies(), expected);
+    assert_reply_across_chunks(&request, &expected);
 }
 
 #[test]
@@ -1662,19 +1632,19 @@ fn decrqss_apc_isolation_and_reply_capacity() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     // Cancel an in-flight DECRQSS, then run APC — no delayed reply may appear.
-    feed(&mut parser, &mut screen, b"\x1bP$qm\x18\x1b_payload\x1b\\");
+    parser.put_bytes(&mut screen, b"\x1bP$qm\x18\x1b_payload\x1b\\");
     assert_eq!(screen.drain_replies(), Vec::<u8>::new());
 
     let reply = success_reply(b"0m");
     let prefix = vec![b'x'; 1024 - reply.len()];
     screen.push_reply(&prefix);
-    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    parser.put_bytes(&mut screen, &decrqss(b"m"));
     let replies = screen.drain_replies();
     assert_eq!(&replies[prefix.len()..], reply.as_slice());
 
     let prefix = vec![b'x'; 1024 - reply.len() + 1];
     screen.push_reply(&prefix);
-    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    parser.put_bytes(&mut screen, &decrqss(b"m"));
     assert_eq!(screen.drain_replies(), prefix);
 }
 
@@ -1687,14 +1657,14 @@ fn decrqss_pm_sos_isolation_and_request_replacement() {
         b"\x1b^payload\x1b\\".as_slice(),
         b"\x1bXpayload\x1b\\".as_slice(),
     ] {
-        feed(&mut parser, &mut screen, b"\x1bP$qm\x18");
-        feed(&mut parser, &mut screen, intro);
+        parser.put_bytes(&mut screen, b"\x1bP$qm\x18");
+        parser.put_bytes(&mut screen, intro);
         assert_eq!(screen.drain_replies(), Vec::<u8>::new());
     }
 
     // Cancelled mid-flight request is fully replaced by a later successful DECRQSS.
-    feed(&mut parser, &mut screen, b"\x1bP$qx\x18");
-    feed(&mut parser, &mut screen, &decrqss(b"m"));
+    parser.put_bytes(&mut screen, b"\x1bP$qx\x18");
+    parser.put_bytes(&mut screen, &decrqss(b"m"));
     assert_eq!(screen.drain_replies(), success_reply(b"0m"));
 }
 
@@ -1705,7 +1675,7 @@ fn decrqss_parser_string_cap_overflow_still_fails() {
     let mut oversized = b"\x1bP$q".to_vec();
     oversized.extend(std::iter::repeat_n(b'a', 5000));
     oversized.extend_from_slice(b"\x1b\\OK");
-    feed(&mut parser, &mut screen, &oversized);
+    parser.put_bytes(&mut screen, &oversized);
     assert_eq!(screen.drain_replies(), FAILURE_REPLY);
     assert!(screen.row_text(0).contains("OK"));
 }
@@ -1736,32 +1706,15 @@ fn xtgettcap(names: &[&str]) -> Vec<u8> {
 
 const XTGETTCAP_FAILURE_REPLY: &[u8] = b"\x1bP0+r\x1b\\";
 
-fn assert_xtgettcap_round_trip(reply: &[u8], expected_ps: usize, expected_payload: &[u8]) {
-    let mut parser = harbor_parser::Parser::default();
-    let mut recorder = DcsRecorder::default();
-    for &byte in reply {
-        parser.advance(&mut recorder, byte);
-    }
-    assert_eq!(recorder.hook_count, 1);
-    assert_eq!(recorder.unhook_count, 1);
-    assert_eq!(recorder.terminated, Some(true));
-    assert_eq!(recorder.action, Some(b'r'));
-    assert_eq!(recorder.intermediates, b"+");
-    let params = recorder.params.expect("DCS hook params");
-    assert_eq!(params.len(), 1);
-    assert_eq!(params.get(0), Some(expected_ps));
-    assert_eq!(recorder.payload, expected_payload);
-}
-
 #[test]
 fn xtgettcap_reports_supported_string_capabilities() {
     let reply = replies_for(&xtgettcap(&["TN"]));
     assert_eq!(reply, b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\");
-    assert_xtgettcap_round_trip(&reply, 1, b"544E=787465726D2D323536636F6C6F72");
+    assert_dcs_round_trip(&reply, b"+", 1, b"544E=787465726D2D323536636F6C6F72");
 
     let reply = replies_for(&xtgettcap(&["RGB"]));
     assert_eq!(reply, b"\x1bP1+r524742=382F382F38\x1b\\");
-    assert_xtgettcap_round_trip(&reply, 1, b"524742=382F382F38");
+    assert_dcs_round_trip(&reply, b"+", 1, b"524742=382F382F38");
 }
 
 #[test]
@@ -1776,7 +1729,7 @@ fn xtgettcap_reports_numeric_capabilities_as_hex_encoded_decimal() {
         expected.extend_from_slice(payload);
         expected.extend_from_slice(b"\x1b\\");
         assert_eq!(reply, expected, "{name}");
-        assert_xtgettcap_round_trip(&reply, 1, payload);
+        assert_dcs_round_trip(&reply, b"+", 1, payload);
     }
 }
 
@@ -1785,12 +1738,12 @@ fn xtgettcap_preserves_numeric_boolean_types_aliases_and_case() {
     let request = xtgettcap(&["co", "Co", "colors", "U8", "u8", "COLORS", "Su", "U8"]);
     let payload = b"436F=323536;636F6C6F7273=323536;5538=31;7538;5375;5538=31";
     let reply = replies_for(&request);
-    assert_xtgettcap_round_trip(&reply, 1, payload);
+    assert_dcs_round_trip(&reply, b"+", 1, payload);
     for split in 0..=request.len() {
         let mut screen = Screen::new(10, 20);
         let mut parser = TerminalParser::default();
-        feed(&mut parser, &mut screen, &request[..split]);
-        feed(&mut parser, &mut screen, &request[split..]);
+        parser.put_bytes(&mut screen, &request[..split]);
+        parser.put_bytes(&mut screen, &request[split..]);
         assert_eq!(screen.drain_replies(), reply, "split at {split}");
     }
 }
@@ -1798,7 +1751,7 @@ fn xtgettcap_preserves_numeric_boolean_types_aliases_and_case() {
 fn unsupported_identity_and_extension_queries_stay_silent_without_side_effects() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"seed\x1b[3;7H");
+    parser.put_bytes(&mut screen, b"seed\x1b[3;7H");
     for query in [
         b"\x1b[=c".as_slice(), // Tertiary DA.
         b"\x1b[>q",
@@ -1807,12 +1760,12 @@ fn unsupported_identity_and_extension_queries_stay_silent_without_side_effects()
         b"\x1b_Gi=194,a=q;AAAA\x1b\\", // Kitty graphics query.
         b"\x1bPtmux;\x1b\x1b[c\x1b\\", // No passthrough wrapper.
     ] {
-        feed(&mut parser, &mut screen, query);
+        parser.put_bytes(&mut screen, query);
         assert!(screen.drain_replies().is_empty(), "query {query:?}");
         assert_eq!((screen.cursor_y(), screen.cursor_x()), (2, 6));
         assert!(screen.row_text(0).starts_with("seed"));
     }
-    feed(&mut parser, &mut screen, b"\x1b[5n");
+    parser.put_bytes(&mut screen, b"\x1b[5n");
     assert_eq!(screen.drain_replies(), b"\x1b[0n");
 }
 
@@ -1820,7 +1773,7 @@ fn unsupported_identity_and_extension_queries_stay_silent_without_side_effects()
 fn xtgettcap_reports_boolean_capability_by_name_only() {
     let reply = replies_for(&xtgettcap(&["u8"]));
     assert_eq!(reply, b"\x1bP1+r7538\x1b\\");
-    assert_xtgettcap_round_trip(&reply, 1, b"7538");
+    assert_dcs_round_trip(&reply, b"+", 1, b"7538");
 }
 
 #[test]
@@ -1830,8 +1783,9 @@ fn xtgettcap_answers_multi_capability_queries_in_order() {
         reply,
         b"\x1bP1+r544E=787465726D2D323536636F6C6F72;524742=382F382F38;7538\x1b\\"
     );
-    assert_xtgettcap_round_trip(
+    assert_dcs_round_trip(
         &reply,
+        b"+",
         1,
         b"544E=787465726D2D323536636F6C6F72;524742=382F382F38;7538",
     );
@@ -1842,7 +1796,7 @@ fn xtgettcap_empty_or_unknown_query_returns_failure() {
     for names in [&[][..], &["xx"][..], &["colours"][..]] {
         let reply = replies_for(&xtgettcap(names));
         assert_eq!(reply, XTGETTCAP_FAILURE_REPLY);
-        assert_xtgettcap_round_trip(&reply, 0, b"");
+        assert_dcs_round_trip(&reply, b"+", 0, b"");
     }
 }
 
@@ -1850,7 +1804,7 @@ fn xtgettcap_empty_or_unknown_query_returns_failure() {
 fn xtgettcap_mixed_query_skips_unknown_names() {
     let reply = replies_for(&xtgettcap(&["xx", "RGB", "yy"]));
     assert_eq!(reply, b"\x1bP1+r524742=382F382F38\x1b\\");
-    assert_xtgettcap_round_trip(&reply, 1, b"524742=382F382F38");
+    assert_dcs_round_trip(&reply, b"+", 1, b"524742=382F382F38");
 }
 
 #[test]
@@ -1867,11 +1821,11 @@ fn xtgettcap_malformed_hex_is_skipped_without_panic() {
 fn xtgettcap_cancellation_produces_no_reply() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1bP+q544E\x18OK");
+    parser.put_bytes(&mut screen, b"\x1bP+q544E\x18OK");
     assert_eq!(screen.drain_replies(), Vec::<u8>::new());
     assert!(screen.row_text(0).contains("OK"));
 
-    feed(&mut parser, &mut screen, b"\x1bP+q544E\x1aOK");
+    parser.put_bytes(&mut screen, b"\x1bP+q544E\x1aOK");
     assert_eq!(screen.drain_replies(), Vec::<u8>::new());
 }
 
@@ -1882,7 +1836,7 @@ fn xtgettcap_pt_overflow_returns_failure() {
     let mut oversized = b"\x1bP+q".to_vec();
     oversized.extend(std::iter::repeat_n(b'5', 257));
     oversized.extend_from_slice(b"\x1b\\");
-    feed(&mut parser, &mut screen, &oversized);
+    parser.put_bytes(&mut screen, &oversized);
     assert_eq!(screen.drain_replies(), XTGETTCAP_FAILURE_REPLY);
 }
 
@@ -1891,21 +1845,7 @@ fn xtgettcap_chunking_matches_bulk_including_split_st() {
     let request = xtgettcap(&["TN", "RGB", "u8"]);
     let expected = b"\x1bP1+r544E=787465726D2D323536636F6C6F72;524742=382F382F38;7538\x1b\\";
 
-    for chunk in [1usize, 2, 3, 7] {
-        let mut screen = Screen::new(10, 20);
-        let mut parser = TerminalParser::default();
-        for part in request.chunks(chunk) {
-            feed(&mut parser, &mut screen, part);
-        }
-        assert_eq!(screen.drain_replies(), expected);
-    }
-
-    let mut screen = Screen::new(10, 20);
-    let mut parser = TerminalParser::default();
-    let split_at = request.len() - 1; // before final '\\'
-    feed(&mut parser, &mut screen, &request[..split_at]);
-    feed(&mut parser, &mut screen, &request[split_at..]);
-    assert_eq!(screen.drain_replies(), expected);
+    assert_reply_across_chunks(&request, expected);
 }
 
 #[test]
@@ -1913,23 +1853,19 @@ fn xtgettcap_apc_isolation_and_reply_capacity() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     // Cancel an in-flight XTGETTCAP, then run APC — no delayed reply may appear.
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1bP+q544E\x18\x1b_payload\x1b\\",
-    );
+    parser.put_bytes(&mut screen, b"\x1bP+q544E\x18\x1b_payload\x1b\\");
     assert_eq!(screen.drain_replies(), Vec::<u8>::new());
 
     let reply = b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\";
     let prefix = vec![b'x'; 1024 - reply.len()];
     screen.push_reply(&prefix);
-    feed(&mut parser, &mut screen, &xtgettcap(&["TN"]));
+    parser.put_bytes(&mut screen, &xtgettcap(&["TN"]));
     let replies = screen.drain_replies();
     assert_eq!(&replies[prefix.len()..], reply.as_slice());
 
     let prefix = vec![b'x'; 1024 - reply.len() + 1];
     screen.push_reply(&prefix);
-    feed(&mut parser, &mut screen, &xtgettcap(&["TN"]));
+    parser.put_bytes(&mut screen, &xtgettcap(&["TN"]));
     assert_eq!(screen.drain_replies(), prefix);
 }
 
@@ -1973,11 +1909,11 @@ fn xtgettcap_overflow_failure_does_not_poison_next_request() {
     let mut oversized = b"\x1bP+q".to_vec();
     oversized.extend(std::iter::repeat_n(b'5', 257));
     oversized.extend_from_slice(b"\x1b\\");
-    feed(&mut parser, &mut screen, &oversized);
+    parser.put_bytes(&mut screen, &oversized);
     assert_eq!(screen.drain_replies(), XTGETTCAP_FAILURE_REPLY);
 
     // Act — a follow-up request on the same parser.
-    feed(&mut parser, &mut screen, &xtgettcap(&["TN"]));
+    parser.put_bytes(&mut screen, &xtgettcap(&["TN"]));
 
     // Assert — the overflow flag was reset; the reply is a clean success frame.
     assert_eq!(
@@ -2003,9 +1939,9 @@ fn xtgettcap_reply_cap_falls_back_when_many_names_are_found() {
         expected.push(b';');
         expected.extend_from_slice(entry);
     }
-    assert_xtgettcap_round_trip(&reply, 1, &expected);
+    assert_dcs_round_trip(&reply, b"+", 1, &expected);
     assert_eq!(rejected, XTGETTCAP_FAILURE_REPLY);
-    assert_xtgettcap_round_trip(&rejected, 0, b"");
+    assert_dcs_round_trip(&rejected, b"+", 0, b"");
 }
 
 #[test]
@@ -2038,7 +1974,7 @@ fn dcs_shared_c1_sequence_framing_across_families() {
             b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\",
         ),
     ] {
-        feed(&mut parser, &mut screen, request);
+        parser.put_bytes(&mut screen, request);
         assert_eq!(screen.drain_replies(), expected);
     }
 }
@@ -2072,8 +2008,8 @@ fn dcs_shared_alternating_fragmented_families_and_bounds() {
         let mut screen = Screen::new(3, 5);
         let mut parser = TerminalParser::default();
         parser.set_c1_enabled(true);
-        feed(&mut parser, &mut screen, &stream[..split]);
-        feed(&mut parser, &mut screen, &stream[split..]);
+        parser.put_bytes(&mut screen, &stream[..split]);
+        parser.put_bytes(&mut screen, &stream[split..]);
         assert_eq!(screen.drain_replies(), expected, "split at {split}");
     }
     for chunk in [1, 2, 3, 7, 16] {
@@ -2081,7 +2017,7 @@ fn dcs_shared_alternating_fragmented_families_and_bounds() {
         let mut parser = TerminalParser::default();
         parser.set_c1_enabled(true);
         for part in stream.chunks(chunk) {
-            feed(&mut parser, &mut screen, part);
+            parser.put_bytes(&mut screen, part);
         }
         assert_eq!(screen.drain_replies(), expected, "chunk size {chunk}");
     }
@@ -2212,11 +2148,11 @@ fn dcs_shared_close_session_discards_partial_requests() {
     ] {
         let mut screen = Screen::new(3, 5);
         let mut parser = TerminalParser::default();
-        feed(&mut parser, &mut screen, partial);
+        parser.put_bytes(&mut screen, partial);
         parser.close_session();
-        feed(&mut parser, &mut screen, b"\x1b\\");
+        parser.put_bytes(&mut screen, b"\x1b\\");
         assert!(screen.drain_replies().is_empty());
-        feed(&mut parser, &mut screen, next);
+        parser.put_bytes(&mut screen, next);
         assert_eq!(screen.drain_replies(), expected);
     }
 }
@@ -2228,41 +2164,21 @@ fn should_report_standard_mode_states() {
     for &(param, default) in &[(4, 2), (20, 2)] {
         let mut screen = Screen::new(10, 20);
         let mut parser = TerminalParser::default();
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[{param}$p").as_bytes(),
-        );
+        parser.put_bytes(&mut screen, format!("\x1b[{param}$p").as_bytes());
         assert_eq!(
             screen.drain_replies(),
             format!("\x1b[{param};{default}$y").into_bytes()
         );
 
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[{param}h").as_bytes(),
-        );
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[{param}$p").as_bytes(),
-        );
+        parser.put_bytes(&mut screen, format!("\x1b[{param}h").as_bytes());
+        parser.put_bytes(&mut screen, format!("\x1b[{param}$p").as_bytes());
         assert_eq!(
             screen.drain_replies(),
             format!("\x1b[{param};1$y").into_bytes()
         );
 
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[{param}l").as_bytes(),
-        );
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[{param}$p").as_bytes(),
-        );
+        parser.put_bytes(&mut screen, format!("\x1b[{param}l").as_bytes());
+        parser.put_bytes(&mut screen, format!("\x1b[{param}$p").as_bytes());
         assert_eq!(
             screen.drain_replies(),
             format!("\x1b[{param};2$y").into_bytes()
@@ -2275,26 +2191,14 @@ fn should_report_private_mode_states_with_private_marker() {
     for &(param, default) in &[(1, 2), (6, 2), (7, 1), (25, 1), (66, 2), (69, 2), (2004, 2)] {
         let mut screen = Screen::new(10, 20);
         let mut parser = TerminalParser::default();
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[?{param}$p").as_bytes(),
-        );
+        parser.put_bytes(&mut screen, format!("\x1b[?{param}$p").as_bytes());
         assert_eq!(
             screen.drain_replies(),
             format!("\x1b[?{param};{default}$y").into_bytes()
         );
 
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[?{param}h").as_bytes(),
-        );
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[?{param}$p").as_bytes(),
-        );
+        parser.put_bytes(&mut screen, format!("\x1b[?{param}h").as_bytes());
+        parser.put_bytes(&mut screen, format!("\x1b[?{param}$p").as_bytes());
         assert_eq!(
             screen.drain_replies(),
             format!("\x1b[?{param};1$y").into_bytes()
@@ -2304,10 +2208,10 @@ fn should_report_private_mode_states_with_private_marker() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
-    feed(&mut parser, &mut screen, b"\x1b[?1049$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1049$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1049;1$y");
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
-    feed(&mut parser, &mut screen, b"\x1b[?1049$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1049$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1049;2$y");
 }
 #[test]
@@ -2315,8 +2219,7 @@ fn should_track_mouse_modes_independently_across_multi_parameter_changes_and_ris
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
 
-    feed(
-        &mut parser,
+    parser.put_bytes(
         &mut screen,
         b"\x1b[?1002;1000;1003;1006h\x1b[?1000$p\x1b[?1002$p\x1b[?1003$p\x1b[?1006$p",
     );
@@ -2329,8 +2232,7 @@ fn should_track_mouse_modes_independently_across_multi_parameter_changes_and_ris
         crate::model::MouseTrackingMode::AnyMotion
     );
 
-    feed(
-        &mut parser,
+    parser.put_bytes(
         &mut screen,
         b"\x1b[?1003;1006l\x1b[?1000$p\x1b[?1002$p\x1b[?1003$p\x1b[?1006$p",
     );
@@ -2343,8 +2245,7 @@ fn should_track_mouse_modes_independently_across_multi_parameter_changes_and_ris
         crate::model::MouseTrackingMode::ButtonMotion
     );
 
-    feed(
-        &mut parser,
+    parser.put_bytes(
         &mut screen,
         b"\x1bc\x1b[?1000$p\x1b[?1002$p\x1b[?1003$p\x1b[?1006$p",
     );
@@ -2366,11 +2267,7 @@ fn should_report_alt_screen_family_mode_states() {
             &mut screen,
             format!("\x1b[?{param}h").as_bytes(),
         );
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[?{param}$p").as_bytes(),
-        );
+        parser.put_bytes(&mut screen, format!("\x1b[?{param}$p").as_bytes());
         assert_eq!(
             screen.drain_replies(),
             format!("\x1b[?{param};1$y").into_bytes(),
@@ -2381,11 +2278,7 @@ fn should_report_alt_screen_family_mode_states() {
             &mut screen,
             format!("\x1b[?{param}l").as_bytes(),
         );
-        feed(
-            &mut parser,
-            &mut screen,
-            format!("\x1b[?{param}$p").as_bytes(),
-        );
+        parser.put_bytes(&mut screen, format!("\x1b[?{param}$p").as_bytes());
         assert_eq!(
             screen.drain_replies(),
             format!("\x1b[?{param};2$y").into_bytes(),
@@ -2399,21 +2292,21 @@ fn should_report_1048_cursor_save_state() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
 
-    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1048$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1048;2$y");
 
-    feed(&mut parser, &mut screen, b"\x1b[?1048h");
-    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1048h");
+    parser.put_bytes(&mut screen, b"\x1b[?1048$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1048;1$y");
 
     // DECRC keeps the snapshot slot (matching DECSC/DECRC semantics).
-    feed(&mut parser, &mut screen, b"\x1b[?1048l");
-    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1048l");
+    parser.put_bytes(&mut screen, b"\x1b[?1048$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1048;1$y");
 
     // RIS clears the snapshot slot.
-    feed(&mut parser, &mut screen, b"\x1bc");
-    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    parser.put_bytes(&mut screen, b"\x1bc");
+    parser.put_bytes(&mut screen, b"\x1b[?1048$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1048;2$y");
 }
 
@@ -2452,7 +2345,7 @@ fn should_report_1048_save_slot_per_buffer() {
     let mut parser = TerminalParser::default();
 
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1048h");
-    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1048$p");
     assert_eq!(
         screen.drain_replies(),
         b"\x1b[?1048;1$y",
@@ -2460,7 +2353,7 @@ fn should_report_1048_save_slot_per_buffer() {
     );
 
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
-    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1048$p");
     assert_eq!(
         screen.drain_replies(),
         b"\x1b[?1048;2$y",
@@ -2468,7 +2361,7 @@ fn should_report_1048_save_slot_per_buffer() {
     );
 
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
-    feed(&mut parser, &mut screen, b"\x1b[?1048$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1048$p");
     assert_eq!(
         screen.drain_replies(),
         b"\x1b[?1048;1$y",
@@ -2497,12 +2390,12 @@ fn should_bound_and_preserve_mode_reports_across_alt_transitions() {
     let mut screen = Screen::new(10, 20);
     let mut parser = TerminalParser::default();
     screen.push_reply(&prefix);
-    feed(&mut parser, &mut screen, b"\x1b[?2004$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2004$p");
     assert_eq!(screen.drain_replies().len(), 1024);
 
     let too_full = vec![b'x'; 1024 - reply.len() + 1];
     screen.push_reply(&too_full);
-    feed(&mut parser, &mut screen, b"\x1b[?2004$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2004$p");
     assert_eq!(screen.drain_replies(), too_full);
 
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?2004$p\x1b[?1049h");
@@ -2518,14 +2411,14 @@ fn should_write_cells_when_printable_arrives_between_2026_enable_and_disable() {
     let mut parser = TerminalParser::default();
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[?2026hbatch\x1b[?2026l");
+    parser.put_bytes(&mut screen, b"\x1b[?2026hbatch\x1b[?2026l");
 
     // Assert
     assert!(
         screen.row_text(0).contains("batch"),
         "printable output during a synchronized batch still mutates cells"
     );
-    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2026$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
 }
 
@@ -2536,7 +2429,7 @@ fn should_report_reset_set_set_when_decrqm_queries_2026_at_depths_0_1_2() {
     let mut parser = TerminalParser::default();
 
     // Act / Assert — depth 0 is Reset, never Unknown
-    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2026$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
     assert_ne!(
         screen.mode_status(true, 2026),
@@ -2544,7 +2437,7 @@ fn should_report_reset_set_set_when_decrqm_queries_2026_at_depths_0_1_2() {
     );
 
     // Act / Assert — depth 1 is Set
-    feed(&mut parser, &mut screen, b"\x1b[?2026h\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2026h\x1b[?2026$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;1$y");
     assert_ne!(
         screen.mode_status(true, 2026),
@@ -2552,7 +2445,7 @@ fn should_report_reset_set_set_when_decrqm_queries_2026_at_depths_0_1_2() {
     );
 
     // Act / Assert — depth 2 is Set, never Unknown
-    feed(&mut parser, &mut screen, b"\x1b[?2026h\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2026h\x1b[?2026$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;1$y");
     assert_ne!(
         screen.mode_status(true, 2026),
@@ -2565,10 +2458,10 @@ fn should_keep_decrqm_set_when_one_disable_leaves_2026_nested() {
     // Arrange
     let mut screen = Screen::new(2, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[?2026h\x1b[?2026h");
+    parser.put_bytes(&mut screen, b"\x1b[?2026h\x1b[?2026h");
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[?2026l\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2026l\x1b[?2026$p");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;1$y");
@@ -2580,14 +2473,13 @@ fn should_report_decrqm_reset_when_nested_2026_enables_are_fully_unwound() {
     // Arrange
     let mut screen = Screen::new(2, 20);
     let mut parser = TerminalParser::default();
-    feed(
-        &mut parser,
+    parser.put_bytes(
         &mut screen,
         b"\x1b[?2026h\x1b[?2026hinner\x1b[?2026l\x1b[?2026l",
     );
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2026$p");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
@@ -2602,11 +2494,7 @@ fn should_keep_decrqm_reset_when_extra_2026_disable_arrives_at_zero() {
     let mut parser = TerminalParser::default();
 
     // Act
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1b[?2026l\x1b[?2026l\x1b[?2026$p",
-    );
+    parser.put_bytes(&mut screen, b"\x1b[?2026l\x1b[?2026l\x1b[?2026$p");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
@@ -2618,10 +2506,10 @@ fn should_write_printable_output_when_it_follows_extra_2026_disables() {
     // Arrange
     let mut screen = Screen::new(2, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[?2026l\x1b[?2026l");
+    parser.put_bytes(&mut screen, b"\x1b[?2026l\x1b[?2026l");
 
     // Act
-    feed(&mut parser, &mut screen, b"later");
+    parser.put_bytes(&mut screen, b"later");
 
     // Assert
     assert!(screen.row_text(0).contains("later"));
@@ -2633,23 +2521,23 @@ fn should_handle_focus_reporting_modes_queries_and_resets() {
     let mut screen = Screen::new(2, 20);
     let mut parser = TerminalParser::default();
 
-    feed(&mut parser, &mut screen, b"\x1b[?1004$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1004$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1004;2$y");
 
-    feed(&mut parser, &mut screen, b"\x1b[?1004;2004h\x1b[?1004$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1004;2004h\x1b[?1004$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1004;1$y");
 
-    feed(&mut parser, &mut screen, b"\x1b[!p\x1b[?1004$p");
+    parser.put_bytes(&mut screen, b"\x1b[!p\x1b[?1004$p");
     assert_eq!(
         screen.drain_replies(),
         b"\x1b[?1004;1$y",
         "DECSTR must not reset focus reporting"
     );
 
-    feed(&mut parser, &mut screen, b"\x1b[?1004l\x1b[?1004$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1004l\x1b[?1004$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1004;2$y");
 
-    feed(&mut parser, &mut screen, b"\x1b[?1004h\x1bc\x1b[?1004$p");
+    parser.put_bytes(&mut screen, b"\x1b[?1004h\x1bc\x1b[?1004$p");
     assert_eq!(screen.drain_replies(), b"\x1b[?1004;2$y");
 }
 
@@ -2658,14 +2546,14 @@ fn should_keep_2026_set_when_alt_screen_toggles_while_nested() {
     // Arrange
     let mut screen = Screen::new(2, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[?2026h");
+    parser.put_bytes(&mut screen, b"\x1b[?2026h");
 
     // Act
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049h");
-    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2026$p");
     let alt_reply = screen.drain_replies();
     feed_with_alt_transitions(&mut parser, &mut screen, b"\x1b[?1049l");
-    feed(&mut parser, &mut screen, b"\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1b[?2026$p");
     let primary_reply = screen.drain_replies();
 
     // Assert
@@ -2683,10 +2571,10 @@ fn should_report_decrqm_reset_when_ris_clears_nested_2026() {
     // Arrange
     let mut screen = Screen::new(2, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[?2026h\x1b[?2026hhello");
+    parser.put_bytes(&mut screen, b"\x1b[?2026h\x1b[?2026hhello");
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1bc\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1bc\x1b[?2026$p");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;2$y");
@@ -2698,10 +2586,10 @@ fn should_keep_decrqm_set_when_decstr_leaves_nested_2026() {
     // Arrange
     let mut screen = Screen::new(2, 20);
     let mut parser = TerminalParser::default();
-    feed(&mut parser, &mut screen, b"\x1b[?2026hhello");
+    parser.put_bytes(&mut screen, b"\x1b[?2026hhello");
 
     // Act
-    feed(&mut parser, &mut screen, b"\x1b[!p\x1b[?2026$p");
+    parser.put_bytes(&mut screen, b"\x1b[!p\x1b[?2026$p");
 
     // Assert
     assert_eq!(screen.drain_replies(), b"\x1b[?2026;1$y");
@@ -2721,8 +2609,7 @@ fn osc_default_colors_set_query_reset_and_round_trip_all_slots() {
     let mut parser = TerminalParser::default();
 
     screen.clear_dirty();
-    feed(
-        &mut parser,
+    parser.put_bytes(
         &mut screen,
         b"\x1b]10;#123456\x07\x1b]11;rgb:f/80/0000\x1b\\\x1b]12;#abcdef\x07",
     );
@@ -2738,34 +2625,26 @@ fn osc_default_colors_set_query_reset_and_round_trip_all_slots() {
             .all(|range| range.start_col == 0 && range.end_col == 8)
     );
     screen.clear_dirty();
-    feed(&mut parser, &mut screen, b"\x1b]12;#abcdef\x07");
+    parser.put_bytes(&mut screen, b"\x1b]12;#abcdef\x07");
     assert!(screen.dirty_ranges().is_empty());
 
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]12;?\x07",
-    );
+    parser.put_bytes(&mut screen, b"\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]12;?\x07");
     assert_eq!(
         screen.drain_replies(),
         b"\x1b]10;rgb:1212/3434/5656\x07\x1b]11;rgb:ffff/8080/0000\x1b\\\x1b]12;rgb:abab/cdcd/efef\x07"
     );
 
-    feed(&mut parser, &mut screen, b"\x1b]10;?\x07");
+    parser.put_bytes(&mut screen, b"\x1b]10;?\x07");
     let query_reply = screen.drain_replies();
-    feed(&mut parser, &mut screen, b"\x1b]110;\x1b\\");
+    parser.put_bytes(&mut screen, b"\x1b]110;\x1b\\");
     assert_eq!(screen.active_palette().foreground, startup.foreground);
-    feed(&mut parser, &mut screen, &query_reply);
+    parser.put_bytes(&mut screen, &query_reply);
     assert_eq!(
         screen.active_palette().foreground,
         Rgba::from_rgba8(0x12, 0x34, 0x56, 64)
     );
 
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1b]110;\x07\x1b]111;\x1b\\\x1b]112;\x07",
-    );
+    parser.put_bytes(&mut screen, b"\x1b]110;\x07\x1b]111;\x1b\\\x1b]112;\x07");
     assert_eq!(screen.active_palette(), startup);
 }
 
@@ -2785,21 +2664,21 @@ fn osc_default_colors_reject_invalid_input_and_recover_after_cancel_or_overflow(
         let mut sequence = b"\x1b]10;".to_vec();
         sequence.extend_from_slice(payload);
         sequence.push(0x07);
-        feed(&mut parser, &mut screen, &sequence);
+        parser.put_bytes(&mut screen, &sequence);
     }
-    feed(&mut parser, &mut screen, b"\x1b]110;payload\x07");
+    parser.put_bytes(&mut screen, b"\x1b]110;payload\x07");
     assert_eq!(screen.active_palette(), startup);
     assert!(screen.drain_replies().is_empty());
 
-    feed(&mut parser, &mut screen, b"\x1b]10;#112233\x18");
+    parser.put_bytes(&mut screen, b"\x1b]10;#112233\x18");
     let mut overflow = b"\x1b]11;".to_vec();
     overflow.extend(std::iter::repeat_n(b'a', 4097));
     overflow.push(0x07);
-    feed(&mut parser, &mut screen, &overflow);
+    parser.put_bytes(&mut screen, &overflow);
     assert_eq!(screen.active_palette(), startup);
 
     for &byte in b"\x1b]12;#445566\x1b\\" {
-        feed(&mut parser, &mut screen, &[byte]);
+        parser.put_bytes(&mut screen, &[byte]);
     }
     assert_eq!(
         screen.default_color(DefaultColorSlot::Cursor),
@@ -2812,12 +2691,12 @@ fn osc_default_colors_survive_alt_screen_families_ris_decstr_and_sgr_resets() {
     for mode in [47, 1047, 1049] {
         let mut screen = Screen::new(2, 8);
         let mut parser = TerminalParser::default();
-        feed(&mut parser, &mut screen, b"\x1b]10;#112233\x07");
+        parser.put_bytes(&mut screen, b"\x1b]10;#112233\x07");
         let sequence = format!(
             "\x1b[?{mode}h\x1b]11;#445566\x07\x1b[0m\x1b[!p\x1b[?{mode}l\x1b[?{mode}h\x1b[?{mode}l"
         );
         feed_with_alt_transitions(&mut parser, &mut screen, sequence.as_bytes());
-        feed(&mut parser, &mut screen, b"\x1bc");
+        parser.put_bytes(&mut screen, b"\x1bc");
 
         let active = screen.active_palette();
         assert_eq!(active.foreground, Rgba::from_rgb8(0x11, 0x22, 0x33));
@@ -2838,34 +2717,25 @@ fn osc8_applies_cell_state_and_obeys_close_reset_and_invalid_preservation() {
     let mut screen = Screen::new(2, 8);
     let mut parser = TerminalParser::default();
 
-    feed(
-        &mut parser,
+    parser.put_bytes(
         &mut screen,
         b"\x1b]8;id=one;https://example.test\x1b\\a\x1b[0mb",
     );
     let link = screen.cell(0, 0).hyperlink.expect("opened hyperlink");
     assert_eq!(screen.cell(0, 1).hyperlink, Some(link));
 
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1b]8;id=bad:id=dup;https://bad\x07c",
-    );
+    parser.put_bytes(&mut screen, b"\x1b]8;id=bad:id=dup;https://bad\x07c");
     assert_eq!(screen.cell(0, 2).hyperlink, Some(link));
 
-    feed(&mut parser, &mut screen, b"\x1b]8;;\x1b\\d");
+    parser.put_bytes(&mut screen, b"\x1b]8;;\x1b\\d");
     assert_eq!(screen.cell(0, 3).hyperlink, None);
 
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1b]8;;https://again\x1b\\\x1b[!pe",
-    );
+    parser.put_bytes(&mut screen, b"\x1b]8;;https://again\x1b\\\x1b[!pe");
     assert!(
         screen.cell(0, 0).hyperlink.is_some(),
         "DECSTR keeps active hyperlink"
     );
-    feed(&mut parser, &mut screen, b"\x1bcf");
+    parser.put_bytes(&mut screen, b"\x1bcf");
     assert_eq!(
         screen.cell(0, 0).hyperlink,
         None,
@@ -2882,7 +2752,7 @@ fn osc8_fragmented_st_completion_preserves_wide_cell_identity() {
         b".test\x1b".as_slice(),
         b"\\\xe7\x95\x8c".as_slice(),
     ] {
-        feed(&mut parser, &mut screen, chunk);
+        parser.put_bytes(&mut screen, chunk);
     }
     let link = screen.cell(0, 0).hyperlink.expect("base half linked");
     assert_eq!(screen.cell(0, 1).hyperlink, Some(link));
@@ -2893,34 +2763,22 @@ fn osc8_fragmented_st_completion_preserves_wide_cell_identity() {
 fn osc8_cancel_overflow_and_incomplete_input_preserve_state_and_recover() {
     let mut screen = Screen::new(2, 12);
     let mut parser = TerminalParser::default();
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1b]8;;https://original.test\x1b\\a",
-    );
+    parser.put_bytes(&mut screen, b"\x1b]8;;https://original.test\x1b\\a");
     let original = screen.cell(0, 0).hyperlink.unwrap();
 
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1b]8;;https://cancelled.test\x18b",
-    );
+    parser.put_bytes(&mut screen, b"\x1b]8;;https://cancelled.test\x18b");
     assert_eq!(screen.cell(0, 1).hyperlink, Some(original));
 
     let mut overflow = b"\x1b]8;;".to_vec();
     overflow.extend(std::iter::repeat_n(b'x', 5000));
     overflow.extend_from_slice(b"\x07c");
-    feed(&mut parser, &mut screen, &overflow);
+    parser.put_bytes(&mut screen, &overflow);
     assert_eq!(screen.cell(0, 2).hyperlink, Some(original));
 
     let cursor_before = screen.cursor_x();
-    feed(
-        &mut parser,
-        &mut screen,
-        b"\x1b]8;;https://fragmented.test\x1b",
-    );
+    parser.put_bytes(&mut screen, b"\x1b]8;;https://fragmented.test\x1b");
     assert_eq!(screen.cursor_x(), cursor_before);
-    feed(&mut parser, &mut screen, b"\\d");
+    parser.put_bytes(&mut screen, b"\\d");
     assert_ne!(screen.cell(0, 3).hyperlink, Some(original));
     assert!(screen.cell(0, 3).hyperlink.is_some());
 }

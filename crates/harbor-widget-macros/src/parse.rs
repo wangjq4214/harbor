@@ -302,19 +302,13 @@ mod tests {
 
     #[test]
     fn rejects_retired_context_signature() {
-        let comma_error = parse_error(quote! { cx, Root::new(); });
-        assert!(
-            comma_error
-                .to_string()
-                .contains("no longer takes a context")
-        );
-
-        let passthrough_error = parse_error(quote! { cx; Root::new(); });
-        assert!(
-            passthrough_error
-                .to_string()
-                .contains("no longer takes a context")
-        );
+        for tokens in [quote! { cx, Root::new(); }, quote! { cx; Root::new(); }] {
+            let error = parse_error(tokens.clone());
+            assert!(
+                error.to_string().contains("no longer takes a context"),
+                "{tokens}: {error}"
+            );
+        }
     }
 
     #[test]

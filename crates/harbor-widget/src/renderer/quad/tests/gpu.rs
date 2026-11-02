@@ -126,15 +126,6 @@ fn should_track_multiple_items_at_distinct_slots() {
 
 #[test]
 #[ignore = "gpu: run the matching explicit test recipe"]
-fn should_return_none_for_id_zero_by_default() {
-    let (device, _queue) = gpu_device();
-    let renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
-    // id 0 is the default/unset value; it won't be in the map unless added
-    assert_eq!(renderer.slot_of(0), None);
-}
-
-#[test]
-#[ignore = "gpu: run the matching explicit test recipe"]
 fn grows_instance_buffer_without_losing_live_slots() {
     let (device, queue) = gpu_device();
     let mut renderer = QuadRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);

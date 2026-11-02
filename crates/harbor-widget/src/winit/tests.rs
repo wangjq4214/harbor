@@ -17,78 +17,50 @@ use winit::keyboard::NamedKey;
 fn presented_frame_operations_are_ordered_and_stop_on_acquire_or_encode_error() {
     use std::cell::RefCell;
 
-    let order = RefCell::new(Vec::new());
-    let result = execute_presented_frame(
-        || {
-            order.borrow_mut().push("acquire");
-            Ok::<_, &'static str>("texture")
-        },
-        |_| {
-            order.borrow_mut().push("view");
-            "view"
-        },
-        |_| {
-            order.borrow_mut().push("encode");
-            Ok::<_, &'static str>("command")
-        },
-        |_| order.borrow_mut().push("submit"),
-        || order.borrow_mut().push("pre_present_notify"),
-        |_| order.borrow_mut().push("present"),
-    );
-    assert_eq!(result, Ok(()));
-    assert_eq!(
-        *order.borrow(),
-        vec![
-            "acquire",
-            "view",
-            "encode",
-            "submit",
-            "pre_present_notify",
-            "present"
-        ]
-    );
-
-    let order = RefCell::new(Vec::new());
-    let result = execute_presented_frame(
-        || {
-            order.borrow_mut().push("acquire");
-            Err::<&str, _>("acquire")
-        },
-        |_| {
-            order.borrow_mut().push("view");
-            "view"
-        },
-        |_| {
-            order.borrow_mut().push("encode");
-            Ok::<_, &'static str>("command")
-        },
-        |_| order.borrow_mut().push("submit"),
-        || order.borrow_mut().push("pre_present_notify"),
-        |_| order.borrow_mut().push("present"),
-    );
-    assert_eq!(result, Err("acquire"));
-    assert_eq!(*order.borrow(), vec!["acquire"]);
-
-    let order = RefCell::new(Vec::new());
-    let result = execute_presented_frame(
-        || {
-            order.borrow_mut().push("acquire");
-            Ok::<_, &'static str>("texture")
-        },
-        |_| {
-            order.borrow_mut().push("view");
-            "view"
-        },
-        |_| {
-            order.borrow_mut().push("encode");
-            Err::<&str, _>("encode")
-        },
-        |_| order.borrow_mut().push("submit"),
-        || order.borrow_mut().push("pre_present_notify"),
-        |_| order.borrow_mut().push("present"),
-    );
-    assert_eq!(result, Err("encode"));
-    assert_eq!(*order.borrow(), vec!["acquire", "view", "encode"]);
+    for (failure, expected_order) in [
+        (
+            None,
+            &[
+                "acquire",
+                "view",
+                "encode",
+                "submit",
+                "pre_present_notify",
+                "present",
+            ][..],
+        ),
+        (Some("acquire"), &["acquire"][..]),
+        (Some("encode"), &["acquire", "view", "encode"][..]),
+    ] {
+        let order = RefCell::new(Vec::new());
+        let result = execute_presented_frame(
+            || {
+                order.borrow_mut().push("acquire");
+                if failure == Some("acquire") {
+                    Err("acquire")
+                } else {
+                    Ok("texture")
+                }
+            },
+            |_| {
+                order.borrow_mut().push("view");
+                "view"
+            },
+            |_| {
+                order.borrow_mut().push("encode");
+                if failure == Some("encode") {
+                    Err("encode")
+                } else {
+                    Ok("command")
+                }
+            },
+            |_| order.borrow_mut().push("submit"),
+            || order.borrow_mut().push("pre_present_notify"),
+            |_| order.borrow_mut().push("present"),
+        );
+        assert_eq!(result, failure.map_or(Ok(()), Err), "{failure:?}");
+        assert_eq!(order.borrow().as_slice(), expected_order, "{failure:?}");
+    }
 }
 
 #[test]
@@ -830,6 +802,19 @@ fn keyboard_conversion_preserves_press_release_named_and_numpad_keys() {
     );
 }
 
+fn modifier_combinations() -> [ModifiersState; 6] {
+    [
+        ModifiersState::empty(),
+        ModifiersState::SHIFT,
+        ModifiersState::CONTROL,
+        ModifiersState::ALT,
+        ModifiersState::SUPER,
+        ModifiersState::SHIFT
+            | ModifiersState::CONTROL
+            | ModifiersState::ALT
+            | ModifiersState::SUPER,
+    ]
+}
 #[test]
 fn supported_named_keys_and_modifier_bits_are_preserved() {
     let supported = [
@@ -861,19 +846,8 @@ fn supported_named_keys_and_modifier_bits_are_preserved() {
         (NamedKey::PageUp, WidgetKey::PageUp),
         (NamedKey::PageDown, WidgetKey::PageDown),
     ];
-    let modifier_bits = [
-        ModifiersState::empty(),
-        ModifiersState::SHIFT,
-        ModifiersState::CONTROL,
-        ModifiersState::ALT,
-        ModifiersState::SUPER,
-        ModifiersState::SHIFT
-            | ModifiersState::CONTROL
-            | ModifiersState::ALT
-            | ModifiersState::SUPER,
-    ];
     for (named, expected_key) in supported {
-        for modifiers in modifier_bits {
+        for modifiers in modifier_combinations() {
             let event = keyboard_to_uievent(
                 &Key::Named(named),
                 ElementState::Pressed,
@@ -894,18 +868,7 @@ fn supported_named_keys_and_modifier_bits_are_preserved() {
 
 #[test]
 fn character_and_numpad_matrix_preserves_modifier_combinations() {
-    let modifier_bits = [
-        ModifiersState::empty(),
-        ModifiersState::SHIFT,
-        ModifiersState::CONTROL,
-        ModifiersState::ALT,
-        ModifiersState::SUPER,
-        ModifiersState::SHIFT
-            | ModifiersState::CONTROL
-            | ModifiersState::ALT
-            | ModifiersState::SUPER,
-    ];
-    for modifiers in modifier_bits {
+    for modifiers in modifier_combinations() {
         for (text, expected) in [
             ("a", WidgetKey::Character('a')),
             ("é", WidgetKey::Character('é')),
@@ -1599,41 +1562,6 @@ fn should_request_redraw_and_present_when_about_to_wait_after_matching_disable()
 }
 
 #[test]
-fn should_keep_present_eligible_when_later_turn_follows_trailing_disables() {
-    // Arrange
-    let eligible = Arc::new(AtomicBool::new(false));
-    let redraw = Arc::new(AtomicBool::new(false));
-    let schedule = {
-        let eligible = Arc::clone(&eligible);
-        let redraw = Arc::clone(&redraw);
-        Arc::new(move |_, _| ExternalScheduleDemand {
-            redraw_now: redraw.load(Ordering::SeqCst),
-            ordinary_present_eligible: eligible.load(Ordering::SeqCst),
-            deadline: None,
-        })
-    };
-    let mut runtime = Runtime::new();
-    runtime.set_root(ExternalSurface::new(2026).schedule_with(schedule));
-    let now = Instant::now();
-    let _ = runtime.update(now);
-    let mut presenter = WindowPresenter::new(800, 600, 1.0);
-    let deferred = presenter.about_to_wait(&mut runtime, now, None);
-    assert!(deferred.ordinary_present_eligible);
-    assert!(deferred.has_deferred_externals);
-    assert!(!deferred.request_redraw);
-
-    // Act
-    eligible.store(true, Ordering::SeqCst);
-    redraw.store(true, Ordering::SeqCst);
-    let later = presenter.about_to_wait(&mut runtime, now, None);
-
-    // Assert
-    assert!(later.ordinary_present_eligible);
-    assert!(!later.has_deferred_externals);
-    assert!(later.request_redraw);
-}
-
-#[test]
 fn should_keep_poll_when_about_to_wait_while_externals_are_deferred() {
     use std::time::Duration;
 
@@ -1714,7 +1642,9 @@ fn should_cancel_recovery_and_present_when_schedule_becomes_eligible() {
     let _ = runtime.update(now);
     let mut presenter = WindowPresenter::new(800, 600, 1.0);
     let armed = presenter.about_to_wait(&mut runtime, now, None);
+    assert!(armed.ordinary_present_eligible);
     assert!(armed.has_deferred_externals);
+    assert!(!armed.request_redraw);
     assert_eq!(
         armed.control_flow,
         Some(ControlFlowEffect::WaitUntil(

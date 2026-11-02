@@ -9,11 +9,6 @@ use std::{
     rc::Rc,
 };
 
-/// Helper: returns None for root fibers that have no parent.
-fn no_parent() -> Option<FiberId> {
-    None
-}
-
 fn clear_dirty_queue() {
     PENDING_DIRTY.with(|q| q.borrow_mut().clear());
 }
@@ -59,6 +54,7 @@ fn dirty_flags_operations() {
     flags.insert(DirtyFlags::LAYOUT_DIRTY);
     assert!(flags.contains(DirtyFlags::BUILD_DIRTY));
     assert!(flags.contains(DirtyFlags::LAYOUT_DIRTY));
+    assert!(!flags.is_empty());
 
     flags.remove(DirtyFlags::BUILD_DIRTY);
     assert!(!flags.contains(DirtyFlags::BUILD_DIRTY));
@@ -89,20 +85,7 @@ fn dirty_flags_all_set() {
     assert!(flags.contains(DirtyFlags::LAYOUT_DIRTY));
     assert!(flags.contains(DirtyFlags::PAINT_DIRTY));
     assert!(flags.contains(DirtyFlags::HIT_TEST_DIRTY));
-    // Contains should pass for subsets
-    assert!(flags.contains(DirtyFlags::BUILD_DIRTY));
     assert!(!DirtyFlags::BUILD_DIRTY.contains(DirtyFlags::LAYOUT_DIRTY));
-}
-
-#[test]
-fn dirty_flags_is_empty_after_remove_all() {
-    let mut flags = DirtyFlags::NONE;
-    flags.insert(DirtyFlags::BUILD_DIRTY);
-    flags.insert(DirtyFlags::LAYOUT_DIRTY);
-    assert!(!flags.is_empty());
-    flags.remove(DirtyFlags::BUILD_DIRTY);
-    flags.remove(DirtyFlags::LAYOUT_DIRTY);
-    assert!(flags.is_empty());
 }
 
 // ── FiberArena ──────────────────────────────────────────────────────
@@ -155,9 +138,8 @@ fn arena_remove_parent_does_not_implicitly_remove_children() {
 
 // ── Reconciliation ──────────────────────────────────────────────────
 
-/// A simple test AnyView that holds a name for identification.
-#[allow(dead_code)]
-struct TestView(String, Vec<View>);
+// Scenario labels below are descriptive only; reconciliation uses type/key identity.
+struct TestView;
 
 impl AnyView for TestView {
     fn key(&self) -> Option<&Key> {
@@ -321,12 +303,11 @@ impl AnyView for LayoutPassCountingView {
     }
 }
 
-fn test_view(name: &str) -> View {
-    View::new(TestView(name.to_string(), vec![]), vec![], None)
+fn test_view(_name: &str) -> View {
+    View::new(TestView, vec![], None)
 }
-
-fn test_view_with_children(name: &str, children: Vec<View>) -> View {
-    View::new(TestView(name.to_string(), vec![]), children, None)
+fn test_view_with_children(_name: &str, children: Vec<View>) -> View {
+    View::new(TestView, children, None)
 }
 
 /// A second view type for type-change tests.
@@ -374,7 +355,7 @@ fn reconcile_static_tree_all_reused() {
 
     // First build: create parent fiber with one child
     let parent_view = test_view_with_children("parent", vec![test_view("child")]);
-    let parent_id = create_fiber_from_view(&mut arena, no_parent(), parent_view);
+    let parent_id = create_fiber_from_view(&mut arena, None, parent_view);
 
     let old_children = arena.get(parent_id).unwrap().children.clone();
     assert_eq!(old_children.len(), 1);
@@ -394,7 +375,7 @@ fn reconcile_type_change_unmounts_and_creates() {
     let mut arena = FiberArena::new();
 
     let parent_view = test_view_with_children("parent", vec![test_view("child")]);
-    let parent_id = create_fiber_from_view(&mut arena, no_parent(), parent_view);
+    let parent_id = create_fiber_from_view(&mut arena, None, parent_view);
 
     let old_children = arena.get(parent_id).unwrap().children.clone();
     let old_child = old_children[0];
@@ -413,7 +394,7 @@ fn reconcile_key_change_unmounts_and_creates() {
     let mut arena = FiberArena::new();
 
     let parent_view = test_view_with_children("parent", vec![keyed_test_view("child", "old")]);
-    let parent_id = create_fiber_from_view(&mut arena, no_parent(), parent_view);
+    let parent_id = create_fiber_from_view(&mut arena, None, parent_view);
 
     let old_children = arena.get(parent_id).unwrap().children.clone();
     let old_child = old_children[0];
@@ -431,7 +412,7 @@ fn reconcile_child_list_grows() {
     let mut arena = FiberArena::new();
 
     let parent_view = test_view_with_children("parent", vec![test_view("a"), test_view("b")]);
-    let parent_id = create_fiber_from_view(&mut arena, no_parent(), parent_view);
+    let parent_id = create_fiber_from_view(&mut arena, None, parent_view);
 
     let old_children = arena.get(parent_id).unwrap().children.clone();
     assert_eq!(old_children.len(), 2);
@@ -462,7 +443,7 @@ fn reconcile_child_list_shrinks() {
         "parent",
         vec![test_view("a"), test_view("b"), test_view("c")],
     );
-    let parent_id = create_fiber_from_view(&mut arena, no_parent(), parent_view);
+    let parent_id = create_fiber_from_view(&mut arena, None, parent_view);
 
     let old_children = arena.get(parent_id).unwrap().children.clone();
     assert_eq!(old_children.len(), 3);
@@ -484,7 +465,7 @@ fn reconcile_keyed_children_reuse_across_reorder() {
     let mut arena = FiberArena::new();
     let parent_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         test_view_with_children(
             "parent",
             vec![
@@ -519,7 +500,7 @@ fn reconcile_keyed_middle_removal_preserves_later_fiber() {
     let mut arena = FiberArena::new();
     let parent_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         test_view_with_children(
             "parent",
             vec![
@@ -547,7 +528,7 @@ fn reconcile_mixed_keyed_and_unkeyed_children_only_reuses_unkeyed_positionally()
     let mut arena = FiberArena::new();
     let parent_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         test_view_with_children(
             "parent",
             vec![
@@ -581,7 +562,7 @@ fn reconcile_duplicate_old_key_fails_closed_and_reports_diagnostic() {
     let mut arena = FiberArena::new();
     let parent_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         test_view_with_children(
             "parent",
             vec![
@@ -621,7 +602,7 @@ fn reconcile_same_key_with_different_type_replaces_fiber() {
     let mut arena = FiberArena::new();
     let parent_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         test_view_with_children("parent", vec![keyed_test_view("keyed", "same")]),
     );
     let old_children = arena.get(parent_id).unwrap().children.clone();
@@ -642,7 +623,7 @@ fn reconcile_diagnostics_clear_after_a_clean_pass() {
     let mut arena = FiberArena::new();
     let parent_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         test_view_with_children(
             "parent",
             vec![
@@ -688,7 +669,7 @@ fn reconcile_duplicate_new_key_creates_distinct_fibers_and_reports_diagnostic() 
     let mut arena = FiberArena::new();
     let parent_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         test_view_with_children(
             "parent",
             vec![keyed_test_view("a", "a"), keyed_test_view("b", "b")],
@@ -733,29 +714,31 @@ fn reconcile_empty_to_empty() {
 
 #[test]
 fn unmount_clears_subscriptions() {
+    clear_dirty_queue();
     let mut arena = FiberArena::new();
-
-    // Create a fiber to get a valid FiberId for testing subscriptions
-    let dummy = dummy_fiber();
-    let fid = arena.insert(dummy);
-
-    // Create a fiber with a Signal hook
     let signal = Signal::new(42u32);
-    signal.subscribe(fid);
-
     let mut fiber = dummy_fiber();
     fiber.hooks.push(Box::new(signal.clone()));
     let fiber_id = arena.insert(fiber);
+    signal.subscribe(fiber_id);
 
-    // Signal has the fiber as subscriber
     signal.set(100);
-    // (just checking no panic)
+    assert!(PENDING_DIRTY.with(|q| {
+        q.borrow()
+            .get(&crate::signal::DEFAULT_RUNTIME_ID)
+            .is_some_and(|dirty| dirty.contains(&fiber_id))
+    }));
+    clear_dirty_queue();
 
     unmount_fiber(&mut arena, fiber_id);
     assert!(!arena.contains(fiber_id));
-
-    // After unmount, the fiber is unsubscribed
-    // (Signal::set would no longer try to mark fiber_id dirty via mark_dirty)
+    signal.set(200);
+    assert!(PENDING_DIRTY.with(|q| {
+        q.borrow()
+            .get(&crate::signal::DEFAULT_RUNTIME_ID)
+            .is_none_or(|dirty| dirty.is_empty())
+    }));
+    clear_dirty_queue();
 }
 
 #[test]
@@ -802,7 +785,7 @@ fn layout_sets_rect_on_fiber() {
     let sb = SizedBox::new(Size::new(100.0, 50.0)).unwrap();
     let mut cx = crate::view::BuildCx::stub();
     let view = sb.build(&mut cx);
-    let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+    let fiber_id = create_fiber_from_view(&mut arena, None, view);
 
     layout_fiber(
         &mut arena,
@@ -834,7 +817,7 @@ fn paint_fiber_collects_primitives() {
         .expect("valid color");
     let mut cx = crate::view::BuildCx::stub();
     let view = sb.build(&mut cx);
-    let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+    let fiber_id = create_fiber_from_view(&mut arena, None, view);
 
     // Layout first so the fiber has a rect
     layout_fiber(
@@ -872,7 +855,7 @@ fn paint_fiber_orders_phase_primitives_and_retains_after_ids() {
     let mut arena = FiberArena::new();
     let root_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         View::new(parent, vec![View::new(child, vec![], None)], None),
     );
     layout_fiber(
@@ -964,7 +947,7 @@ fn paint_fiber_attaches_only_inherited_clips_to_descendant_items() {
     let mut arena = FiberArena::new();
     let root = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         View::new(
             ClipAncestor(clip.clone()),
             vec![View::new(child, vec![], None)],
@@ -1015,7 +998,7 @@ fn paint_fiber_nested_column_correct_paint_order() {
         );
     let mut cx = crate::view::BuildCx::stub();
     let view = column.build(&mut cx);
-    let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+    let fiber_id = create_fiber_from_view(&mut arena, None, view);
 
     // Layout
     layout_fiber(
@@ -1028,23 +1011,17 @@ fn paint_fiber_nested_column_correct_paint_order() {
     let items = paint_fiber(&mut arena, fiber_id, 0, &mut 1);
     // Each child has one prim (Quad), plus parent has 0 (no background)
     assert_eq!(items.len(), 3);
-    // Paint order should be sequential: 0, 1, 2
-    assert_eq!(items[0].paint_order, 0);
-    assert_eq!(items[1].paint_order, 1);
-    assert_eq!(items[2].paint_order, 2);
-    // Check colors via primitive
+    // Each child keeps its paint order and color.
     use crate::scene::primitive::Primitive;
-    match &items[0].primitive {
-        Primitive::Quad { color, .. } => assert_eq!(*color, Color::RED),
-        _ => panic!("expected Quad"),
-    }
-    match &items[1].primitive {
-        Primitive::Quad { color, .. } => assert_eq!(*color, Color::GREEN),
-        _ => panic!("expected Quad"),
-    }
-    match &items[2].primitive {
-        Primitive::Quad { color, .. } => assert_eq!(*color, Color::BLUE),
-        _ => panic!("expected Quad"),
+    for (index, expected) in [Color::RED, Color::GREEN, Color::BLUE]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(items[index].paint_order, index as u32, "child {index}");
+        match &items[index].primitive {
+            Primitive::Quad { color, .. } => assert_eq!(*color, expected, "child {index}"),
+            _ => panic!("expected Quad for child {index}"),
+        }
     }
 }
 
@@ -1069,7 +1046,7 @@ fn paint_fiber_column_with_background_produces_paint_order() {
         );
     let mut cx = crate::view::BuildCx::stub();
     let view = column.build(&mut cx);
-    let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+    let fiber_id = create_fiber_from_view(&mut arena, None, view);
 
     layout_fiber(
         &mut arena,
@@ -1118,7 +1095,7 @@ fn paint_fiber_row_with_nested_padding() {
     );
     let mut cx = crate::view::BuildCx::stub();
     let view = row.build(&mut cx);
-    let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+    let fiber_id = create_fiber_from_view(&mut arena, None, view);
 
     layout_fiber(
         &mut arena,
@@ -1162,7 +1139,7 @@ fn paint_fiber_stack_overlapping_children() {
         );
     let mut cx = crate::view::BuildCx::stub();
     let view = stack.build(&mut cx);
-    let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+    let fiber_id = create_fiber_from_view(&mut arena, None, view);
 
     layout_fiber(
         &mut arena,
@@ -1190,7 +1167,7 @@ fn should_measure_nested_padding_from_its_child() {
     let mut cx = crate::view::BuildCx::stub();
     let root_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         Padding::all(4.0)
             .unwrap()
             .child(
@@ -1253,7 +1230,7 @@ fn should_allocate_terminal_content_inside_uniform_root_padding() {
     let mut arena = FiberArena::new();
     let padding = Padding::all(16.0).unwrap().child(ExternalSurface::new(1));
     let mut cx = crate::view::BuildCx::stub();
-    let root_id = create_fiber_from_view(&mut arena, no_parent(), padding.build(&mut cx));
+    let root_id = create_fiber_from_view(&mut arena, None, padding.build(&mut cx));
 
     // Act
     layout_fiber(
@@ -1285,7 +1262,7 @@ fn should_propagate_deflated_constraints_when_padding_wraps_child() {
     let mut cx = crate::view::BuildCx::stub();
     let root_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         Padding::all(16.0).unwrap().child(child).build(&mut cx),
     );
 
@@ -1321,7 +1298,7 @@ fn should_measure_each_subtree_once_without_intrinsic_probes() {
     ));
     let mut arena = FiberArena::new();
     let mut cx = crate::view::BuildCx::stub();
-    let root_id = create_fiber_from_view(&mut arena, no_parent(), root.build(&mut cx));
+    let root_id = create_fiber_from_view(&mut arena, None, root.build(&mut cx));
 
     // Act
     layout_fiber(
@@ -1348,7 +1325,7 @@ fn should_allocate_zero_sized_child_when_root_is_smaller_than_padding_insets() {
     let mut cx = crate::view::BuildCx::stub();
     let root_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         Padding::all(16.0)
             .unwrap()
             .child(ExternalSurface::new(1))
@@ -1381,7 +1358,7 @@ fn should_retain_last_staged_child_when_padding_child_is_chained() {
     let mut cx = crate::view::BuildCx::stub();
     let root_id = create_fiber_from_view(
         &mut arena,
-        no_parent(),
+        None,
         Padding::all(4.0)
             .unwrap()
             .child(SizedBox::new(Size::new(10.0, 10.0)).unwrap())
@@ -1415,7 +1392,7 @@ fn layout_fiber_with_no_children() {
     let sb = SizedBox::new(Size::new(100.0, 50.0)).unwrap();
     let mut cx = crate::view::BuildCx::stub();
     let view = sb.build(&mut cx);
-    let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+    let fiber_id = create_fiber_from_view(&mut arena, None, view);
 
     // This tests that layout doesn't panic when children list is empty
     layout_fiber(
@@ -1471,7 +1448,7 @@ fn paint_fiber_respects_base_order() {
         .expect("valid color");
     let mut cx = crate::view::BuildCx::stub();
     let view = sb.build(&mut cx);
-    let fiber_id = create_fiber_from_view(&mut arena, no_parent(), view);
+    let fiber_id = create_fiber_from_view(&mut arena, None, view);
 
     layout_fiber(
         &mut arena,

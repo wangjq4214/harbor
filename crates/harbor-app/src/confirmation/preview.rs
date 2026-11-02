@@ -108,13 +108,20 @@ impl PrimitiveLeaf for PreviewPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn test_metrics() -> TextMetrics {
-        harbor_widget::runtime::DEFAULT_TEXT_METRICS
+    use harbor_widget::runtime::DEFAULT_TEXT_METRICS;
+
+    fn pointer_event(phase: PointerPhase) -> UiEvent {
+        UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
+            Point::ZERO,
+            phase,
+            harbor_widget::input::event::PointerButton::Left,
+            0,
+        ))
     }
 
     #[test]
     fn intrinsic_size_reflects_widest_line() {
-        let metrics = test_metrics();
+        let metrics = DEFAULT_TEXT_METRICS;
         let lines = vec!["hello".to_string(), "longer line!".to_string()];
         let offset = Arc::new(AtomicUsize::new(0));
         let pane = PreviewPane::new(lines, offset, 20.0, 10);
@@ -127,7 +134,7 @@ mod tests {
 
     #[test]
     fn intrinsic_size_empty_lines() {
-        let metrics = test_metrics();
+        let metrics = DEFAULT_TEXT_METRICS;
         let lines: Vec<String> = vec![];
         let offset = Arc::new(AtomicUsize::new(0));
         let pane = PreviewPane::new(lines, offset, 20.0, 10);
@@ -184,12 +191,7 @@ mod tests {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(5));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: 3.0 },
-            harbor_widget::input::event::PointerButton::Left,
-            0,
-        ));
+        let event = pointer_event(PointerPhase::WheelLine { dx: 0.0, dy: 3.0 });
         let mut ctx = EventCtx::new();
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         let result = pane.handle_event(&event, &mut ctx, rect);
@@ -204,12 +206,7 @@ mod tests {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(4));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelPixel { dx: 0.0, dy: 2.0 },
-            harbor_widget::input::event::PointerButton::Left,
-            0,
-        ));
+        let event = pointer_event(PointerPhase::WheelPixel { dx: 0.0, dy: 2.0 });
         let mut ctx = EventCtx::new();
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
 
@@ -227,12 +224,7 @@ mod tests {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(5));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: -2.0 },
-            harbor_widget::input::event::PointerButton::Left,
-            0,
-        ));
+        let event = pointer_event(PointerPhase::WheelLine { dx: 0.0, dy: -2.0 });
         let mut ctx = EventCtx::new();
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         let result = pane.handle_event(&event, &mut ctx, rect);
@@ -246,12 +238,7 @@ mod tests {
         let lines: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(0));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: -5.0 },
-            harbor_widget::input::event::PointerButton::Left,
-            0,
-        ));
+        let event = pointer_event(PointerPhase::WheelLine { dx: 0.0, dy: -5.0 });
         let mut ctx = EventCtx::new();
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         pane.handle_event(&event, &mut ctx, rect);
@@ -264,12 +251,7 @@ mod tests {
         let lines: Vec<String> = (0..15).map(|i| format!("line {}", i)).collect();
         let offset = Arc::new(AtomicUsize::new(5)); // max = 15-10 = 5
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: 10.0 },
-            harbor_widget::input::event::PointerButton::Left,
-            0,
-        ));
+        let event = pointer_event(PointerPhase::WheelLine { dx: 0.0, dy: 10.0 });
         let mut ctx = EventCtx::new();
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         pane.handle_event(&event, &mut ctx, rect);
@@ -286,12 +268,7 @@ mod tests {
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
 
         // Pointer Move ignored
-        let move_event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::Move,
-            harbor_widget::input::event::PointerButton::Left,
-            0,
-        ));
+        let move_event = pointer_event(PointerPhase::Move);
         let mut ctx = EventCtx::new();
         assert_eq!(
             pane.handle_event(&move_event, &mut ctx, rect),
@@ -315,12 +292,7 @@ mod tests {
         let lines: Vec<String> = vec!["a".to_string(), "b".to_string()];
         let offset = Arc::new(AtomicUsize::new(0));
         let pane = PreviewPane::new(lines, offset.clone(), 20.0, 10);
-        let event = UiEvent::Pointer(harbor_widget::input::event::PointerEvent::new(
-            Point::ZERO,
-            PointerPhase::WheelLine { dx: 0.0, dy: 5.0 },
-            harbor_widget::input::event::PointerButton::Left,
-            0,
-        ));
+        let event = pointer_event(PointerPhase::WheelLine { dx: 0.0, dy: 5.0 });
         let mut ctx = EventCtx::new();
         let rect = Rect::from_min_size(Point::ZERO, Size::new(200.0, 200.0));
         pane.handle_event(&event, &mut ctx, rect);

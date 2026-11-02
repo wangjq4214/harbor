@@ -17,6 +17,7 @@ use std::{
     time::Instant,
 };
 
+#[track_caller]
 fn error<T, E: std::fmt::Display>(result: Result<T, E>, field: &str, rule: &str) {
     let message = result
         .err()
@@ -24,6 +25,36 @@ fn error<T, E: std::fmt::Display>(result: Result<T, E>, field: &str, rule: &str)
         .to_string();
     assert!(message.contains(field), "{message}");
     assert!(message.contains(rule), "{message}");
+}
+
+#[track_caller]
+fn control_style_errors(style: &ControlStyle, field: &str, rule: &str) {
+    for (consumer, result) in [
+        ("Button", Button::new().style(style.clone()).map(|_| ())),
+        (
+            "InteractiveRegion",
+            InteractiveRegion::new().style(style.clone()).map(|_| ()),
+        ),
+        (
+            "NotificationCard.close_button_style",
+            harbor_widget::NotificationCard::new("notice", || {})
+                .close_button_style(style.clone())
+                .map(|_| ()),
+        ),
+        (
+            "IconButton",
+            IconButton::new(LucideIcon::X, "x")
+                .style(style.clone())
+                .map(|_| ()),
+        ),
+    ] {
+        let message = result
+            .err()
+            .unwrap_or_else(|| panic!("{consumer}: {field} must reject {rule}"))
+            .to_string();
+        assert!(message.contains(field), "{consumer}: {message}");
+        assert!(message.contains(rule), "{consumer}: {message}");
+    }
 }
 
 fn panic_message(action: impl FnOnce()) -> String {
@@ -117,27 +148,7 @@ fn scalar_entries_reject_at_construction_and_accept_zero_and_large_finite_values
             let mut style = Theme::default().button;
             let (field, slot) = scalar(&mut style, index);
             *slot = value;
-            error(
-                Button::new().style(style.clone()),
-                field,
-                "finite and nonnegative",
-            );
-            error(
-                InteractiveRegion::new().style(style.clone()),
-                field,
-                "finite and nonnegative",
-            );
-            error(
-                harbor_widget::NotificationCard::new("notice", || {})
-                    .close_button_style(style.clone()),
-                field,
-                "finite and nonnegative",
-            );
-            error(
-                IconButton::new(LucideIcon::X, "x").style(style.clone()),
-                field,
-                "finite and nonnegative",
-            );
+            control_style_errors(&style, field, "finite and nonnegative");
             for icon_role in [false, true] {
                 let mut theme = Theme::default();
                 if icon_role {
@@ -197,23 +208,7 @@ fn every_rgba_component_in_every_state_and_focus_ring_is_validated_by_consumers(
                         ["normal", "hovered", "pressed", "selected", "disabled"][state],
                         ["background", "border", "foreground"][kind]
                     );
-                    error(Button::new().style(style.clone()), &field, "finite RGBA");
-                    error(
-                        InteractiveRegion::new().style(style.clone()),
-                        &field,
-                        "finite RGBA",
-                    );
-                    error(
-                        harbor_widget::NotificationCard::new("notice", || {})
-                            .close_button_style(style.clone()),
-                        &field,
-                        "finite RGBA",
-                    );
-                    error(
-                        IconButton::new(LucideIcon::X, "x").style(style.clone()),
-                        &field,
-                        "finite RGBA",
-                    );
+                    control_style_errors(&style, &field, "finite RGBA");
                     for icon_role in [false, true] {
                         let mut theme = Theme::default();
                         if icon_role {
@@ -229,26 +224,7 @@ fn every_rgba_component_in_every_state_and_focus_ring_is_validated_by_consumers(
         for component in 0..4 {
             let mut style = Theme::default().button;
             *channel(&mut style.focus_ring, component) = value;
-            error(
-                Button::new().style(style.clone()),
-                "focus_ring",
-                "finite RGBA",
-            );
-            error(
-                InteractiveRegion::new().style(style.clone()),
-                "focus_ring",
-                "finite RGBA",
-            );
-            error(
-                IconButton::new(LucideIcon::X, "x").style(style.clone()),
-                "focus_ring",
-                "finite RGBA",
-            );
-            error(
-                harbor_widget::NotificationCard::new("notice", || {}).close_button_style(style),
-                "focus_ring",
-                "finite RGBA",
-            );
+            control_style_errors(&style, "focus_ring", "finite RGBA");
         }
     }
 }

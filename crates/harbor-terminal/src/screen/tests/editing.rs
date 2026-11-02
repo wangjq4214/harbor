@@ -1,12 +1,20 @@
 use super::*;
 
+fn fill_row_letters(screen: &mut Screen) {
+    for row in 0..screen.rows() {
+        for col in 0..screen.cols() {
+            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
+        }
+    }
+}
+
 #[test]
 fn erase_display_mode_0_marks_from_cursor_to_end() {
     let mut screen = Screen::new(5, 4);
     screen.active.cursor.cursor.y = 2;
     screen.clear_dirty();
     screen.erase_display(0);
-    let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
+    let dirty = screen.dirty_rows();
     assert_eq!(
         dirty,
         vec![2, 3, 4],
@@ -20,7 +28,7 @@ fn erase_display_mode_1_marks_from_start_to_cursor() {
     screen.active.cursor.cursor.y = 2;
     screen.clear_dirty();
     screen.erase_display(1);
-    let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
+    let dirty = screen.dirty_rows();
     assert_eq!(
         dirty,
         vec![0, 1, 2],
@@ -33,7 +41,7 @@ fn erase_display_mode_2_marks_all() {
     let mut screen = Screen::new(5, 4);
     screen.clear_dirty();
     screen.erase_display(2);
-    let dirty: Vec<usize> = screen.dirty_rows().into_iter().collect();
+    let dirty = screen.dirty_rows();
     assert_eq!(dirty.len(), 5, "erase_display(2) should mark all rows");
 }
 
@@ -137,15 +145,16 @@ fn erase_chars_clears_from_cursor_to_right() {
     screen.clear_dirty();
     screen.erase_chars(7);
     assert_eq!(screen.row_text(0).trim_end(), "hello");
-    assert_eq!(screen.dirty_rows().into_iter().collect::<Vec<_>>(), vec![0]);
+    assert_eq!(screen.dirty_rows(), vec![0]);
 }
 
 #[test]
 fn erase_chars_clamps_to_row_end() {
     let mut screen = Screen::new(1, 4);
-    screen.write_char('a');
-    screen.write_char('b');
-    assert_eq!(screen.row_text(0), "ab  ");
+    for ch in "abcd".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.row_text(0), "abcd");
 
     screen.active.cursor.cursor.x = 2;
     screen.erase_chars(10); // more than remaining cols
@@ -195,9 +204,10 @@ fn insert_chars_zero_acts_as_one() {
 #[test]
 fn insert_chars_clamps_to_row_end() {
     let mut screen = Screen::new(1, 4);
-    screen.write_char('a');
-    screen.write_char('b');
-    assert_eq!(screen.row_text(0), "ab  ");
+    for ch in "abcd".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.row_text(0), "abcd");
 
     screen.active.cursor.cursor.x = 2;
     screen.insert_chars(10);
@@ -233,9 +243,10 @@ fn delete_chars_zero_acts_as_one() {
 #[test]
 fn delete_chars_clamps_to_row_end() {
     let mut screen = Screen::new(1, 4);
-    screen.write_char('a');
-    screen.write_char('b');
-    assert_eq!(screen.row_text(0), "ab  ");
+    for ch in "abcd".chars() {
+        screen.write_char(ch);
+    }
+    assert_eq!(screen.row_text(0), "abcd");
 
     screen.active.cursor.cursor.x = 2;
     screen.delete_chars(10);
@@ -247,11 +258,7 @@ fn insert_lines_within_region() {
     let mut screen = Screen::new(4, 4);
     screen.active.cursor.scroll_region.top = 1;
     screen.active.cursor.scroll_region.bottom = 2;
-    for row in 0..4 {
-        for col in 0..4 {
-            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
-        }
-    }
+    fill_row_letters(&mut screen);
     assert_eq!(screen.row_text(0), "aaaa");
     assert_eq!(screen.row_text(1), "bbbb");
     assert_eq!(screen.row_text(2), "cccc");
@@ -270,11 +277,7 @@ fn insert_lines_outside_region_noop() {
     let mut screen = Screen::new(4, 4);
     screen.active.cursor.scroll_region.top = 1;
     screen.active.cursor.scroll_region.bottom = 2;
-    for row in 0..4 {
-        for col in 0..4 {
-            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
-        }
-    }
+    fill_row_letters(&mut screen);
     screen.active.cursor.cursor.y = 0; // above scroll_top
     screen.insert_lines(1);
     assert_eq!(screen.row_text(0), "aaaa");
@@ -288,11 +291,7 @@ fn delete_lines_within_region() {
     let mut screen = Screen::new(4, 4);
     screen.active.cursor.scroll_region.top = 1;
     screen.active.cursor.scroll_region.bottom = 2;
-    for row in 0..4 {
-        for col in 0..4 {
-            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
-        }
-    }
+    fill_row_letters(&mut screen);
     assert_eq!(screen.row_text(1), "bbbb");
     assert_eq!(screen.row_text(2), "cccc");
 
@@ -309,11 +308,7 @@ fn delete_lines_outside_region_noop() {
     let mut screen = Screen::new(4, 4);
     screen.active.cursor.scroll_region.top = 1;
     screen.active.cursor.scroll_region.bottom = 2;
-    for row in 0..4 {
-        for col in 0..4 {
-            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
-        }
-    }
+    fill_row_letters(&mut screen);
     screen.active.cursor.cursor.y = 3; // below scroll_bottom
     screen.delete_lines(1);
     assert_eq!(screen.row_text(1), "bbbb");
@@ -325,11 +320,7 @@ fn scroll_up_region_scrolls() {
     let mut screen = Screen::new(4, 4);
     screen.active.cursor.scroll_region.top = 0;
     screen.active.cursor.scroll_region.bottom = 2;
-    for row in 0..4 {
-        for col in 0..4 {
-            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
-        }
-    }
+    fill_row_letters(&mut screen);
     assert_eq!(screen.row_text(0), "aaaa");
     assert_eq!(screen.row_text(1), "bbbb");
     assert_eq!(screen.row_text(2), "cccc");
@@ -347,11 +338,7 @@ fn scroll_down_region_scrolls() {
     let mut screen = Screen::new(4, 4);
     screen.active.cursor.scroll_region.top = 0;
     screen.active.cursor.scroll_region.bottom = 2;
-    for row in 0..4 {
-        for col in 0..4 {
-            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
-        }
-    }
+    fill_row_letters(&mut screen);
 
     screen.scroll_down_region(2);
     assert_eq!(screen.row_text(0), "    ");
@@ -363,11 +350,7 @@ fn scroll_down_region_scrolls() {
 #[test]
 fn scroll_up_region_clamps_n() {
     let mut screen = Screen::new(3, 4);
-    for row in 0..3 {
-        for col in 0..4 {
-            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
-        }
-    }
+    fill_row_letters(&mut screen);
     screen.scroll_up_region(100);
     assert_eq!(screen.row_text(0), "    ");
     assert_eq!(screen.row_text(1), "    ");
@@ -379,6 +362,8 @@ fn set_scroll_region_default() {
     let mut screen = Screen::new(4, 4);
     screen.active.cursor.scroll_region.top = 2;
     screen.active.cursor.scroll_region.bottom = 3;
+    screen.active.cursor.cursor.x = 3;
+    screen.active.cursor.cursor.y = 3;
     screen.set_scroll_region(0, 0);
     assert_eq!(screen.active.cursor.scroll_region.top, 0);
     assert_eq!(screen.active.cursor.scroll_region.bottom, 3);
@@ -441,11 +426,7 @@ fn newline_scrolls_region() {
     let mut screen = Screen::new(4, 4);
     screen.active.cursor.scroll_region.top = 1;
     screen.active.cursor.scroll_region.bottom = 2;
-    for row in 0..4 {
-        for col in 0..4 {
-            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
-        }
-    }
+    fill_row_letters(&mut screen);
     // Cursor at scroll_bottom, call newline.
     screen.active.cursor.cursor.y = 2;
     screen.active.cursor.cursor.x = 0;
@@ -463,11 +444,7 @@ fn reverse_index_scrolls_region() {
     let mut screen = Screen::new(4, 4);
     screen.active.cursor.scroll_region.top = 1;
     screen.active.cursor.scroll_region.bottom = 2;
-    for row in 0..4 {
-        for col in 0..4 {
-            screen.cell_mut(row, col).ch = (b'a' + row as u8) as char;
-        }
-    }
+    fill_row_letters(&mut screen);
     // Cursor at scroll_top, call reverse_index.
     screen.active.cursor.cursor.y = 1;
     screen.clear_dirty();
