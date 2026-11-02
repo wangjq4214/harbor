@@ -145,6 +145,9 @@ pub(crate) fn accept_configuration(
     if candidate.shell.directory != accepted.shell.directory {
         launch.push("initial directory");
     }
+    if candidate.profiles != accepted.profiles {
+        launch.push("named profiles");
+    }
     if !launch.is_empty() {
         parts.push(format!("new sessions only: {}", launch.join(", ")));
     }
@@ -1298,6 +1301,7 @@ impl Shell {
         let font_settings = settings.font.clone();
         let history = settings.history;
         let shell_command = crate::tab_coordinator::configured_shell(&settings.shell);
+        let profiles = settings.profiles.clone();
         let event_proxy = self.event_proxy.clone();
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let hmr_root_inputs = Rc::new(RefCell::new(None::<MainWindowRootInputs>));
@@ -1344,6 +1348,7 @@ impl Shell {
                     Arc::clone(context.shared_gpu()),
                     surface.format,
                     shell_command,
+                    profiles,
                     font_settings,
                     history,
                     font_warnings,

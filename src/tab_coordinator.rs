@@ -31,6 +31,7 @@ pub(crate) fn configured_shell(settings: &harbor_config::ShellSettings) -> Shell
         args: settings.args.clone(),
         environment: settings.environment.clone(),
         directory: settings.directory.clone(),
+        ..ShellCommand::default()
     }
 }
 pub(crate) fn format_window_title(title: &str) -> String {
@@ -95,6 +96,7 @@ fn next_app_action(
 /// all model/render preparations and group PTY effects have succeeded.
 struct TerminalConfiguration {
     shell_command: ShellCommand,
+    profiles: std::collections::BTreeMap<harbor_config::ProfileId, harbor_config::SessionProfile>,
     font_settings: harbor_config::FontSettings,
     history: harbor_config::HistoryLimits,
     // Effective selection warnings survive no-change reloads until the font
@@ -165,6 +167,7 @@ impl TerminalConfiguration {
                 self.appearance = TerminalAppearance::from_palette(settings.colors);
             }
             self.shell_command = configured_shell(&settings.shell);
+            self.profiles = settings.profiles.clone();
             // Bindings and launch/restart-only changes do not depend on session resources.
             return Ok(self.font_warnings.clone());
         }
@@ -303,6 +306,7 @@ impl TerminalConfiguration {
         self.metrics = metrics;
         self.appearance = TerminalAppearance::from_palette(settings.colors);
         self.shell_command = configured_shell(&settings.shell);
+        self.profiles = settings.profiles.clone();
         // Effective clipboard delivery remains the startup policy, including for new tabs.
         tabs.accept_configuration_size(size);
         self.geometry_recovery_pending = false;
@@ -355,6 +359,10 @@ impl TerminalTabFactory {
         gpu: Arc<SharedGpu>,
         format: wgpu::TextureFormat,
         shell_command: ShellCommand,
+        profiles: std::collections::BTreeMap<
+            harbor_config::ProfileId,
+            harbor_config::SessionProfile,
+        >,
         font_settings: harbor_config::FontSettings,
         history: harbor_config::HistoryLimits,
         font_warnings: Vec<String>,
@@ -370,6 +378,7 @@ impl TerminalTabFactory {
             format,
             configuration: TerminalConfiguration {
                 shell_command,
+                profiles,
                 font_settings,
                 history,
                 font_warnings,
@@ -399,13 +408,30 @@ impl TerminalTabFactory {
         size: TerminalSize,
         surface_size: (u32, u32),
     ) -> anyhow::Result<TerminalTabResources> {
+        self.create_resources_with_command(
+            tab_id,
+            draw_id,
+            size,
+            surface_size,
+            &self.configuration.shell_command,
+        )
+    }
+
+    fn create_resources_with_command(
+        &self,
+        tab_id: TabId,
+        draw_id: ExternalDrawId,
+        size: TerminalSize,
+        surface_size: (u32, u32),
+        command: &ShellCommand,
+    ) -> anyhow::Result<TerminalTabResources> {
         let fonts = load_system_fonts(&self.configuration.font_settings)?;
         let endpoints = PtyEndpoints::spawn_shell(
             harbor_pty::TerminalSize {
                 rows: size.rows,
                 cols: size.cols,
             },
-            &self.configuration.shell_command,
+            command,
         )?;
         let shell_name = endpoints.shell_name().to_owned();
         let output_event_proxy = self.event_proxy.clone();
@@ -703,6 +729,56 @@ impl TabCoordinator {
             merge_wait(&mut result.wait, host.request_focus(&focus_handle).wait);
         }
         result
+    }
+
+    /// Current accepted choices for the downstream chooser; no stale recipe is retained in intents.
+    #[allow(dead_code)] // T0002 consumes this launch contract.
+    pub(crate) fn profiles(
+        &self,
+    ) -> &std::collections::BTreeMap<harbor_config::ProfileId, harbor_config::SessionProfile> {
+        &self.factory.configuration.profiles
+    }
+
+    /// Typed Host operation, intentionally separate from ordinary New tab.
+    #[allow(dead_code)] // The production chooser is a separate ticket.
+    pub(crate) fn execute_profile_launch(
+        &mut self,
+        host: &mut WinitWindowHost,
+        intent: harbor_app::profiles::ProfileLaunchIntent,
+    ) -> TabDrainOutcome {
+        let surface = host.viewport().physical_size;
+        let size = self
+            .tabs
+            .last_broadcast_size()
+            .unwrap_or_else(|| self.factory.default_terminal_size(surface));
+        let result = crate::profile_launch::create_tab(
+            &mut self.tabs,
+            &self.factory.configuration.profiles,
+            &intent,
+            |id, draw, command| {
+                self.factory
+                    .create_resources_with_command(id, draw, size, surface, command)
+            },
+        );
+        match result {
+            Ok(outcome) => {
+                self.workspace_ui.publish_configuration_notice(
+                    harbor_app::notifications::ConfigurationNoticeSource::Operation,
+                    None,
+                );
+                self.apply_tab_outcome(host, outcome, TabFocusPolicy::Terminal)
+            }
+            Err(error) => {
+                self.workspace_ui.report_configuration_result(format!(
+                    "New session failed: {error:#}. Existing sessions are unchanged."
+                ));
+                TabDrainOutcome {
+                    wait: host.request_frame().wait,
+                    failed: true,
+                    close_window: false,
+                }
+            }
+        }
     }
 
     pub(crate) fn execute_tab_command(

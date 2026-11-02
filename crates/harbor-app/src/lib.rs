@@ -9,6 +9,7 @@ pub mod command;
 pub mod confirmation;
 pub mod notifications;
 mod popups;
+pub mod profiles;
 mod search;
 pub use search::SearchCommandOutcome;
 pub mod tab_manager;

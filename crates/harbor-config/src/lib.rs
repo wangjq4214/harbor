@@ -12,7 +12,9 @@ use std::{
 };
 
 mod color;
+mod profiles;
 pub use color::{Color, Palette, Rgba};
+pub use profiles::{ProfileId, SessionProfile};
 use toml::{Table, Value};
 
 pub const FONT_SIZE: f32 = 24.0;
@@ -35,6 +37,8 @@ pub struct Settings {
     pub font: FontSettings,
     pub history: HistoryLimits,
     pub shell: ShellSettings,
+    /// Complete independent catalog, keyed by persistent TOML identity.
+    pub profiles: BTreeMap<ProfileId, SessionProfile>,
     pub colors: Palette,
     pub keybindings: RawKeybindings,
     pub clipboard: ClipboardSettings,
@@ -330,40 +334,52 @@ fn parse_error_location(error: &toml::de::Error, source: &str) -> String {
 fn parse_document_at(document: Value, path: &Path) -> SettingsLoad {
     let mut loaded = parse_document(document);
     if let Some(directory) = loaded.settings.shell.directory.take() {
-        let resolved = (|| -> Result<PathBuf, &'static str> {
-            if directory.as_os_str().is_empty() {
-                return Err("must not be empty");
-            }
-            let base =
-                std::path::absolute(path).map_err(|_| "could not resolve configuration path")?;
-            let directory = if directory.is_absolute() {
-                directory
-            } else {
-                base.parent()
-                    .ok_or("configuration path has no parent")?
-                    .join(directory)
-            };
-            // Never let a remaining Windows drive-relative path depend on a drive's cwd.
-            if !directory.is_absolute() {
-                return Err("must resolve to an absolute path");
-            }
-            let metadata = fs::metadata(&directory)
-                .map_err(|_| "could not inspect directory (missing, invalid or inaccessible)")?;
-            if !metadata.is_dir() {
-                return Err("is not a directory");
-            }
-            Ok(directory)
-        })();
-        match resolved {
+        match resolve_directory(directory, path) {
             Ok(directory) => loaded.settings.shell.directory = Some(directory),
             Err(reason) => loaded.diagnostics.push(error(format!(
                 "shell.directory: {reason}; using inherited directory"
             ))),
         }
     }
+    loaded.settings.profiles.retain(|_, profile| {
+        let Some(directory) = profile.launch.directory.take() else {
+            return true;
+        };
+        match resolve_directory(directory, path) {
+            Ok(directory) => {
+                profile.launch.directory = Some(directory);
+                true
+            }
+            Err(reason) => {
+                loaded.diagnostics.push(error(format!(
+                    "profiles.directory: {reason}; profile unavailable"
+                )));
+                false
+            }
+        }
+    });
     loaded
 }
 
+fn resolve_directory(directory: PathBuf, path: &Path) -> Result<PathBuf, &'static str> {
+    let base = std::path::absolute(path).map_err(|_| "could not resolve configuration path")?;
+    let directory = if directory.is_absolute() {
+        directory
+    } else {
+        base.parent()
+            .ok_or("configuration path has no parent")?
+            .join(directory)
+    };
+    if !directory.is_absolute() {
+        return Err("must resolve to an absolute path");
+    }
+    let metadata = fs::metadata(&directory)
+        .map_err(|_| "could not inspect directory (missing, invalid or inaccessible)")?;
+    if !metadata.is_dir() {
+        return Err("is not a directory");
+    }
+    Ok(directory)
+}
 #[cfg(windows)]
 fn environment_names_equal(a: &str, b: &str) -> bool {
     use windows::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
@@ -386,6 +402,7 @@ fn parse_document(document: Value) -> SettingsLoad {
         &[
             "font",
             "shell",
+            "profiles",
             "colors",
             "keybindings",
             "clipboard",
@@ -399,6 +416,7 @@ fn parse_document(document: Value) -> SettingsLoad {
     parse_font(root.get("font"), &mut settings.font, &mut diagnostics);
     parse_history(root.get("history"), &mut settings.history, &mut diagnostics);
     parse_shell(root.get("shell"), &mut settings.shell, &mut diagnostics);
+    settings.profiles = profiles::parse(root.get("profiles"), &mut diagnostics);
     parse_clipboard(
         root.get("clipboard"),
         &mut settings.clipboard,
@@ -529,23 +547,23 @@ fn parse_shell(
     );
 
     if let Some(value) = table.get("program") {
-        match non_empty_string(value) {
+        match non_empty_string(value).filter(|program| !program.contains('\0')) {
             Some(program) => settings.program = Some(program.to_owned()),
             None => diagnostics.push(error(
-                "shell.program must be a non-empty string; using platform fallback",
+                "shell.program must be a non-empty string without NUL; using platform fallback",
             )),
         }
     }
     if let Some(value) = table.get("args") {
         match value.as_array().and_then(|args| {
             args.iter()
-                .map(Value::as_str)
+                .map(|arg| arg.as_str().filter(|arg| !arg.contains('\0')))
                 .map(|arg| arg.map(str::to_owned))
                 .collect::<Option<Vec<_>>>()
         }) {
             Some(args) => settings.args = args,
             None => diagnostics.push(error(
-                "shell.args must be an array of strings; using no arguments",
+                "shell.args must be an array of strings without NUL; using no arguments",
             )),
         }
     }

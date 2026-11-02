@@ -105,6 +105,7 @@ pub struct Terminal {
     read_session: read_model::SessionId,
     /// PTY I/O and ANSI/VT parsing. None until initialized with PTY endpoints.
     io: TerminalIo,
+    launch_provenance: Option<harbor_pty::LaunchProvenance>,
     /// Terminal-owned pointer and selection state.
     pointer: PointerInteraction,
     /// Terminal-owned default-background tint and fallback policy.
@@ -132,6 +133,11 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    /// Successful launch facts survive commands, metadata updates and config reloads.
+    pub fn launch_provenance(&self) -> Option<&harbor_pty::LaunchProvenance> {
+        self.launch_provenance.as_ref()
+    }
+
     pub fn projection_requires_full_update(&self) -> bool {
         self.update_needs_full
     }
@@ -147,9 +153,12 @@ impl Terminal {
         wake: impl Fn() -> bool + Send + 'static,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(!self.io.has_session(), "terminal session already attached");
+        let provenance = endpoints.launch_provenance().clone();
         let (pty_read, pty_write, pty_control) = endpoints.into_parts();
         let io = TerminalIo::try_new(pty_read, pty_write, Some(pty_control), wake)?;
-        Ok(self.attach_io(io))
+        let mut terminal = self.attach_io(io);
+        terminal.launch_provenance = Some(provenance);
+        Ok(terminal)
     }
 
     fn attach_io(mut self, mut io: TerminalIo) -> Self {
@@ -203,6 +212,7 @@ impl Terminal {
             screen: Screen::with_palette_and_history(rows, cols, appearance.palette(), history),
             read_session: read_model::SessionId(read_model::fresh_identity()),
             io: TerminalIo::new_headless(),
+            launch_provenance: None,
             pointer: PointerInteraction::new(),
             appearance,
             backdrop_available: false,

@@ -51,6 +51,7 @@ impl Drop for Workspace {
 
 struct Probe {
     terminal: Terminal,
+    launch_provenance: harbor_pty::LaunchProvenance,
     report: PathBuf,
     signal: PathBuf,
 }
@@ -98,6 +99,23 @@ while ($true) {{ Start-Sleep -Milliseconds 100 }}
             "pwsh",
             "this probe requires real PowerShell 7, not a disguised fallback"
         );
+        let launch_provenance = endpoints.launch_provenance().clone();
+        assert_eq!(launch_provenance.program.to_string_lossy(), "pwsh.exe");
+        assert_eq!(
+            launch_provenance.args,
+            if fallback {
+                Vec::new()
+            } else {
+                command.args.clone()
+            }
+        );
+        assert_eq!(
+            launch_provenance.initial_directory,
+            command
+                .directory
+                .clone()
+                .unwrap_or_else(|| std::env::current_dir().unwrap())
+        );
         let mut terminal = Terminal::new_headless(24, 120)
             .start_session_from_endpoints(endpoints, || true)
             .unwrap();
@@ -112,11 +130,16 @@ while ($true) {{ Start-Sleep -Milliseconds 100 }}
         }
         Self {
             terminal,
+            launch_provenance,
             report,
             signal,
         }
     }
     fn read(&mut self) -> Vec<String> {
+        assert_eq!(
+            self.terminal.launch_provenance(),
+            Some(&self.launch_provenance)
+        );
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             self.terminal.drain_pty();

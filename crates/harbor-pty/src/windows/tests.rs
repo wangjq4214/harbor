@@ -10,6 +10,25 @@ use super::*;
 
 use ::windows::Win32::System::Pipes::PeekNamedPipe;
 #[test]
+fn named_executable_failure_never_attempts_a_substitute() {
+    let command = ShellCommand {
+        executable_policy: crate::ExecutablePolicy::Strict,
+        ..ShellCommand::new(Some("missing-named.exe".into()), vec!["arg".into()])
+    };
+    let mut attempts = Vec::new();
+    let error =
+        create_shell_process_with::<()>(&command, Some("cmd.exe".into()), |program, args| {
+            attempts.push((program.to_owned(), args.to_vec()));
+            anyhow::bail!("synthetic creation failure")
+        })
+        .unwrap_err();
+    assert_eq!(
+        attempts,
+        [(OsString::from("missing-named.exe"), vec!["arg".to_owned()])]
+    );
+    assert!(format!("{error:#}").contains("no fallback"));
+}
+#[test]
 fn cancelled_read_maps_to_interrupted_io_error() {
     let error =
         ::windows::core::Error::from_hresult(HRESULT::from_win32(ERROR_OPERATION_ABORTED.0));

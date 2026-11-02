@@ -32,6 +32,7 @@ impl Fixture {
         let policy = TerminalConfiguration {
             geometry_recovery_pending: false,
             shell_command: ShellCommand::default(),
+            profiles: accepted.profiles.clone(),
             font_settings: accepted.font.clone(),
             history: accepted.history,
             font_warnings: Vec::new(),
@@ -462,6 +463,10 @@ fn native_group_rejection_and_retry(compensation_fails: bool) {
 #[cfg(windows)]
 #[path = "session_launch_tests.rs"]
 mod session_launch_tests;
+
+#[cfg(windows)]
+#[path = "session_profile_tests.rs"]
+mod session_profile_tests;
 
 #[cfg(windows)]
 #[path = "configuration_watch_tests.rs"]

@@ -17,6 +17,7 @@ mod event;
 #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
 mod hot_reload;
 mod hyperlink;
+mod profile_launch;
 mod shell;
 mod tab_coordinator;
 mod telemetry;
