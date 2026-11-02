@@ -501,7 +501,8 @@ fn long_unicode_titles_are_ellipsized_clipped_and_never_resize_close_controls() 
 fn many_tabs_scroll_and_offset_clamps_after_content_shrinks() {
     let snapshots = (1..=20).map(|id| snapshot(id, id == 1, false)).collect();
     let controller = controller(1000.0, snapshots, 1);
-    let mut runtime = mount(controller.clone(), 1000, 120);
+    // One tab plus ordinary-new and profile-new controls fit after shrinking.
+    let mut runtime = mount(controller.clone(), 1000, 160);
     assert!(controller.tabs.scroll.metrics().max_scroll_extent() > 0.0);
 
     for _ in 0..24 {

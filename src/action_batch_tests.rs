@@ -77,6 +77,7 @@ fn execute(admission: AppActionAdmission) -> (AppCommandRequest, bool) {
         AppActionAdmission::Execute {
             request,
             clear_palette_focus,
+            ..
         } => (request, clear_palette_focus),
         AppActionAdmission::Rejected { reason, .. } => panic!("unexpected rejection: {reason}"),
     }
@@ -254,4 +255,143 @@ fn retired_search_editor_intents_are_dropped_and_stale_palette_cannot_refocus_ov
     }
     assert!(ui.search_query().is_some());
     assert!(bytes.lock().unwrap().is_empty());
+}
+
+fn profile_catalog()
+-> std::collections::BTreeMap<harbor_config::ProfileId, harbor_config::SessionProfile> {
+    [(
+        harbor_config::ProfileId::new("work").unwrap(),
+        harbor_config::SessionProfile {
+            name: "Work".into(),
+            launch: harbor_config::ShellSettings {
+                program: Some("synthetic.exe".into()),
+                ..Default::default()
+            },
+        },
+    )]
+    .into()
+}
+
+fn submit_profile(ui: &WorkspaceUiController, runtime: &mut Runtime) -> AppCommandRequest {
+    ui.publish_profiles(profile_catalog());
+    runtime.request_focus(&ui.open_profile_chooser());
+    runtime.update(Instant::now());
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("work".into())));
+    runtime.update(Instant::now());
+    key(runtime, Key::Enter, Modifiers::default());
+    let requests = ui.drain_actions();
+    assert_eq!(requests.len(), 1);
+    requests[0]
+}
+
+#[test]
+fn profile_fifo_admits_one_real_transaction_and_targets_the_new_terminal_or_preserves_old_on_failure()
+ {
+    for fail in [false, true] {
+        let (mut tabs, ui, mut runtime, bytes) = fixture();
+        *tabs.active_terminal().unwrap().lock().unwrap() = Terminal::new_headless(8, 40);
+        let old = tabs.active_id();
+        let request = submit_profile(&ui, &mut runtime);
+        let mut queue = [request, request].into_iter();
+        let Some(AppActionAdmission::Execute {
+            profile: Some(intent),
+            request: admitted,
+            clear_palette_focus: true,
+        }) = next_app_action(&mut queue, &ui, &tabs, false)
+        else {
+            panic!("profile admission")
+        };
+        assert_eq!(admitted.command, AppCommand::LaunchProfile);
+        assert_eq!(intent.source, old);
+        let mut creates = 0;
+        let result = crate::profile_launch::create_tab(
+            &mut tabs,
+            &profile_catalog(),
+            &intent,
+            |_, draw, command| {
+                creates += 1;
+                assert_eq!(command.program.as_deref(), Some("synthetic.exe"));
+                if fail {
+                    anyhow::bail!("synthetic creation failure");
+                }
+                Ok(resources(draw, &bytes))
+            },
+        );
+        assert_eq!(creates, 1);
+        assert_eq!(result.is_err(), fail);
+        assert!(matches!(
+            next_app_action(&mut queue, &ui, &tabs, false),
+            Some(AppActionAdmission::Rejected { .. })
+        ));
+        assert!(next_app_action(&mut queue, &ui, &tabs, false).is_none());
+        if fail {
+            assert_eq!(tabs.active_id(), old);
+            assert_eq!(tabs.snapshots().len(), 1);
+            ui.report_configuration_result("New session failed: synthetic creation failure".into());
+        } else {
+            assert_ne!(tabs.active_id(), old);
+            assert_eq!(tabs.snapshots().len(), 2);
+        }
+        ui.tabs()
+            .sync(tabs.snapshots(), tabs.active_bridge(), 1000.0);
+        runtime.clear_focus();
+        runtime.request_focus(&ui.terminal_focus());
+        runtime.update(Instant::now());
+        assert!(runtime.input().focused().is_some());
+        assert!(!ui.popup_is_open());
+        assert!(bytes.lock().unwrap().is_empty());
+        // The newly published bridge owns the destination, not the retired source editor.
+        if !fail {
+            key(&mut runtime, Key::Character('q'), Modifiers::default());
+            assert_eq!(&*bytes.lock().unwrap(), b"q");
+        }
+    }
+}
+
+#[test]
+fn profile_fifo_revalidates_edits_removal_source_gate_and_replacement() {
+    for scenario in ["edited", "deleted", "source", "gate", "replacement"] {
+        let (mut tabs, ui, mut runtime, bytes) = fixture();
+        *tabs.active_terminal().unwrap().lock().unwrap() = Terminal::new_headless(8, 40);
+        let request = submit_profile(&ui, &mut runtime);
+        match scenario {
+            "edited" => {
+                let mut catalog = profile_catalog();
+                catalog
+                    .get_mut("work")
+                    .unwrap()
+                    .launch
+                    .args
+                    .push("new".into());
+                ui.publish_profiles(catalog);
+            }
+            "deleted" => ui.publish_profiles(Default::default()),
+            "source" => {
+                tabs.create_tab(|_, draw| Ok(resources(draw, &bytes)))
+                    .unwrap();
+            }
+            "replacement" => ui.open_search(tabs.active_id().unwrap()),
+            _ => {}
+        }
+        let admission = next_app_action(&mut [request].into_iter(), &ui, &tabs, scenario == "gate");
+        assert!(
+            matches!(admission, Some(AppActionAdmission::Rejected { .. })),
+            "{scenario}"
+        );
+        if scenario == "replacement" {
+            assert!(ui.search_query().is_some());
+            assert!(matches!(
+                admission,
+                Some(AppActionAdmission::Rejected {
+                    restore_terminal_focus: false,
+                    ..
+                })
+            ));
+        }
+        assert_eq!(
+            tabs.snapshots().len(),
+            if scenario == "source" { 2 } else { 1 }
+        );
+        assert!(bytes.lock().unwrap().is_empty());
+    }
 }

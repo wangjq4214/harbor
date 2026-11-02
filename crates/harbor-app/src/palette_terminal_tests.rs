@@ -44,6 +44,8 @@ fn full_visible_registry_is_discoverable_with_effective_bindings_hidden_intents_
     }
     for command in [
         AppCommand::SearchChanged,
+        AppCommand::LaunchProfile,
+        AppCommand::BackToCommands(1),
         AppCommand::CloseCommandPalette(1),
         AppCommand::DismissNotification(1),
     ] {

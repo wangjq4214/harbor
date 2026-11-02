@@ -644,7 +644,7 @@ impl ActiveSession {
             .tabs
             .next_app_action(&mut actions, self.paste.is_active())
         {
-            let (request, from_palette) = match admission {
+            let (request, from_palette, profile) = match admission {
                 AppActionAdmission::Rejected {
                     request,
                     reason,
@@ -668,17 +668,52 @@ impl ActiveSession {
                 AppActionAdmission::Execute {
                     request,
                     clear_palette_focus,
+                    profile,
                 } => {
                     if clear_palette_focus {
                         merge_wait(&mut result.wait, self.main_host.clear_focus().wait);
                     }
-                    (request, clear_palette_focus)
+                    (request, clear_palette_focus, profile)
                 }
             };
             match request.command {
                 AppCommand::OpenCommandPalette => {
                     let focus = self.workspace_ui.open_palette();
                     merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
+                }
+                AppCommand::OpenProfileChooser => {
+                    let focus = self.workspace_ui.open_profile_chooser();
+                    merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
+                }
+                AppCommand::BackToCommands(generation) => {
+                    if let Some(focus) = self.workspace_ui.back_to_commands(generation) {
+                        merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
+                    }
+                }
+                AppCommand::LaunchProfile => {
+                    // Only admitted palette requests carry this generation-scoped intent.
+                    let intent = profile.expect("admitted profile launch");
+                    let outcome = self
+                        .tabs
+                        .execute_profile_launch(&mut self.main_host, intent);
+                    self.workspace_ui.report_palette_result(
+                        request.command,
+                        if outcome.failed {
+                            Err("Failed: see session creation error")
+                        } else {
+                            Ok(())
+                        },
+                    );
+                    if outcome.failed {
+                        merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                    }
+                    merge_wait(&mut result.wait, outcome.wait);
+                    self.reconcile_clipboard();
                 }
                 AppCommand::CloseCommandPalette(generation) => {
                     if self.workspace_ui.close_palette(generation) {

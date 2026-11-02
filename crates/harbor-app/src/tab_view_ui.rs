@@ -26,7 +26,8 @@ pub(crate) fn tab_rail(
                         for snapshot in state.snapshots.iter() {
                             tab_row(cx, snapshot, state.presentation, controller, dispatcher.clone());
                         }
-                        new_tab_button(state.presentation, dispatcher).keyed("new-terminal");
+                        new_tab_button(state.presentation, dispatcher.clone()).keyed("new-terminal");
+                        profile_button(state.presentation, dispatcher).keyed("new-profile");
                     }
                 }
             }
@@ -135,6 +136,37 @@ fn new_tab_button(
                         }
                     }
                 }
+            })
+            .build(cx)
+    }
+}
+
+fn profile_button(
+    presentation: RailPresentation,
+    dispatcher: Dispatcher<AppCommandRequest>,
+) -> impl Component {
+    move |cx: &mut BuildCx| {
+        let compact = presentation == RailPresentation::Compact;
+        InteractiveRegion::new()
+            .style(rail_style(cx, compact)).expect("valid control style")
+            .on_activate({
+                let dispatcher = dispatcher.clone();
+                move |_| dispatcher.dispatch(AppCommandRequest::shortcut(
+                    crate::command::AppCommand::OpenProfileChooser,
+                ))
+            })
+            .child_with(move |cx, state| {
+                let color = rail_style(cx, compact).resolve_state(&state).foreground;
+                harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 0.0 } else { 8.0 }, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
+                    SizedBox::width(24.0) => {
+                        Icon::new(LucideIcon::ChevronDown).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
+                    }
+                    if !compact {
+                        Expanded::new() => {
+                            TextLabel::new("New from profile…").foreground(color).expect("valid color").ellipsis();
+                        }
+                    }
+                } }
             })
             .build(cx)
     }

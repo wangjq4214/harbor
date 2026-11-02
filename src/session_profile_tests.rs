@@ -348,4 +348,108 @@ mod pty {
             "T0001_NATIVE_PASS: exact argv, literal/empty/removal/TERM, all cwd levels, coherent reload, strict failure, disappearing path/retry, stable PID/provenance after child command"
         );
     }
+
+    #[test]
+    #[ignore = "pty: Windows ConPTY, WARP and launch_probe example"]
+    fn chooser_fifo_to_real_child_and_accepted_reload_catalog() {
+        use harbor_app::command::{AppCommand, AppCommandRequest};
+        use harbor_widget::{
+            input::event::{Key, KeyboardEvent, Modifiers, UiEvent},
+            renderer::Viewport,
+            runtime::Runtime,
+        };
+        fn tap(runtime: &mut Runtime, key: Key) {
+            for event in [
+                KeyboardEvent::KeyDown {
+                    key,
+                    modifiers: Modifiers::default(),
+                },
+                KeyboardEvent::KeyUp {
+                    key,
+                    modifiers: Modifiers::default(),
+                },
+            ] {
+                runtime.dispatch(UiEvent::Keyboard(event));
+            }
+        }
+        let w = Workspace::new();
+        let mut f = Fixture::new();
+        let mut runtime = Runtime::new();
+        runtime.set_viewport(Viewport::new(1000, 500, 1.0));
+        runtime.set_root(harbor_app::workspace::tab_workspace(f.ui.clone(), false));
+        runtime.update(Instant::now());
+        for (index, palette_entry) in [false, true].into_iter().enumerate() {
+            let accepted = w.settings(Some("configured"), Some("synthetic-override"), index);
+            f.reload(accepted.clone(), None).unwrap();
+            let count = f.tabs.snapshots().len();
+            if palette_entry {
+                runtime.request_focus(&f.ui.open_palette());
+                runtime.update(Instant::now());
+                runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime(
+                    "app.open-profile".into(),
+                )));
+                tap(&mut runtime, Key::Enter);
+                let requests = f.ui.drain_actions();
+                assert_eq!(requests.len(), 1);
+                assert!(matches!(
+                    next_app_action(&mut requests.into_iter(), &f.ui, &f.tabs, false),
+                    Some(AppActionAdmission::Execute {
+                        request: AppCommandRequest {
+                            command: AppCommand::OpenProfileChooser,
+                            ..
+                        },
+                        ..
+                    })
+                ));
+            }
+            runtime.request_focus(&f.ui.open_profile_chooser());
+            runtime.update(Instant::now());
+            runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("work".into())));
+            tap(&mut runtime, Key::Enter);
+            let requests = f.ui.drain_actions();
+            assert_eq!(requests.len(), 1);
+            // Failed complete live acceptance must not leak the edited recipe to UI admission.
+            let mut rejected = accepted.clone();
+            rejected
+                .profiles
+                .get_mut("work")
+                .unwrap()
+                .launch
+                .args
+                .push("must-not-launch".into());
+            rejected.colors.foreground = Rgba::from_rgb8(1, 2, 3);
+            assert!(f.reload(rejected, Some(ReloadStage::Palette)).is_err());
+            let request = requests[0];
+            let mut queue = [request, request].into_iter();
+            let Some(AppActionAdmission::Execute {
+                profile: Some(intent),
+                ..
+            }) = next_app_action(&mut queue, &f.ui, &f.tabs, false)
+            else {
+                panic!("current accepted chooser request")
+            };
+            let child = launch(&mut f, &intent).unwrap();
+            let observed = report(&mut f, &w.report(index));
+            let provenance = child.lock().unwrap().launch_provenance().unwrap().clone();
+            assert!(observed.contains(&format!("args:{:?}\n", provenance.args)));
+            assert!(!provenance.args.iter().any(|arg| arg == "must-not-launch"));
+            assert!(observed.contains("literal:Some(\"$VAR %VAR% $(echo synthetic)\")"));
+            assert_directory(&observed, &w.0.join("configured"));
+            assert_eq!(f.tabs.snapshots().len(), count + 1);
+            assert!(matches!(
+                next_app_action(&mut queue, &f.ui, &f.tabs, false),
+                Some(AppActionAdmission::Rejected { .. })
+            ));
+            f.ui.tabs()
+                .sync(f.tabs.snapshots(), f.tabs.active_bridge(), 1000.0);
+            runtime.clear_focus();
+            runtime.request_focus(&f.ui.terminal_focus());
+            runtime.update(Instant::now());
+            assert!(runtime.input().focused().is_some());
+            assert!(!f.ui.popup_is_open());
+        }
+        println!(
+            "T0002_CONPTY_PASS: both chooser entries, real FIFO admission, exactly one real child each, accepted argv/env/cwd after rejected reload, mounted terminal focus"
+        );
+    }
 }

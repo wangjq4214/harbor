@@ -10,7 +10,8 @@ Shortcuts use exact simultaneous modifiers, not multi-stroke sequences. These ar
 | --- | --- | --- |
 | `app.command-palette` | Ctrl+Shift+P | Open/focus the command palette for existing application commands |
 | `app.reload-configuration` | Ctrl+Shift+R | Strict reload of the retained configuration path; independent of watcher |
-| `app.new-tab` | Ctrl+T | Create/activate a new session |
+| `app.new-tab` | Ctrl+T | Create/activate an ordinary session using `[shell]` |
+| `app.open-profile` | None | Open the shared named-profile chooser |
 | `app.close-active-tab` | Ctrl+W | Close active session; final tab requests window closure |
 | `app.next-tab` | Ctrl+Tab | Next tab, wrapping |
 | `app.previous-tab` | Ctrl+Shift+Tab | Previous tab, wrapping |
@@ -39,17 +40,25 @@ Search commands consume their shortcuts even if no search or match is available;
 
 ## Command palette
 
-Press **Ctrl+Shift+P** to open/focus the query. The integrated catalog includes configuration reload; tab creation, closing, navigation and numeric selection (1–9); terminal copy/paste and primary-buffer scrolling; and current-session search open/close/next/previous. `terminal.copy-or-interrupt` is deliberately hidden: palette Copy always copies, including empty text without a selection. Profiles, panes and application appearance switching are not delivered.
+Press **Ctrl+Shift+P** to open/focus the query. The integrated catalog includes configuration reload; tab creation, closing, navigation and numeric selection (1–9); terminal copy/paste and primary-buffer scrolling; and current-session search open/close/next/previous. `terminal.copy-or-interrupt` is deliberately hidden: palette Copy always copies, including empty text without a selection. The named-profile chooser is also available; quick saving, panes and application appearance switching are not delivered.
 
 Type a **case-insensitive substring** of a display label or stable command ID (not fuzzy matching). An empty query exposes the catalog; no matches shows an empty state and cannot execute. Up/Down selects a row; Enter invokes it once. Rows show accepted **effective** shortcuts, including multiple alternatives and `Unbound`, rather than superseded defaults. Accepted configuration reload updates them; a rejected reload retains the prior bindings. The opener ID is `app.command-palette`, configurable with the grammar below.
 
-Unavailable rows explain why—for example, scrolling in the alternate screen, a missing tab position, or closed search. Invocation rechecks context; rejecting a palette action does not send Enter or a scroll key to the terminal. Successful and no-change invocations show no notice; the palette closing and the action's own effect (including the separate paste-confirmation window) are the feedback. Rejected and failed invocations show a notice naming the command and reason, and a later success retires it. Reload errors are independent notices and also auto-close after three seconds; a palette result is not a promise of new search matches or successful execution of pasted shell text.
+Unavailable rows are disabled without reason text or tooltips—for example, scrolling in the alternate screen, a missing tab position, or closed search. Invocation rechecks context; rejecting a palette action does not send Enter or a scroll key to the terminal. Successful and no-change invocations show no notice; the palette closing and the action's own effect (including the separate paste-confirmation window) are the feedback. Rejected and failed invocations show a notice naming the command and reason, and a later success retires it. Reload errors are independent notices and also auto-close after three seconds; a palette result is not a promise of new search matches or successful execution of pasted shell text.
 
 The query uses the reusable single-line editor: caret/selection, Unicode-safe edits, Ctrl+A/C/X/V, Ctrl+Z undo, and Ctrl+Y/Ctrl+Shift+Z redo. Clipboard shortcuts edit the field, not terminal input or selection. IME preedit does not filter until committed; confirming a candidate does not invoke a command. Escape first cancels composition, then closes the palette on a separate press.
 
 Cancel returns to terminal interaction. Tab actions target the resulting active terminal; closing the final tab requests window closure. Search open and match navigation target the search editor; search close restores the terminal. Copy, scroll and reload return to terminal interaction. Paste preserves the separate confirmation window and its input gate rather than restoring palette focus. Losing window focus closes the palette; reopen it after returning.
 
 **Verification limits:** focused tests cover the full visible catalog, but integrated Windows acceptance is still incomplete. Native checks observed Chinese candidate commit/cancel, search destinations, alternate-screen rejection, binding reload/display and field clipboard edits. Confirmation completion, late-result/root-replacement races and parts of the tab/scroll matrix remain unresolved. On the tested Windows setup, terminal text shows through the palette and reduces readability; notifications can overlap it. See the [acceptance requirements and scenarios](../../.grimoire/spec/0030-command-palette.md). This is not completion of issue #156 or broad terminal/application certification.
+
+## Named-profile chooser
+
+Select **New session from profile…** (`app.open-profile`, unbound by default) or the rail's **New from profile…** control. The same palette has no separate title/header: its first row contains a left-arrow return icon, the filtering field, and a right-hand checkmark confirmation icon, using the search panel's icon-button styling. Both palette levels use the same field height (current UI line height plus 12dp padding). The side buttons follow that height without enlarging the field; their artwork and the input caret stay vertically centered. The field filters profile names/stable IDs with the usual case-insensitive substring matching. Up/Down selects; Enter, the checkmark or a row click launches once. Confirmation is disabled with no valid selection or while a launch is pending. Empty/no-match results do nothing. Escape first cancels composition, then returns to a fresh command list; another Escape closes it. Mouse Back performs the same return.
+
+Accepted reloads update choices; rejected candidates retain them. A removed selection cannot turn into another profile by list position. Edited/deleted queued recipes are rejected; select again. Successful launch targets the resulting terminal; creation failure shows a notice and leaves existing sessions intact. Replacing search or the palette retires the old editor rather than suspending/restoring it. Existing native paste-confirmation gating is unchanged.
+
+Mounted/adapter tests and a Windows ConPTY chooser-to-child test pass; production desktop IME, OS-level focus and packaged-build observations remain **NOT RUN** for this slice. See [T0002 evidence](../verification/T0002-two-level-profile-chooser.md), not a claim of complete #157 acceptance.
 
 ## Where shortcuts apply
 

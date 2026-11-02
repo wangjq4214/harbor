@@ -34,7 +34,7 @@ Harbor watches the selected file by default and coalesces saves before reloading
 | --- | --- |
 | `history.*`, `font.*`, `colors.*`, `keybindings.*` | Live for applicable existing and future terminal/application resources |
 | `shell.program`, `shell.args`, `shell.environment`, `shell.directory` | First startup child, then **new sessions only** after reload; existing children are unchanged |
-| `profiles.<id>.*` | Accepted **named-launch policy only**; no effect on ordinary launches or existing children; chooser/save UI pending |
+| `profiles.<id>.*` | Accepted **named-launch policy only**; updates the shared chooser; no effect on ordinary launches or existing children; quick save pending |
 | `clipboard.osc52_write` | **Restart required**, including for new tabs in the running process |
 | Portable marker/path choice | **Restart required**; not a TOML setting |
 
@@ -81,7 +81,7 @@ Relative directories resolve against the selected **configuration file's parent*
 
 ## Named profile launch contract
 
-Named profiles are accepted future-launch policy. **The production chooser and quick-save UI are not implemented by this slice**; ordinary startup/New tab/Ctrl+T still use `[shell]`. The typed Host launch seam and Windows child outcomes are covered in [scoped evidence](../verification/T0001-profile-launch-contract.md).
+Named profiles are accepted future-launch policy. Choose **New from profile…** in the tab rail (down-chevron in compact mode), or **New session from profile…** in the command palette. Both open the same second-level chooser; ordinary startup/New tab/Ctrl+T still use `[shell]`. Quick save is not implemented. See [launch-contract evidence](../verification/T0001-profile-launch-contract.md) and [chooser evidence and native limitations](../verification/T0002-two-level-profile-chooser.md).
 
 ```toml
 [profiles.work]

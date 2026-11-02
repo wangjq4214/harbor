@@ -52,6 +52,7 @@ pub(crate) enum AppActionAdmission {
     Execute {
         request: harbor_app::command::AppCommandRequest,
         clear_palette_focus: bool,
+        profile: Option<harbor_app::profiles::ProfileLaunchIntent>,
     },
     Rejected {
         request: harbor_app::command::AppCommandRequest,
@@ -74,6 +75,7 @@ fn next_app_action(
             continue;
         }
         let palette = matches!(request.source, CommandSource::Palette { .. });
+        let profile = ui.palette_profile_intent(request);
         if palette && let Err(reason) = ui.take_palette_request(request, tabs, input_blocked) {
             return Some(AppActionAdmission::Rejected {
                 request,
@@ -82,9 +84,19 @@ fn next_app_action(
             });
         }
         if !input_blocked {
+            if request.command == harbor_app::command::AppCommand::LaunchProfile
+                && profile.is_none()
+            {
+                return Some(AppActionAdmission::Rejected {
+                    request,
+                    reason: "Profile selection expired",
+                    restore_terminal_focus: !ui.popup_is_open(),
+                });
+            }
             return Some(AppActionAdmission::Execute {
                 request,
                 clear_palette_focus: palette,
+                profile,
             });
         }
     }
@@ -168,6 +180,7 @@ impl TerminalConfiguration {
             }
             self.shell_command = configured_shell(&settings.shell);
             self.profiles = settings.profiles.clone();
+            workspace_ui.publish_profiles(self.profiles.clone());
             // Bindings and launch/restart-only changes do not depend on session resources.
             return Ok(self.font_warnings.clone());
         }
@@ -307,6 +320,7 @@ impl TerminalConfiguration {
         self.appearance = TerminalAppearance::from_palette(settings.colors);
         self.shell_command = configured_shell(&settings.shell);
         self.profiles = settings.profiles.clone();
+        workspace_ui.publish_profiles(self.profiles.clone());
         // Effective clipboard delivery remains the startup policy, including for new tabs.
         tabs.accept_configuration_size(size);
         self.geometry_recovery_pending = false;
@@ -596,6 +610,7 @@ impl TabCoordinator {
         workspace_ui: WorkspaceUiController,
         factory: TerminalTabFactory,
     ) -> Self {
+        workspace_ui.publish_profiles(factory.configuration.profiles.clone());
         Self {
             tabs,
             workspace_ui,
@@ -731,16 +746,7 @@ impl TabCoordinator {
         result
     }
 
-    /// Current accepted choices for the downstream chooser; no stale recipe is retained in intents.
-    #[allow(dead_code)] // T0002 consumes this launch contract.
-    pub(crate) fn profiles(
-        &self,
-    ) -> &std::collections::BTreeMap<harbor_config::ProfileId, harbor_config::SessionProfile> {
-        &self.factory.configuration.profiles
-    }
-
     /// Typed Host operation, intentionally separate from ordinary New tab.
-    #[allow(dead_code)] // The production chooser is a separate ticket.
     pub(crate) fn execute_profile_launch(
         &mut self,
         host: &mut WinitWindowHost,
