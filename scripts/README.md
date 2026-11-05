@@ -7,18 +7,25 @@ from the repository root unless noted otherwise. Automated script tests live in
 | Directory | Purpose | Entry points |
 | --- | --- | --- |
 | [`setup/`](setup/) | Restore pinned Windows dependencies | `fetch_conpty.ps1`, `fetch_wasdk.ps1` |
+| [`dev/`](dev/) | Build and run locally with upstream or shared-cache Cargo | `run_harbor.ps1` stages ConPTY beside the reported executable after every build |
 | [`packaging/`](packaging/) | Build Windows release assets | `package_windows.ps1`; `build_windows_msi.ps1` consumes an existing payload; `windows_package_version.ps1` is a shared helper |
 | [`docs/`](docs/) | Check Markdown language/links/fragments and compile/run public-guide Rust examples | `check_docs.py`, `check_examples.py` |
 | [`ci/`](ci/) | Required quality aggregation and advisory performance reporting | `check_quality_gate.py` aggregates required jobs; `performance_report.py` / `performance_probe.rs` measure A/B changes; `publish_performance_comment.py` maintains one PR comment |
 | [`profiling/`](profiling/) | Analyze DHAT allocation reports | `dhat_analyze.py`, `dhat_drill.py` |
 | [`terminal/`](terminal/) | Interactive terminal probes and synthetic workloads | See the fixture list below |
-| [`tests/`](tests/) | Automated tests of the scripts themselves | Python unit tests, `test_sample_process.ps1` and `test_package_windows.ps1` |
+| [`tests/`](tests/) | Automated tests of the scripts themselves | Python unit tests, `test_sample_process.ps1`, `test_package_windows.ps1` and `test_run_harbor.ps1` |
 
 ## Common Commands
 
 ```powershell
 # Restore the bundled ConPTY runtime before building on Windows.
 ./scripts/setup/fetch_conpty.ps1
+
+# Local launch (PowerShell 7); detects Cargo and restores runtime files on cache hits.
+./scripts/dev/run_harbor.ps1
+./scripts/dev/run_harbor.ps1 -BuildOnly
+# Optional release build; -CargoPath can explicitly select a Cargo executable.
+./scripts/dev/run_harbor.ps1 -Release
 
 # Restore WASDK metadata only when regenerating Windows bindings.
 ./scripts/setup/fetch_wasdk.ps1
@@ -37,6 +44,7 @@ python scripts/profiling/dhat_drill.py dhat-heap.json render_frame
 # Test scripts without launching Harbor or accessing the clipboard.
 python -B -m unittest discover -s scripts/tests -v
 pwsh -NoProfile -File scripts/tests/test_sample_process.ps1
+pwsh -NoProfile -File scripts/tests/test_run_harbor.ps1
 powershell.exe -NoProfile -File scripts/tests/test_package_windows.ps1
 powershell.exe -NoProfile -STA -File scripts/terminal/test_osc52_manual.ps1 -SelfTest
 ```

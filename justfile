@@ -1,5 +1,8 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
+# Windows local builds stage ConPTY after Cargo finishes, including shared-cache hits.
+harbor_dev := "pwsh -NoLogo -NoProfile -File scripts/dev/run_harbor.ps1"
+
 # Show available development commands.
 default:
     @just --list
@@ -11,19 +14,19 @@ setup:
 
 # Build Harbor.
 build:
-    cargo build
+    {{ if os() == "windows" { harbor_dev + " -BuildOnly" } else { "cargo build" } }}
 
 # Build an optimized development binary (use package for distributable assets).
 build-release:
-    cargo build --release
+    {{ if os() == "windows" { harbor_dev + " -Release -BuildOnly" } else { "cargo build --release" } }}
 
 # Run Harbor without widget hot reload.
 run:
-    cargo run
+    {{ if os() == "windows" { harbor_dev } else { "cargo run" } }}
 
 # Run Harbor with release optimizations, without widget hot reload.
 run-release:
-    cargo run --release
+    {{ if os() == "windows" { harbor_dev + " -Release" } else { "cargo run --release" } }}
 
 # Check every workspace target.
 check:
