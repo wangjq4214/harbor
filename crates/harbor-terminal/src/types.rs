@@ -96,6 +96,7 @@ pub enum TerminalOutputEvent {
     WorkingDirectoryReset,
     ShellIntegration(ShellIntegrationMarker),
     ShellIntegrationReset,
+    Project(harbor_config::project::ProjectEvent),
 }
 
 use harbor_config::{Palette, Rgba};

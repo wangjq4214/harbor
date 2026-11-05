@@ -11,6 +11,7 @@ fn catalog() -> BTreeMap<ProfileId, SessionProfile> {
             (
                 ProfileId::new(id).unwrap(),
                 SessionProfile {
+                    project: None,
                     name: name.into(),
                     launch: ShellSettings {
                         program: Some("synthetic.exe".into()),

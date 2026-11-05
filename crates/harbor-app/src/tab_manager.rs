@@ -539,6 +539,7 @@ impl TabManager {
                     tab.shell_integration = Some(marker);
                 }
                 TerminalOutputEvent::ShellIntegrationReset => tab.shell_integration = None,
+                TerminalOutputEvent::Project(_) => {} // Retained by the terminal, not UI snapshots.
             }
         }
         let metadata_changed = tab.working_directory != previous_working_directory

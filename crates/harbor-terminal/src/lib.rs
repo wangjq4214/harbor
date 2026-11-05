@@ -106,6 +106,7 @@ pub struct Terminal {
     /// PTY I/O and ANSI/VT parsing. None until initialized with PTY endpoints.
     io: TerminalIo,
     launch_provenance: Option<harbor_pty::LaunchProvenance>,
+    project_recognition: harbor_config::project::ProjectRecognition,
     /// Terminal-owned pointer and selection state.
     pointer: PointerInteraction,
     /// Terminal-owned default-background tint and fallback policy.
@@ -134,6 +135,9 @@ pub struct Terminal {
 
 impl Terminal {
     /// Successful launch facts survive commands, metadata updates and config reloads.
+    pub fn project_snapshot(&self) -> Option<harbor_config::ProjectRecipe> {
+        self.project_recognition.snapshot()
+    }
     pub fn launch_provenance(&self) -> Option<&harbor_pty::LaunchProvenance> {
         self.launch_provenance.as_ref()
     }
@@ -213,6 +217,7 @@ impl Terminal {
             read_session: read_model::SessionId(read_model::fresh_identity()),
             io: TerminalIo::new_headless(),
             launch_provenance: None,
+            project_recognition: Default::default(),
             pointer: PointerInteraction::new(),
             appearance,
             backdrop_available: false,
@@ -449,7 +454,16 @@ impl Terminal {
 
     /// Drains parser side effects exactly once in FIFO order.
     pub fn drain_output_events(&mut self) -> Vec<TerminalOutputEvent> {
-        self.io.drain_output_events()
+        let events = self.io.drain_output_events();
+        for event in &events {
+            if matches!(event, TerminalOutputEvent::ShellIntegrationReset) {
+                self.project_recognition = Default::default();
+            }
+            if let TerminalOutputEvent::Project(project) = event {
+                self.project_recognition.apply(project.clone());
+            }
+        }
+        events
     }
 
     /// Writes bytes synchronously to the terminal's PTY input endpoint.

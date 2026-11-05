@@ -35,6 +35,7 @@ impl Borrow<str> for ProfileId {
 pub struct SessionProfile {
     pub name: String,
     pub launch: ShellSettings,
+    pub project: Option<crate::ProjectRecipe>,
 }
 
 pub(super) fn parse(
@@ -68,6 +69,13 @@ pub(super) fn parse(
         }
         let mut launch_table = table.clone();
         launch_table.remove("name");
+        let project = launch_table.remove("project").and_then(|value| {
+            let recipe = crate::ProjectRecipe::parse(&value);
+            if recipe.is_none() {
+                diagnostics.push(error("profiles.project is invalid (values omitted)"));
+            }
+            recipe
+        });
         if launch_table.keys().any(|key| {
             !matches!(
                 key.as_str(),
@@ -82,6 +90,13 @@ pub(super) fn parse(
         parse_shell(Some(&Value::Table(launch_table)), &mut launch, diagnostics);
         if launch.program.is_none() {
             diagnostics.push(error("profiles.program is required; profile unavailable"));
+        }
+        if let Some(project) = &project
+            && (launch.program.as_deref() != Some(project.environment.program())
+                || !launch.args.is_empty()
+                || launch.directory.is_some())
+        {
+            diagnostics.push(error("project profiles require the environment launcher, empty args and no native directory"));
         }
         for diagnostic in &mut diagnostics[start..] {
             diagnostic.message = diagnostic.message.replace("shell.", "profiles.");
@@ -103,6 +118,7 @@ pub(super) fn parse(
                 SessionProfile {
                     name: name.unwrap().to_owned(),
                     launch,
+                    project,
                 },
             );
         }

@@ -198,6 +198,7 @@ impl ScrollController {
 pub struct ScrollView {
     controller: Option<ScrollController>,
     line_step: f32,
+    shrink_wrap: bool,
     child: Option<View>,
 }
 
@@ -213,6 +214,7 @@ impl ScrollView {
         Self {
             controller: None,
             line_step: DEFAULT_SCROLL_LINE_STEP,
+            shrink_wrap: false,
             child: None,
         }
     }
@@ -229,6 +231,12 @@ impl ScrollView {
         self
     }
 
+    /// Sizes the viewport height to its content, capped by parent constraints.
+    /// Width still fills bounded space. Defaults to false (fill available height).
+    pub fn shrink_wrap(mut self, shrink_wrap: bool) -> Self {
+        self.shrink_wrap = shrink_wrap;
+        self
+    }
     /// Sets the single scrollable child.
     pub fn child(mut self, child: impl crate::IntoChildView) -> Self {
         self.child = Some(child.into_child_view());
@@ -251,6 +259,7 @@ impl Component for ScrollView {
             ScrollViewport {
                 controller,
                 line_step: self.line_step,
+                shrink_wrap: self.shrink_wrap,
                 scrollbar_color: cx.theme().button.normal.foreground,
                 gesture,
                 hovered,
@@ -276,6 +285,7 @@ impl crate::WithChildren for ScrollView {
 struct ScrollViewport {
     controller: ScrollController,
     line_step: f32,
+    shrink_wrap: bool,
     scrollbar_color: Color,
     gesture: Rc<Cell<Option<ScrollbarGesture>>>,
     hovered: Rc<Cell<bool>>,
@@ -308,7 +318,12 @@ impl AnyView for ScrollViewport {
         } else {
             Size::ZERO
         };
-        let viewport = constraints.fill_bounded(child_size);
+        let filled = constraints.fill_bounded(child_size);
+        let viewport = if self.shrink_wrap {
+            constraints.constrain(Size::new(filled.width, child_size.height))
+        } else {
+            filled
+        };
         let offset = self
             .controller
             .requested()
@@ -640,11 +655,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shrink_wrapped_scroll_view_fits_content_and_preserves_overflow_scrolling() {
+        use crate::{Align, Alignment2D, SizedBox, renderer::Viewport, runtime::Runtime};
+        for (shrink_wrap, height, expected_height) in [
+            (false, 24.0, 100.0),
+            (true, 24.0, 24.0),
+            (true, 240.0, 100.0),
+            (true, 0.0, 0.0),
+        ] {
+            let controller = ScrollController::new();
+            let mut runtime = Runtime::new();
+            runtime.set_viewport(Viewport::new(300, 100, 1.0));
+            runtime.set_root(
+                Align::new(Alignment2D::TOP_LEFT).child(
+                    ScrollView::new()
+                        .controller(controller.clone())
+                        .shrink_wrap(shrink_wrap)
+                        .child(SizedBox::new(Size::new(40.0, height)).unwrap()),
+                ),
+            );
+            runtime.update(std::time::Instant::now());
+            assert_eq!(controller.metrics().viewport_extent(), expected_height);
+            assert_eq!(controller.metrics().content_extent(), height);
+            assert_eq!(controller.scroll_by(50.0), height > expected_height);
+            runtime.update(std::time::Instant::now());
+            assert_eq!(
+                controller.metrics().offset(),
+                if height > expected_height { 50.0 } else { 0.0 }
+            );
+        }
+
+        let controller = ScrollController::new();
+        let mut runtime = Runtime::new();
+        runtime.set_viewport(Viewport::new(300, 100, 1.0));
+        runtime.set_root(
+            Align::new(Alignment2D::TOP_LEFT).child(
+                crate::ConstrainedBox::new().min_height(60.0).child(
+                    ScrollView::new()
+                        .controller(controller.clone())
+                        .shrink_wrap(true)
+                        .child(SizedBox::new(Size::new(40.0, 24.0)).unwrap()),
+                ),
+            ),
+        );
+        runtime.update(std::time::Instant::now());
+        assert_eq!(controller.metrics().viewport_extent(), 60.0);
+    }
+
+    #[test]
     fn post_layout_uses_one_valid_child_for_both_committed_metrics() {
         let controller = ScrollController::new();
         let view = ScrollViewport {
             controller: controller.clone(),
             line_step: DEFAULT_SCROLL_LINE_STEP,
+            shrink_wrap: false,
             scrollbar_color: Color::WHITE,
             gesture: Rc::new(Cell::new(None)),
             hovered: Rc::new(Cell::new(false)),

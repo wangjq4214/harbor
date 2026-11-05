@@ -13,8 +13,12 @@ use std::{
 
 mod color;
 mod profiles;
+pub mod project;
 pub use color::{Color, Palette, Rgba};
 pub use profiles::{ProfileId, SessionProfile};
+pub use project::{AgentInvocation, ProjectEnvironment, ProjectRecipe};
+mod profile_save;
+pub use profile_save::append_profile;
 use toml::{Table, Value};
 
 pub const FONT_SIZE: f32 = 24.0;
@@ -137,7 +141,7 @@ impl std::fmt::Debug for ShellSettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShellSettings")
             .field("program", &self.program)
-            .field("args", &self.args)
+            .field("argument_count", &self.args.len())
             .field("environment", &"<redacted>")
             .field("directory", &self.directory)
             .finish()
@@ -267,19 +271,25 @@ impl std::error::Error for CandidateError {}
 /// Command/key semantics must additionally be validated by the application.
 pub fn load_candidate_from_path(path: impl AsRef<Path>) -> Result<SettingsLoad, CandidateError> {
     let path = path.as_ref();
+    let source = fs::read_to_string(path).map_err(|err| CandidateError {
+        path: path.to_owned(),
+        io_kind: Some(err.kind()),
+        diagnostics: vec![error(format!("could not read settings: {err}"))],
+    })?;
+    candidate_from_source(path, &source)
+}
+
+/// Validate a staged document without publishing or touching its selected path.
+pub fn candidate_from_source(path: &Path, source: &str) -> Result<SettingsLoad, CandidateError> {
     let reject = |message: String| CandidateError {
         path: path.to_owned(),
         io_kind: None,
         diagnostics: vec![error(message)],
     };
-    let source = fs::read_to_string(path).map_err(|err| CandidateError {
-        io_kind: Some(err.kind()),
-        ..reject(format!("could not read settings: {err}"))
-    })?;
-    let document = toml::from_str::<Value>(&source).map_err(|err| {
+    let document = toml::from_str::<Value>(source).map_err(|err| {
         reject(format!(
             "could not parse settings: {}",
-            parse_error_location(&err, &source)
+            parse_error_location(&err, source)
         ))
     })?;
     let parsed = parse_document_at(document, path);
@@ -342,6 +352,15 @@ fn parse_document_at(document: Value, path: &Path) -> SettingsLoad {
         }
     }
     loaded.settings.profiles.retain(|_, profile| {
+        if let Some(project) = &mut profile.project
+            && matches!(project.environment, ProjectEnvironment::LocalPwsh)
+            && resolve_directory(PathBuf::from(&project.directory), path).is_err()
+        {
+            loaded.diagnostics.push(error(
+                "profiles.project.directory is unavailable; profile unavailable",
+            ));
+            return false;
+        }
         let Some(directory) = profile.launch.directory.take() else {
             return true;
         };

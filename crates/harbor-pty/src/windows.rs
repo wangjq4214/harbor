@@ -441,6 +441,7 @@ fn create_shell_process(
             program,
             args,
             initial_directory,
+            configured_environment: command.environment.clone(),
         },
     ))
 }

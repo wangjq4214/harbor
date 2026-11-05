@@ -2,6 +2,8 @@
 
 **Status:** Proposed
 **Date:** 2026-11-02
+**Superseded by:** [ADR 0109](./0109-environment-aware-project-presets-and-recognized-agents.md) for the launch-only capture boundary and exclusion of recognized runtime environments/agents only. Persistence and credential protections below remain applicable; recognition/relaunch details are still under refinement.
+**Capture fallback superseded by:** [ADR 0110](./0110-last-recognized-agent-launch-with-original-arguments.md): unknown execution context/current directory must be shown and correctable, not silently replaced by the initial directory.
 **Sources:** Issue #157 refinement conversation; the owner approved saving Harbor-recorded launch program/arguments and the directory at save initiation, environment exclusion by default with explicit selection of configured overrides, and conflict-safe writes to the selected configuration file.
 **Extends:** [ADR 0106](./0106-independent-session-profiles-and-explicit-osc7-launch-policy.md), [ADR 0107](./0107-shared-palette-profile-flow-and-in-window-confirmation.md), [ADR 0062](./0062-watched-reload-and-new-session-launch-settings.md), and [ADR 0057](./0057-windows-installation-and-portable-isolation.md) for explicit user-requested writes only. Automatic configuration creation and portable/home isolation remain unchanged.
 

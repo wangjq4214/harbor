@@ -1,0 +1,616 @@
+//! Application-owned input-only naming and in-window review. No filesystem effects.
+use super::*;
+#[path = "quick_save_project.rs"]
+mod project_review;
+use harbor_config::{SessionProfile, ShellSettings};
+use harbor_widget::input::event::{Key, Modifiers};
+use harbor_widget::widgets::text_label::TextLabel;
+use harbor_widget::{
+    Button, Column, ConstrainedBox, ControlColors, DecoratedBox, KeyChord, ScrollView,
+};
+use project_review::ProjectReview;
+use std::collections::BTreeSet;
+
+/// Stable Host-captured source. ShellSettings deliberately redacts environment Debug output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuickSaveDraft {
+    pub source: crate::tab_manager::TabId,
+    pub launch: ShellSettings,
+    pub project: Option<harbor_config::ProjectRecipe>,
+}
+#[derive(Clone, Debug)]
+pub struct QuickSaveSubmission {
+    pub generation: u64,
+    pub profile: SessionProfile,
+}
+#[derive(Clone)]
+struct QuickSaveState {
+    draft: QuickSaveDraft,
+    project: ProjectReview,
+    approved_project: Option<harbor_config::ProjectRecipe>,
+    input: TextEditingController,
+    review_name: Option<String>,
+    selected: BTreeSet<String>,
+    acknowledged: bool,
+    pending: bool,
+    issued: bool,
+    error: Option<String>,
+    focus: FocusHandle,
+}
+// A queued approval belongs to the mounted review, not merely retained Store data.
+struct QuickSaveLifetime {
+    ui: WorkspaceUiController,
+    generation: u64,
+}
+impl Drop for QuickSaveLifetime {
+    fn drop(&mut self) {
+        let state = self.ui.store.state().read();
+        let retire = state.popups.is_current(self.generation)
+            && state
+                .popups
+                .get::<QuickSaveState>()
+                .is_some_and(|save| save.pending && !save.issued);
+        drop(state);
+        if retire {
+            self.ui.cancel_quick_save(AppCommandRequest::popup(
+                AppCommand::CancelQuickSave,
+                self.generation,
+            ));
+        }
+    }
+}
+
+fn name_error(
+    name: &str,
+    profiles: &std::collections::BTreeMap<harbor_config::ProfileId, SessionProfile>,
+) -> Option<&'static str> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().any(char::is_control) {
+        Some("Enter a preset name (no control characters)")
+    } else if profiles.values().any(|profile| profile.name == name) {
+        Some("A preset with this name already exists")
+    } else {
+        None
+    }
+}
+
+impl WorkspaceUiController {
+    pub fn open_quick_save(&self, draft: QuickSaveDraft) -> FocusHandle {
+        let mut state = self.store.state().read().clone();
+        let focus = state.popups.open(|_| QuickSaveState {
+            project: ProjectReview::new(draft.project.clone()),
+            approved_project: None,
+            draft,
+            input: TextEditingController::new(""),
+            review_name: None,
+            selected: BTreeSet::new(),
+            acknowledged: false,
+            pending: false,
+            issued: false,
+            error: None,
+            focus: FocusHandle::new(),
+        });
+        self.store.set_state(state);
+        focus
+    }
+    pub fn quick_save_is_open(&self) -> bool {
+        self.store
+            .state()
+            .read()
+            .popups
+            .get::<QuickSaveState>()
+            .is_some()
+    }
+    /// Retires the editor/controller on every step; old clipboard/IME cannot follow it.
+    pub fn navigate_quick_save(&self, request: AppCommandRequest) -> Option<FocusHandle> {
+        let crate::command::CommandSource::Popup { generation } = request.source else {
+            return None;
+        };
+        let mut state = self.store.state().read().clone();
+        if !state.popups.is_current(generation) {
+            return None;
+        }
+        let mut save = state.popups.get::<QuickSaveState>()?.clone();
+        if save.pending {
+            return None;
+        }
+        match request.command {
+            AppCommand::AdvanceQuickSave if save.review_name.is_none() => {
+                if save.input.value().composition.is_some() {
+                    return None;
+                }
+                if let Some(error) = name_error(&save.input.text(), &state.profiles) {
+                    save.error = Some(error.into());
+                    state.popups.update::<QuickSaveState>(|s| *s = save);
+                    self.store.set_state(state);
+                    return None;
+                }
+                save.review_name = Some(save.input.text().trim().into());
+                // A sink receives initial review focus, never the final Save button.
+                save.focus = FocusHandle::new();
+            }
+            AppCommand::EditQuickSave if save.review_name.is_some() => {
+                save.input = TextEditingController::new(save.review_name.take().unwrap());
+                save.focus = FocusHandle::new();
+            }
+            _ => return None,
+        }
+        save.error = None;
+        save.project.retire_editors();
+        let focus = state.popups.open(|_| save);
+        self.store.set_state(state);
+        Some(focus)
+    }
+    pub fn cancel_quick_save(&self, request: AppCommandRequest) -> bool {
+        let crate::command::CommandSource::Popup { generation } = request.source else {
+            return false;
+        };
+        let mut state = self.store.state().read().clone();
+        if state.popups.get::<QuickSaveState>().is_none() || !state.popups.close(generation) {
+            return false;
+        }
+        self.store.set_state(state);
+        true
+    }
+    pub fn cancel_quick_save_on_focus_loss(&self) -> bool {
+        let Some(generation) = self.store.state().read().popups.generation() else {
+            return false;
+        };
+        self.cancel_quick_save(AppCommandRequest::popup(
+            AppCommand::CancelQuickSave,
+            generation,
+        ))
+    }
+    fn update_quick_save(&self, generation: u64, update: impl FnOnce(&mut QuickSaveState)) {
+        let mut state = self.store.state().read().clone();
+        if !state.popups.is_current(generation) {
+            return;
+        }
+        state.popups.update::<QuickSaveState>(|save| {
+            if !save.pending {
+                update(save);
+            }
+        });
+        self.store.set_state(state);
+    }
+    fn queue_quick_save(&self, generation: u64) {
+        let mut queued = false;
+        self.update_quick_save(generation, |save| {
+            if save.review_name.is_some()
+                && save.project.recipe().is_ok()
+                && (save.selected.is_empty() || save.acknowledged)
+            {
+                save.approved_project = save.project.recipe().ok();
+                save.pending = true;
+                queued = true;
+            }
+        });
+        if queued {
+            self.store.dispatcher().dispatch(AppCommandRequest::popup(
+                AppCommand::CommitQuickSave,
+                generation,
+            ));
+        }
+    }
+    /// One-shot Host admission. Direct or stale queued requests carry no authority.
+    pub fn take_quick_save_submission(
+        &self,
+        request: AppCommandRequest,
+    ) -> Option<QuickSaveSubmission> {
+        let crate::command::CommandSource::Popup { generation } = request.source else {
+            return None;
+        };
+        let mut state = self.store.state().read().clone();
+        if request.command != AppCommand::CommitQuickSave || !state.popups.is_current(generation) {
+            return None;
+        }
+        let save = state.popups.get::<QuickSaveState>()?;
+        if !save.pending || save.issued || (!save.selected.is_empty() && !save.acknowledged) {
+            return None;
+        }
+        let name = save.review_name.clone()?;
+        let project = save.approved_project.clone()?;
+        let mut launch = save.draft.launch.clone();
+        launch.program = Some(project.environment.program().into());
+        launch.args.clear();
+        launch.directory = None;
+        launch
+            .environment
+            .retain(|key, _| save.selected.contains(key));
+        let submission = QuickSaveSubmission {
+            generation,
+            profile: SessionProfile {
+                name,
+                launch,
+                project: Some(project),
+            },
+        };
+        // Keep the layer blocked until Host completion. Duplicate delivery is denied.
+        state
+            .popups
+            .update::<QuickSaveState>(|save| save.issued = true);
+        self.store.set_state(state);
+        Some(submission)
+    }
+    pub fn finish_quick_save(
+        &self,
+        generation: u64,
+        result: Result<(), String>,
+    ) -> Option<FocusHandle> {
+        let mut state = self.store.state().read().clone();
+        if !state.popups.is_current(generation) || state.popups.get::<QuickSaveState>().is_none() {
+            return None;
+        }
+        let focus = match result {
+            Ok(()) => {
+                state.popups.close(generation);
+                self.terminal_focus
+            }
+            Err(error) => {
+                state.popups.update::<QuickSaveState>(|save| {
+                    save.pending = false;
+                    save.approved_project = None;
+                    save.issued = false;
+                    save.error = Some(error);
+                });
+                state.popups.get::<QuickSaveState>().unwrap().focus
+            }
+        };
+        self.store.set_state(state);
+        Some(focus)
+    }
+}
+/// Keep control characters inert without exposing Rust's Debug formatting.
+fn display_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\\' | '"' | '\'' => ch.to_string(),
+            _ => ch.escape_debug().to_string(),
+        })
+        .collect()
+}
+
+/// Borderless, selectable text keeps long captured values accessible by keyboard.
+fn review_line(text: String, key: &'static str) -> View {
+    View::deferred(
+        (move |cx: &mut BuildCx| {
+            let input = cx.use_state(|| TextEditingController::new(text.clone()));
+            if input.read().text() != text {
+                input.read().set_text(text.clone());
+            }
+            harbor_widget::EditableText::new(input.read().clone())
+                .read_only(true)
+                .build(cx)
+        })
+        .keyed(key),
+    )
+}
+
+impl crate::popups::Popup for QuickSaveState {
+    fn focus(&self) -> FocusHandle {
+        self.focus
+    }
+    fn close(&self) {
+        self.input.set_text("");
+        self.project.clear_editors();
+    }
+    fn blocks_shortcuts(&self) -> bool {
+        true
+    }
+    fn build(
+        &self,
+        _cx: &mut BuildCx,
+        ui: &WorkspaceUiController,
+        _: &ResolvedKeybindings,
+        generation: u64,
+    ) -> View {
+        let save = self.clone();
+        let ui = ui.clone();
+        View::deferred(
+            (move |cx: &mut BuildCx| save.panel(cx, &ui, generation))
+                .keyed(format!("quick-save-owner-{generation}")),
+        )
+    }
+}
+impl QuickSaveState {
+    fn panel(&self, cx: &mut BuildCx, ui: &WorkspaceUiController, generation: u64) -> View {
+        cx.use_state(|| {
+            std::rc::Rc::new(QuickSaveLifetime {
+                ui: ui.clone(),
+                generation,
+            })
+        });
+        let appearance = GlassAppearance::command_palette();
+        let dispatch = ui.store.dispatcher();
+        let send = move |command| dispatch.dispatch(AppCommandRequest::popup(command, generation));
+        let mut content = Column::new()
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .gap(8.0)
+            .unwrap();
+        let mut footer = None;
+        let label = |text: String| TextLabel::new(text);
+        if let Some(name) = &self.review_name {
+            let header = Focus::new()
+                .focus_handle(self.focus)
+                .child(label("Save this preset?".into()))
+                .build(cx);
+            let arguments =
+                if harbor_config::project::suspected_credentials(&self.draft.launch.args) {
+                    "[hidden: suspected credentials; source startup arguments are not saved]".into()
+                } else if self.draft.launch.args.is_empty() {
+                    "None".into()
+                } else {
+                    self.draft
+                        .launch
+                        .args
+                        .iter()
+                        .map(|arg| {
+                            if arg.is_empty()
+                                || arg.chars().any(|ch| ch.is_whitespace() || ch == '"')
+                            {
+                                format!("{arg:?}")
+                            } else {
+                                display_value(arg)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+            let directory = self
+                .draft
+                .launch
+                .directory
+                .as_ref()
+                .map(|path| display_value(&path.to_string_lossy()))
+                .unwrap_or_else(|| "Not used as current directory evidence".into());
+            content = content
+                .push_child(header)
+                .push_child(review_line(
+                    format!("Name: {}", display_value(name)),
+                    "review-name",
+                ))
+                .push_child(review_line(
+                    format!(
+                        "Source program (provenance): {}",
+                        display_value(
+                            self.draft
+                                .launch
+                                .program
+                                .as_deref()
+                                .unwrap_or("Default shell")
+                        )
+                    ),
+                    "review-program",
+                ))
+                .push_child(review_line(
+                    format!("Source arguments (not replayed): {arguments}"),
+                    "review-args",
+                ))
+                .push_child(review_line(
+                    format!("Directory: {directory}"),
+                    "review-directory",
+                ))
+                .push_child(
+                    label(if self.draft.launch.environment.is_empty() {
+                        "No environment overrides will be saved.".into()
+                    } else {
+                        format!(
+                            "Environment overrides: {} selected (values hidden)",
+                            self.selected.len()
+                        )
+                    })
+                    .build(cx),
+                );
+            for (index, key) in self.draft.launch.environment.keys().enumerate() {
+                let selected = self.selected.contains(key);
+                let key = key.clone();
+                let change = ui.clone();
+                content = content.push_child(View::deferred(
+                    Button::text(format!(
+                        "{} {}",
+                        if selected { "[x]" } else { "[ ]" },
+                        display_value(&key)
+                    ))
+                    .disabled(self.pending)
+                    .on_click(move |_| {
+                        change.update_quick_save(generation, |save| {
+                            if !save.selected.remove(&key) {
+                                save.selected.insert(key.clone());
+                            }
+                            save.acknowledged = false;
+                        });
+                    })
+                    .keyed(format!("environment-{index}")),
+                ));
+            }
+            if !self.selected.is_empty() {
+                let change = ui.clone();
+                content = content.push_child(View::deferred(
+                    Button::text(if self.acknowledged {
+                        "[x] Selected variables contain no passwords or tokens"
+                    } else {
+                        "[ ] Selected variables contain no passwords or tokens"
+                    })
+                    .disabled(self.pending)
+                    .on_click(move |_| {
+                        change.update_quick_save(generation, |save| {
+                            save.acknowledged = !save.acknowledged
+                        })
+                    })
+                    .keyed("quick-save-ack"),
+                ));
+            }
+            content = content.push_child(self.project.panel(cx, ui, generation, self.pending));
+            let back = send.clone();
+            let cancel = send.clone();
+            let commit = ui.clone();
+            footer = Some(
+                Row::new()
+                    .gap(8.0)
+                    .unwrap()
+                    .push_child(View::deferred(
+                        Button::text("Return to edit")
+                            .disabled(self.pending)
+                            .on_click(move |_| back(AppCommand::EditQuickSave)),
+                    ))
+                    .push_child(View::deferred(
+                        Button::text("Cancel")
+                            .disabled(self.pending)
+                            .on_click(move |_| cancel(AppCommand::CancelQuickSave)),
+                    ))
+                    .push_child(View::deferred(
+                        Button::text("Save")
+                            .disabled(
+                                self.pending
+                                    || self.project.recipe().is_err()
+                                    || (!self.selected.is_empty() && !self.acknowledged),
+                            )
+                            .on_click(move |_| commit.queue_quick_save(generation))
+                            .keyed("quick-save-final"),
+                    ))
+                    .build(cx),
+            );
+        } else {
+            let changed = ui.clone();
+            let submit = send.clone();
+            let cancel = send.clone();
+            let input = TextField::new(self.input.clone())
+                .decoration(appearance.input())
+                .padding(6.0)
+                .unwrap()
+                .placeholder("Preset name…")
+                .focus_handle(self.focus)
+                .on_change(move |_| changed.update_quick_save(generation, |save| save.error = None))
+                .on_submit(move |_| submit(AppCommand::AdvanceQuickSave))
+                .on_escape(move || cancel(AppCommand::CancelQuickSave));
+            let advance = send.clone();
+            let disabled = self.pending
+                || name_error(&self.input.text(), &ui.store.state().read().profiles).is_some();
+            let mut style = cx.theme().button.clone();
+            style.min_height = 0.0;
+            style.horizontal_padding = 0.0;
+            style.border_width = 0.0;
+            let fg = style.normal.foreground;
+            let colors = ControlColors {
+                background: Color::TRANSPARENT,
+                border: Color::TRANSPARENT,
+                foreground: fg,
+            };
+            style.normal = colors;
+            style.hovered = colors;
+            style.pressed = colors;
+            style.disabled = colors;
+            let button = InteractiveRegion::new()
+                .style(style)
+                .unwrap()
+                .focusable(false)
+                .disabled(disabled)
+                .on_activate(move |_| advance(AppCommand::AdvanceQuickSave))
+                .child_with(move |cx, state| {
+                    let mut material = appearance;
+                    if state.hovered {
+                        material.input_fill.a += 0.06;
+                    }
+                    if state.pressed {
+                        material.input_fill.a += 0.08;
+                    }
+                    DecoratedBox::new(material.input())
+                        .child(
+                            Padding::all(6.0).unwrap().child(
+                                TextLabel::new("Save…")
+                                    .foreground(Color {
+                                        a: if state.disabled { 0.4 } else { 1.0 },
+                                        ..fg
+                                    })
+                                    .unwrap(),
+                            ),
+                        )
+                        .build(cx)
+                });
+            content = content.push_child(
+                ConstrainedBox::new()
+                    .max_height_with(|metrics| metrics.line_height + 12.0)
+                    .child(
+                        Row::new()
+                            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+                            .gap(4.0)
+                            .unwrap()
+                            .push_child(
+                                Expanded::new()
+                                    .child(View::deferred(
+                                        input.keyed(format!("save-editor-{generation}")),
+                                    ))
+                                    .build(cx),
+                            )
+                            .push_child(View::deferred(button.keyed("save-advance")))
+                            .build(cx),
+                    )
+                    .build(cx),
+            );
+        }
+        let feedback = self.error.clone().or_else(|| {
+            self.review_name
+                .is_none()
+                .then(|| {
+                    name_error(&self.input.text(), &ui.store.state().read().profiles)
+                        .map(str::to_owned)
+                })
+                .flatten()
+        });
+        if let Some(error) = feedback {
+            content = content.push_child(review_line(error, "save-error"));
+        }
+        let cancel = send.clone();
+        let actions = ActionHandler::new(move |command| {
+            cancel(command);
+            ActionOutcome::Consumed
+        });
+        let content = ScrollView::new()
+            .shrink_wrap(true)
+            .child(content.build(cx))
+            .build(cx);
+        let content = if let Some(footer) = footer {
+            Column::new()
+                .cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .gap(8.0)
+                .unwrap()
+                .push_child(harbor_widget::Flexible::new().child(content).build(cx))
+                .push_child(footer)
+                .build(cx)
+        } else {
+            content
+        };
+        let content = Padding::all(8.0).unwrap().child(content).build(cx);
+        let card = appearance.panel(cx, content);
+        let card = actions
+            .child(
+                ShortcutMap::new()
+                    .bind(
+                        KeyChord::new(Key::Escape, Modifiers::default()),
+                        AppCommand::CancelQuickSave,
+                    )
+                    .child(card),
+            )
+            .build(cx);
+        Portal::new()
+            .child(
+                Align::new(Alignment2D::new(
+                    harbor_widget::PositionAlignment::Center,
+                    harbor_widget::PositionAlignment::Start,
+                ))
+                .insets(Insets::all(12.0))
+                .unwrap()
+                .child(
+                    ConstrainedBox::new()
+                        .max_width(480.0)
+                        .max_height(520.0)
+                        .child(FocusScope::new().modal(true).child(card).build(cx))
+                        .build(cx),
+                )
+                .build(cx),
+            )
+            .keyed(format!("quick-save-{generation}"))
+            .build(cx)
+    }
+}

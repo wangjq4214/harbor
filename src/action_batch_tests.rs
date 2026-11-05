@@ -262,6 +262,7 @@ fn profile_catalog()
     [(
         harbor_config::ProfileId::new("work").unwrap(),
         harbor_config::SessionProfile {
+            project: None,
             name: "Work".into(),
             launch: harbor_config::ShellSettings {
                 program: Some("synthetic.exe".into()),

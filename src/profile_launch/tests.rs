@@ -83,6 +83,7 @@ fn profile_resolution_observes_precedence_and_current_identity_without_shell_inh
     let mut profiles = BTreeMap::from([(
         id.clone(),
         SessionProfile {
+            project: None,
             name: "Work".into(),
             launch: harbor_config::ShellSettings {
                 program: Some("selected.exe".into()),

@@ -180,6 +180,7 @@ struct PendingReload {
     automatic: bool,
     path: std::path::PathBuf,
     report_palette: bool,
+    quick_save: Option<(u64, Vec<u8>)>,
 }
 
 /// Active session resources that exist while the window and renderer are alive.
@@ -191,6 +192,7 @@ pub(crate) struct ActiveSession {
     foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor,
     clipboard_epoch: u64,
     pending_reload: Option<PendingReload>,
+    quick_save_transaction: Option<crate::profile_save::SaveTransaction>,
     tabs: TabCoordinator,
     workspace_ui: WorkspaceUiController,
     configuration_path: Option<std::path::PathBuf>,
@@ -473,7 +475,71 @@ impl ActiveSession {
         );
     }
 
+    fn begin_quick_save(&mut self) -> Result<harbor_widget::FocusHandle, String> {
+        let draft = self.tabs.capture_quick_save().map_err(str::to_owned)?;
+        let path = self
+            .configuration_path
+            .clone()
+            .ok_or("Selected configuration path unavailable")?;
+        let transaction = crate::profile_save::SaveTransaction::begin(path)?;
+        self.quick_save_transaction = Some(transaction);
+        Ok(self.workspace_ui.open_quick_save(draft))
+    }
+
+    fn commit_quick_save(
+        &mut self,
+        request: harbor_app::command::AppCommandRequest,
+    ) -> Option<harbor_widget::FocusHandle> {
+        let submission = self.workspace_ui.take_quick_save_submission(request)?;
+        // A previous unaccepted reload must never publish over the save generation.
+        if let Some(previous) = self.pending_reload.take()
+            && previous.report_palette
+        {
+            self.workspace_ui.report_palette_result(
+                AppCommand::ReloadConfiguration,
+                Err("Rejected: reload superseded by save"),
+            );
+        }
+        let result = (|| -> Result<PendingReload, String> {
+            let transaction = self
+                .quick_save_transaction
+                .as_mut()
+                .ok_or("Save source expired; reopen save")?;
+            let loaded = transaction.commit(&submission.profile)?;
+            let bytes = transaction
+                .committed_bytes()
+                .ok_or("Save durability was not established")?;
+            let acquisition = self.tabs.acquire_configuration(&loaded.settings)
+                .map_err(|_| "Preset saved on disk, but configuration preparation failed; retry Save to publish")?;
+            Ok(PendingReload {
+                loaded,
+                acquisition,
+                automatic: false,
+                path: transaction.path().to_owned(),
+                report_palette: false,
+                quick_save: Some((submission.generation, bytes)),
+            })
+        })();
+        match result {
+            Ok(pending) => {
+                self.pending_reload = Some(pending);
+                self.advance_configuration_reload();
+                None
+            }
+            Err(error) => self
+                .workspace_ui
+                .finish_quick_save(submission.generation, Err(error)),
+        }
+    }
     fn reload_configuration(&mut self, automatic: bool) -> Option<bool> {
+        // Publication for an explicit save retains its acquisitions and exact disk generation.
+        if self
+            .pending_reload
+            .as_ref()
+            .is_some_and(|pending| pending.quick_save.is_some())
+        {
+            return None;
+        }
         // A new document supersedes an unaccepted candidate, not an accepted generation.
         if let Some(previous) = self.pending_reload.take()
             && previous.report_palette
@@ -510,6 +576,7 @@ impl ActiveSession {
                 automatic,
                 path,
                 report_palette: false,
+                quick_save: None,
             }))
         })();
         match staged {
@@ -540,7 +607,25 @@ impl ActiveSession {
             automatic,
             path,
             report_palette,
+            quick_save,
         } = pending;
+        let save_guard = quick_save
+            .as_ref()
+            .map(|(_, expected)| crate::profile_save::pin_generation(&path, expected));
+        if let Some(Err(error)) = save_guard.as_ref() {
+            drop(acquisition);
+            let generation = quick_save.as_ref().unwrap().0;
+            if let Some(focus) = self.workspace_ui.finish_quick_save(
+                generation,
+                Err(format!(
+                    "Preset was written, but not published: {error}. Inspect/reload the file"
+                )),
+            ) {
+                self.main_host.request_focus(&focus);
+                self.main_host.request_frame();
+            }
+            return Some(false);
+        }
         let path_label = path.display().to_string();
         let viewport = self.main_host.viewport().clone();
         let result = ready
@@ -565,7 +650,19 @@ impl ActiveSession {
             });
         // Release every acquisition even on preparation/PTY/compensation failure.
         drop(acquisition);
+        drop(save_guard);
         let completion = self.report_reload_result(result, automatic, &path_label);
+        if let Some((generation, _)) = quick_save {
+            let outcome = if completion == Some(true) {
+                Ok(())
+            } else {
+                Err("Preset saved on disk, but configuration publication failed; retry Save to publish or cancel and reload".into())
+            };
+            if let Some(focus) = self.workspace_ui.finish_quick_save(generation, outcome) {
+                self.main_host.request_focus(&focus);
+                self.main_host.request_frame();
+            }
+        }
         if report_palette {
             self.workspace_ui.report_palette_result(
                 AppCommand::ReloadConfiguration,
@@ -680,6 +777,55 @@ impl ActiveSession {
                 AppCommand::OpenCommandPalette => {
                     let focus = self.workspace_ui.open_palette();
                     merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
+                }
+                AppCommand::SaveCurrentSession => {
+                    if let Some(source) = self.tabs.active_id() {
+                        merge_wait(
+                            &mut result.wait,
+                            self.process_terminal_output(event_loop, source),
+                        );
+                    }
+                    match self.begin_quick_save() {
+                        Ok(focus) => {
+                            merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait)
+                        }
+                        Err(error) => self
+                            .workspace_ui
+                            .report_palette_result(request.command, Err(&error)),
+                    }
+                    merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                }
+                AppCommand::AdvanceQuickSave | AppCommand::EditQuickSave => {
+                    if let Some(focus) = self.workspace_ui.navigate_quick_save(request) {
+                        // Only an admitted current-generation edit may refresh disk conflict state.
+                        if request.command == AppCommand::EditQuickSave
+                            && let Some(transaction) = self.quick_save_transaction.as_mut()
+                            && let Err(error) = transaction.refresh()
+                        {
+                            self.workspace_ui
+                                .report_palette_result(request.command, Err(&error));
+                        }
+                        merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
+                    }
+                    merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                }
+                AppCommand::CommitQuickSave => {
+                    if let Some(focus) = self.commit_quick_save(request) {
+                        merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
+                    }
+                    merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                }
+                AppCommand::CancelQuickSave => {
+                    if self.workspace_ui.cancel_quick_save(request) {
+                        self.quick_save_transaction = None;
+                        merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                        merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                    }
                 }
                 AppCommand::OpenProfileChooser => {
                     let focus = self.workspace_ui.open_profile_chooser();
@@ -1209,7 +1355,10 @@ impl ActiveSession {
         if self.stop_for_gpu_fault(event_loop) {
             return;
         }
-        if matches!(&event, WindowEvent::Focused(false)) && self.workspace_ui.cancel_palette() {
+        if matches!(&event, WindowEvent::Focused(false))
+            && (self.workspace_ui.cancel_palette()
+                || self.workspace_ui.cancel_quick_save_on_focus_loss())
+        {
             // Native focus loss expires a queued selection, not just preedit/clipboard delivery.
             merge_wait(
                 &mut wait,
@@ -1451,6 +1600,7 @@ impl Shell {
             foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor::new(),
             clipboard_epoch: 0,
             pending_reload: None,
+            quick_save_transaction: None,
             tabs,
             workspace_ui,
             effective_clipboard: settings.clipboard.clone(),

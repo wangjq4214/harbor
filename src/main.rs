@@ -18,6 +18,7 @@ mod event;
 mod hot_reload;
 mod hyperlink;
 mod profile_launch;
+mod profile_save;
 mod shell;
 mod tab_coordinator;
 mod telemetry;

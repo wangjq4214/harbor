@@ -83,6 +83,17 @@ fn next_app_action(
                 restore_terminal_focus: !ui.popup_is_open() && !input_blocked,
             });
         }
+        if ui.quick_save_is_open()
+            && !matches!(
+                request.command,
+                harbor_app::command::AppCommand::AdvanceQuickSave
+                    | harbor_app::command::AppCommand::EditQuickSave
+                    | harbor_app::command::AppCommand::CancelQuickSave
+                    | harbor_app::command::AppCommand::CommitQuickSave
+            )
+        {
+            continue;
+        }
         if !input_blocked {
             if request.command == harbor_app::command::AppCommand::LaunchProfile
                 && profile.is_none()
@@ -532,6 +543,12 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
+    pub(crate) fn active_id(&self) -> Option<TabId> {
+        self.tabs.active_id()
+    }
+    pub(crate) fn capture_quick_save(&self) -> Result<harbor_app::QuickSaveDraft, &'static str> {
+        crate::profile_save::capture(&self.tabs)
+    }
     pub(crate) fn acquire_configuration(
         &self,
         settings: &harbor_config::Settings,

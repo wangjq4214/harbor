@@ -27,7 +27,8 @@ pub(crate) fn tab_rail(
                             tab_row(cx, snapshot, state.presentation, controller, dispatcher.clone());
                         }
                         new_tab_button(state.presentation, dispatcher.clone()).keyed("new-terminal");
-                        profile_button(state.presentation, dispatcher).keyed("new-profile");
+                        profile_button(state.presentation, dispatcher.clone()).keyed("new-profile");
+                        save_profile_button(state.presentation, dispatcher).keyed("save-profile");
                     }
                 }
             }
@@ -169,6 +170,28 @@ fn profile_button(
                 } }
             })
             .build(cx)
+    }
+}
+fn save_profile_button(
+    presentation: RailPresentation,
+    dispatcher: Dispatcher<AppCommandRequest>,
+) -> impl Component {
+    move |cx: &mut BuildCx| {
+        let compact = presentation == RailPresentation::Compact;
+        let dispatcher = dispatcher.clone();
+        InteractiveRegion::new().style(rail_style(cx, compact)).unwrap()
+            .on_activate(move |_| dispatcher.dispatch(AppCommandRequest::shortcut(crate::command::AppCommand::SaveCurrentSession)))
+            .child_with(move |cx, state| {
+                let color = rail_style(cx, compact).resolve_state(&state).foreground;
+                harbor_widget::view! { Row::new() => {
+                    SizedBox::width(24.0) => {
+                        Icon::new(LucideIcon::Check).size(20.0).unwrap().foreground(color).unwrap();
+                    }
+                    if !compact {
+                        TextLabel::new("Save current session…").foreground(color).unwrap().ellipsis();
+                    }
+                } }
+            }).build(cx)
     }
 }
 

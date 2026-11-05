@@ -20,6 +20,8 @@ use harbor_widget::{
 };
 #[path = "palette.rs"]
 mod palette;
+#[path = "quick_save.rs"]
+pub(crate) mod quick_save;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]

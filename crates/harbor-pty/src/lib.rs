@@ -33,11 +33,23 @@ pub enum ExecutablePolicy {
 }
 
 /// Immutable facts about the successful child launch, not an executable title.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct LaunchProvenance {
     pub program: std::ffi::OsString,
     pub args: Vec<String>,
     pub initial_directory: std::path::PathBuf,
+    /// Only configured overrides passed to this child; never inherited runtime values.
+    pub configured_environment: std::collections::BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for LaunchProvenance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LaunchProvenance")
+            .field("program", &self.program)
+            .field("argument_count", &self.args.len())
+            .field("initial_directory", &self.initial_directory)
+            .finish_non_exhaustive()
+    }
 }
 /// Per-child launch policy. Environment values are never included in Debug output.
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -64,7 +76,7 @@ impl std::fmt::Debug for ShellCommand {
         f.debug_struct("ShellCommand")
             .field("executable_policy", &self.executable_policy)
             .field("program", &self.program)
-            .field("args", &self.args)
+            .field("argument_count", &self.args.len())
             .field("environment", &"<redacted>")
             .field("directory", &self.directory)
             .finish()

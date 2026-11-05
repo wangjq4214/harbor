@@ -10,6 +10,7 @@ pub mod confirmation;
 pub mod notifications;
 mod popups;
 pub mod profiles;
+pub use workspace::quick_save::{QuickSaveDraft, QuickSaveSubmission};
 mod search;
 pub use search::SearchCommandOutcome;
 pub mod tab_manager;

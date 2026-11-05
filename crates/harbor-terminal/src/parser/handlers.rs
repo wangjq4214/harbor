@@ -293,6 +293,12 @@ impl VtHandler for ScreenHandler<'_> {
     }
 
     fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], bell_terminated: bool) {
+        if command == b"777" && payload.starts_with(b"harbor;") {
+            self.output_events.push(TerminalOutputEvent::Project(
+                harbor_config::project::ProjectEvent::parse(payload),
+            ));
+            return;
+        }
         // Denied delivery and an occupied First slot need not allocate decoded candidates.
         if command == b"52"
             && (self.clipboard_delivery == crate::ClipboardDelivery::Discard

@@ -1,4 +1,5 @@
 //! Explicit Host policy. Terminal OSC parsing never inspects the filesystem.
+mod project;
 use std::{collections::BTreeMap, path::PathBuf};
 
 use harbor_app::profiles::ProfileLaunchIntent;
@@ -54,9 +55,20 @@ pub(crate) fn resolve(
     intent: &ProfileLaunchIntent,
     metadata: Option<&WorkingDirectoryMetadata>,
 ) -> anyhow::Result<ResolvedLaunch> {
+    // Project directories belong to their saved environment, never local OSC 7 policy.
     let profile = profiles
         .get(&intent.profile)
         .ok_or_else(|| anyhow::anyhow!("selected profile is no longer available"))?;
+    if let Some(recipe) = &profile.project {
+        anyhow::ensure!(
+            intent.directory.is_none(),
+            "project presets use their reviewed project directory"
+        );
+        return Ok(ResolvedLaunch {
+            command: project::resolve(profile, recipe)?,
+            _local_directory: None,
+        });
+    }
     let mut command = crate::tab_coordinator::configured_shell(&profile.launch);
     command.executable_policy = ExecutablePolicy::Strict;
     let mut local = None;
@@ -163,7 +175,7 @@ pub(crate) fn local_directory(metadata: &WorkingDirectoryMetadata) -> Option<Loc
 }
 
 #[cfg(windows)]
-fn inspect_local_directory(path: PathBuf) -> Option<LocalDirectory> {
+pub(crate) fn inspect_local_directory(path: PathBuf) -> Option<LocalDirectory> {
     use std::os::windows::{
         ffi::OsStrExt,
         io::{FromRawHandle, OwnedHandle},
@@ -231,7 +243,7 @@ fn inspect_local_directory(path: PathBuf) -> Option<LocalDirectory> {
 }
 
 #[cfg(not(windows))]
-fn inspect_local_directory(path: PathBuf) -> Option<LocalDirectory> {
+pub(crate) fn inspect_local_directory(path: PathBuf) -> Option<LocalDirectory> {
     // Unix PTY creation remains unimplemented; do not follow symlink metadata.
     path.ancestors()
         .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !m.is_symlink()))

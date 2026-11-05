@@ -207,6 +207,8 @@ fn search_button_surfaces(runtime: &Runtime) -> Vec<(Rect, f32)> {
 
 #[path = "profile_chooser_tests.rs"]
 mod profile_chooser;
+#[path = "quick_save_tests.rs"]
+mod quick_save;
 
 #[path = "palette_tests.rs"]
 mod palette_support;
