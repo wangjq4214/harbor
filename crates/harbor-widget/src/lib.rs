@@ -69,7 +69,7 @@ pub use widgets::{
     Portal, Row, ScrollController, ScrollMetrics, ScrollView, Separator, ShortcutMap, Spacer,
     Stack, TextLabel, ThemeProvider,
 };
-pub use widgets::{EditableText, TextField, VerticalDirection};
+pub use widgets::{Checkbox, EditableText, SegmentedControl, TextField, VerticalDirection};
 pub use widgets::{align::Align, padding::Padding, sized_box::SizedBox};
 
 #[cfg(test)]

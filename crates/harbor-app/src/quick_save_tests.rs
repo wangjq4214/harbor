@@ -84,7 +84,16 @@ fn click(runtime: &mut Runtime, rect: Rect) {
     row_pointer(runtime, point, PointerPhase::Down);
     row_pointer(runtime, point, PointerPhase::Up);
 }
+fn click_control(runtime: &mut Runtime, key: &str) {
+    focus_control(runtime, key);
+    let rect = keyed_rect(runtime, key);
+    click(runtime, rect);
+}
 
+// Wrapped TextLabel emits one primitive per visual line without changing source text.
+fn review_text(runtime: &Runtime) -> String {
+    painted(runtime).replace('\n', "")
+}
 fn panel_rect(runtime: &Runtime) -> Rect {
     let delta = runtime.pending_delta().unwrap();
     delta
@@ -92,7 +101,9 @@ fn panel_rect(runtime: &Runtime) -> Rect {
         .iter()
         .chain(&delta.modified)
         .find_map(|item| match item.primitive {
-            Primitive::BackdropMaterial { rect, .. } => Some(rect),
+            Primitive::BackdropMaterial { rect, .. } | Primitive::BackdropBlur { rect, .. } => {
+                Some(rect)
+            }
             _ => None,
         })
         .expect("quick-save panel")
@@ -136,17 +147,32 @@ fn quick_save_naming_and_review_are_compact_borderless_and_readable() {
         review.size().height < 520.0,
         "review should fit its content: {review:?}"
     );
+    assert!(
+        keyed_rect(&runtime, "project-apply").size().width
+            < keyed_rect(&runtime, "project-directory").size().width,
+        "context correction is a content-sized secondary action"
+    );
     let text = painted(&runtime);
     for expected in [
         "Save this preset?",
         "Name: My preset",
-        "Source program (provenance): synthetic-source.exe",
-        "Source arguments (not replayed): None",
-        r"Directory: D:\Code\harbor",
         "No environment overrides will be saved.",
     ] {
         assert!(text.contains(expected), "missing {expected:?} in {text}");
     }
+    assert!(
+        !text.contains("synthetic-source.exe"),
+        "provenance starts collapsed"
+    );
+    focus_control(&mut runtime, "quick-save-details");
+    tap(&mut runtime, Key::Enter);
+    runtime.update(Instant::now());
+    let details = painted(&runtime);
+    assert!(details.contains("Source program (provenance): synthetic-source.exe"));
+    assert!(details.contains("Source arguments (not replayed): None"));
+    assert!(
+        details.contains(r"Initial directory (not current-directory evidence): D:\Code\harbor")
+    );
     assert!(!text.contains("Some("));
     for key in [
         "review-name",
@@ -202,7 +228,7 @@ fn quick_save_entry_and_palette_reach_input_only_naming_and_equivalent_advance()
     runtime.request_focus(&ui.navigate_quick_save(request).unwrap());
     runtime.update(Instant::now());
     assert!(painted(&runtime).contains("Saved source"));
-    assert!(painted(&runtime).contains("synthetic-source.exe"));
+    assert!(painted(&runtime).contains("Show supporting details"));
     assert!(!painted(&runtime).contains("synthetic-secret"));
     assert!(bytes.lock().unwrap().is_empty());
 }
@@ -288,6 +314,9 @@ fn quick_save_return_retains_capture_and_name_stale_delivery_cannot_replace_it()
     assert!(painted(&runtime).contains("Retained"));
     assert!(!painted(&runtime).contains("late"));
     advance(&ui, &mut runtime);
+    focus_control(&mut runtime, "quick-save-details");
+    tap(&mut runtime, Key::Enter);
+    runtime.update(Instant::now());
     assert!(painted(&runtime).contains("source arg"));
     let retired = popup(&ui, AppCommand::CancelQuickSave);
     start(&ui, &mut runtime, draft());
@@ -319,8 +348,8 @@ fn quick_save_only_selected_environment_is_admitted_after_acknowledgment_once() 
     assert!(ui.take_quick_save_submission(request).is_none());
     ui.finish_quick_save(submission.generation, Err("synthetic failure".into()));
     runtime.update(Instant::now());
-    let one = keyed_rect(&runtime, "environment-0");
-    click(&mut runtime, one);
+    assert!(painted(&runtime).contains("synthetic failure"));
+    click_control(&mut runtime, "environment-0");
     runtime.update(Instant::now());
     let save = keyed_rect(&runtime, "quick-save-final");
     click(&mut runtime, save);
@@ -328,11 +357,9 @@ fn quick_save_only_selected_environment_is_admitted_after_acknowledgment_once() 
         ui.drain_actions().is_empty(),
         "selection alone does not authorize secrets"
     );
-    let ack = keyed_rect(&runtime, "quick-save-ack");
-    click(&mut runtime, ack);
+    click_control(&mut runtime, "quick-save-ack");
     runtime.update(Instant::now());
-    let save = keyed_rect(&runtime, "quick-save-final");
-    click(&mut runtime, save);
+    click_control(&mut runtime, "quick-save-final");
     let request = take_one(&ui);
     assert!(matches!(request.source, CommandSource::Popup { .. }));
     let submission = ui.take_quick_save_submission(request).unwrap();
@@ -349,8 +376,7 @@ fn quick_save_unmounted_approval_and_focus_loss_cannot_commit_a_replacement() {
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Old draft");
     advance(&ui, &mut runtime);
-    let save = keyed_rect(&runtime, "quick-save-final");
-    click(&mut runtime, save);
+    click_control(&mut runtime, "quick-save-final");
     let old = take_one(&ui);
     runtime.set_root(
         harbor_widget::SizedBox::new(harbor_widget::layout::Size::new(10.0, 10.0)).unwrap(),
@@ -451,4 +477,140 @@ fn quick_save_original_agent_arguments_survive_review_and_require_independent_ac
     let submission = ui.take_quick_save_submission(take_one(&ui)).unwrap();
     assert_eq!(submission.profile.project.unwrap().agent, Some(invocation));
     assert!(submission.profile.launch.environment.is_empty());
+}
+
+#[test]
+fn quick_save_environment_choices_have_persistent_environment_specific_fields_and_explicit_apply() {
+    let (_, ui, mut runtime, bytes) = fixture();
+    start(&ui, &mut runtime, draft());
+    replace(&mut runtime, "Environment review");
+    advance(&ui, &mut runtime);
+    assert!(!review_text(&runtime).contains("WSL distribution"));
+    assert!(!review_text(&runtime).contains("SSH destination"));
+    assert!(!fiber_ids(&runtime).iter().any(|id| {
+        runtime
+            .arena()
+            .get(*id)
+            .unwrap()
+            .key()
+            .is_some_and(|k| k.text() == "project-target")
+    }));
+
+    click_control(&mut runtime, "wsl");
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("WSL distribution"));
+    assert!(review_text(&runtime).contains("apply the environment/directory correction first"));
+    click_control(&mut runtime, "project-apply");
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("Enter a valid environment target"));
+    focus_control(&mut runtime, "project-target");
+    replace(&mut runtime, "Ubuntu");
+    focus_control(&mut runtime, "project-directory");
+    replace(&mut runtime, "/home/synthetic/项目");
+    // Merely filling the form does not approve it; the explicit gate remains.
+    assert!(review_text(&runtime).contains("Unknown or edited context"));
+    click_control(&mut runtime, "project-apply");
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("Context explicitly corrected"));
+    assert!(!review_text(&runtime).contains("Enter a valid environment target"));
+
+    // Keyboard traversal + activation uses the same caller-owned selection.
+    focus_control(&mut runtime, "ssh");
+    tap(&mut runtime, Key::Space);
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("SSH destination"));
+    assert!(!review_text(&runtime).contains("WSL distribution"));
+    focus_control(&mut runtime, "pwsh");
+    tap(&mut runtime, Key::Space);
+    runtime.update(Instant::now());
+    assert!(!fiber_ids(&runtime).iter().any(|id| {
+        runtime
+            .arena()
+            .get(*id)
+            .unwrap()
+            .key()
+            .is_some_and(|k| k.text() == "project-target")
+    }));
+    assert!(ui.drain_actions().is_empty());
+    assert!(bytes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn quick_save_agent_and_override_checkboxes_have_independent_acknowledgements_and_pending_state() {
+    let (_, ui, mut runtime, _) = fixture();
+    let mut source = draft();
+    source.project.as_mut().unwrap().agent = Some(harbor_config::AgentInvocation {
+        program: "pi".into(),
+        args: vec!["--resume".into(), "synthetic-session".into()],
+    });
+    start(&ui, &mut runtime, source);
+    replace(&mut runtime, "Independent choices");
+    advance(&ui, &mut runtime);
+    click_control(&mut runtime, "environment-0");
+    runtime.update(Instant::now());
+    click_control(&mut runtime, "project-agent-ack");
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("confirm above before saving"));
+    assert!(ui.drain_actions().is_empty());
+    click_control(&mut runtime, "quick-save-ack");
+    runtime.update(Instant::now());
+    click_control(&mut runtime, "project-agent-include");
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("explicitly omitted"));
+    click_control(&mut runtime, "project-agent-include");
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("Review agent arguments"));
+    assert!(
+        !review_text(&runtime).contains("confirm above before saving"),
+        "agent choice must not reset the independent override acknowledgement"
+    );
+    click_control(&mut runtime, "project-agent-ack");
+    runtime.update(Instant::now());
+    click_control(&mut runtime, "quick-save-final");
+    let request = take_one(&ui);
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("Saving…"));
+    // Disabled controls cannot alter the approved snapshot while Host admission waits.
+    let include = keyed_rect(&runtime, "project-agent-include");
+    click(&mut runtime, include);
+    let submission = ui.take_quick_save_submission(request).unwrap();
+    assert!(submission.profile.project.unwrap().agent.is_some());
+    assert_eq!(submission.profile.launch.environment.len(), 1);
+    assert!(ui.drain_actions().is_empty());
+}
+
+#[test]
+fn quick_save_long_values_remain_selectable_and_copyable_across_resize_and_disclosure() {
+    let (_, ui, mut runtime, _) = fixture();
+    let mut source = draft();
+    let argument = format!(
+        "{}项目 e\u{0301} 👩\u{200d}💻",
+        "synthetic-long-argument/".repeat(40)
+    );
+    source.launch.args = vec![argument.clone()];
+    source.project.as_mut().unwrap().directory =
+        format!("C:/{}项目", "synthetic-long-path/".repeat(35));
+    start(&ui, &mut runtime, source);
+    replace(&mut runtime, "Long values");
+    advance(&ui, &mut runtime);
+    click_control(&mut runtime, "quick-save-details");
+    runtime.update(Instant::now());
+    let expected = format!("Source arguments (not replayed): {argument:?}");
+    for (width, height) in [(1000, 500), (280, 180), (800, 600)] {
+        runtime.set_viewport(harbor_widget::renderer::Viewport::new(width, height, 1.0));
+        runtime.update(Instant::now());
+        focus_control(&mut runtime, "review-args");
+        down(&mut runtime, Key::Character('a'), ctrl());
+        up(&mut runtime, Key::Character('a'), ctrl());
+        let effect = runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Character('c'),
+            modifiers: ctrl(),
+        }));
+        up(&mut runtime, Key::Character('c'), ctrl());
+        let Some(ClipboardEffect::Editor(request)) = effect.clipboard else {
+            panic!("copy request")
+        };
+        assert_eq!(request.write.as_deref(), Some(expected.as_str()));
+    }
+    assert!(ui.drain_actions().is_empty());
 }

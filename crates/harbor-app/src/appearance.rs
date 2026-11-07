@@ -114,6 +114,54 @@ impl Default for GlassAppearance {
         }
     }
 }
+/// Review-local hierarchy; generic controls still own interaction and focus painting.
+pub(crate) fn quick_save_button_style(
+    cx: &BuildCx,
+    primary: bool,
+) -> harbor_widget::theme::ControlStyle {
+    use harbor_widget::ControlColors;
+    let mut style = cx.theme().button.clone();
+    style.min_height = 30.0;
+    style.horizontal_padding = 10.0;
+    style.border_width = 1.0;
+    style.radius = 6.0;
+    let colors = |background, foreground| ControlColors {
+        background,
+        foreground,
+        border: Color {
+            a: 0.2,
+            ..Color::WHITE
+        },
+    };
+    let neutral = |a| Color { a, ..Color::WHITE };
+    let accent = |a| Color {
+        r: 0.22,
+        g: 0.47,
+        b: 0.70,
+        a,
+    };
+    style.normal = colors(
+        if primary { accent(1.0) } else { neutral(0.035) },
+        Color::WHITE,
+    );
+    style.hovered = colors(
+        if primary { accent(0.85) } else { neutral(0.12) },
+        Color::WHITE,
+    );
+    style.pressed = colors(
+        if primary { accent(0.65) } else { neutral(0.2) },
+        Color::WHITE,
+    );
+    style.selected = colors(accent(0.75), Color::WHITE);
+    style.disabled = colors(neutral(0.025), neutral(0.38));
+    style.focus_ring = Color {
+        r: 0.6,
+        g: 0.82,
+        b: 1.0,
+        a: 1.0,
+    };
+    style
+}
 
 impl GlassAppearance {
     pub fn command_palette() -> Self {
@@ -138,6 +186,45 @@ impl GlassAppearance {
         }
     }
 
+    /// Task-form material: neutral and substantially more solid than palette chrome.
+    pub fn quick_save() -> Self {
+        Self {
+            blur_sigma: 6.0,
+            refraction: EdgeRefraction::new(0.0, 0.0).unwrap(),
+            material: None,
+            panel_fill: Paint::Solid(Color {
+                r: 0.055,
+                g: 0.06,
+                b: 0.07,
+                a: 0.96,
+            }),
+            panel_border: Border::all(
+                Color {
+                    a: 0.18,
+                    ..Color::WHITE
+                },
+                1.0,
+            )
+            .unwrap(),
+            input_fill: Color {
+                r: 0.015,
+                g: 0.02,
+                b: 0.025,
+                a: 0.92,
+            },
+            input_border: Some(
+                Border::all(
+                    Color {
+                        a: 0.26,
+                        ..Color::WHITE
+                    },
+                    1.0,
+                )
+                .unwrap(),
+            ),
+            ..Self::command_palette()
+        }
+    }
     /// Row-local glass, lighter than the panel and absent on idle suggestions.
     pub fn command_palette_row(foreground: Color, state: InteractionState) -> Option<Self> {
         let alpha = if !state.disabled && state.pressed {

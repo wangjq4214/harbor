@@ -381,3 +381,108 @@ fn notification_wrapping_fills_real_ui_width_and_caps_details_across_dpi() {
         }
     }
 }
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn uncapped_label_wrap_uses_rendered_advances_and_preserves_unicode_across_resize() {
+    use crate::view::{BuildCx, Component};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let (device, queue) = gpu_device();
+    let mut rt = Runtime::new();
+    rt.init_text_renderer(&device, &queue, wgpu::TextureFormat::Bgra8Unorm)
+        .unwrap();
+    let source = "iiiiWWWWiiii 项目 e\u{0301} 👩\u{200d}💻\nFull final warning without truncation.";
+    let builds = Rc::new(Cell::new(0));
+    let observed = builds.clone();
+    rt.set_root(move |cx: &mut BuildCx| {
+        observed.set(observed.get() + 1);
+        TextLabel::new(source)
+            .wrap()
+            .foreground(Color::GREEN)
+            .unwrap()
+            .build(cx)
+    });
+    let root = rt.root_id().unwrap();
+    for scale in [1.0, 1.5, 2.0] {
+        let measure = |rt: &Runtime, text: &str| {
+            text.chars()
+                .map(|ch| {
+                    rt.encoder
+                        .advance_width(ch, scale, rt.text_metrics.cell_width)
+                })
+                .sum::<f32>()
+        };
+        assert!(
+            measure(&rt, "W") > measure(&rt, "i"),
+            "real proportional UI font"
+        );
+        for width in [4, 23, 70, 500, 23] {
+            let viewport = Viewport::new((width as f32 * scale) as u32, 4000, scale);
+            let available = viewport.logical_size.width;
+            rt.set_viewport(viewport);
+            rt.update(Instant::now());
+            rt.prepare_text(&queue);
+            let lines: Vec<_> = rt
+                .scene_graph
+                .items()
+                .iter()
+                .filter_map(|item| match &item.primitive {
+                    Primitive::Text {
+                        text,
+                        origin,
+                        color,
+                    } => {
+                        assert_eq!(*color, Color::GREEN);
+                        Some((item.id, text.to_string(), *origin))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                lines
+                    .iter()
+                    .map(|(_, text, _)| text.as_str())
+                    .collect::<String>(),
+                source.replace('\n', "")
+            );
+            assert_eq!(rt.root_id(), Some(root));
+            assert_eq!(
+                builds.get(),
+                1,
+                "resize must re-layout retained source, not rebuild it"
+            );
+            assert!(rt.arena.get(root).unwrap().layout_error().is_none());
+            let rect = rt.arena.get(root).unwrap().layout_rect().unwrap();
+            assert!(
+                (rect.size().height - lines.len() as f32 * rt.text_metrics.line_height).abs()
+                    < 0.01
+            );
+            for (index, (id, text, origin)) in lines.iter().enumerate() {
+                assert!(!text.contains('…'));
+                let rendered = rt.text_run_cache().get(*id).unwrap().advance_width;
+                assert!((rendered - measure(&rt, text)).abs() < 0.01);
+                assert!(
+                    rendered <= available + 0.01 || text.graphemes(true).count() == 1,
+                    "only an indivisible oversized grapheme may overflow: {text:?}"
+                );
+                assert_eq!(origin.x, rect.min.x);
+                assert!(
+                    (origin.y - rect.min.y - index as f32 * rt.text_metrics.line_height).abs()
+                        < 0.01
+                );
+            }
+            if width == 500 {
+                assert_eq!(
+                    lines
+                        .iter()
+                        .map(|(_, text, _)| text.as_str())
+                        .collect::<Vec<_>>(),
+                    source.split('\n').collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+}

@@ -192,6 +192,10 @@ impl Component for InteractiveRegion {
                 next.active_pointer = None;
                 next.visual.pressed = false;
                 next.visual.cancelled = false;
+                // Focus admission is revoked during reconciliation. Do not
+                // retain a keyboard ring when routing retires the old target.
+                next.visual.focused = false;
+                next.visual.focus_visible = false;
             }
             runtime.set(next);
         }

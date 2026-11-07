@@ -11,6 +11,7 @@ pub(super) struct ProjectReview {
     include_agent: bool,
     checked_arguments: bool,
     changed: bool,
+    correction_error: Option<String>,
 }
 impl ProjectReview {
     pub(super) fn new(project: Option<ProjectRecipe>) -> Self {
@@ -29,6 +30,7 @@ impl ProjectReview {
             include_agent: true,
             checked_arguments: false,
             changed: false,
+            correction_error: None,
         }
     }
     pub(super) fn retire_editors(&mut self) {
@@ -101,140 +103,201 @@ impl ProjectReview {
         generation: u64,
         pending: bool,
     ) -> View {
+        let appearance = GlassAppearance::quick_save();
         let mut column = Column::new()
             .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .gap(6.0)
-            .unwrap();
-        column = column.push_child(review_line(if self.applied.is_none() {
-            "Environment / current directory unknown. Enable guided integration or correct below. Initial cwd is not used."
-        } else { "Captured project context (untrusted shell metadata; review before saving)." }.into(), "project-status"));
-        let mut environments = Row::new().gap(6.0).unwrap();
-        for (kind, label) in [
-            ("pwsh", "Local pwsh"),
-            ("wsl", "WSL bash"),
-            ("ssh", "Direct SSH bash"),
-        ] {
-            let change = ui.clone();
-            environments = environments.push_child(View::deferred(
-                Button::text(format!(
-                    "{} {label}",
-                    if self.kind == kind { "[x]" } else { "[ ]" }
-                ))
+            .unwrap()
+            .push_child(review_heading("PROJECT CONTEXT").build(cx));
+        column = column.push_child(review_message(
+            if self.applied.is_none() {
+                "Environment / current directory unknown. Correct the context below; initial cwd is not current-directory evidence."
+            } else if self.changed {
+                "Context explicitly corrected, not automatically recognized. Changing environments clears the captured agent."
+            } else {
+                "Captured shell metadata — review the environment and current project directory."
+            }, "project-status", self.applied.is_none(),
+        ));
+        let change = ui.clone();
+        column = column
+            .push_child(review_heading("Execution environment").build(cx))
+            .push_child(View::deferred(
+                SegmentedControl::new(
+                    [
+                        ("pwsh".into(), "Local pwsh".into()),
+                        ("wsl".into(), "WSL bash".into()),
+                        ("ssh".into(), "Direct SSH bash".into()),
+                    ],
+                    self.kind.clone(),
+                )
+                .style(review_button_style(cx, false))
+                .unwrap()
                 .disabled(pending)
-                .on_click(move |_| {
+                .on_change(move |kind| {
                     change.update_quick_save(generation, |s| {
-                        s.project.kind = kind.into();
-                        s.project.target.set_text("");
+                        if s.project.kind != kind {
+                            s.project.kind = kind;
+                            s.project.target.set_text("");
+                            s.project.correction_error = None;
+                        }
                     })
                 })
-                .keyed(format!("project-kind-{kind}")),
+                .keyed("project-environment"),
             ));
+        if self.kind != "pwsh" {
+            let target_change = ui.clone();
+            let (label, example) = if self.kind == "wsl" {
+                ("WSL distribution", "e.g. Ubuntu")
+            } else {
+                ("SSH destination", "e.g. user@host or a config alias")
+            };
+            column = column
+                .push_child(review_heading(label).build(cx))
+                .push_child(View::deferred(
+                    TextField::new(self.target.clone())
+                        .decoration(appearance.input())
+                        .disabled(pending)
+                        .placeholder(example)
+                        .on_change(move |_| target_change.update_quick_save(generation, |_| {}))
+                        .keyed("project-target"),
+                ));
         }
-        column = column.push_child(environments.build(cx));
-        let target_change = ui.clone();
         let directory_change = ui.clone();
         column = column
-            .push_child(
-                TextField::new(self.target.clone())
-                    .disabled(pending)
-                    .placeholder("WSL distribution / SSH destination; empty for local")
-                    .on_change(move |_| target_change.update_quick_save(generation, |_| {}))
-                    .keyed("project-target")
-                    .build(cx),
-            )
-            .push_child(
+            .push_child(review_heading("Project directory").build(cx))
+            .push_child(View::deferred(
                 TextField::new(self.directory.clone())
+                    .decoration(appearance.input())
                     .disabled(pending)
-                    .placeholder("Absolute current project directory")
-                    .on_change(move |_| directory_change.update_quick_save(generation, |_| {}))
-                    .keyed("project-directory")
-                    .build(cx),
-            );
-        let change = ui.clone();
-        column = column.push_child(View::deferred(
-            Button::text("Apply context correction")
-                .disabled(pending)
-                .on_click(move |_| {
-                    change.update_quick_save(generation, |s| {
-                        s.error = s.project.apply().err().map(str::to_owned);
+                    .placeholder(if self.kind == "pwsh" {
+                        "e.g. C:\\work\\project"
+                    } else {
+                        "e.g. /home/user/project"
                     })
-                })
-                .keyed("project-apply"),
-        ));
-        if let Some(project) = &self.applied {
-            column = column.push_child(review_line(
-                format!(
-                    "Relaunch: {} → {} {} → {}",
-                    project.environment.program(),
-                    project.environment.kind(),
-                    project.environment.target(),
-                    display_value(&project.directory)
-                ),
-                "project-recipe",
+                    .on_change(move |_| directory_change.update_quick_save(generation, |_| {}))
+                    .keyed("project-directory"),
+            ))
+            .push_child(review_message(
+                match self.kind.as_str() {
+                    "wsl" => {
+                        "Absolute path inside the selected WSL distribution, not a Windows path."
+                    }
+                    "ssh" => "Absolute path on the SSH destination, not a local Windows path.",
+                    _ => "Absolute path on this computer for local PowerShell.",
+                },
+                "project-directory-help",
+                false,
             ));
+        let change = ui.clone();
+        column = column.push_child(
+            Row::new()
+                .push_child(View::deferred(
+                    Button::text("Apply context correction")
+                        .style(review_button_style(cx, false))
+                        .unwrap()
+                        .disabled(pending)
+                        .on_click(move |_| {
+                            change.update_quick_save(generation, |s| {
+                                s.project.correction_error =
+                                    s.project.apply().err().map(str::to_owned);
+                            })
+                        })
+                        .keyed("project-apply"),
+                ))
+                .build(cx),
+        );
+        if let Some(error) = &self.correction_error {
+            column = column.push_child(review_message(error.clone(), "context-error", true));
+        }
+        if self.pending_correction() {
+            column = column.push_child(review_message(
+                "Unknown or edited context: apply the environment/directory correction first.",
+                "context-pending",
+                true,
+            ));
+        }
+        if let Some(project) = &self.applied {
+            column = column
+                .push_child(review_heading("Approved relaunch context").build(cx))
+                .push_child(review_line(
+                    format!(
+                        "{} · {} {} → {}",
+                        project.environment.program(),
+                        project.environment.kind(),
+                        display_value(project.environment.target()),
+                        display_value(&project.directory)
+                    ),
+                    "project-recipe",
+                ));
             if let Some(agent) = &project.agent {
                 let suspicious = suspected_credentials(&agent.args);
-                let description = if suspicious {
-                    "[arguments hidden: suspected credentials; omit this invocation to save]".into()
+                column = column.push_child(review_heading("Agent invocation").build(cx));
+                if suspicious {
+                    column = column.push_child(review_message(
+                        "Agent arguments are hidden: suspected credentials. Omit this invocation to save; credentials cannot be persisted.",
+                        "agent-secret-warning", true,
+                    ));
                 } else {
-                    agent
+                    let arguments = agent
                         .args
                         .iter()
                         .map(|a| format!("{a:?}"))
                         .collect::<Vec<_>>()
-                        .join(" ")
-                };
-                column = column.push_child(review_line(
-                    format!("Last agent: {} {description}", agent.program),
-                    "project-agent",
-                ));
+                        .join(" ");
+                    column = column.push_child(review_line(
+                        format!("Last agent: {} {arguments}", agent.program),
+                        "project-agent",
+                    ));
+                }
                 let change = ui.clone();
                 column = column.push_child(View::deferred(
-                    Button::text(if self.include_agent {
-                        "[x] Include last agent (click to omit)"
-                    } else {
-                        "[ ] Agent explicitly omitted — not an exact invocation copy"
-                    })
-                    .disabled(pending)
-                    .on_click(move |_| {
-                        change.update_quick_save(generation, |s| {
-                            s.project.include_agent = !s.project.include_agent;
-                            s.project.checked_arguments = false;
+                    Checkbox::new("Include last recognized agent", self.include_agent)
+                        .style(review_button_style(cx, false))
+                        .unwrap()
+                        .disabled(pending)
+                        .on_change(move |checked| {
+                            change.update_quick_save(generation, |s| {
+                                s.project.include_agent = checked;
+                                s.project.checked_arguments = false;
+                            })
                         })
-                    })
-                    .keyed("project-agent-include"),
+                        .keyed("project-agent-include"),
+                ));
+                column = column.push_child(review_message(
+                    if self.include_agent {
+                        "The displayed invocation will be included only after the required argument review. Secret detection is limited."
+                    } else {
+                        "Agent explicitly omitted — this is not an exact invocation copy. Only the project shell will open."
+                    }, "agent-inclusion", false,
                 ));
                 if self.include_agent && !suspicious {
                     let change = ui.clone();
                     column = column.push_child(View::deferred(
-                        Button::text(if self.checked_arguments {
-                            "[x] Agent arguments contain no passwords/tokens"
-                        } else {
-                            "[ ] I checked agent arguments: no passwords/tokens"
-                        })
+                        Checkbox::new(
+                            "I checked agent arguments: no passwords/tokens",
+                            self.checked_arguments,
+                        )
+                        .style(review_button_style(cx, false))
+                        .unwrap()
                         .disabled(pending)
-                        .on_click(move |_| {
+                        .on_change(move |checked| {
                             change.update_quick_save(generation, |s| {
-                                s.project.checked_arguments = !s.project.checked_arguments
+                                s.project.checked_arguments = checked
                             })
                         })
                         .keyed("project-agent-ack"),
                     ));
                 }
             } else {
-                column = column.push_child(review_line(
-                    "No recognized agent in this environment; only the project shell will open."
-                        .into(),
+                column = column.push_child(review_message(
+                    "No recognized agent in this environment; only the project shell will open.",
                     "project-no-agent",
+                    false,
                 ));
             }
         }
-        if self.changed {
-            column = column.push_child(review_line("Context explicitly corrected; original recognition is not claimed. Changing environments clears its agent selection.".into(), "project-corrected"));
-        }
-        column = column.push_child(review_line("Project relaunch uses the environment launcher and fixed directory/agent setup, not the source shell's startup arguments. Secret detection is limited; no history, nesting or virtual-environment restoration.".into(), "project-limitations"));
         if let Err(error) = self.recipe() {
-            column = column.push_child(review_line(error.into(), "project-error"));
+            column = column.push_child(review_message(error, "project-error", true));
         }
         column.build(cx)
     }
