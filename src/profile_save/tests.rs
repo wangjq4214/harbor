@@ -232,18 +232,29 @@ fn real_flow_to_writer_to_accepted_catalog_retains_disk_only_failure_and_retries
     runtime.update(Instant::now());
     let click_save = |runtime: &mut Runtime| {
         use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase};
-        let mut todo = vec![runtime.root_id().unwrap()];
-        let rect = loop {
-            let id = todo.pop().expect("final save button");
-            let fiber = runtime.arena().get(id).unwrap();
-            if fiber
-                .key()
-                .is_some_and(|key| key.text() == "quick-save-final")
-            {
-                break fiber.layout_rect().unwrap();
+        let mut visible = None;
+        for _ in 0..64 {
+            let mut todo = vec![runtime.root_id().unwrap()];
+            let rect = loop {
+                let id = todo.pop().expect("final save button");
+                let fiber = runtime.arena().get(id).unwrap();
+                if fiber
+                    .key()
+                    .is_some_and(|key| key.text() == "quick-save-final")
+                {
+                    break fiber.layout_rect().unwrap();
+                }
+                todo.extend(fiber.children().iter().copied());
+            };
+            if rect.min.y >= 12.0 && rect.max.y <= 688.0 {
+                visible = Some(rect);
+                break;
             }
-            todo.extend(fiber.children().iter().copied());
-        };
+            // Keyboard traversal reveals actions inside the scrollable review.
+            tap(runtime, Key::Tab);
+            runtime.update(Instant::now());
+        }
+        let rect = visible.expect("final Save must scroll into the viewport");
         for phase in [PointerPhase::Down, PointerPhase::Up] {
             runtime.dispatch(UiEvent::Pointer(PointerEvent {
                 pointer_id: 0,

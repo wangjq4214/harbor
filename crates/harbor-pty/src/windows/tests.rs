@@ -91,39 +91,58 @@ fn missing_or_blank_comspec_still_falls_back_to_cmd() {
 
 #[test]
 fn configured_shell_takes_precedence_and_preserves_args() {
-    let command = ShellCommand::new(Some(r"C:\Tools\nu.exe".to_owned()), vec!["a b".to_owned()]);
-    let mut attempts = 0;
-    let (_, title) = create_shell_process_with(&command, None, |program, args| {
-        attempts += 1;
+    for executable_policy in [
+        crate::ExecutablePolicy::LegacyFallback,
+        crate::ExecutablePolicy::Strict,
+    ] {
+        let command = ShellCommand {
+            executable_policy,
+            ..ShellCommand::new(
+                Some(r"C:\Tools\nu.exe".to_owned()),
+                ["", "a b", "q'\"\\", "世界", "--resume"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            )
+        };
+        let mut attempts = 0;
+        let ((process, program, args), title) =
+            create_shell_process_with(&command, None, |program, args| {
+                attempts += 1;
+                Ok((42, program.to_owned(), args.to_vec()))
+            })
+            .unwrap();
+        assert_eq!(attempts, 1);
+        assert_eq!(process, 42);
         assert_eq!(program, OsStr::new(r"C:\Tools\nu.exe"));
         assert_eq!(args, command.args);
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(attempts, 1);
-    assert_eq!(title, "nu");
+        assert_eq!(title, "nu");
+    }
 }
 
 #[test]
 fn failed_configured_shell_uses_default_order_without_configured_args() {
     let command = ShellCommand::new(Some("missing.exe".to_owned()), vec!["--custom".to_owned()]);
     let mut attempted = Vec::new();
-    let (_, title) = create_shell_process_with(&command, None, |program, args| {
-        attempted.push(program.to_string_lossy().into_owned());
-        if program == OsStr::new("missing.exe") {
-            assert_eq!(args, command.args);
-        } else {
-            assert!(args.is_empty());
-        }
-        if program == OsStr::new("powershell.exe") {
-            Ok(())
-        } else {
-            anyhow::bail!("unavailable")
-        }
-    })
-    .unwrap();
+    let ((process, program, args), title) =
+        create_shell_process_with(&command, None, |program, args| {
+            attempted.push(program.to_string_lossy().into_owned());
+            if program == OsStr::new("missing.exe") {
+                assert_eq!(args, command.args);
+            } else {
+                assert!(args.is_empty());
+            }
+            if program == OsStr::new("powershell.exe") {
+                Ok((42, program.to_owned(), args.to_vec()))
+            } else {
+                anyhow::bail!("unavailable")
+            }
+        })
+        .unwrap();
     assert_eq!(attempted, ["missing.exe", "pwsh.exe", "powershell.exe"]);
     assert_eq!(title, "powershell");
+    assert_eq!(process, 42);
+    assert_eq!(program, OsStr::new("powershell.exe"));
+    assert!(args.is_empty());
 }
 
 #[test]

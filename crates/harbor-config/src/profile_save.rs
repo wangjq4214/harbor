@@ -72,11 +72,7 @@ pub fn append_profile(
         project.validate()?;
         recipe.insert("project".into(), project.value());
     }
-    let mut profiles = Table::new();
-    profiles.insert(id.clone(), Value::Table(recipe));
-    let mut root = Table::new();
-    root.insert("profiles".into(), Value::Table(profiles));
-    let addition = toml::to_string(&root).map_err(|_| "Could not serialize preset")?;
+    let addition = toml::to_string(&recipe).map_err(|_| "Could not serialize preset")?;
     let mut document = source
         .parse::<toml_edit::DocumentMut>()
         .map_err(|_| "Could not preserve configuration document")?;
@@ -89,7 +85,7 @@ pub fn append_profile(
     document["profiles"]
         .as_table_like_mut()
         .ok_or("Profiles must be a table")?
-        .insert(&id, addition["profiles"][&id].clone());
+        .insert(&id, toml_edit::Item::Table(addition.into_table()));
     let result = document.to_string();
     let loaded = candidate_from_source(path, &result)
         .map_err(|_| "Could not add preset to this document")?;

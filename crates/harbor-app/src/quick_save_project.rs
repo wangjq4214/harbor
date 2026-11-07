@@ -130,7 +130,7 @@ impl ProjectReview {
                     ],
                     self.kind.clone(),
                 )
-                .style(review_button_style(cx, false))
+                .style(quick_save_button_style(cx, false))
                 .unwrap()
                 .disabled(pending)
                 .on_change(move |kind| {
@@ -193,7 +193,7 @@ impl ProjectReview {
             Row::new()
                 .push_child(View::deferred(
                     Button::text("Apply context correction")
-                        .style(review_button_style(cx, false))
+                        .style(quick_save_button_style(cx, false))
                         .unwrap()
                         .disabled(pending)
                         .on_click(move |_| {
@@ -259,7 +259,7 @@ impl ProjectReview {
                 let change = ui.clone();
                 column = column.push_child(View::deferred(
                     Checkbox::new("Include last recognized agent", self.include_agent)
-                        .style(review_button_style(cx, false))
+                        .style(quick_save_button_style(cx, false))
                         .unwrap()
                         .disabled(pending)
                         .on_change(move |checked| {
@@ -284,7 +284,7 @@ impl ProjectReview {
                             "I checked agent arguments: no passwords/tokens",
                             self.checked_arguments,
                         )
-                        .style(review_button_style(cx, false))
+                        .style(quick_save_button_style(cx, false))
                         .unwrap()
                         .disabled(pending)
                         .on_change(move |checked| {

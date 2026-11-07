@@ -411,8 +411,7 @@ fn create_shell_process(
             "shell.directory is unavailable or not a directory at child creation"
         );
     }
-    let mut selected = None;
-    let (process, name) =
+    let ((process, program, args), name) =
         create_shell_process_with(command, std::env::var_os("COMSPEC"), |program, args| {
             ensure!(
                 !program.encode_wide().any(|c| c == 0),
@@ -430,10 +429,8 @@ fn create_shell_process(
                 Some(&directory),
             )
             .map_err(anyhow::Error::from)?;
-            selected = Some((program.to_os_string(), args.to_vec()));
-            Ok(process)
+            Ok((process, program.to_os_string(), args.to_vec()))
         })?;
-    let (program, args) = selected.expect("successful creation records the selected recipe");
     Ok((
         process,
         name,
@@ -453,21 +450,18 @@ fn create_shell_process_with<T>(
     comspec: Option<OsString>,
     mut create: impl FnMut(&OsStr, &[String]) -> anyhow::Result<T>,
 ) -> anyhow::Result<(T, String)> {
+    let configured_program = command
+        .program
+        .as_deref()
+        .filter(|program| !program.trim().is_empty());
     if command.executable_policy == crate::ExecutablePolicy::Strict {
-        let program = command
-            .program
-            .as_deref()
-            .filter(|program| !program.trim().is_empty())
+        let program = configured_program
             .ok_or_else(|| anyhow::anyhow!("named profile requires an executable"))?;
         let process = create(OsStr::new(program), &command.args)
             .context("named profile executable failed (no fallback)")?;
         return Ok((process, shell_display_name(OsStr::new(program))));
     }
     let mut failures = Vec::new();
-    let configured_program = command
-        .program
-        .as_deref()
-        .filter(|program| !program.trim().is_empty());
     if let Some(program) = configured_program {
         match create(OsStr::new(program), &command.args) {
             Ok(process) => return Ok((process, shell_display_name(OsStr::new(program)))),

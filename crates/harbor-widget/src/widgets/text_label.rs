@@ -15,9 +15,15 @@ pub struct TextLabel {
     text: String,
     color: Color,
     scale: f32,
-    ellipsis: bool,
-    wrap: bool,
+    mode: LabelMode,
     geometry: RefCell<Option<LabelGeometry>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LabelMode {
+    SingleLine,
+    Ellipsis,
+    Wrap,
 }
 
 impl TextLabel {
@@ -26,8 +32,7 @@ impl TextLabel {
             text: text.into(),
             color: Color::WHITE,
             scale: 1.0,
-            ellipsis: false,
-            wrap: false,
+            mode: LabelMode::SingleLine,
             geometry: RefCell::new(None),
         }
     }
@@ -35,8 +40,7 @@ impl TextLabel {
     /// Truncates overflowing text at grapheme boundaries using measured advances,
     /// including the ellipsis glyph. Keeps the source for subsequent wider layouts.
     pub fn ellipsis(mut self) -> Self {
-        self.ellipsis = true;
-        self.wrap = false;
+        self.mode = LabelMode::Ellipsis;
         self
     }
 
@@ -46,8 +50,7 @@ impl TextLabel {
     /// than disappearing. Parents own clipping/scrolling for constrained heights.
     /// `wrap` and `ellipsis` are exclusive; the last builder call wins.
     pub fn wrap(mut self) -> Self {
-        self.wrap = true;
-        self.ellipsis = false;
+        self.mode = LabelMode::Wrap;
         self
     }
 
@@ -90,7 +93,7 @@ impl AnyView for TextLabel {
     }
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         self.with_geometry(metrics, |geometry| {
-            let size = if self.wrap {
+            let size = if self.mode == LabelMode::Wrap {
                 let ranges = geometry.line_ranges(&self.text, constraints.max.width, true);
                 let width = ranges
                     .iter()
@@ -115,19 +118,15 @@ impl AnyView for TextLabel {
         if self.scale == 0.0 {
             return Vec::new();
         }
-        let lines = self.with_geometry(metrics, |geometry| {
-            if self.wrap {
-                geometry.wrapped(&self.text, rect.size().width, None)
-            } else if self.ellipsis {
-                vec![geometry.ellipsized(&self.text, rect.size().width)]
-            } else {
-                vec![self.text.clone()]
-            }
+        let lines = self.with_geometry(metrics, |geometry| match self.mode {
+            LabelMode::Wrap => geometry.wrapped(&self.text, rect.size().width, None),
+            LabelMode::Ellipsis => vec![geometry.ellipsized(&self.text, rect.size().width)],
+            LabelMode::SingleLine => vec![self.text.clone()],
         });
         lines
             .into_iter()
             .enumerate()
-            .filter(|(_, text)| !text.is_empty() || (!self.ellipsis && !self.wrap))
+            .filter(|(_, text)| !text.is_empty() || self.mode == LabelMode::SingleLine)
             .map(|(index, text)| {
                 let origin = crate::layout::Point::new(
                     rect.min.x,
@@ -284,6 +283,43 @@ mod tests {
     use crate::input::event::UiEvent;
     use crate::input::event_ctx::{EventCtx, EventHandled};
     use crate::layout::Point;
+
+    #[test]
+    fn display_mode_builders_replace_each_other_without_changing_empty_text_behavior() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        let constraints = BoxConstraints::loose(Size::new(2.0, 1000.0));
+        let label = TextLabel::new("ab\ncd");
+        for (label, expected) in [
+            (label.clone(), vec!["ab\ncd"]),
+            (label.clone().wrap(), vec!["ab", "cd"]),
+            (label.clone().ellipsis(), vec!["a…"]),
+            (label.clone().wrap().ellipsis(), vec!["a…"]),
+            (label.clone().ellipsis().wrap(), vec!["ab", "cd"]),
+            (label.clone().wrap().wrap(), vec!["ab", "cd"]),
+            (label.ellipsis().ellipsis(), vec!["a…"]),
+        ] {
+            label.prepare_text_geometry(&metrics, &mut |_| 1.0);
+            let size = label.intrinsic_size(constraints, &metrics);
+            assert_eq!(size.height, expected.len() as f32 * metrics.line_height);
+            let primitives =
+                label.paint_primitives(Rect::from_min_size(Point::ZERO, size), &metrics);
+            let text: Vec<_> = primitives
+                .iter()
+                .filter_map(Primitive::text_run)
+                .map(|run| run.0)
+                .collect();
+            assert_eq!(text, expected);
+        }
+        let empty = TextLabel::new("");
+        for (label, count) in [
+            (empty.clone(), 1),
+            (empty.clone().wrap(), 0),
+            (empty.ellipsis(), 0),
+        ] {
+            let rect = Rect::from_min_size(Point::ZERO, Size::new(2.0, 100.0));
+            assert_eq!(label.paint_primitives(rect, &metrics).len(), count);
+        }
+    }
 
     #[test]
     fn uncapped_wrapping_prefers_words_without_losing_whitespace_or_long_tokens() {

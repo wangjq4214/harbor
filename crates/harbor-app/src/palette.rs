@@ -24,8 +24,8 @@ pub(super) struct PaletteState {
     pub target: Option<TabId>,
     pub input: TextEditingController,
     pub selected: usize,
-    pub pending: bool,
     level: PaletteLevel,
+    /// A captured invocation is pending until its owning popup is retired.
     invocation: Option<PaletteEntry>,
     pub focus: FocusHandle,
     scroll: ScrollController,
@@ -93,7 +93,9 @@ impl Drop for PaletteEditorLifetime {
             .read()
             .popups
             .get::<PaletteState>()
-            .is_some_and(|palette| palette.generation == self.generation && palette.pending);
+            .is_some_and(|palette| {
+                palette.generation == self.generation && palette.invocation.is_some()
+            });
         if pending {
             self.controller.close_palette(self.generation);
         }
@@ -302,7 +304,6 @@ impl WorkspaceUiController {
                 .map(|tab| tab.id),
             input: TextEditingController::new(""),
             selected: 0,
-            pending: false,
             level,
             invocation: None,
             focus: self.palette_focus,
@@ -319,7 +320,7 @@ impl WorkspaceUiController {
         let palette = state.popups.get::<PaletteState>()?;
         if palette.generation != generation
             || palette.level != PaletteLevel::Profiles
-            || palette.pending
+            || palette.invocation.is_some()
         {
             return None;
         }
@@ -345,7 +346,7 @@ impl WorkspaceUiController {
             .expect("profile catalog revision exhausted");
         let current = state.profiles.clone();
         state.popups.update::<PaletteState>(|palette| {
-            if palette.level == PaletteLevel::Profiles && !palette.pending {
+            if palette.level == PaletteLevel::Profiles && palette.invocation.is_none() {
                 // Preserve identity, never reinterpret an old index as a different profile.
                 palette.selected = selected
                     .as_ref()
@@ -373,7 +374,7 @@ impl WorkspaceUiController {
         }
         let state = self.store.state().read();
         let palette = state.popups.get::<PaletteState>()?;
-        if palette.generation != generation || palette.target != target || !palette.pending {
+        if palette.generation != generation || palette.target != target {
             return None;
         }
         let (id, _) = palette.invocation.as_ref()?.profile.as_ref()?;
@@ -406,7 +407,10 @@ impl WorkspaceUiController {
             .popups
             .get::<PaletteState>()
             .ok_or("Palette is closed")?;
-        if palette.generation != generation || !palette.pending || palette.target != target {
+        if palette.generation != generation
+            || palette.invocation.is_none()
+            || palette.target != target
+        {
             return Err("Palette request expired");
         }
         if request.command == AppCommand::LaunchProfile {
@@ -502,7 +506,7 @@ impl WorkspaceUiController {
         if state
             .popups
             .get::<PaletteState>()
-            .is_some_and(|palette| palette.generation == generation && !palette.pending)
+            .is_some_and(|palette| palette.generation == generation && palette.invocation.is_none())
         {
             state.popups.update::<PaletteState>(|palette| {
                 palette.selected = 0;
@@ -518,7 +522,7 @@ impl WorkspaceUiController {
         if state
             .popups
             .get::<PaletteState>()
-            .is_some_and(|palette| palette.generation == generation && !palette.pending)
+            .is_some_and(|palette| palette.generation == generation && palette.invocation.is_none())
         {
             state.popups.update::<PaletteState>(|palette| {
                 let count = entries(palette, &state_profiles).len();
@@ -565,7 +569,7 @@ impl WorkspaceUiController {
         let Some(palette) = state.popups.get::<PaletteState>() else {
             return;
         };
-        if palette.generation != generation || palette.pending {
+        if palette.generation != generation || palette.invocation.is_some() {
             return;
         }
         // Mouse rows retain identity and recipe, never a potentially stale result index.
@@ -599,7 +603,6 @@ impl WorkspaceUiController {
             },
         };
         state.popups.update::<PaletteState>(|palette| {
-            palette.pending = true;
             palette.invocation = Some(entry);
         });
         self.store.set_state(state);
@@ -699,7 +702,7 @@ fn palette_panel(
         let back = controller.store.dispatcher();
         let confirm = controller.clone();
         let style = glass_icon_button_style(cx);
-        let pending = palette.pending;
+        let pending = palette.invocation.is_some();
         let confirm_disabled = pending
             || entries.get(palette.selected).is_none_or(|entry| {
                 availability(
@@ -771,7 +774,7 @@ fn palette_panel(
     } else {
         let context = controller.palette_context();
         for (index, entry) in entries.iter().enumerate() {
-            let disabled = palette.pending
+            let disabled = palette.invocation.is_some()
                 || availability(entry.command, palette.target, &snapshots, context).is_err();
             let foreground = if disabled {
                 cx.theme().button.disabled.foreground

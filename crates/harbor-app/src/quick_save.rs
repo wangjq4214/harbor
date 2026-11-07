@@ -1,5 +1,6 @@
 //! Application-owned input-only naming and in-window review. No filesystem effects.
 use super::*;
+use crate::appearance::quick_save_button_style;
 #[path = "quick_save_project.rs"]
 mod project_review;
 use harbor_config::{SessionProfile, ShellSettings};
@@ -28,13 +29,13 @@ pub struct QuickSaveSubmission {
 struct QuickSaveState {
     draft: QuickSaveDraft,
     project: ProjectReview,
+    /// Frozen at final approval; its presence also marks a pending submission.
     approved_project: Option<harbor_config::ProjectRecipe>,
     input: TextEditingController,
     review_name: Option<String>,
     details_open: bool,
     selected: BTreeSet<String>,
     acknowledged: bool,
-    pending: bool,
     issued: bool,
     error: Option<String>,
     focus: FocusHandle,
@@ -51,7 +52,7 @@ impl Drop for QuickSaveLifetime {
             && state
                 .popups
                 .get::<QuickSaveState>()
-                .is_some_and(|save| save.pending && !save.issued);
+                .is_some_and(|save| save.pending() && !save.issued);
         drop(state);
         if retire {
             self.ui.cancel_quick_save(AppCommandRequest::popup(
@@ -88,7 +89,6 @@ impl WorkspaceUiController {
             details_open: false,
             selected: BTreeSet::new(),
             acknowledged: false,
-            pending: false,
             issued: false,
             error: None,
             focus: FocusHandle::new(),
@@ -114,7 +114,7 @@ impl WorkspaceUiController {
             return None;
         }
         let mut save = state.popups.get::<QuickSaveState>()?.clone();
-        if save.pending {
+        if save.pending() {
             return None;
         }
         match request.command {
@@ -170,7 +170,7 @@ impl WorkspaceUiController {
             return;
         }
         state.popups.update::<QuickSaveState>(|save| {
-            if !save.pending {
+            if !save.pending() {
                 update(save);
             }
         });
@@ -180,11 +180,10 @@ impl WorkspaceUiController {
         let mut queued = false;
         self.update_quick_save(generation, |save| {
             if save.review_name.is_some()
-                && save.project.recipe().is_ok()
-                && (save.selected.is_empty() || save.acknowledged)
+                && let Ok(project) = save.project.recipe()
+                && save.overrides_approved()
             {
-                save.approved_project = save.project.recipe().ok();
-                save.pending = true;
+                save.approved_project = Some(project);
                 queued = true;
             }
         });
@@ -208,7 +207,7 @@ impl WorkspaceUiController {
             return None;
         }
         let save = state.popups.get::<QuickSaveState>()?;
-        if !save.pending || save.issued || (!save.selected.is_empty() && !save.acknowledged) {
+        if save.issued || !save.overrides_approved() {
             return None;
         }
         let name = save.review_name.clone()?;
@@ -251,7 +250,6 @@ impl WorkspaceUiController {
             }
             Err(error) => {
                 state.popups.update::<QuickSaveState>(|save| {
-                    save.pending = false;
                     save.approved_project = None;
                     save.issued = false;
                     save.error = Some(error);
@@ -352,10 +350,6 @@ fn review_block(cx: &mut BuildCx, title: &str, divider_key: &'static str) -> Col
         )
 }
 
-fn review_button_style(cx: &BuildCx, primary: bool) -> harbor_widget::theme::ControlStyle {
-    crate::appearance::quick_save_button_style(cx, primary)
-}
-
 impl crate::popups::Popup for QuickSaveState {
     fn focus(&self) -> FocusHandle {
         self.focus
@@ -383,6 +377,14 @@ impl crate::popups::Popup for QuickSaveState {
     }
 }
 impl QuickSaveState {
+    fn pending(&self) -> bool {
+        self.approved_project.is_some()
+    }
+
+    fn overrides_approved(&self) -> bool {
+        self.selected.is_empty() || self.acknowledged
+    }
+
     fn panel(&self, cx: &mut BuildCx, ui: &WorkspaceUiController, generation: u64) -> View {
         cx.use_state(|| {
             std::rc::Rc::new(QuickSaveLifetime {
@@ -415,7 +417,7 @@ impl QuickSaveState {
                 ));
             content = content
                 .push_child(header.build(cx))
-                .push_child(self.project.panel(cx, ui, generation, self.pending));
+                .push_child(self.project.panel(cx, ui, generation, self.pending()));
 
             // Opt-in choices and their independent acknowledgement never live in disclosure.
             let mut overrides = review_block(cx, "Environment variables", "overrides-divider");
@@ -434,9 +436,9 @@ impl QuickSaveState {
                 let change = ui.clone();
                 overrides = overrides.push_child(View::deferred(
                     Checkbox::new(display_value(&key), selected)
-                        .style(review_button_style(cx, false))
+                        .style(quick_save_button_style(cx, false))
                         .unwrap()
-                        .disabled(self.pending)
+                        .disabled(self.pending())
                         .on_change(move |checked| {
                             change.update_quick_save(generation, |save| {
                                 if checked {
@@ -457,9 +459,9 @@ impl QuickSaveState {
                         "Selected variables contain no passwords or tokens",
                         self.acknowledged,
                     )
-                    .style(review_button_style(cx, false))
+                    .style(quick_save_button_style(cx, false))
                     .unwrap()
-                    .disabled(self.pending)
+                    .disabled(self.pending())
                     .on_change(move |checked| {
                         change.update_quick_save(generation, |save| save.acknowledged = checked)
                     })
@@ -491,9 +493,9 @@ impl QuickSaveState {
                 } else {
                     "Show supporting details"
                 })
-                .style(review_button_style(cx, false))
+                .style(quick_save_button_style(cx, false))
                 .unwrap()
-                .disabled(self.pending)
+                .disabled(self.pending())
                 .on_click(move |_| {
                     change.update_quick_save(generation, |save| {
                         save.details_open = !save.details_open
@@ -563,28 +565,28 @@ impl QuickSaveState {
                     .unwrap()
                     .push_child(View::deferred(
                         Button::text("Cancel")
-                            .style(review_button_style(cx, false))
+                            .style(quick_save_button_style(cx, false))
                             .unwrap()
-                            .disabled(self.pending)
+                            .disabled(self.pending())
                             .on_click(move |_| cancel(AppCommand::CancelQuickSave))
                             .keyed("quick-save-cancel"),
                     ))
                     .push_child(View::deferred(
                         Button::text("Return to edit")
-                            .style(review_button_style(cx, false))
+                            .style(quick_save_button_style(cx, false))
                             .unwrap()
-                            .disabled(self.pending)
+                            .disabled(self.pending())
                             .on_click(move |_| back(AppCommand::EditQuickSave))
                             .keyed("quick-save-back"),
                     ))
                     .push_child(View::deferred(
-                        Button::text(if self.pending { "Saving…" } else { "Save" })
-                            .style(review_button_style(cx, true))
+                        Button::text(if self.pending() { "Saving…" } else { "Save" })
+                            .style(quick_save_button_style(cx, true))
                             .unwrap()
                             .disabled(
-                                self.pending
+                                self.pending()
                                     || self.project.recipe().is_err()
-                                    || (!self.selected.is_empty() && !self.acknowledged),
+                                    || !self.overrides_approved(),
                             )
                             .on_click(move |_| commit.queue_quick_save(generation))
                             .keyed("quick-save-final"),
@@ -606,7 +608,7 @@ impl QuickSaveState {
                 .on_submit(move |_| submit(AppCommand::AdvanceQuickSave))
                 .on_escape(move || cancel(AppCommand::CancelQuickSave));
             let advance = send.clone();
-            let disabled = self.pending
+            let disabled = self.pending()
                 || name_error(&self.input.text(), &ui.store.state().read().profiles).is_some();
             let mut style = cx.theme().button.clone();
             style.min_height = 0.0;
