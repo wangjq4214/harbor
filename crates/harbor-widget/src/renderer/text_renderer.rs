@@ -346,7 +346,7 @@ impl TextRenderer {
         self.id_to_offset.clear();
         let mut next_offset = 0;
         for item in scene_graph.items() {
-            if let crate::scene::primitive::Primitive::Text { origin, color, .. } = &item.primitive
+            if let Some((_, origin, color, _)) = item.primitive.text_run()
                 && let Some(run_data) = run_cache.get(item.id)
             {
                 let count = u32::try_from(run_data.glyphs.len())
@@ -360,8 +360,8 @@ impl TextRenderer {
                     next_offset,
                     TextInstanceBatch {
                         glyphs: run_data.glyphs.as_slice(),
-                        origin: *origin,
-                        color: *color,
+                        origin,
+                        color,
                         clips: &item.clips,
                     },
                     viewport,

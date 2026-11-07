@@ -53,6 +53,37 @@ maximum they fill that maximum, even under loose root constraints.
   Its finite long-axis maximum is filled; an unbounded long axis defaults to zero
   unless bounded constraints supply an explicit extent.
 
+## Optional wrapping
+
+`Row::wrap(true)`, `Column::wrap(true)` and `Flex::wrap(true)` opt into
+additional runs at the available main-axis cap. The equivalent local setting is
+`FlexOptions { wrap: true, ..Default::default() }`; the default remains a single
+run. Children are measured using the full main-axis cap, not a guessed breakpoint
+or application-maintained text widths.
+
+Main-axis alignment is applied separately within each run. Cross-axis start,
+center and end apply within each run's natural cross extent. Stretch retains the
+existing constraint policy: a finite cross maximum is supplied on the first
+measurement, so each run can fill that cap and multiple runs can overflow it.
+With an unbounded cross maximum, stretch derives each run's natural finite cross
+extent and corrects its children once. This avoids introducing repeated intrinsic
+stretch correction in bounded nested layouts.
+
+Runs advance from the cross-axis start, with the configured `gap` both between
+children and between runs. As with single-run flex, alignment needs
+parent-imposed minimum space to distribute; opting into wrapping does not force
+a content-sized group to fill the available width.
+
+Flexible children have zero basis when choosing run breaks; their factors divide
+the remaining main extent of their own run using the existing fit and rounding
+rules. With an unbounded main axis there is no wrapping, and unbounded-flex
+diagnostics remain unchanged. Stretch uses provisional measurements followed by
+at most one correction per child; corrections do not regroup runs or redistribute
+shares. Overflow stays diagnostic rather than implicitly clipping content.
+
+Applications choose whether to wrap, alignment, spacing and child order. No
+action-group policy or button semantics are built into the layout engine.
+
 ## Parent data and errors
 
 Flex factor and fit are typed metadata on the immediate child wrapper.

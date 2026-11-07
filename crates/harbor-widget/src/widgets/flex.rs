@@ -57,6 +57,8 @@ pub enum MainAxisAlignment {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlexOptions {
     pub gap: f32,
+    /// Wrap at the main-axis cap. Disabled by default.
+    pub wrap: bool,
     pub main_axis_alignment: MainAxisAlignment,
     pub cross_axis_alignment: CrossAxisAlignment,
 }
@@ -65,6 +67,7 @@ impl Default for FlexOptions {
     fn default() -> Self {
         Self {
             gap: 0.0,
+            wrap: false,
             main_axis_alignment: MainAxisAlignment::Start,
             cross_axis_alignment: CrossAxisAlignment::Start,
         }
@@ -89,6 +92,7 @@ pub struct Flex {
     pub cross_axis_alignment: CrossAxisAlignment,
     background: Option<Color>,
     pub(crate) gap: f32,
+    wrap: bool,
     pub(crate) children: Vec<View>,
 }
 
@@ -100,6 +104,7 @@ impl Flex {
             cross_axis_alignment: CrossAxisAlignment::Start,
             background: None,
             gap: 0.0,
+            wrap: false,
             children: Vec::new(),
         }
     }
@@ -108,12 +113,14 @@ impl Flex {
         Self::new(axis)
             .main_axis_alignment(options.main_axis_alignment)
             .cross_axis_alignment(options.cross_axis_alignment)
+            .wrap(options.wrap)
             .gap(options.gap)
     }
 
     pub fn get_options(&self) -> FlexOptions {
         FlexOptions {
             gap: self.gap,
+            wrap: self.wrap,
             main_axis_alignment: self.main_axis_alignment,
             cross_axis_alignment: self.cross_axis_alignment,
         }
@@ -124,6 +131,14 @@ impl Flex {
         crate::layout::configuration::validate_scalar("gap", gap)?;
         self.gap = gap;
         Ok(self)
+    }
+
+    /// Wrap content-sized children at the main-axis cap, with `gap` between runs.
+    /// Flexible children have zero wrapping basis and divide each run's remainder.
+    /// Alignment applies within each run; runs advance from the cross-axis start.
+    pub fn wrap(mut self, wrap: bool) -> Self {
+        self.wrap = wrap;
+        self
     }
 
     pub fn main_axis_alignment(mut self, alignment: MainAxisAlignment) -> Self {
@@ -177,6 +192,7 @@ impl Flex {
         FlexLayout {
             axis: self.axis,
             gap: self.gap,
+            wrap: self.wrap,
             main_axis_alignment: self.main_axis_alignment,
             cross_axis_alignment: self.cross_axis_alignment,
         }
@@ -243,6 +259,7 @@ impl AnyView for Flex {
 pub(crate) struct FlexLayout {
     pub axis: Axis,
     pub gap: f32,
+    pub wrap: bool,
     pub main_axis_alignment: MainAxisAlignment,
     pub cross_axis_alignment: CrossAxisAlignment,
 }
@@ -255,7 +272,7 @@ impl FlexLayout {
     ) -> Result<ParentLayout, LayoutError> {
         constraints.validate()?;
         let count = children.len();
-        let gaps = self.gaps(count)?;
+        let gaps = self.gaps(if self.wrap { 0 } else { count })?;
         let mut data = Vec::with_capacity(count);
         for index in 0..count {
             data.push(children.parent_data(index)?.flex);
@@ -270,7 +287,9 @@ impl FlexLayout {
         } else {
             0.0
         };
-        let inflexible_max = if main_max.is_finite() {
+        let inflexible_max = if self.wrap {
+            main_max
+        } else if main_max.is_finite() {
             finite((f64::from(main_max) - gaps).max(0.0))?
         } else {
             f32::INFINITY
@@ -281,7 +300,6 @@ impl FlexLayout {
         };
         let mut requests = vec![natural; count];
         let mut sizes = vec![Size::ZERO; count];
-        let mut inflexible_extent = 0.0_f64;
         for (index, metadata) in data.iter().enumerate() {
             if metadata.is_none() {
                 sizes[index] = if provisional_stretch {
@@ -290,7 +308,6 @@ impl FlexLayout {
                     children.measure(index, natural)?
                 };
                 validate_size(sizes[index])?;
-                inflexible_extent += f64::from(self.axis.main(sizes[index]));
             }
         }
 
@@ -298,67 +315,86 @@ impl FlexLayout {
         if flex_count > 0 && !main_max.is_finite() {
             diagnostics.push(LayoutDiagnostic::UnboundedFlex);
         }
-        // u128 cannot overflow for a Vec indexed by usize containing u32 factors.
-        let total_factor: u128 = data
-            .iter()
-            .flatten()
-            .map(|metadata| u128::from(metadata.factor.get()))
-            .sum();
-        let remaining = (f64::from(main_max) - gaps - inflexible_extent).max(0.0);
-        let mut residue = remaining;
-        let mut flexible_left = flex_count;
-        for (index, metadata) in data.iter().enumerate() {
-            let Some(metadata) = metadata else {
-                continue;
-            };
-            flexible_left -= 1;
-            let request = if main_max.is_finite() {
-                let share = if flexible_left == 0 {
-                    finite(residue)?
+        let runs = self.runs(constraints, &sizes)?;
+        for run in &runs {
+            // Each wrapped run uses the existing zero-basis flex allocation policy.
+            let inflexible_extent: f64 = run
+                .clone()
+                .filter(|&index| data[index].is_none())
+                .map(|index| f64::from(self.axis.main(sizes[index])))
+                .sum();
+            // u128 cannot overflow for a Vec indexed by usize containing u32 factors.
+            let total_factor: u128 = data[run.clone()]
+                .iter()
+                .flatten()
+                .map(|metadata| u128::from(metadata.factor.get()))
+                .sum();
+            let remaining =
+                (f64::from(main_max) - self.gaps(run.len())? - inflexible_extent).max(0.0);
+            let mut residue = remaining;
+            let mut flexible_left = data[run.clone()].iter().flatten().count();
+            for index in run.clone() {
+                let Some(metadata) = data[index] else {
+                    continue;
+                };
+                flexible_left -= 1;
+                let request = if main_max.is_finite() {
+                    let share = if flexible_left == 0 {
+                        finite(residue)?
+                    } else {
+                        finite(
+                            (remaining * f64::from(metadata.factor.get()) / total_factor as f64)
+                                .min(residue),
+                        )?
+                    };
+                    // Subtract the actual f32 share, not the unrounded ideal share.
+                    residue = (residue - f64::from(share)).max(0.0);
+                    let minimum = if metadata.fit == FlexFit::Tight {
+                        share
+                    } else {
+                        0.0
+                    };
+                    BoxConstraints {
+                        min: self.axis.size(minimum, cross_min),
+                        max: self.axis.size(share, cross_max),
+                    }
                 } else {
-                    finite(
-                        (remaining * f64::from(metadata.factor.get()) / total_factor as f64)
-                            .min(residue),
-                    )?
+                    natural
                 };
-                // Subtract the actual f32 share, not the unrounded ideal share.
-                residue = (residue - f64::from(share)).max(0.0);
-                let minimum = if metadata.fit == FlexFit::Tight {
-                    share
+                requests[index] = request;
+                sizes[index] = if provisional_stretch {
+                    children.measure_provisional(index, request)?
                 } else {
-                    0.0
+                    children.measure(index, request)?
                 };
-                BoxConstraints {
-                    min: self.axis.size(minimum, cross_min),
-                    max: self.axis.size(share, cross_max),
-                }
-            } else {
-                natural
-            };
-            requests[index] = request;
-            sizes[index] = if provisional_stretch {
-                children.measure_provisional(index, request)?
-            } else {
-                children.measure(index, request)?
-            };
-            validate_size(sizes[index])?;
-        }
-
-        if provisional_stretch && !children.is_provisional() && count > 0 {
-            let cross = self.cross_extent(constraints, &sizes);
-            for index in 0..count {
-                // Even a child already reporting this cross extent may contain
-                // pending provisional descendants. Finalize every child.
-                let request = BoxConstraints {
-                    min: self.axis.size(self.axis.main(requests[index].min), cross),
-                    max: self.axis.size(self.axis.main(requests[index].max), cross),
-                };
-                sizes[index] = children.measure(index, request)?;
                 validate_size(sizes[index])?;
             }
         }
-        // Correction deliberately does not redistribute shares or converge.
-        self.finish(constraints, &sizes, flex_count > 0, diagnostics)
+
+        if provisional_stretch && !children.is_provisional() {
+            for run in &runs {
+                let cross = if self.wrap {
+                    self.run_extent(&sizes[run.clone()])?.1
+                } else {
+                    self.cross_extent(constraints, &sizes)
+                };
+                for index in run.clone() {
+                    // Finalize all provisional descendants, even if their size matched.
+                    let request = BoxConstraints {
+                        min: self.axis.size(self.axis.main(requests[index].min), cross),
+                        max: self.axis.size(self.axis.main(requests[index].max), cross),
+                    };
+                    sizes[index] = children.measure(index, request)?;
+                    validate_size(sizes[index])?;
+                }
+            }
+        }
+        // Correction deliberately does not redistribute shares, rewrap or converge.
+        if self.wrap {
+            self.finish_wrapped(constraints, &sizes, &runs, flex_count > 0, diagnostics)
+        } else {
+            self.finish(constraints, &sizes, flex_count > 0, diagnostics)
+        }
     }
 
     /// Compatibility for direct legacy tests; real measurement uses `layout`.
@@ -367,7 +403,13 @@ impl FlexLayout {
         constraints: BoxConstraints,
         sizes: &[Size],
     ) -> (Size, Vec<Point>) {
-        match self.finish(constraints, sizes, false, Vec::new()) {
+        let result = if self.wrap {
+            self.runs(constraints, sizes)
+                .and_then(|runs| self.finish_wrapped(constraints, sizes, &runs, false, Vec::new()))
+        } else {
+            self.finish(constraints, sizes, false, Vec::new())
+        };
+        match result {
             Ok(layout) => (
                 layout.size,
                 layout
@@ -378,6 +420,121 @@ impl FlexLayout {
             ),
             Err(_) => (Size::ZERO, vec![Point::ZERO; sizes.len()]),
         }
+    }
+
+    /// Inflexible measurements determine run breaks; flexible children have zero basis.
+    fn runs(
+        &self,
+        constraints: BoxConstraints,
+        sizes: &[Size],
+    ) -> Result<Vec<std::ops::Range<usize>>, LayoutError> {
+        constraints.validate()?;
+        self.gaps(0)?;
+        let mut runs = Vec::new();
+        let mut start = 0;
+        let mut occupied = 0.0;
+        for (index, &size) in sizes.iter().enumerate() {
+            validate_size(size)?;
+            let main = f64::from(self.axis.main(size));
+            let next = if index == start {
+                main
+            } else {
+                occupied + f64::from(self.gap) + main
+            };
+            if self.wrap && index > start && next > f64::from(self.axis.main(constraints.max)) {
+                runs.push(start..index);
+                start = index;
+                occupied = main;
+            } else {
+                occupied = next;
+            }
+        }
+        if start < sizes.len() {
+            runs.push(start..sizes.len());
+        }
+        Ok(runs)
+    }
+
+    fn run_extent(&self, sizes: &[Size]) -> Result<(f32, f32), LayoutError> {
+        let mut main = self.gaps(sizes.len())?;
+        let mut cross = 0.0_f32;
+        for &size in sizes {
+            validate_size(size)?;
+            main += f64::from(self.axis.main(size));
+            cross = cross.max(self.axis.cross(size));
+        }
+        Ok((finite(main)?, cross))
+    }
+
+    fn finish_wrapped(
+        &self,
+        constraints: BoxConstraints,
+        sizes: &[Size],
+        runs: &[std::ops::Range<usize>],
+        has_flex: bool,
+        mut diagnostics: Vec<LayoutDiagnostic>,
+    ) -> Result<ParentLayout, LayoutError> {
+        let extents = runs
+            .iter()
+            .map(|run| self.run_extent(&sizes[run.clone()]))
+            .collect::<Result<Vec<_>, _>>()?;
+        let natural_main = extents
+            .iter()
+            .map(|extent| extent.0)
+            .fold(0.0_f32, f32::max);
+        let natural_cross = finite(
+            extents
+                .iter()
+                .map(|extent| f64::from(extent.1))
+                .sum::<f64>()
+                + self.gaps(runs.len())?,
+        )?;
+        let mut size = constraints.constrain(self.axis.size(natural_main, natural_cross));
+        if has_flex && self.axis.main(constraints.max).is_finite() {
+            size = self
+                .axis
+                .size(self.axis.main(constraints.max), self.axis.cross(size));
+        }
+        let mut placements = Vec::with_capacity(sizes.len());
+        let mut cross_cursor = 0.0;
+        let mut overflow_main = 0.0_f32;
+        for (run, &(_, cross)) in runs.iter().zip(&extents) {
+            let run_size = self.axis.size(self.axis.main(size), cross);
+            let line = self.finish(
+                BoxConstraints::tight(run_size),
+                &sizes[run.clone()],
+                false,
+                Vec::new(),
+            )?;
+            for diagnostic in line.diagnostics {
+                if let LayoutDiagnostic::Overflow { main, .. } = diagnostic {
+                    overflow_main = overflow_main.max(main);
+                }
+            }
+            for (index, origin) in line.placements {
+                let offset = finite(
+                    cross_cursor + f64::from(self.axis.cross(Size::new(origin.x, origin.y))),
+                )?;
+                placements.push((
+                    run.start + index,
+                    self.axis
+                        .point(self.axis.main(Size::new(origin.x, origin.y)), offset),
+                ));
+            }
+            cross_cursor += f64::from(cross) + f64::from(self.gap);
+        }
+        let overflow_cross = (natural_cross - self.axis.cross(size)).max(0.0);
+        if overflow_main > 0.0 || overflow_cross > 0.0 {
+            diagnostics.push(LayoutDiagnostic::Overflow {
+                main: overflow_main,
+                cross: overflow_cross,
+            });
+        }
+        Ok(ParentLayout {
+            size,
+            placements,
+            diagnostics,
+        })
     }
 
     fn gaps(&self, count: usize) -> Result<f64, LayoutError> {

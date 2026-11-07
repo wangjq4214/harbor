@@ -4,6 +4,7 @@
 **Status:** Draft; settled requirements, not implementation or runtime acceptance
 **Date:** 2026-11-07
 **Sources:** Owner-supplied screenshot of the Quick Save confirmation overlay; the refinement conversation approving a restrained, clearer tool-style presentation and asking which components belong in widget; subsequent approval of one UI-and-widget-boundary spec without ticket slicing or implementation. Existing behavior is governed by [spec 0052](./0052-named-session-profiles-and-quick-save.md).
+**Presentation refinement source:** Subsequent owner feedback that the current save page feels mixed together, proposing divider lines and larger headings; approval of the proposed block layout and updating this existing spec only, without tickets or implementation.
 **Source snapshot:** `3aa8e98`, clean working tree before this document. Inspection covered Quick Save composition, project review, application glass appearance, widget exports, text fields, labels and shared control surfaces. This is a scoped source assessment, not a runtime diagnosis of the screenshot's clipping.
 
 ## Outcome
@@ -27,7 +28,18 @@ Organize review around:
 
 1. **What will be saved:** preset name, execution environment and project directory, with agent inclusion and confirmed arguments available for meaningful review when applicable.
 2. **What needs attention:** unknown or edited context, invalid fields, required acknowledgements and save failures.
-3. **Supporting details:** source program/startup-argument provenance, configured environment overrides and restoration limitations.
+3. **Supporting details:** source program/startup-argument provenance and restoration limitations.
+
+Express that hierarchy as distinct reading blocks in this order:
+
+- **Review header:** page title and preset name.
+- **Project and execution environment:** environment choice, applicable destination, project directory, approved context, and associated correction action/feedback.
+- **Agent, when applicable:** inclusion choice, invocation arguments and their required confirmations/warnings.
+- **Environment variables:** configured-override choices, inclusion/exclusion summary and their independent safety acknowledgement.
+- **Supporting details:** collapsible source provenance and restoration limitations, subject to the warning-visibility requirements below.
+- **Final actions:** Save, Return to edit and Cancel, visually separated from review content without changing their behavior.
+
+Keep field errors, safety warnings and acknowledgement instructions next to their relevant content or controls rather than collecting them into a detached generic warning block. Save failures remain visible near the final actions. These block labels express grouping, not mandatory UI wording or localization.
 
 Supporting detail may use collapsible sections to reduce visual noise. Required warnings, suspected-credential handling, blocking feedback and necessary confirmation controls must not disappear into a collapsed section. Where details are collapsed, inclusion/exclusion state remains understandable without opening every section. Full required review content remains accessible; do not remove it merely to shorten the form.
 
@@ -44,8 +56,11 @@ Use concise user-facing labels and explanations. Distinguish source startup argu
 
 ### R4 — Readable material, controls and text
 
-- Use a more solid, distinguishable review surface with a darker, more neutral background scrim and less distracting terminal bleed-through. Retain restrained glass styling rather than adding more visual effects.
+- Preserve the translucent glass character used by the command palette and search: share their application-owned backdrop material, subtle panel tint and distinguishable translucent input surfaces. Keep softened background colors visible rather than replacing the review or inputs with near-opaque fills or adding a dark full-window scrim. Readability must come from the shared glass treatment and foreground/control hierarchy, not loss of transparency.
 - Distinguish title, body and auxiliary text typographically and by foreground treatment. Give inputs a discernible surface, and make primary Save visually distinct from secondary and cancel actions. Hover, pressed, selected, disabled and keyboard-focus feedback must be discernible where applicable.
+- In the final action area, arrange Cancel, Return to edit and Save in that left-to-right order as a right-aligned horizontal group when space permits. Save is the sole solid primary action; Return to edit and Cancel have subordinate visual weight. When the window is too narrow, allow wrapping or vertical arrangement while preserving complete labels, usable targets and reachability. Keep form-local actions near the content they affect rather than right-aligning every button.
+- Use a clear type scale: the page title is the most prominent heading; major block headings are visibly larger than persistent field labels and body text; helper text stays subordinate but readable. A case change or foreground-color change alone does not satisfy the heading-size distinction.
+- Separate major content blocks and the final action area with restrained divider lines and larger inter-block whitespace than spacing within a block. Keep fields within their section visually related. Do not add a divider between every field or surround every field with another bordered card; retain the required discernible input surfaces. Block separation must remain clear when details expand or content wraps, while preserving R1's compact sizing and constrained-window reachability.
 - Explanatory and error text wraps within available content width. Fix the screenshot's clipped message presentation; do not solve it by silently removing the leading text or hiding warnings behind ellipses.
 - Keep long captured paths and non-secret argument values fully inspectable, selectable and copyable. Wrapping explanatory text does not authorize replacing existing read-only value editors with non-selectable labels, shortening copied values or revealing redacted secrets.
 - Preserve source values across resizing and layout changes. Use UI-renderer text measurements rather than app-maintained character/cell-count line breaking.
@@ -119,12 +134,18 @@ Inspected surfaces are `crates/harbor-app/src/quick_save.rs`, `quick_save_projec
 | E8 | Return to edit, cancel, replace the popup, confirm IME candidates and deliver late/repeated input | Draft retention, no-write cancellation, exclusive lifetime and terminal-focus restoration follow spec 0052; no stale approval, extra commit or leaked PTY input |
 | E9 | Explicitly Save a valid reviewed draft, then repeat with a write conflict/failure | Successful persistence/publication uses the existing selected-file contract; failure is visible and retains the draft; visual redesign causes no silent overwrite, premature success claim or permission bypass |
 | E10 | Render and exercise generic selection/text capabilities without Harbor profile or terminal state | Public contracts remain usable independently; caller-owned values drive visuals and callbacks return intent; no Harbor business dependencies or competing selected/checked state are required |
-| E11 | Compare review over both quiet and visually busy terminal backgrounds | Review surface, inputs, text hierarchy, selection/focus feedback and primary/secondary actions remain distinguishable; reduced bleed-through does not blur foreground text or change hit regions |
+| E11 | Compare review with the command palette over both quiet and visually busy terminal backgrounds | The review retains comparable glass transparency, softened background color and optical treatment without a dark full-window scrim; review surface, inputs, text hierarchy, selection/focus feedback and primary/secondary actions remain distinguishable, foreground stays sharp and hit regions are unchanged |
+| E12 | Open a review with an applicable agent and configured overrides; expand supporting details, then review a draft without an applicable agent | Title/name, project/environment, applicable agent, environment variables, supporting details and final actions read as distinct ordered blocks; page title is most prominent, block headings are visibly larger than field labels/body text, and restrained dividers plus greater inter-block spacing separate sections rather than every field; no per-field bordered-card clutter is introduced |
+| E13 | In a constrained window, trigger a context-validation error, a required safety acknowledgement and a save failure; expand/collapse supporting details | Field errors and required safety information stay beside their relevant content/controls, save failure remains visible near final actions, and mandatory warnings are never collapsed away; wrapped content, dividers and larger headings do not make required content or actions unreachable |
+| E14 | Review final actions at a width that fits the group, then constrain the window and trigger a save failure | The fitting layout shows Cancel, Return to edit and Save left-to-right in a right-aligned row, with Save visually primary; at constrained widths all three remain readable and reachable without being squeezed, and save failure remains near the actions |
 
 ## Decisions and Traceability
 
 - **One spec, no slice or implementation:** the owner's final approval selected the proposed UI-and-widget-boundary scope. Existing spec 0052 remains the behavioral contract; a focused companion avoids rewriting unrelated launch/capture requirements.
 - **Task-form presentation and restrained glass:** approved screenshot discussion supplies R1–R4, including compact sizing, supporting-detail disclosure, persistent labels, secondary correction and visible blocked-save feedback. It does not supply exact visual tokens or a broader workspace redesign.
+- **Preserve palette-like transparency:** the owner's later rejection of the opaque review explicitly supersedes R4's earlier more-solid-surface/darker-scrim direction. Reuse the command palette's glass and translucent editor appearance while retaining the approved grouping, headings, action layout, readability and save-safety constraints.
+- **Explicit reading blocks and heading scale:** the owner's subsequent mixed-content feedback and approval of the proposed block layout supply R2's ordered grouping, R4's larger block headings/dividers/relative spacing and E12–E13. This is an amendment to the existing presentation contract, not a new architecture decision, fixed pixel design, ticket set or authorization to change save behavior.
+- **Final action group:** the owner chose the proposed right-aligned Cancel / Return to edit / Save row over a full-width Save. This applies to the Quick Save review, not a whole-application button policy; narrow layouts may wrap or stack.
 - **Prioritize selection controls and wrapping:** the approved boundary recommendation supplies R5. Form-field extraction is optional; a reusable disclosure component is not required. These are task scope choices rather than a new general design-system architecture.
 - **Mechanism versus product policy:** [ADR 0064](../adr/0064-widget-and-application-component-ownership.md), [ADR 0065](../adr/0065-layered-widget-text-input.md), [ADR 0070](../adr/0070-shared-application-glass-presets-with-local-overrides.md) and [ADR 0083](../adr/0083-composable-buttons-and-shared-control-surfaces.md) support R5–R6. Reuse their state, editor, interaction and appearance boundaries; no new ADR supersession is selected.
 - **Existing confirmation/safety contract:** [ADR 0107](../adr/0107-shared-palette-profile-flow-and-in-window-confirmation.md) and spec 0052 support R1/R7 and the safety cases. Detail disclosure cannot weaken required review or credential handling.

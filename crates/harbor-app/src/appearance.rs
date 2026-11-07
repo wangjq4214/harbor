@@ -186,45 +186,6 @@ impl GlassAppearance {
         }
     }
 
-    /// Task-form material: neutral and substantially more solid than palette chrome.
-    pub fn quick_save() -> Self {
-        Self {
-            blur_sigma: 6.0,
-            refraction: EdgeRefraction::new(0.0, 0.0).unwrap(),
-            material: None,
-            panel_fill: Paint::Solid(Color {
-                r: 0.055,
-                g: 0.06,
-                b: 0.07,
-                a: 0.96,
-            }),
-            panel_border: Border::all(
-                Color {
-                    a: 0.18,
-                    ..Color::WHITE
-                },
-                1.0,
-            )
-            .unwrap(),
-            input_fill: Color {
-                r: 0.015,
-                g: 0.02,
-                b: 0.025,
-                a: 0.92,
-            },
-            input_border: Some(
-                Border::all(
-                    Color {
-                        a: 0.26,
-                        ..Color::WHITE
-                    },
-                    1.0,
-                )
-                .unwrap(),
-            ),
-            ..Self::command_palette()
-        }
-    }
     /// Row-local glass, lighter than the panel and absent on idle suggestions.
     pub fn command_palette_row(foreground: Color, state: InteractionState) -> Option<Self> {
         let alpha = if !state.disabled && state.pressed {

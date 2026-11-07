@@ -15,7 +15,9 @@ use crate::scene::primitive::{
 };
 use crate::scene::{SceneDelta, SceneGraph};
 use crate::signal::RuntimeId;
-use crate::text::{GlyphFn, TextMetrics, TextRunCache};
+#[cfg(test)]
+use crate::text::GlyphFn;
+use crate::text::{TextMetrics, TextRunCache};
 use hashbrown::HashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -222,17 +224,20 @@ impl FrameEncoder {
         let revision = atlas.ensure_scene_text(
             owner,
             scene_graph.items().iter().filter_map(|item| {
-                if let Primitive::Text { text, .. } = &item.primitive {
-                    Some(text.as_ref())
-                } else {
-                    None
-                }
+                item.primitive
+                    .text_run()
+                    .map(|(text, _, _, scale)| (text, scale))
             }),
             raster_scale,
             queue,
         );
-        let glyph_fn = |ch| atlas.glyph(ch, raster_scale).copied();
-        self.prepare_text_runs_at_scale(scene_graph, metrics, revision, raster_scale, &glyph_fn);
+        self.prepare_scaled_text_runs(
+            scene_graph,
+            metrics,
+            revision,
+            raster_scale,
+            &|ch, text_scale| atlas.glyph(ch, raster_scale * text_scale).copied(),
+        );
     }
 
     pub(crate) fn release_text_owner(&mut self, owner: RuntimeId) {
@@ -275,6 +280,7 @@ impl FrameEncoder {
         self.prepare_text_runs_at_scale(scene_graph, metrics, atlas_revision, 1.0, glyph_fn);
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_text_runs_at_scale(
         &mut self,
         scene_graph: &SceneGraph,
@@ -282,6 +288,23 @@ impl FrameEncoder {
         atlas_revision: u64,
         raster_scale: f32,
         glyph_fn: &GlyphFn<'_>,
+    ) {
+        self.prepare_scaled_text_runs(
+            scene_graph,
+            metrics,
+            atlas_revision,
+            raster_scale,
+            &|ch, _| glyph_fn(ch),
+        );
+    }
+
+    fn prepare_scaled_text_runs(
+        &mut self,
+        scene_graph: &SceneGraph,
+        metrics: &TextMetrics,
+        atlas_revision: u64,
+        raster_scale: f32,
+        glyph_fn: &dyn Fn(char, f32) -> Option<crate::text::AtlasGlyph>,
     ) {
         let revision_changed = self.prepared_atlas_revision != Some(atlas_revision);
         if revision_changed {
@@ -291,14 +314,20 @@ impl FrameEncoder {
         let mut changed = revision_changed;
         let mut live_ids = Vec::new();
         for item in scene_graph.items() {
-            if let crate::scene::primitive::Primitive::Text { text, .. } = &item.primitive {
+            if let Some((text, _, _, text_scale)) = item.primitive.text_run() {
+                let scaled_metrics = TextMetrics {
+                    cell_width: metrics.cell_width * text_scale,
+                    line_height: metrics.line_height * text_scale,
+                    ascent: metrics.ascent * text_scale,
+                    ..*metrics
+                };
                 let run_id = crate::scene::primitive::TextRunId::new(item.id);
                 changed |= self.text_run_cache.upsert_at_scale(
                     run_id,
                     text,
-                    metrics,
+                    &scaled_metrics,
                     raster_scale,
-                    glyph_fn,
+                    &|ch| glyph_fn(ch, text_scale),
                 );
                 live_ids.push(run_id);
             }
@@ -511,7 +540,7 @@ impl FrameEncoder {
                         );
                     }
                 }
-                Primitive::Text { .. } => {
+                Primitive::Text { .. } | Primitive::ScaledText { .. } => {
                     quad_run.flush(renderer, pass);
                     if let Some(ref tr) = self.text_renderer {
                         tr.encode_item(pass, item.id);

@@ -47,6 +47,12 @@ impl Column {
         Ok(self)
     }
 
+    /// Wrap children onto new columns at the available height. See `Flex::wrap`.
+    pub fn wrap(mut self, wrap: bool) -> Self {
+        self.inner = self.inner.wrap(wrap);
+        self
+    }
+
     pub fn main_axis_alignment(mut self, alignment: MainAxisAlignment) -> Self {
         self.inner = self.inner.main_axis_alignment(alignment);
         self

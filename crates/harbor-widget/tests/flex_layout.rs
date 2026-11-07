@@ -666,3 +666,230 @@ fn wide_and_nested_flex_trees_complete_within_measurement_budget() {
     let runtime = mount(nested, Size::new(512.0, 512.0));
     assert!(assert_finite_tree(&runtime) > 70);
 }
+
+#[test]
+fn wrapping_rows_and_columns_align_each_run_and_resize_without_rebuilding() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let component = Flex::new(axis)
+            .wrap(true)
+            .gap(8.0)
+            .unwrap()
+            .main_axis_alignment(MainAxisAlignment::End)
+            .push_child(SizedBox::new(size(axis, 50.0, 30.0)).unwrap())
+            .push_child(SizedBox::new(size(axis, 110.0, 30.0)).unwrap())
+            .push_child(SizedBox::new(size(axis, 60.0, 30.0)).unwrap());
+        let mut runtime = mount(
+            bounds(axis, 300.0, 300.0).child(component),
+            size(axis, 300.0, 200.0),
+        );
+        assert_finite_tree(&runtime);
+        let ids = fiber(&runtime, &[0]).children().to_vec();
+        for (index, offset) in [64.0, 122.0, 240.0].into_iter().enumerate() {
+            assert_rect(
+                rect(&runtime, &[0, index]),
+                point(axis, offset, 0.0),
+                size(axis, [50.0, 110.0, 60.0][index], 30.0),
+            );
+        }
+        let viewport = size(axis, 180.0, 200.0);
+        runtime.set_viewport(Viewport::new(
+            viewport.width as u32,
+            viewport.height as u32,
+            1.0,
+        ));
+        runtime.update(Instant::now());
+        assert_finite_tree(&runtime);
+        assert_eq!(fiber(&runtime, &[0]).children(), ids);
+        for (index, (main, cross)) in [(12.0, 0.0), (70.0, 0.0), (120.0, 38.0)]
+            .into_iter()
+            .enumerate()
+        {
+            assert_rect(
+                rect(&runtime, &[0, index]),
+                point(axis, main, cross),
+                size(axis, [50.0, 110.0, 60.0][index], 30.0),
+            );
+        }
+    }
+    let builds = Rc::new(Cell::new(0));
+    let mut runtime = mount(
+        Row::new()
+            .wrap(true)
+            .push_child(CountedLeaf(builds.clone())),
+        Size::new(100.0, 50.0),
+    );
+    runtime.set_viewport(Viewport::new(200, 50, 1.0));
+    runtime.update(Instant::now());
+    assert_eq!(builds.get(), 1);
+    assert_finite_tree(&runtime);
+}
+
+#[test]
+fn wrapping_shared_options_match_facades_and_builders() {
+    let options = harbor_widget::FlexOptions {
+        wrap: true,
+        gap: 8.0,
+        main_axis_alignment: MainAxisAlignment::End,
+        ..Default::default()
+    };
+    assert_eq!(
+        Row::new()
+            .wrap(true)
+            .gap(8.0)
+            .unwrap()
+            .main_axis_alignment(MainAxisAlignment::End)
+            .get_options(),
+        options
+    );
+    assert_eq!(
+        Column::with_options(options).unwrap().get_options(),
+        options
+    );
+    let row = Row::with_options(options)
+        .unwrap()
+        .push_child(SizedBox::new(Size::new(60.0, 10.0)).unwrap())
+        .push_child(SizedBox::new(Size::new(60.0, 20.0)).unwrap());
+    let column = Column::with_options(options)
+        .unwrap()
+        .push_child(SizedBox::new(Size::new(10.0, 60.0)).unwrap())
+        .push_child(SizedBox::new(Size::new(20.0, 60.0)).unwrap());
+    let row = mount(row, Size::new(100.0, 100.0));
+    let column = mount(column, Size::new(100.0, 100.0));
+    assert_finite_tree(&row);
+    assert_finite_tree(&column);
+    assert_rect(rect(&row, &[]), Point::ZERO, Size::new(60.0, 38.0));
+    assert_rect(
+        rect(&row, &[1]),
+        Point::new(0.0, 18.0),
+        Size::new(60.0, 20.0),
+    );
+    assert_rect(rect(&column, &[]), Point::ZERO, Size::new(38.0, 60.0));
+    assert_rect(
+        rect(&column, &[1]),
+        Point::new(18.0, 0.0),
+        Size::new(20.0, 60.0),
+    );
+}
+
+#[test]
+fn wrapping_cross_alignment_and_flex_shares_are_local_to_each_run() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        for cross in [
+            CrossAxisAlignment::Start,
+            CrossAxisAlignment::Center,
+            CrossAxisAlignment::End,
+            CrossAxisAlignment::Stretch,
+        ] {
+            let runtime = mount(
+                Flex::new(axis)
+                    .wrap(true)
+                    .gap(8.0)
+                    .unwrap()
+                    .cross_axis_alignment(cross)
+                    .main_axis_alignment(MainAxisAlignment::End)
+                    .push_child(SizedBox::new(size(axis, 60.0, 10.0)).unwrap())
+                    .push_child(Expanded::new().child(SizedBox::new(size(axis, 0.0, 5.0)).unwrap()))
+                    .push_child(SizedBox::new(size(axis, 60.0, 20.0)).unwrap())
+                    .push_child(
+                        Flexible::new().child(SizedBox::new(size(axis, 10.0, 8.0)).unwrap()),
+                    ),
+                size(axis, 100.0, 200.0),
+            );
+            assert_finite_tree(&runtime);
+            let (first_cross, second_cross, total_cross) = if cross == CrossAxisAlignment::Stretch {
+                (200.0, 200.0, 200.0)
+            } else {
+                (10.0, 20.0, 38.0)
+            };
+            assert_rect(
+                rect(&runtime, &[]),
+                Point::ZERO,
+                size(axis, 100.0, total_cross),
+            );
+            let offset = |run_cross: f32, child_cross: f32| match cross {
+                CrossAxisAlignment::Center => (run_cross - child_cross) / 2.0,
+                CrossAxisAlignment::End => run_cross - child_cross,
+                _ => 0.0,
+            };
+            let extent = |run_cross: f32, natural: f32| {
+                if cross == CrossAxisAlignment::Stretch {
+                    run_cross
+                } else {
+                    natural
+                }
+            };
+            assert_rect(
+                rect(&runtime, &[1]),
+                point(axis, 68.0, offset(first_cross, 5.0)),
+                size(axis, 32.0, extent(first_cross, 5.0)),
+            );
+            let second_start = first_cross + 8.0;
+            assert_rect(
+                rect(&runtime, &[2]),
+                point(axis, 22.0, second_start),
+                size(axis, 60.0, second_cross),
+            );
+            assert_rect(
+                rect(&runtime, &[3]),
+                point(axis, 90.0, second_start + offset(second_cross, 8.0)),
+                size(axis, 10.0, extent(second_cross, 8.0)),
+            );
+        }
+    }
+}
+
+#[test]
+fn wrapping_extremes_remain_finite_and_report_cross_overflow() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        for maximum in [0.0, 1.0, 50.0, 128.0, 256.0] {
+            let runtime = mount(
+                Flex::new(axis)
+                    .wrap(true)
+                    .gap(8.0)
+                    .unwrap()
+                    .push_child(SizedBox::new(size(axis, 60.0, 10.0)).unwrap())
+                    .push_child(SizedBox::new(size(axis, 60.0, 10.0)).unwrap()),
+                size(axis, maximum, 15.0),
+            );
+            assert_finite_tree(&runtime);
+            if maximum < 128.0 {
+                assert_eq!(
+                    fiber(&runtime, &[]).layout_diagnostics(),
+                    &[LayoutDiagnostic::Overflow {
+                        main: 0.0,
+                        cross: 13.0
+                    }]
+                );
+            } else {
+                assert!(fiber(&runtime, &[]).layout_diagnostics().is_empty());
+            }
+        }
+        let runtime = mount(Flex::new(axis).wrap(true), size(axis, 100.0, 50.0));
+        assert_finite_tree(&runtime);
+        assert_eq!(rect(&runtime, &[]).size(), Size::ZERO);
+    }
+}
+
+#[test]
+fn nested_wrapping_stretch_keeps_final_geometry_within_measurement_budget() {
+    let mut nested = Flex::new(Axis::Horizontal)
+        .wrap(true)
+        .push_child(SizedBox::new(Size::new(10.0, 10.0)).unwrap());
+    for level in 0..24 {
+        let axis = if level % 2 == 0 {
+            Axis::Horizontal
+        } else {
+            Axis::Vertical
+        };
+        nested = Flex::new(axis)
+            .wrap(true)
+            .gap(2.0)
+            .unwrap()
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .push_child(SizedBox::new(size(axis, 10.0, 10.0)).unwrap())
+            .push_child(Expanded::new().child(nested))
+            .push_child(SizedBox::new(size(axis, 20.0, 20.0)).unwrap());
+    }
+    let runtime = mount(nested, Size::new(80.0, 80.0));
+    assert!(assert_finite_tree(&runtime) > 90);
+}

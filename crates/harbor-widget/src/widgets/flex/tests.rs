@@ -256,6 +256,7 @@ fn engine(axis: Axis) -> FlexLayout {
         gap: 0.0,
         main_axis_alignment: MainAxisAlignment::Start,
         cross_axis_alignment: CrossAxisAlignment::Start,
+        wrap: false,
     }
 }
 
@@ -531,5 +532,80 @@ fn overflowing_children_align_from_start_and_report_both_axes() {
             main: 10.0,
             cross: 5.0
         }]
+    );
+}
+
+#[test]
+fn wrapped_stretch_finalizes_each_run_once_and_unbounded_main_stays_content_driven() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let mut layout = engine(axis);
+        layout.wrap = true;
+        layout.gap = 8.0;
+        layout.cross_axis_alignment = CrossAxisAlignment::Stretch;
+        let mut children = Children::new(axis, &[(60.0, 10.0, None), (60.0, 20.0, None)]);
+        let result = layout
+            .layout(
+                BoxConstraints::loose(axis.size(100.0, f32::INFINITY)),
+                &mut children,
+            )
+            .unwrap();
+        assert_eq!(result.size, axis.size(60.0, 38.0));
+        assert_eq!(children.provisional_calls, [0, 1]);
+        for (index, cross) in [10.0, 20.0].into_iter().enumerate() {
+            assert_eq!(children.requests[index].len(), 2);
+            assert_eq!(axis.cross(children.requests[index][1].min), cross);
+            assert_eq!(axis.cross(children.requests[index][1].max), cross);
+        }
+        let mut children = Children::new(
+            axis,
+            &[(60.0, 10.0, None), (20.0, 20.0, Some((1, FlexFit::Tight)))],
+        );
+        let result = layout
+            .layout(
+                BoxConstraints::loose(axis.size(f32::INFINITY, f32::INFINITY)),
+                &mut children,
+            )
+            .unwrap();
+        assert_eq!(result.size, axis.size(88.0, 20.0));
+        assert_eq!(result.diagnostics, [LayoutDiagnostic::UnboundedFlex]);
+        assert!(children.requests.iter().all(|requests| requests.len() == 2));
+    }
+}
+
+#[test]
+fn wrapped_cross_sum_overflow_is_an_error_not_nonfinite_geometry() {
+    let mut layout = engine(Axis::Horizontal);
+    layout.wrap = true;
+    let mut children = Children::new(Axis::Horizontal, &[(1.0, f32::MAX, None); 2]);
+    assert!(matches!(
+        layout.layout(
+            BoxConstraints::loose(Size::new(1.0, f32::INFINITY)),
+            &mut children
+        ),
+        Err(LayoutError::InvalidGeometry)
+    ));
+}
+
+#[test]
+fn wrapped_gaps_are_checked_per_axis_instead_of_summing_unrelated_runs() {
+    let mut layout = engine(Axis::Horizontal);
+    layout.wrap = true;
+    layout.gap = f32::MAX;
+    let mut children = Children::new(Axis::Horizontal, &[(0.0, 0.0, None); 3]);
+    let result = layout
+        .layout(
+            BoxConstraints::loose(Size::new(f32::MAX, f32::INFINITY)),
+            &mut children,
+        )
+        .unwrap();
+    assert_eq!(result.size, Size::new(f32::MAX, f32::MAX));
+    assert!(result.diagnostics.is_empty());
+    assert_eq!(
+        result.placements,
+        [
+            (0, Point::ZERO),
+            (1, Point::new(f32::MAX, 0.0)),
+            (2, Point::new(0.0, f32::MAX))
+        ]
     );
 }

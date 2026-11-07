@@ -408,6 +408,12 @@ pub(crate) trait AnyView: 'static {
         rect.contains(point)
     }
 
+    /// Local UI-font scale used for measuring this view's text. Zero hides text.
+    /// Implementations must return a finite, nonnegative value.
+    fn text_scale(&self) -> f32 {
+        1.0
+    }
+
     /// Prepare local text geometry before layout using the renderer's scalar advances.
     fn prepare_text_geometry(&self, _metrics: &TextMetrics, _advance: &mut dyn FnMut(char) -> f32) {
     }

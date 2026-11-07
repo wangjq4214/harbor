@@ -486,3 +486,81 @@ fn uncapped_label_wrap_uses_rendered_advances_and_preserves_unicode_across_resiz
         }
     }
 }
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+fn mixed_local_text_scales_use_matching_raster_metrics_and_encode_across_dpi() {
+    let (device, queue) = gpu_device();
+    let mut rt = Runtime::new();
+    rt.init_renderer(&device, wgpu::TextureFormat::Bgra8Unorm);
+    rt.init_text_renderer(&device, &queue, wgpu::TextureFormat::Bgra8Unorm)
+        .unwrap();
+    rt.set_root(
+        crate::Column::new()
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .push_child(
+                TextLabel::new("WiWi 项目 heading")
+                    .wrap()
+                    .scale(1.6)
+                    .unwrap(),
+            )
+            .push_child(
+                TextLabel::new("WiWi 项目 section")
+                    .wrap()
+                    .scale(1.25)
+                    .unwrap(),
+            )
+            .push_child(TextLabel::new("WiWi 项目 body").wrap()),
+    );
+    for dpi in [1.0, 1.25, 1.5, 2.0, 1.0] {
+        for width in [120.0, 500.0, 160.0] {
+            let viewport = Viewport::new((width * dpi) as u32, (1000.0 * dpi) as u32, dpi);
+            rt.set_viewport(viewport.clone());
+            rt.update(Instant::now());
+            rt.prepare_text(&queue);
+            let items = rt.scene_graph.items().to_vec();
+            for text_scale in [1.0, 1.25, 1.6] {
+                let runs: Vec<_> = items
+                    .iter()
+                    .filter_map(|item| {
+                        let (text, _, _, scale) = item.primitive.text_run()?;
+                        (scale == text_scale).then_some((item.id, text))
+                    })
+                    .collect();
+                assert!(!runs.is_empty());
+                for (id, text) in runs {
+                    let measured: f32 = text
+                        .chars()
+                        .map(|ch| {
+                            rt.encoder.advance_width(
+                                ch,
+                                dpi * text_scale,
+                                rt.text_metrics.cell_width,
+                            ) * text_scale
+                        })
+                        .sum();
+                    let run = rt.text_run_cache().get(id).unwrap();
+                    assert!(
+                        (run.advance_width - measured).abs() < 0.01,
+                        "layout and raster advances diverged at DPI {dpi}, local scale {text_scale}"
+                    );
+                    assert!(run.advance_width <= width + 0.01);
+                    assert!(!run.glyphs.is_empty());
+                }
+                let atlas = rt.encoder.text_atlas.as_ref().unwrap().borrow();
+                let glyph = atlas
+                    .glyph('W', dpi * text_scale)
+                    .expect("every local size is retained");
+                let body = atlas.glyph('W', dpi).unwrap();
+                if text_scale > 1.0 {
+                    assert!(
+                        glyph.height > body.height,
+                        "rasterize a larger glyph instead of stretching the body bitmap"
+                    );
+                }
+            }
+            encode(&mut rt, &device, &queue, viewport);
+            assert!(rt.pending_delta.is_none());
+        }
+    }
+}

@@ -103,12 +103,12 @@ impl ProjectReview {
         generation: u64,
         pending: bool,
     ) -> View {
-        let appearance = GlassAppearance::quick_save();
-        let mut column = Column::new()
+        let appearance = GlassAppearance::command_palette();
+        let mut sections = Column::new()
             .cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .gap(6.0)
-            .unwrap()
-            .push_child(review_heading("PROJECT CONTEXT").build(cx));
+            .gap(18.0)
+            .unwrap();
+        let mut column = review_block(cx, "Project and execution environment", "project-divider");
         column = column.push_child(review_message(
             if self.applied.is_none() {
                 "Environment / current directory unknown. Correct the context below; initial cwd is not current-directory evidence."
@@ -120,7 +120,7 @@ impl ProjectReview {
         ));
         let change = ui.clone();
         column = column
-            .push_child(review_heading("Execution environment").build(cx))
+            .push_child(review_label("Execution environment").build(cx))
             .push_child(View::deferred(
                 SegmentedControl::new(
                     [
@@ -152,7 +152,7 @@ impl ProjectReview {
                 ("SSH destination", "e.g. user@host or a config alias")
             };
             column = column
-                .push_child(review_heading(label).build(cx))
+                .push_child(review_label(label).build(cx))
                 .push_child(View::deferred(
                     TextField::new(self.target.clone())
                         .decoration(appearance.input())
@@ -164,7 +164,7 @@ impl ProjectReview {
         }
         let directory_change = ui.clone();
         column = column
-            .push_child(review_heading("Project directory").build(cx))
+            .push_child(review_label("Project directory").build(cx))
             .push_child(View::deferred(
                 TextField::new(self.directory.clone())
                     .decoration(appearance.input())
@@ -216,9 +216,15 @@ impl ProjectReview {
                 true,
             ));
         }
+        let context_blocked = self.pending_correction()
+            || self.target.value().composition.is_some()
+            || self.directory.value().composition.is_some();
+        if context_blocked && let Err(error) = self.recipe() {
+            column = column.push_child(review_message(error, "project-error", true));
+        }
         if let Some(project) = &self.applied {
             column = column
-                .push_child(review_heading("Approved relaunch context").build(cx))
+                .push_child(review_label("Approved relaunch context").build(cx))
                 .push_child(review_line(
                     format!(
                         "{} · {} {} → {}",
@@ -231,7 +237,8 @@ impl ProjectReview {
                 ));
             if let Some(agent) = &project.agent {
                 let suspicious = suspected_credentials(&agent.args);
-                column = column.push_child(review_heading("Agent invocation").build(cx));
+                sections = sections.push_child(column.build(cx));
+                column = review_block(cx, "Agent", "agent-divider");
                 if suspicious {
                     column = column.push_child(review_message(
                         "Agent arguments are hidden: suspected credentials. Omit this invocation to save; credentials cannot be persisted.",
@@ -296,9 +303,9 @@ impl ProjectReview {
                 ));
             }
         }
-        if let Err(error) = self.recipe() {
+        if !context_blocked && let Err(error) = self.recipe() {
             column = column.push_child(review_message(error, "project-error", true));
         }
-        column.build(cx)
+        sections.push_child(column.build(cx)).build(cx)
     }
 }

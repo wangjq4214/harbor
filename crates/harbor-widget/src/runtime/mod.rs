@@ -479,9 +479,17 @@ impl Runtime {
             if let Some(fiber) = self.arena.get(id) {
                 pending.extend_from_slice(&fiber.children);
                 if let Some(view) = &fiber.view {
+                    let text_scale = view.text_scale();
                     view.prepare_text_geometry(&self.text_metrics, &mut |ch| {
-                        self.encoder
-                            .advance_width(ch, scale, self.text_metrics.cell_width)
+                        if text_scale == 0.0 {
+                            0.0
+                        } else {
+                            self.encoder.advance_width(
+                                ch,
+                                scale * text_scale,
+                                self.text_metrics.cell_width,
+                            ) * text_scale
+                        }
                     });
                 }
             }

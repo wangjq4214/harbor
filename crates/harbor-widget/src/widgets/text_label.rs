@@ -14,6 +14,7 @@ use unicode_segmentation::UnicodeSegmentation;
 pub struct TextLabel {
     text: String,
     color: Color,
+    scale: f32,
     ellipsis: bool,
     wrap: bool,
     geometry: RefCell<Option<LabelGeometry>>,
@@ -24,6 +25,7 @@ impl TextLabel {
         TextLabel {
             text: text.into(),
             color: Color::WHITE,
+            scale: 1.0,
             ellipsis: false,
             wrap: false,
             geometry: RefCell::new(None),
@@ -49,12 +51,22 @@ impl TextLabel {
         self
     }
 
+    /// Scales this label relative to the UI font, including wrapping and line height.
+    /// Glyphs are rasterized at the local scale and display DPI, not stretched bitmaps.
+    /// A finite, nonnegative factor is required; zero suppresses the label.
+    pub fn scale(mut self, scale: f32) -> Result<Self, crate::LayoutConfigError> {
+        crate::layout::configuration::validate_scalar("TextLabel.scale", scale)?;
+        self.scale = scale;
+        *self.geometry.borrow_mut() = None;
+        Ok(self)
+    }
+
     fn with_geometry<T>(&self, metrics: &TextMetrics, f: impl FnOnce(&LabelGeometry) -> T) -> T {
         let geometry = self.geometry.borrow();
         match geometry.as_ref() {
             Some(geometry) => f(geometry),
             None => f(&LabelGeometry::measure(&self.text, &mut |_| {
-                metrics.cell_width
+                metrics.cell_width * self.scale
             })),
         }
     }
@@ -73,6 +85,9 @@ impl Component for TextLabel {
 }
 
 impl AnyView for TextLabel {
+    fn text_scale(&self) -> f32 {
+        self.scale
+    }
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         self.with_geometry(metrics, |geometry| {
             let size = if self.wrap {
@@ -81,9 +96,12 @@ impl AnyView for TextLabel {
                     .iter()
                     .map(|&(start, end)| geometry.prefixes[end].1 - geometry.prefixes[start].1)
                     .fold(0.0, f32::max);
-                Size::new(width, ranges.len() as f32 * metrics.line_height)
+                Size::new(
+                    width,
+                    ranges.len() as f32 * metrics.line_height * self.scale,
+                )
             } else {
-                Size::new(geometry.width(), metrics.line_height)
+                Size::new(geometry.width(), metrics.line_height * self.scale)
             };
             constraints.constrain(size)
         })
@@ -94,6 +112,9 @@ impl AnyView for TextLabel {
     }
 
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
+        if self.scale == 0.0 {
+            return Vec::new();
+        }
         let lines = self.with_geometry(metrics, |geometry| {
             if self.wrap {
                 geometry.wrapped(&self.text, rect.size().width, None)
@@ -107,13 +128,25 @@ impl AnyView for TextLabel {
             .into_iter()
             .enumerate()
             .filter(|(_, text)| !text.is_empty() || (!self.ellipsis && !self.wrap))
-            .map(|(index, text)| Primitive::Text {
-                text: Arc::from(text),
-                origin: crate::layout::Point::new(
+            .map(|(index, text)| {
+                let origin = crate::layout::Point::new(
                     rect.min.x,
-                    rect.min.y + index as f32 * metrics.line_height,
-                ),
-                color: self.color,
+                    rect.min.y + index as f32 * metrics.line_height * self.scale,
+                );
+                if self.scale == 1.0 {
+                    Primitive::Text {
+                        text: Arc::from(text),
+                        origin,
+                        color: self.color,
+                    }
+                } else {
+                    Primitive::ScaledText {
+                        text: Arc::from(text),
+                        origin,
+                        color: self.color,
+                        scale: self.scale,
+                    }
+                }
             })
             .collect()
     }
@@ -497,5 +530,53 @@ mod tests {
             }
             _ => panic!("expected Text"),
         }
+    }
+    #[test]
+    fn scaled_labels_wrap_at_local_advances_and_keep_scaled_line_height() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        let label = TextLabel::new("WiWi").wrap().scale(1.5).unwrap();
+        // Runtime supplies actual advances at the requested local font scale.
+        label.prepare_text_geometry(&metrics, &mut |ch| if ch == 'W' { 12.0 } else { 3.0 });
+        assert_eq!(label.text_scale(), 1.5);
+        let narrow = label.intrinsic_size(BoxConstraints::loose(Size::new(15.0, 500.0)), &metrics);
+        assert_eq!(narrow, Size::new(15.0, metrics.line_height * 3.0));
+        let primitives = label.paint_primitives(Rect::from_min_size(Point::ZERO, narrow), &metrics);
+        let runs: Vec<_> = primitives.iter().filter_map(Primitive::text_run).collect();
+        assert_eq!(
+            runs.iter().map(|run| run.0).collect::<Vec<_>>(),
+            ["Wi", "Wi"]
+        );
+        assert!(runs.iter().all(|run| run.3 == 1.5));
+        assert_eq!(runs[1].1.y - runs[0].1.y, metrics.line_height * 1.5);
+        let wide = label.intrinsic_size(BoxConstraints::loose(Size::new(100.0, 500.0)), &metrics);
+        assert_eq!(wide, Size::new(30.0, metrics.line_height * 1.5));
+    }
+
+    #[test]
+    fn label_scale_validates_and_resets_prepared_geometry_without_affecting_other_labels() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        let bounds = BoxConstraints::loose(Size::new(1000.0, 1000.0));
+        for scale in [-1.0, f32::INFINITY, f32::NAN] {
+            let error = TextLabel::new("test").scale(scale).err().unwrap();
+            assert_eq!(error.field, "TextLabel.scale");
+        }
+        let label = TextLabel::new("WW");
+        label.prepare_text_geometry(&metrics, &mut |_| 2.0);
+        let scaled = label.clone().scale(2.0).unwrap();
+        assert_eq!(
+            scaled.intrinsic_size(bounds, &metrics).width,
+            4.0 * metrics.cell_width
+        );
+        assert_eq!(label.intrinsic_size(bounds, &metrics).width, 4.0);
+        let hidden = scaled.scale(0.0).unwrap();
+        assert_eq!(hidden.intrinsic_size(bounds, &metrics), Size::ZERO);
+        assert!(
+            hidden
+                .paint_primitives(
+                    Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0)),
+                    &metrics
+                )
+                .is_empty()
+        );
     }
 }

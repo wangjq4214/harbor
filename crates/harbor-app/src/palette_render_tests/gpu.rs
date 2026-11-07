@@ -293,3 +293,117 @@ fn notification_material_pixels_are_local_rounded_and_retained_at_multiple_dpi()
         }
     }
 }
+
+#[test]
+#[ignore = "GPU pixel acceptance; run explicitly with --ignored --nocapture"]
+fn quick_save_review_pixels_match_palette_glass_without_dimming_the_window() {
+    let (device, queue) = crate::test_gpu::device();
+    for scale in [1.0, 1.5, 2.0] {
+        for format in [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        ] {
+            let (_, controller, mut runtime, _) = fixture();
+            let viewport = Viewport::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale);
+            runtime.set_viewport(viewport.clone());
+            runtime.init_renderer(&device, format);
+            runtime.set_root(View::leaf(TestBackdrop));
+            runtime.update(Instant::now());
+            let baseline = render(&device, &queue, &mut runtime, viewport.clone(), format);
+
+            let focus = controller.open_quick_save(crate::QuickSaveDraft {
+                source: TabId(1),
+                launch: harbor_config::ShellSettings::default(),
+                project: Some(harbor_config::ProjectRecipe {
+                    environment: harbor_config::ProjectEnvironment::LocalPwsh,
+                    directory: "C:/synthetic-project".into(),
+                    agent: None,
+                }),
+            });
+            let root = controller.clone();
+            runtime.set_root(move |cx: &mut BuildCx| {
+                let state = root.store.watch(cx).clone();
+                let panel = state.popups.active().unwrap().build(
+                    cx,
+                    &root,
+                    &validate_keybindings(&harbor_config::RawKeybindings::default()).unwrap(),
+                    state.popups.generation().unwrap(),
+                );
+                Stack::new()
+                    .push_child(View::leaf(TestBackdrop))
+                    .push_child(panel)
+                    .build(cx)
+            });
+            runtime.request_focus(&focus);
+            runtime.update(Instant::now());
+            replace(&mut runtime, "Palette-like glass");
+            tap(&mut runtime, Key::Enter);
+            let request = take_one(&controller);
+            assert_eq!(request.command, AppCommand::AdvanceQuickSave);
+            runtime.request_focus(&controller.navigate_quick_save(request).unwrap());
+            runtime.update(Instant::now());
+            let delta = runtime.pending_delta().unwrap();
+            let panel = delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .find_map(|item| match item.primitive {
+                    Primitive::BackdropMaterial { rect, .. }
+                    | Primitive::BackdropBlur { rect, .. } => Some(rect),
+                    _ => None,
+                })
+                .expect("review glass panel");
+            let review = render(&device, &queue, &mut runtime, viewport.clone(), format);
+
+            // The reference has the same bounds and palette recipe, but no review content.
+            runtime.set_root(move |cx: &mut BuildCx| {
+                let content = ConstrainedBox::new()
+                    .min_width(panel.size().width)
+                    .max_width(panel.size().width)
+                    .min_height(panel.size().height)
+                    .max_height(panel.size().height)
+                    .build(cx);
+                let glass = GlassAppearance::command_palette().panel(cx, content);
+                let aligned = Align::new(harbor_widget::Alignment2D::new(
+                    harbor_widget::PositionAlignment::Center,
+                    harbor_widget::PositionAlignment::Start,
+                ))
+                .insets(harbor_widget::Insets::all(12.0))
+                .unwrap()
+                .child(glass)
+                .build(cx);
+                Stack::new()
+                    .push_child(View::leaf(TestBackdrop))
+                    .push_child(aligned)
+                    .build(cx)
+            });
+            runtime.update(Instant::now());
+            let reference = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            let pixel = |pixels: &[u8], x: f32, y: f32| {
+                let offset = (((y * scale) as u32 * viewport.physical_size.0 + (x * scale) as u32)
+                    * 4) as usize;
+                pixels[offset..offset + 4].to_vec()
+            };
+            let middle_y = (panel.min.y + panel.max.y) / 2.0;
+            assert_eq!(
+                pixel(&review, panel.min.x - 8.0, middle_y),
+                pixel(&baseline, panel.min.x - 8.0, middle_y),
+                "review must leave the window outside the glass undimmed"
+            );
+            for (x, y) in [
+                (panel.max.x - 8.0, middle_y),
+                ((panel.min.x + panel.max.x) / 2.0, panel.min.y + 6.0),
+            ] {
+                let actual = pixel(&review, x, y);
+                let expected = pixel(&reference, x, y);
+                assert!(
+                    actual
+                        .iter()
+                        .zip(&expected)
+                        .all(|(a, b)| a.abs_diff(*b) <= 1),
+                    "review glass must match palette transparency at {scale}, {format:?}, ({x}, {y}): {actual:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+}

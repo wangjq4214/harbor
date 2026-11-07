@@ -3,6 +3,7 @@ use super::palette_support::*;
 use super::*;
 use crate::{QuickSaveDraft, command::CommandSource};
 use harbor_config::{ProfileId, SessionProfile, ShellSettings};
+use harbor_widget::layout::Size;
 
 fn draft() -> QuickSaveDraft {
     QuickSaveDraft {
@@ -192,6 +193,83 @@ fn quick_save_naming_and_review_are_compact_borderless_and_readable() {
     assert!(
         save.min.y >= 12.0 && save.max.y <= 168.0,
         "Save must scroll into view: {save:?}"
+    );
+    tap(&mut runtime, Key::Enter);
+    assert_eq!(take_one(&ui).command, AppCommand::CommitQuickSave);
+}
+
+#[test]
+fn quick_save_review_uses_palette_glass_and_translucent_inputs_without_a_scrim() {
+    let (_, ui, mut runtime, _) = fixture();
+    start(&ui, &mut runtime, draft());
+    replace(&mut runtime, "Transparent review");
+    advance(&ui, &mut runtime);
+    let appearance = crate::appearance::GlassAppearance::command_palette();
+    let panel = panel_rect(&runtime);
+    let directory = keyed_rect(&runtime, "project-directory");
+    let delta = runtime.pending_delta().unwrap();
+    let items: Vec<_> = delta.added.iter().chain(&delta.modified).collect();
+    assert!(
+        items.iter().any(|item| matches!(item.primitive,
+            Primitive::BackdropMaterial { rect, sigma, refraction, material, .. }
+                if rect == panel && sigma == appearance.blur_sigma
+                    && refraction == appearance.refraction && Some(material) == appearance.material
+        )),
+        "review must keep the palette's full glass material, not just a blur"
+    );
+    assert!(
+        items.iter().any(|item| matches!(item.primitive,
+            Primitive::RoundedQuad { rect, color, .. }
+                if rect == directory && color == appearance.input_fill
+        )),
+        "project inputs must retain the palette's translucent editor surface"
+    );
+    assert!(
+        !items.iter().any(|item| matches!(item.primitive,
+            Primitive::Quad { rect, color, .. }
+                if rect.min == Point::ZERO && rect.size() == Size::new(1000.0, 500.0)
+                    && color.a > 0.0 && color.r == 0.0 && color.g == 0.0 && color.b == 0.0
+        )),
+        "the review must not darken the whole window behind its glass"
+    );
+}
+
+#[test]
+fn quick_save_final_actions_align_right_and_wrap_at_narrow_widths() {
+    let (_, ui, mut runtime, _) = fixture();
+    let mut source = draft();
+    source.launch.environment.clear();
+    start(&ui, &mut runtime, source);
+    replace(&mut runtime, "Actions");
+    advance(&ui, &mut runtime);
+    let cancel = keyed_rect(&runtime, "quick-save-cancel");
+    let back = keyed_rect(&runtime, "quick-save-back");
+    let save = keyed_rect(&runtime, "quick-save-final");
+    let divider = keyed_rect(&runtime, "actions-divider");
+    assert!(cancel.max.x <= back.min.x && back.max.x <= save.min.x);
+    assert_eq!(cancel.min.y, save.min.y);
+    assert!((save.max.x - divider.max.x).abs() < 1.0);
+
+    focus_control(&mut runtime, "quick-save-final");
+    let focused = runtime.input().focused();
+    runtime.set_viewport(harbor_widget::renderer::Viewport::new(230, 600, 1.0));
+    runtime.update(Instant::now());
+    let cancel = keyed_rect(&runtime, "quick-save-cancel");
+    let back = keyed_rect(&runtime, "quick-save-back");
+    let save = keyed_rect(&runtime, "quick-save-final");
+    let divider = keyed_rect(&runtime, "actions-divider");
+    assert!(
+        save.min.y > cancel.min.y,
+        "actions should wrap: {cancel:?} {back:?} {save:?}"
+    );
+    for rect in [cancel, back, save] {
+        assert!(rect.min.x >= divider.min.x && rect.max.x <= divider.max.x);
+        assert!(rect.size().width > 0.0);
+    }
+    assert_eq!(
+        runtime.input().focused(),
+        focused,
+        "wrapping must retain keyboard focus"
     );
     tap(&mut runtime, Key::Enter);
     assert_eq!(take_one(&ui).command, AppCommand::CommitQuickSave);
@@ -613,4 +691,159 @@ fn quick_save_long_values_remain_selectable_and_copyable_across_resize_and_discl
         assert_eq!(request.write.as_deref(), Some(expected.as_str()));
     }
     assert!(ui.drain_actions().is_empty());
+}
+
+#[test]
+fn quick_save_review_has_ordered_blocks_larger_headings_and_restrained_dividers() {
+    let (_, ui, mut runtime, _) = fixture();
+    let mut source = draft();
+    source.project.as_mut().unwrap().agent = Some(harbor_config::AgentInvocation {
+        program: "pi".into(),
+        args: vec!["--resume".into(), "synthetic-session".into()],
+    });
+    start(&ui, &mut runtime, source);
+    replace(&mut runtime, "Grouped review");
+    advance(&ui, &mut runtime);
+    let heading_scale = |runtime: &Runtime, title: &str| {
+        let delta = runtime.pending_delta().unwrap();
+        delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .filter_map(|item| item.primitive.text_run())
+            .find_map(|(text, _, _, scale)| (text == title).then_some(scale))
+            .unwrap_or_else(|| panic!("missing heading {title}"))
+    };
+    let title = heading_scale(&runtime, "Save this preset?");
+    let section = heading_scale(&runtime, "Project and execution environment");
+    let field = heading_scale(&runtime, "Execution environment");
+    assert!(title > section && section > field);
+    for title in ["Agent", "Environment variables", "Supporting details"] {
+        assert_eq!(heading_scale(&runtime, title), section);
+    }
+    let keys = [
+        "project-divider",
+        "agent-divider",
+        "overrides-divider",
+        "details-divider",
+        "actions-divider",
+    ];
+    let dividers: Vec<_> = keys.iter().map(|key| keyed_rect(&runtime, key)).collect();
+    for pair in dividers.windows(2) {
+        assert!(pair[0].max.y < pair[1].min.y);
+        assert_eq!(pair[0].size().width, pair[1].size().width);
+    }
+    assert!(dividers.iter().all(|rect| rect.size().height <= 1.0));
+    let name = keyed_rect(&runtime, "review-name");
+    let first_field = keyed_rect(&runtime, "project-environment");
+    assert!(dividers[0].min.y - name.max.y > 6.0);
+    assert!(first_field.min.y > dividers[0].max.y);
+    assert_borderless(&runtime, "review-name");
+    assert_borderless(&runtime, "project-agent");
+    click_control(&mut runtime, "quick-save-details");
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("Source program (provenance)"));
+    assert!(
+        keyed_rect(&runtime, "review-program").min.y
+            > keyed_rect(&runtime, "details-divider").max.y
+    );
+    assert!(
+        keyed_rect(&runtime, "review-directory").max.y
+            < keyed_rect(&runtime, "actions-divider").min.y
+    );
+    click_control(&mut runtime, "project-agent-ack");
+    runtime.update(Instant::now());
+    for (width, height) in [(280, 180), (640, 360), (1000, 600)] {
+        runtime.set_viewport(harbor_widget::renderer::Viewport::new(width, height, 1.0));
+        runtime.update(Instant::now());
+        focus_control(&mut runtime, "quick-save-final");
+        let save = keyed_rect(&runtime, "quick-save-final");
+        let panel = panel_rect(&runtime);
+        assert!(
+            save.min.y >= panel.min.y && save.max.y <= panel.max.y,
+            "final action must stay reachable after scrolling: {save:?} in {panel:?}"
+        );
+    }
+    assert!(ui.drain_actions().is_empty());
+
+    // A draft with no recognized agent does not acquire an empty Agent block.
+    ui.cancel_quick_save(popup(&ui, AppCommand::CancelQuickSave));
+    start(&ui, &mut runtime, draft());
+    replace(&mut runtime, "Shell only");
+    advance(&ui, &mut runtime);
+    assert!(!fiber_ids(&runtime).iter().any(|id| {
+        runtime
+            .arena()
+            .get(*id)
+            .unwrap()
+            .key()
+            .is_some_and(|key| key.text() == "agent-divider")
+    }));
+}
+
+#[test]
+fn quick_save_grouped_feedback_stays_with_context_agent_overrides_and_actions() {
+    let (_, ui, mut runtime, bytes) = fixture();
+    let mut source = draft();
+    source.launch.args = vec!["--token".into(), "synthetic-secret".into()];
+    source.project.as_mut().unwrap().agent = Some(harbor_config::AgentInvocation {
+        program: "pi".into(),
+        args: vec!["--resume".into(), "synthetic-session".into()],
+    });
+    start(&ui, &mut runtime, source);
+    replace(&mut runtime, "Nearby feedback");
+    advance(&ui, &mut runtime);
+    click_control(&mut runtime, "environment-0");
+    runtime.update(Instant::now());
+    assert!(
+        keyed_rect(&runtime, "project-error").min.y > keyed_rect(&runtime, "agent-divider").max.y
+    );
+    assert!(
+        keyed_rect(&runtime, "project-error").max.y
+            < keyed_rect(&runtime, "overrides-divider").min.y
+    );
+    assert!(
+        keyed_rect(&runtime, "override-error").min.y
+            > keyed_rect(&runtime, "overrides-divider").max.y
+    );
+    assert!(
+        keyed_rect(&runtime, "override-error").max.y
+            < keyed_rect(&runtime, "details-divider").min.y
+    );
+    assert!(
+        keyed_rect(&runtime, "source-secret-warning").min.y
+            > keyed_rect(&runtime, "details-divider").max.y
+    );
+    assert!(!review_text(&runtime).contains("synthetic-secret"));
+    click_control(&mut runtime, "wsl");
+    runtime.update(Instant::now());
+    assert!(
+        keyed_rect(&runtime, "project-error").max.y < keyed_rect(&runtime, "agent-divider").min.y,
+        "context error must not be misplaced under the retained agent"
+    );
+    assert!(ui.drain_actions().is_empty());
+    // Exercise the real failure presentation after passing the independent gates.
+    click_control(&mut runtime, "pwsh");
+    runtime.update(Instant::now());
+    click_control(&mut runtime, "project-agent-ack");
+    runtime.update(Instant::now());
+    click_control(&mut runtime, "quick-save-ack");
+    runtime.update(Instant::now());
+    click_control(&mut runtime, "quick-save-final");
+    let request = take_one(&ui);
+    assert!(ui.take_quick_save_submission(request).is_some());
+    let generation = ui.store.state().read().popups.generation().unwrap();
+    ui.finish_quick_save(
+        generation,
+        Err("Synthetic write conflict; draft retained".into()),
+    );
+    runtime.update(Instant::now());
+    assert!(review_text(&runtime).contains("Synthetic write conflict"));
+    assert!(
+        keyed_rect(&runtime, "save-error").min.y > keyed_rect(&runtime, "actions-divider").max.y
+    );
+    assert!(
+        keyed_rect(&runtime, "save-error").max.y < keyed_rect(&runtime, "quick-save-final").min.y
+    );
+    assert!(bytes.lock().unwrap().is_empty());
 }
