@@ -71,17 +71,7 @@ mod pty {
     #[test]
     #[ignore = "pty: Windows ConPTY, pwsh 7.3+, build harbor-pty launch_probe example first"]
     fn project_pwsh_relaunch_delivers_original_argv_to_each_supported_executable() {
-        let probe = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("examples/launch_probe.exe");
-        assert!(
-            probe.is_file(),
-            "cargo build -p harbor-pty --example launch_probe"
-        );
+        let probe = crate::test_launch_probe::launch_probe();
         let root = tempfile::tempdir().unwrap();
         let project_dir = root.path().join("project ' 世界");
         fs::create_dir(&project_dir).unwrap();

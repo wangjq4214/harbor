@@ -21,17 +21,7 @@ mod pty {
             Self(root)
         }
         fn settings(&self, directory: Option<&str>, value: Option<&str>, index: usize) -> Settings {
-            let probe = std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("examples/launch_probe.exe");
-            assert!(
-                probe.is_file(),
-                "build with cargo build -p harbor-pty --example launch_probe"
-            );
+            let probe = crate::test_launch_probe::launch_probe();
             let mut source = format!(
                 "[shell]\nprogram = 'legacy-not-inherited.exe'\nargs = ['legacy']\n[profiles.work]\nname = 'Work'\nprogram = '{}'\nargs = ['', 'a b', '\"quoted\"', 'C:\\space path\\', 'slash\\\"quote', '世界🙂', '$VAR %VAR%']\n",
                 probe.display()

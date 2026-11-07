@@ -7,6 +7,10 @@
 #[path = "../tests/support/gpu.rs"]
 mod test_gpu;
 
+#[cfg(all(test, windows))]
+#[path = "../tests/support/launch_probe.rs"]
+mod test_launch_probe;
+
 mod backdrop;
 mod chrome;
 mod clipboard;

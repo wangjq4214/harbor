@@ -68,6 +68,7 @@ function New-Fixture([string]$Name, [uint16]$Machine = 0x8664,
     $tools = Join-Path $fixtureRoot 'fake tools'
     New-Item -ItemType Directory -Path (Join-Path $repo 'scripts/dev'), $tools -Force | Out-Null
     Copy-Item -LiteralPath $launcher -Destination (Join-Path $repo 'scripts/dev/run_harbor.ps1')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/dev/conpty_staging.ps1') -Destination (Join-Path $repo 'scripts/dev/conpty_staging.ps1')
     [IO.File]::WriteAllText((Join-Path $repo 'Cargo.toml'), "[package]`nname = 'harbor'`nversion = '0.1.0'`n")
     $fixture = @{
         Home = $fixtureRoot

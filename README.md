@@ -42,7 +42,9 @@ For local development with huacnlee/cargo's shared cache, use PowerShell 7:
 The script reports the selected Cargo, uses its JSON executable path, and stages
 ConPTY after every build, including cache hits. `-Release` selects release mode.
 It does not change PATH or toolchains; CI continues using upstream Cargo directly.
-Plain `cargo run` with the shared-cache fork does not perform this staging step.
+On Windows, `just` test recipes use a separate
+[Cargo test staging wrapper](docs/developer/testing.md) for shared-cache artifacts.
+Plain `cargo run` or `cargo test` with the shared-cache fork does not perform this staging step.
 
 Run the fetch script once after cloning, and again when the pinned runtime changes.
 Windows builds stage the pinned [Microsoft ConPTY runtime](third_party/conpty/README.md)

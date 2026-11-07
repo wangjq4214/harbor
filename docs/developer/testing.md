@@ -5,11 +5,37 @@ Tests have two independent boundaries:
 - **Ownership:** private unit tests live beside their module, under `src/<module>/tests.rs` or a topic directory. Public API and cross-crate contracts live in each crate's `tests/`.
 - **Resources:** ordinary tests run by default. Resource-dependent cases live in `gpu`, `pty`, `native` or `perf` modules and carry `#[ignore]`. Select the module, not every ignored test.
 
+On Windows, the `just` test recipes use PowerShell 7 and require the locally
+restored ConPTY source (`./scripts/setup/fetch_conpty.ps1`). For direct use:
+
+```powershell
+./scripts/dev/test_cargo.ps1 --locked -p harbor-pty filter -- --ignored --test-threads=1
+```
+
+The wrapper runs `cargo test --no-run` with the same Cargo selections, features,
+target and filter, stages the complete runtime beside every reported executable
+(including fresh shared-cache artifacts), then runs the original `cargo test`
+with its harness arguments. `-CargoPath` selects a Cargo executable. It rejects
+`--doc`, `--no-run` and custom `--message-format`: rustdoc-generated executables
+are not reported as Cargo artifacts, and those modes cannot use this contract.
+Ordinary `cargo test` may also run doctests; their transient executables are not
+staged by this wrapper and must not rely on an adjacent ConPTY bundle. The two
+Cargo invocations assume artifacts are not concurrently relocated or replaced
+between staging and execution. CI's direct upstream Cargo commands and
+non-Windows recipes are unchanged.
+
+The Windows wrapper deliberately sets `CARGO_SHARE_WORKSPACE_UNITS=0` for both
+Cargo invocations and their children (including trybuild): the huacnlee/cargo
+fork's shared workspace units break nested trybuild builds. This also overrides
+an explicit caller value during the tests and restores it afterward. Upstream
+Cargo ignores the fork-specific variable; builds and direct Cargo commands are
+not changed.
+
 Run commands from the repository root. Windows and installed system fonts are still required for Windows-specific font tests; “headless” means no native window, not a simulated font backend.
 
 | Command | Runs | Requirements |
 | --- | --- | --- |
-| `just test` | Default workspace tests plus renderer-free terminal tests | Rust; no GPU, ConPTY child or desktop window |
+| `just test` | Default workspace tests plus renderer-free terminal tests | Rust; on Windows, the configuration watcher test also uses a GPU fixture and ConPTY child |
 | `just test-architecture` | Source ownership guards, also included in default tests | Rust; no native resources |
 | `just script-test` | All Python tool tests, including profiling inputs | Python 3.12+ |
 | `just sampler-test` | Process-sampler smoke test, not Harbor performance | Windows, PowerShell 7+ |
@@ -27,7 +53,7 @@ The [Windows quality workflow](../../.github/workflows/windows-quality-gates.yml
 
 | Job | Responsibility | Time limit |
 | --- | --- | --- |
-| Quick checks | Markdown consistency, Python tool tests, Windows sampler, workspace formatting and package version/tag validation | 10 minutes |
+| Quick checks | Markdown consistency, Python tool tests, Windows sampler and development-wrapper tests, workspace formatting and package version/tag validation | 10 minutes |
 | Rust validation | Strict Clippy, default/core-only tests, serial WARP GPU/ConPTY suites, compiled guide examples and warning-free API reference | 45 minutes |
 | Release packages | Static-CRT x64 build, matching MSI/ZIP validation, rejection tests and checked artifact upload | 45 minutes |
 | `quality` | Aggregate all three required lanes, writing their results to the job summary | 5 minutes |
