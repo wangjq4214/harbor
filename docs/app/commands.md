@@ -12,6 +12,7 @@ Shortcuts use exact simultaneous modifiers, not multi-stroke sequences. These ar
 | `app.reload-configuration` | Ctrl+Shift+R | Strict reload of the retained configuration path; independent of watcher |
 | `app.new-tab` | Ctrl+T | Create/activate an ordinary session using `[shell]` |
 | `app.open-profile` | None | Open the shared named-profile chooser |
+| `app.save-current-session` | None | Save current session as project preset… |
 | `app.close-active-tab` | Ctrl+W | Close active session; final tab requests window closure |
 | `app.next-tab` | Ctrl+Tab | Next tab, wrapping |
 | `app.previous-tab` | Ctrl+Shift+Tab | Previous tab, wrapping |
@@ -40,7 +41,7 @@ Search commands consume their shortcuts even if no search or match is available;
 
 ## Command palette
 
-Press **Ctrl+Shift+P** to open/focus the query. The integrated catalog includes configuration reload; tab creation, closing, navigation and numeric selection (1–9); terminal copy/paste and primary-buffer scrolling; and current-session search open/close/next/previous. `terminal.copy-or-interrupt` is deliberately hidden: palette Copy always copies, including empty text without a selection. The named-profile chooser is also available; quick saving, panes and application appearance switching are not delivered.
+Press **Ctrl+Shift+P** to open/focus the query. The integrated catalog includes configuration reload; tab creation, closing, navigation and numeric selection (1–9); terminal copy/paste and primary-buffer scrolling; and current-session search open/close/next/previous. `terminal.copy-or-interrupt` is deliberately hidden: palette Copy always copies, including empty text without a selection. The named-profile chooser and preset quick saving are also available; panes and application appearance switching are not delivered.
 
 Type a **case-insensitive substring** of a display label or stable command ID (not fuzzy matching). An empty query exposes the catalog; no matches shows an empty state and cannot execute. Up/Down selects a row; Enter invokes it once. Rows show accepted **effective** shortcuts, including multiple alternatives and `Unbound`, rather than superseded defaults. Accepted configuration reload updates them; a rejected reload retains the prior bindings. The opener ID is `app.command-palette`, configurable with the grammar below.
 
@@ -59,6 +60,23 @@ Select **New session from profile…** (`app.open-profile`, unbound by default) 
 Accepted reloads update choices; rejected candidates retain them. A removed selection cannot turn into another profile by list position. Edited/deleted queued recipes are rejected; select again. Successful launch targets the resulting terminal; creation failure shows a notice and leaves existing sessions intact. Replacing search or the palette retires the old editor rather than suspending/restoring it. Existing native paste-confirmation gating is unchanged.
 
 Mounted/adapter tests and a Windows ConPTY chooser-to-child test pass; production desktop IME, OS-level focus and packaged-build observations remain **NOT RUN** for this slice. See [T0002 evidence](../verification/T0002-two-level-profile-chooser.md), not a claim of complete #157 acceptance.
+
+
+
+## Save current session as preset
+
+Select **Save current session as preset…** (`app.save-current-session`, unbound by default) in the command palette. Preset creation is an in-window task form:
+
+1. **Preset naming:** Enter a display name in the single-line input. An adjacent **Save…** button and the Enter key validate the draft name (nonempty, control-free, unique) and advance to review; neither writes to disk. Empty or duplicate names display nearby feedback and disable advance.
+2. **In-window review:** Confirmation appears as an overlay inside the existing application window (no separate native window). It shares the palette's translucent glass appearance and arranges details into clear reading blocks:
+   - **Header:** Preset title and name.
+   - **Project and execution environment:** A segmented control selects `Local pwsh`, `WSL bash`, or `Direct SSH bash`. For WSL, enter a distribution; for SSH, enter a destination (user@host or SSH config alias). Enter the absolute project directory in that environment. An **Apply context correction** secondary button explicitly applies edits; typing alone does not authorize save.
+   - **Agent (when applicable):** If a recognized supported agent (`pi`, `codex`, `claude`, `opencode`) was captured, an **Include last recognized agent** checkbox controls inclusion. Arguments are inspected; suspected credentials trigger a warning, hide arguments, and block saving that invocation unless explicitly omitted. An acknowledgement checkbox is required to confirm argument review.
+   - **Environment variables:** Configured environment overrides from the source session are excluded by default. Users may deliberately check specific variables to include, accompanied by a secret-free acknowledgement checkbox. Values remain hidden.
+   - **Supporting details:** Collapsible source program provenance, startup arguments, and initial directory. These explain that source startup arguments are not replayed as startup scripts.
+   - **Final actions:** A right-aligned wrapping row provides **Cancel** (writes nothing), **Return to edit** (preserves the draft and name), and **Save** (sole primary solid button).
+
+**Safety and persistence:** Repeated Enter from naming cannot accidentally trigger final Save. Final Save atomically writes a new `[profiles.saved-N]` preset to the currently selected configuration file, preserving unrelated settings and comments. If the file changed externally or write permissions fail, the draft is retained for retry and an honest error is shown.
 
 ## Where shortcuts apply
 

@@ -12,6 +12,6 @@ Harbor is a Windows-first terminal application with terminal tabs, GPU rendering
 
 ## Current limitations
 
-Pane splitting, quick saving of presets, and native Unix shell sessions are not available. The command palette and named-profile chooser are implemented with [scoped verification limits](commands.md#named-profile-chooser).
+Pane splitting and native Unix shell sessions are not available. The command palette, named-profile chooser, and quick-save project presets are implemented with [scoped verification limits](commands.md#named-profile-chooser).
 
 For embedding, see the [widget guide](../widget/README.md) and [terminal guide](../terminal/README.md).

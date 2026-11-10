@@ -10,7 +10,7 @@ Harbor remains Windows-first: stabilize content, input and session lifecycle, th
 | --- | --- | --- |
 | M0 — Establish compatibility | Reproducible Windows application, code-page and extension-transport investigation | Still needed alongside correctness work; a probe or configured workflow is not broad compatibility. |
 | M1 — Preserve content | Coherent Unicode, anchors and resize/reflow | Implementation is present, including the scoped no-wrap sequence-promotion repair. Integrated native/performance coverage remains. |
-| M2 — Configure and discover | Reload, command palette and profiles | Reload, new-session launch settings and the existing-command palette are integrated. Native acceptance remains incomplete; profiles are not implemented. |
+| M2 — Configure and discover | Reload, command palette and profiles | Reload, new-session launch settings, existing-command palette, and named profiles / quick save presets are integrated. Integrated Windows runtime evidence remains. |
 | M3 — Work in panes | Independent panes, search and shell workflows | Current-session literal search is implemented. Panes and broader shell workflows are not. |
 | M4 — Extend compatibility | Selected VT gaps, Kitty keyboard and bounded graphics | Modern SGR, palette and mouse slices exist; Kitty negotiation/transport and graphics remain investigation-gated. |
 | M5 — Polish | Unified product themes/glass and release hardening | Acrylic and search-panel blur/gradient/refraction primitives exist. Whole-product composition and measured acceptance remain. |
@@ -29,7 +29,7 @@ These identifiers preserve references used by existing issues/specifications wit
 | N03 | `chcp` / legacy Windows compatibility | [#154](https://github.com/wangjq4214/harbor/issues/154) is closed; [#171](https://github.com/wangjq4214/harbor/issues/171) still tracks overlapping code-page evidence and separate Kitty transport gates. Reconcile reusable evidence before repeating probes; closure alone is not a compatibility result. ConPTY remains UTF-8, not a GBK parser mode. |
 | N04 | Configuration reload | Manual/watched reload and launch settings implemented; remaining integrated human/runtime acceptance. |
 | N05 | Command palette | Existing visible commands integrated through the shared registry; [native acceptance and readability work remain](../../.grimoire/spec/0030-command-palette.md#delivery-and-outstanding-acceptance). #156 still defers profiles/panes/appearance scope. |
-| N06 | Named session profiles | Not implemented; retain new-session-only launch policy. |
+| N06 | Named session profiles | Independent profile contracts, shared two-level chooser, and environment-aware quick save presets implemented; integrated Windows runtime evidence (T0004) remains. |
 | N07 | Pane workspace | Not implemented; independent allocation, focus, routing, resize and close lifetimes required. |
 | N08 | Scrollback search | Bounded current-session literal search delivered; retained acceptance/cost work and broader search scope remain separate. |
 | N09 | Shell-integration workflows | OSC 7/8/133 metadata foundations exist; directory inheritance, command navigation and complete workflows remain. |

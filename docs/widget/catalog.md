@@ -8,7 +8,7 @@ Browse by the job you need to do. The tables describe available public APIs and 
 
 | Need | Available building blocks | Constraints |
 | --- | --- | --- |
-| Horizontal or vertical composition | `Row`, `Column`, `Flex`, `FlexOptions`, `MainAxisAlignment`, `CrossAxisAlignment` | Shared constrained flex engine; fallible options/gaps; [layout contract](../flex-layout.md) |
+| Horizontal or vertical composition | `Row`, `Column`, `Flex`, `FlexOptions`, `MainAxisAlignment`, `CrossAxisAlignment` | Shared constrained flex engine; fallible options/gaps; optional wrapping (`.wrap(true)`, `FlexOptions { wrap: true, .. }`); [layout contract](../flex-layout.md) |
 | Allocate flexible space | `Expanded`, `Flexible`, `FlexFit`, `Spacer` | Flex-parent relationships and bounded/unbounded constraints matter |
 | Impose size, insets or alignment | `SizedBox`, `ConstrainedBox`, `Padding`, `Align` | Logical pixels; `Align` can position overlay content without making its empty area hit-testable |
 | Layer ordinary children | `Stack` | Shared parent allocation, not a generic positioned/anchored popover engine |
@@ -26,7 +26,9 @@ Browse by the job you need to do. The tables describe available public APIs and 
 
 | Need | Available control | Constraints |
 | --- | --- | --- |
-| Single-line text | `TextLabel`, `.foreground(...)`, `.ellipsis()` | Renderer-advance label, not rich text or a general shaping/layout engine |
+| Text display | `TextLabel`, `.foreground(...)`, `.ellipsis()`, `.wrap()`, `.scale(...)` | Renderer-advance label with measurement-driven line wrapping (`.wrap()`) and text scaling (`.scale(...)`), not rich text or a general shaping/layout engine |
+| Boolean selection | `Checkbox::new(label, checked)` | Caller-owned checked state; `.on_change(...)`, disabled state, visible focus |
+| Single-choice selection | `SegmentedControl::new(items, selected)` | Single-choice segmented control; `.on_change(...)`, disabled state, visible focus |
 | Built-in vector artwork | `Icon`, `LucideIcon` | Built-in Lucide inventory, not arbitrary SVG loading |
 | Composable activation | `Button::new()`, `Button::text(text)`, `Button::icon(icon, text)` | Single replaceable child/content slot; `.on_click`, `.disabled`, `.selected`, `.focus_handle`, `.style` |
 | Icon activation | `IconButton::new(icon, label)` | Icon-only; label is non-painted metadata, not proof of a native accessibility bridge |
@@ -194,4 +196,4 @@ An overlay is not an OS window. For embedding a terminal, see [TERMINAL](../term
 
 ## Boundaries to plan around
 
-There is no generic modal-dialog/menu/popover service, UIA bridge, virtual collections, wrapping/grid/positioned layout suite, arbitrary SVG/images/paths/filters, full rich text or concurrent rendering API.
+There is no generic modal-dialog/menu/popover service, UIA bridge, virtual collections, grid/positioned layout suite, arbitrary SVG/images/paths/filters, full rich text or concurrent rendering API.
