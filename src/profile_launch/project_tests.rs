@@ -88,14 +88,22 @@ mod pty {
                 project_dir.to_string_lossy().into_owned(),
                 agent,
             );
-            profile.launch.environment.insert(
-                "PATH".into(),
-                format!(
-                    "{};{}",
-                    root.path().display(),
-                    std::env::var("PATH").unwrap()
-                ),
-            );
+            let sys_paths = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .filter(|p| {
+                    let s = p.to_string_lossy().to_ascii_lowercase();
+                    !s.contains("mise")
+                        && !s.contains(".cargo")
+                        && !s.contains("npm")
+                        && !s.contains("pnpm")
+                })
+                .collect::<Vec<_>>();
+            let test_path =
+                std::env::join_paths(std::iter::once(root.path().to_path_buf()).chain(sys_paths))
+                    .unwrap();
+            profile
+                .launch
+                .environment
+                .insert("PATH".into(), test_path.to_string_lossy().into_owned());
             profile.launch.environment.insert(
                 "HARBOR_PROFILE_REPORT".into(),
                 report.to_string_lossy().into_owned(),

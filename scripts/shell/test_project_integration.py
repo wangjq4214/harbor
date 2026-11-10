@@ -77,7 +77,25 @@ class ProjectIntegration(unittest.TestCase):
             self.assertEqual(report.read_text(), "636F6D706F756E64")
 
     def test_bash_cooperating_environment_context_and_original_argv(self):
-        executable = os.environ.get("HARBOR_TEST_BASH") or shutil.which("bash")
+        executable = os.environ.get("HARBOR_TEST_BASH")
+        if not executable and os.name == "nt":
+            for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+                if "system32" in path_dir.lower():
+                    continue
+                candidate = Path(path_dir) / "bash.exe"
+                if candidate.is_file():
+                    executable = str(candidate)
+                    break
+            if not executable:
+                for standard in [
+                    r"C:\Program Files\Git\bin\bash.exe",
+                    r"C:\Program Files\Git\usr\bin\bash.exe",
+                ]:
+                    if os.path.isfile(standard):
+                        executable = standard
+                        break
+        if not executable:
+            executable = shutil.which("bash")
         self.assertIsNotNone(executable, "bash with od/tr required")
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
