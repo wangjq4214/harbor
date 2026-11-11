@@ -55,7 +55,8 @@ pub use layout::{
     Alignment2D, CrossAxisAlignment, FlexFit, Insets, LayoutConfigError, PositionAlignment,
 };
 pub use theme::{
-    AppearanceError, ColorConfigError, ControlColors, ControlStyle, ControlVisualState, Theme,
+    AppearanceError, ColorConfigError, ControlBackdrop, ControlColors, ControlStyle,
+    ControlVisualState, Theme,
 };
 pub use widgets::backdrop_filter::{
     BackdropFilter, BackdropMaterial, BackdropRim, BackdropTone, EdgeRefraction,

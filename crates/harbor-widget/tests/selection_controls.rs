@@ -430,3 +430,264 @@ fn selection_edge_cases_and_complete_style_validation_are_generic() {
             .is_err()
     );
 }
+
+#[test]
+fn selected_segment_keeps_a_shape_marker_when_hovered_and_labels_survive_narrow_layout() {
+    let selected = Signal::new("ssh".to_string());
+    let value = selected.clone();
+    let mut rt = runtime(move |cx: &mut BuildCx| {
+        cx.track(&value);
+        SegmentedControl::new(
+            [
+                ("local".into(), "Local shell".into()),
+                ("wsl".into(), "WSL distribution".into()),
+                ("ssh".into(), "Direct SSH destination".into()),
+            ],
+            value.read().clone(),
+        )
+        .style(style())
+        .unwrap()
+        .build(cx)
+    });
+    assert_eq!(
+        checkmarks(&rt),
+        1,
+        "enabled selection cannot rely on color alone"
+    );
+    pointer(&mut rt, Point::new(300.0, 5.0), PointerPhase::Move);
+    update(&mut rt);
+    assert_eq!(checkmarks(&rt), 1, "hover feedback cannot erase selection");
+    for width in [360, 180, 240, 600] {
+        rt.set_viewport(Viewport::new(width, 800, 1.0));
+        update(&mut rt);
+        for (index, expected) in ["Local shell", "WSL distribution", "Direct SSH destination"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut lines: Vec<_> = primitives(&rt)
+                .into_iter()
+                .filter_map(|p| match p {
+                    Primitive::Text { text, origin, .. }
+                        if origin.x >= index as f32 * width as f32 / 3.0
+                            && origin.x < (index + 1) as f32 * width as f32 / 3.0 =>
+                    {
+                        Some((origin.y, text.to_string()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+            assert_eq!(
+                lines.into_iter().map(|(_, s)| s).collect::<String>(),
+                expected
+            );
+        }
+        assert_eq!(checkmarks(&rt), 1);
+    }
+    selected.set("local".into());
+    update(&mut rt);
+    assert_eq!(checkmarks(&rt), 1);
+}
+
+#[test]
+fn segment_labels_are_centered_and_do_not_move_when_selection_changes() {
+    let selected = Signal::new(String::new());
+    let value = selected.clone();
+    let disabled = Signal::new(false);
+    let disabled_value = disabled.clone();
+    let mut rt = runtime(move |cx: &mut BuildCx| {
+        cx.track(&value);
+        cx.track(&disabled_value);
+        SegmentedControl::new(choices(), value.read().clone())
+            .disabled(*disabled_value.read())
+            .style(style())
+            .unwrap()
+            .build(cx)
+    });
+    let text_positions = |rt: &Runtime| {
+        primitives(rt)
+            .into_iter()
+            .filter_map(|p| match p {
+                Primitive::Text { text, origin, .. } => Some((text.to_string(), origin)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    for width in [900, 360, 180, 900] {
+        rt.set_viewport(Viewport::new(width, 1000, 1.0));
+        selected.set(String::new());
+        disabled.set(false);
+        update(&mut rt);
+        let baseline = text_positions(&rt);
+        if width >= 360 {
+            for (index, (_, label)) in choices().into_iter().enumerate() {
+                let origin = baseline.iter().find(|(text, _)| text == &label).unwrap().1;
+                let text_width = label.chars().count() as f32 * rt.text_metrics().cell_width;
+                let center = (index as f32 + 0.5) * width as f32 / 3.0;
+                assert!((origin.x + text_width / 2.0 - center).abs() < 0.01);
+            }
+        }
+        for selection in ["a", "b", "c", "unknown"] {
+            selected.set(selection.into());
+            update(&mut rt);
+            assert_eq!(
+                text_positions(&rt),
+                baseline,
+                "selection must not move text"
+            );
+            assert_eq!(checkmarks(&rt), usize::from(selection != "unknown"));
+            pointer(
+                &mut rt,
+                Point::new(width as f32 / 2.0, 5.0),
+                PointerPhase::Move,
+            );
+            key(&mut rt, Key::Tab, false);
+            update(&mut rt);
+            assert_eq!(
+                text_positions(&rt),
+                baseline,
+                "hover/focus must not move text"
+            );
+            disabled.set(true);
+            update(&mut rt);
+            assert_eq!(text_positions(&rt), baseline, "disabled must not move text");
+            disabled.set(false);
+            update(&mut rt);
+        }
+    }
+}
+
+#[test]
+fn segmented_material_is_theme_injected_local_and_retained_across_states() {
+    use harbor_widget::{
+        BackdropMaterial, BackdropRim, BackdropTone, ControlBackdrop, EdgeRefraction, ThemeProvider,
+    };
+    let material = BackdropMaterial::new(
+        4.0,
+        -0.1,
+        BackdropTone {
+            offset: 0.0,
+            slope: 1.0,
+            quadratic: 0.0,
+            saturation: 1.02,
+        },
+        BackdropRim {
+            highlight: 0.3,
+            shade: 0.22,
+        },
+    )
+    .unwrap();
+    let refraction = EdgeRefraction::new(6.0, 2.0).unwrap();
+    for sigma in [-1.0, f32::NAN, f32::INFINITY] {
+        assert!(ControlBackdrop::new(sigma, refraction, material).is_err());
+    }
+    let mut theme = Theme::default();
+    theme.button.selected_backdrop =
+        Some(ControlBackdrop::new(f32::MAX, refraction, material).unwrap());
+    theme.button.selected.background.a = 0.1;
+    theme.button.selected.border = Color::TRANSPARENT;
+    let themed = Signal::new(theme.clone());
+    let selected = Signal::new("a".to_string());
+    let value = selected.clone();
+    let disabled = Signal::new(false);
+    let disabled_value = disabled.clone();
+    let mut rt = runtime(ThemeProvider::from_signal(themed.clone()).child(
+        move |cx: &mut BuildCx| {
+            cx.track(&value);
+            cx.track(&disabled_value);
+            SegmentedControl::new(choices(), value.read().clone())
+                .disabled(*disabled_value.read())
+                .build(cx)
+        },
+    ));
+    let material_rects = |rt: &Runtime| {
+        primitives(rt)
+            .into_iter()
+            .filter_map(|p| match p {
+                Primitive::BackdropMaterial {
+                    rect,
+                    sigma,
+                    refraction: actual,
+                    material: effect,
+                    ..
+                } => {
+                    assert_eq!(sigma, 64.0, "reuse the existing bounded filter");
+                    assert_eq!(actual, refraction);
+                    assert_eq!(effect, material);
+                    Some(rect)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    for (index, (value, _)) in choices().into_iter().enumerate() {
+        selected.set(value);
+        update(&mut rt);
+        let rects = material_rects(&rt);
+        assert_eq!(rects.len(), 1);
+        let rect = rects[0];
+        assert_eq!(rect.min.x, index as f32 * 120.0);
+        assert_eq!(rect.size().width, 120.0);
+        let center = Point::new(rect.min.x + 60.0, 5.0);
+        for phase in [PointerPhase::Move, PointerPhase::Down, PointerPhase::Up] {
+            pointer(&mut rt, center, phase);
+            update(&mut rt);
+            assert_eq!(material_rects(&rt), rects);
+            assert_eq!(checkmarks(&rt), 1);
+        }
+        disabled.set(true);
+        update(&mut rt);
+        assert_eq!(material_rects(&rt), rects);
+        disabled.set(false);
+        update(&mut rt);
+    }
+    selected.set("unknown".into());
+    update(&mut rt);
+    assert!(material_rects(&rt).is_empty());
+    selected.set("a".into());
+    update(&mut rt);
+    assert_eq!(material_rects(&rt).len(), 1);
+    theme.button.selected_backdrop = None;
+    themed.set(theme);
+    update(&mut rt);
+    assert!(
+        material_rects(&rt).is_empty(),
+        "theme changes remove the material"
+    );
+    assert_eq!(checkmarks(&rt), 1);
+}
+
+#[test]
+fn segment_gaps_are_validated_and_keep_each_surface_separate_under_resize() {
+    for gap in [-1.0, f32::NAN, f32::INFINITY] {
+        assert!(
+            SegmentedControl::new(choices(), "a".into())
+                .gap(gap)
+                .is_err()
+        );
+    }
+    let mut rt = runtime(
+        SegmentedControl::new(choices(), "a".into())
+            .gap(6.0)
+            .unwrap(),
+    );
+    for width in [360, 180, 600] {
+        rt.set_viewport(Viewport::new(width, 400, 1.0));
+        update(&mut rt);
+        let mut surfaces: Vec<_> = primitives(&rt)
+            .into_iter()
+            .filter_map(|p| match p {
+                Primitive::Quad { rect, .. } => Some(rect),
+                _ => None,
+            })
+            .collect();
+        surfaces.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+        assert_eq!(surfaces.len(), 3);
+        assert_eq!(surfaces[0].min.x, 0.0);
+        assert_eq!(surfaces[2].max.x, width as f32);
+        for pair in surfaces.windows(2) {
+            assert_eq!(pair[1].min.x - pair[0].max.x, 6.0);
+            assert_eq!(pair[0].size().width, pair[1].size().width);
+        }
+    }
+}

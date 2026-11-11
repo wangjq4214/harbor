@@ -256,6 +256,7 @@ fn engine(axis: Axis) -> FlexLayout {
         gap: 0.0,
         main_axis_alignment: MainAxisAlignment::Start,
         cross_axis_alignment: CrossAxisAlignment::Start,
+        shrink_wrap: false,
         wrap: false,
     }
 }
@@ -608,4 +609,40 @@ fn wrapped_gaps_are_checked_per_axis_instead_of_summing_unrelated_runs() {
             (2, Point::new(0.0, f32::MAX))
         ]
     );
+}
+
+#[test]
+fn shrink_wrap_is_opt_in_and_preserves_loose_tight_and_parent_bounds() {
+    use crate::{Expanded, Flexible, SizedBox};
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        for wrap in [false, true] {
+            for shrink in [false, true] {
+                for tight in [false, true] {
+                    let leaf = SizedBox::new(axis.size(20.0, 10.0)).unwrap();
+                    let child = if tight {
+                        View::deferred(Expanded::new().child(leaf))
+                    } else {
+                        View::deferred(Flexible::new().child(leaf))
+                    };
+                    let tree = Flex::new(axis)
+                        .wrap(wrap)
+                        .shrink_wrap(shrink)
+                        .gap(5.0)
+                        .unwrap()
+                        .push_child(SizedBox::new(axis.size(10.0, 10.0)).unwrap())
+                        .push_child(child);
+                    let (arena, root) = layout_tree(
+                        tree,
+                        BoxConstraints {
+                            min: axis.size(40.0, 0.0),
+                            max: axis.size(100.0, 30.0),
+                        },
+                    );
+                    assert_committed_tree(&arena, root);
+                    let size = arena.get(root).unwrap().layout_rect().unwrap().size();
+                    assert_eq!(axis.main(size), if shrink && !tight { 40.0 } else { 100.0 });
+                }
+            }
+        }
+    }
 }

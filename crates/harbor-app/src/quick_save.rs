@@ -1,14 +1,13 @@
 //! Application-owned input-only naming and in-window review. No filesystem effects.
 use super::*;
-use crate::appearance::quick_save_button_style;
+use crate::appearance::design_system::{self as design, ControlRole, TextRole};
 #[path = "quick_save_project.rs"]
 mod project_review;
 use harbor_config::{SessionProfile, ShellSettings};
 use harbor_widget::input::event::{Key, Modifiers};
 use harbor_widget::widgets::text_label::TextLabel;
 use harbor_widget::{
-    Button, Checkbox, Column, ConstrainedBox, ControlColors, DecoratedBox, KeyChord, ScrollView,
-    SegmentedControl,
+    Button, Checkbox, Column, ConstrainedBox, DecoratedBox, KeyChord, ScrollView, SegmentedControl,
 };
 use project_review::ProjectReview;
 use std::collections::BTreeSet;
@@ -38,6 +37,7 @@ struct QuickSaveState {
     acknowledged: bool,
     issued: bool,
     error: Option<String>,
+    review_scroll: harbor_widget::ScrollController,
     focus: FocusHandle,
 }
 // A queued approval belongs to the mounted review, not merely retained Store data.
@@ -80,6 +80,9 @@ fn name_error(
 impl WorkspaceUiController {
     pub fn open_quick_save(&self, draft: QuickSaveDraft) -> FocusHandle {
         let mut state = self.store.state().read().clone();
+        state
+            .notices
+            .publish(ConfigurationNoticeSource::QuickSave, None);
         let focus = state.popups.open(|_| QuickSaveState {
             project: ProjectReview::new(draft.project.clone()),
             approved_project: None,
@@ -91,6 +94,7 @@ impl WorkspaceUiController {
             acknowledged: false,
             issued: false,
             error: None,
+            review_scroll: harbor_widget::ScrollController::new(),
             focus: FocusHandle::new(),
         });
         self.store.set_state(state);
@@ -123,8 +127,9 @@ impl WorkspaceUiController {
                     return None;
                 }
                 if let Some(error) = name_error(&save.input.text(), &state.profiles) {
-                    save.error = Some(error.into());
-                    state.popups.update::<QuickSaveState>(|s| *s = save);
+                    state
+                        .notices
+                        .publish(ConfigurationNoticeSource::QuickSave, Some(error.into()));
                     self.store.set_state(state);
                     return None;
                 }
@@ -138,7 +143,11 @@ impl WorkspaceUiController {
             }
             _ => return None,
         }
+        state
+            .notices
+            .publish(ConfigurationNoticeSource::QuickSave, None);
         save.error = None;
+        save.review_scroll.jump_to(0.0);
         save.project.retire_editors();
         let focus = state.popups.open(|_| save);
         self.store.set_state(state);
@@ -152,6 +161,9 @@ impl WorkspaceUiController {
         if state.popups.get::<QuickSaveState>().is_none() || !state.popups.close(generation) {
             return false;
         }
+        state
+            .notices
+            .publish(ConfigurationNoticeSource::QuickSave, None);
         self.store.set_state(state);
         true
     }
@@ -253,6 +265,7 @@ impl WorkspaceUiController {
                     save.approved_project = None;
                     save.issued = false;
                     save.error = Some(error);
+                    save.review_scroll.jump_to(f32::INFINITY);
                 });
                 state.popups.get::<QuickSaveState>().unwrap().focus
             }
@@ -282,70 +295,64 @@ fn review_line(text: String, key: &'static str) -> View {
             }
             harbor_widget::EditableText::new(input.read().clone())
                 .read_only(true)
+                .foreground(design::FOREGROUND)
+                .unwrap()
                 .build(cx)
         })
         .keyed(key),
     )
 }
+
 /// Explanations use UI text geometry; captured values remain selectable editors.
 fn review_message(text: impl Into<String>, key: &'static str, warning: bool) -> View {
     View::deferred(
-        TextLabel::new(text)
-            .wrap()
-            .foreground(if warning {
-                Color {
-                    r: 1.0,
-                    g: 0.72,
-                    b: 0.53,
-                    a: 1.0,
-                }
+        design::text(
+            text,
+            if warning {
+                TextRole::Warning
             } else {
-                Color {
-                    a: 0.72,
-                    ..Color::WHITE
-                }
-            })
-            .unwrap()
-            .keyed(key),
+                TextRole::Supporting
+            },
+        )
+        .keyed(key),
     )
 }
 
 fn review_label(text: &str) -> TextLabel {
-    TextLabel::new(text)
-        .wrap()
-        .foreground(Color::WHITE)
-        .unwrap()
-}
-
-fn review_heading(text: &str) -> TextLabel {
-    review_label(text).scale(1.25).unwrap()
+    design::text(text, TextRole::Label)
 }
 
 fn review_divider(key: &'static str) -> View {
     View::deferred(
         harbor_widget::Separator::horizontal()
-            .color(Color {
-                a: 0.14,
-                ..Color::WHITE
-            })
+            .color(design::DIVIDER)
             .unwrap()
             .keyed(key),
     )
 }
 
-/// Product grouping stays in the application; fields retain their own surfaces.
-fn review_block(cx: &mut BuildCx, title: &str, divider_key: &'static str) -> Column {
+/// A label stays closer to its field than to the next field or section.
+fn review_field(cx: &mut BuildCx, label: &str, field: View) -> View {
     Column::new()
         .cross_axis_alignment(CrossAxisAlignment::Stretch)
-        .gap(6.0)
+        .gap(design::LABEL_GAP)
+        .unwrap()
+        .push_child(review_label(label).build(cx))
+        .push_child(field)
+        // Conditional target fields must not retire the neighboring directory editor.
+        .keyed(format!("review-field-{label}"))
+        .build(cx)
+}
+
+/// Product grouping stays in the application; fields retain their own surfaces.
+fn review_block(cx: &mut BuildCx, title: &str, heading_key: &'static str) -> Column {
+    Column::new()
+        .cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .gap(design::FIELD_GAP)
         .unwrap()
         .push_child(
-            Column::new()
-                .cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .gap(12.0)
-                .unwrap()
-                .push_child(review_divider(divider_key))
-                .push_child(review_heading(title).build(cx))
+            design::text(title, TextRole::Section)
+                .keyed(heading_key)
                 .build(cx),
         )
 }
@@ -361,19 +368,30 @@ impl crate::popups::Popup for QuickSaveState {
     fn blocks_shortcuts(&self) -> bool {
         true
     }
+    fn notification_inset(&self) -> f32 {
+        if self.review_name.is_none() {
+            // Keep the existing top-right notification below the compact naming bar.
+            12.0 + 2.0 * design::INPUT_PADDING + design::CONTROL_HEIGHT
+        } else {
+            0.0
+        }
+    }
     fn build(
         &self,
-        _cx: &mut BuildCx,
+        cx: &mut BuildCx,
         ui: &WorkspaceUiController,
         _: &ResolvedKeybindings,
         generation: u64,
     ) -> View {
         let save = self.clone();
         let ui = ui.clone();
-        View::deferred(
-            (move |cx: &mut BuildCx| save.panel(cx, &ui, generation))
-                .keyed(format!("quick-save-owner-{generation}")),
-        )
+        harbor_widget::ThemeProvider::new(design::theme(cx.theme()))
+            .expect("valid application theme")
+            .child(
+                (move |cx: &mut BuildCx| save.panel(cx, &ui, generation))
+                    .keyed(format!("quick-save-owner-{generation}")),
+            )
+            .build(cx)
     }
 }
 impl QuickSaveState {
@@ -393,34 +411,64 @@ impl QuickSaveState {
             })
         });
         let reviewing = self.review_name.is_some();
-        let appearance = GlassAppearance::command_palette();
+        let appearance = if reviewing {
+            GlassAppearance::command_palette()
+        } else {
+            GlassAppearance::default()
+        };
         let dispatch = ui.store.dispatcher();
         let send = move |command| dispatch.dispatch(AppCommandRequest::popup(command, generation));
         let mut content = Column::new()
             .cross_axis_alignment(CrossAxisAlignment::Stretch)
-            .gap(if reviewing { 18.0 } else { 10.0 })
+            .gap(if reviewing {
+                design::SECTION_GAP
+            } else {
+                design::FIELD_GAP
+            })
             .unwrap();
+        let mut review_header = None;
+        let mut review_footer = None;
         if let Some(name) = &self.review_name {
+            let back = send.clone();
             let header = Column::new()
                 .cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .gap(6.0)
+                .gap(design::LABEL_GAP)
                 .unwrap()
                 .push_child(
                     Focus::new()
                         .focus_handle(self.focus)
-                        .child(review_label("Save this preset?").scale(1.6).unwrap())
+                        .child(design::text("Save preset", TextRole::Title))
                         .build(cx),
                 )
-                .push_child(review_line(
-                    format!("Name: {}", display_value(name)),
-                    "review-name",
-                ));
-            content = content
-                .push_child(header.build(cx))
-                .push_child(self.project.panel(cx, ui, generation, self.pending()));
+                .push_child(
+                    Row::new()
+                        .cross_axis_alignment(CrossAxisAlignment::Center)
+                        .gap(design::LABEL_GAP)
+                        .unwrap()
+                        .push_child(
+                            Expanded::new().child(review_line(display_value(name), "review-name")),
+                        )
+                        .push_child(
+                            Button::text("Edit name")
+                                .style(design::control(cx, ControlRole::Quiet))
+                                .unwrap()
+                                .disabled(self.pending())
+                                .on_click(move |_| back(AppCommand::EditQuickSave))
+                                .keyed("quick-save-back"),
+                        )
+                        .build(cx),
+                )
+                .keyed("review-header")
+                .build(cx);
+            review_header = Some(header);
+            content = content.push_child(self.project.panel(cx, ui, generation, self.pending()));
 
             // Opt-in choices and their independent acknowledgement never live in disclosure.
-            let mut overrides = review_block(cx, "Environment variables", "overrides-divider");
+            let mut overrides = if self.draft.launch.environment.is_empty() {
+                Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch)
+            } else {
+                review_block(cx, "Environment variables", "overrides-heading")
+            };
             overrides = overrides.push_child(review_message(
                 if self.draft.launch.environment.is_empty() {
                     "No environment overrides will be saved.".into()
@@ -436,7 +484,7 @@ impl QuickSaveState {
                 let change = ui.clone();
                 overrides = overrides.push_child(View::deferred(
                     Checkbox::new(display_value(&key), selected)
-                        .style(quick_save_button_style(cx, false))
+                        .style(design::control(cx, ControlRole::Checkbox))
                         .unwrap()
                         .disabled(self.pending())
                         .on_change(move |checked| {
@@ -459,7 +507,7 @@ impl QuickSaveState {
                         "Selected variables contain no passwords or tokens",
                         self.acknowledged,
                     )
-                    .style(quick_save_button_style(cx, false))
+                    .style(design::control(cx, ControlRole::Checkbox))
                     .unwrap()
                     .disabled(self.pending())
                     .on_change(move |checked| {
@@ -477,7 +525,10 @@ impl QuickSaveState {
             }
 
             content = content.push_child(overrides.build(cx));
-            let mut details = review_block(cx, "Supporting details", "details-divider");
+            let mut details = Column::new()
+                .cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .gap(design::FIELD_GAP)
+                .unwrap();
             let suspicious_source =
                 harbor_config::project::suspected_credentials(&self.draft.launch.args);
             if suspicious_source {
@@ -487,22 +538,29 @@ impl QuickSaveState {
                 ));
             }
             let change = ui.clone();
-            details = details.push_child(View::deferred(
-                Button::text(if self.details_open {
-                    "Hide supporting details"
-                } else {
-                    "Show supporting details"
-                })
-                .style(quick_save_button_style(cx, false))
-                .unwrap()
-                .disabled(self.pending())
-                .on_click(move |_| {
-                    change.update_quick_save(generation, |save| {
-                        save.details_open = !save.details_open
-                    })
-                })
-                .keyed("quick-save-details"),
-            ));
+            details = details.push_child(
+                Row::new()
+                    .push_child(View::deferred(
+                        Button::icon(
+                            if self.details_open {
+                                LucideIcon::ChevronUp
+                            } else {
+                                LucideIcon::ChevronDown
+                            },
+                            "Source details",
+                        )
+                        .style(design::control(cx, ControlRole::Quiet))
+                        .unwrap()
+                        .disabled(self.pending())
+                        .on_click(move |_| {
+                            change.update_quick_save(generation, |save| {
+                                save.details_open = !save.details_open
+                            })
+                        })
+                        .keyed("quick-save-details"),
+                    ))
+                    .build(cx),
+            );
             if self.details_open {
                 let arguments = if suspicious_source {
                     "[hidden: suspected credentials]".into()
@@ -550,11 +608,10 @@ impl QuickSaveState {
                 .unwrap()
                 .push_child(review_divider("actions-divider"));
             if let Some(error) = &self.error {
-                actions = actions.push_child(review_message(error.clone(), "save-error", true));
+                // Keep complete errors next to the footer, but in the scrolling body:
+                // a long filesystem error must not consume the fixed controls' budget.
+                content = content.push_child(review_message(error.clone(), "save-error", true));
             }
-            // Keep actions in the same shrink-wrapped scroll surface: even tiny windows
-            // can reach every field and action without a fixed footer consuming the body.
-            let back = send.clone();
             let cancel = send.clone();
             let commit = ui.clone();
             actions = actions.push_child(
@@ -565,23 +622,15 @@ impl QuickSaveState {
                     .unwrap()
                     .push_child(View::deferred(
                         Button::text("Cancel")
-                            .style(quick_save_button_style(cx, false))
+                            .style(design::control(cx, ControlRole::Quiet))
                             .unwrap()
                             .disabled(self.pending())
                             .on_click(move |_| cancel(AppCommand::CancelQuickSave))
                             .keyed("quick-save-cancel"),
                     ))
                     .push_child(View::deferred(
-                        Button::text("Return to edit")
-                            .style(quick_save_button_style(cx, false))
-                            .unwrap()
-                            .disabled(self.pending())
-                            .on_click(move |_| back(AppCommand::EditQuickSave))
-                            .keyed("quick-save-back"),
-                    ))
-                    .push_child(View::deferred(
                         Button::text(if self.pending() { "Saving…" } else { "Save" })
-                            .style(quick_save_button_style(cx, true))
+                            .style(design::control(cx, ControlRole::Primary))
                             .unwrap()
                             .disabled(
                                 self.pending()
@@ -593,64 +642,36 @@ impl QuickSaveState {
                     ))
                     .build(cx),
             );
-            content = content.push_child(actions.build(cx));
+            review_footer = Some(actions.keyed("review-footer").build(cx));
         } else {
             let changed = ui.clone();
             let submit = send.clone();
             let cancel = send.clone();
             let input = TextField::new(self.input.clone())
                 .decoration(appearance.input())
+                .foreground(design::FOREGROUND)
+                .unwrap()
                 .padding(6.0)
                 .unwrap()
                 .placeholder("Preset name…")
                 .focus_handle(self.focus)
-                .on_change(move |_| changed.update_quick_save(generation, |save| save.error = None))
+                .on_change(move |_| {
+                    if changed.store.state().read().popups.is_current(generation) {
+                        changed.publish_configuration_notice(
+                            ConfigurationNoticeSource::QuickSave,
+                            None,
+                        );
+                    }
+                })
                 .on_submit(move |_| submit(AppCommand::AdvanceQuickSave))
                 .on_escape(move || cancel(AppCommand::CancelQuickSave));
             let advance = send.clone();
-            let disabled = self.pending()
-                || name_error(&self.input.text(), &ui.store.state().read().profiles).is_some();
-            let mut style = cx.theme().button.clone();
-            style.min_height = 0.0;
-            style.horizontal_padding = 0.0;
-            style.border_width = 0.0;
-            let fg = style.normal.foreground;
-            let colors = ControlColors {
-                background: Color::TRANSPARENT,
-                border: Color::TRANSPARENT,
-                foreground: fg,
-            };
-            style.normal = colors;
-            style.hovered = colors;
-            style.pressed = colors;
-            style.disabled = colors;
-            let button = InteractiveRegion::new()
-                .style(style)
-                .unwrap()
-                .focusable(false)
-                .disabled(disabled)
-                .on_activate(move |_| advance(AppCommand::AdvanceQuickSave))
-                .child_with(move |cx, state| {
-                    let mut material = appearance;
-                    if state.hovered {
-                        material.input_fill.a += 0.06;
-                    }
-                    if state.pressed {
-                        material.input_fill.a += 0.08;
-                    }
-                    DecoratedBox::new(material.input())
-                        .child(
-                            Padding::all(6.0).unwrap().child(
-                                TextLabel::new("Save…")
-                                    .foreground(Color {
-                                        a: if state.disabled { 0.4 } else { 1.0 },
-                                        ..fg
-                                    })
-                                    .unwrap(),
-                            ),
-                        )
-                        .build(cx)
-                });
+            let button = popup_icon_button(
+                LucideIcon::Check,
+                crate::appearance::glass_icon_button_style(cx),
+            )
+            .disabled(self.pending())
+            .on_activate(move |_| advance(AppCommand::AdvanceQuickSave));
             content = content.push_child(
                 ConstrainedBox::new()
                     .max_height_with(|metrics| metrics.line_height + 12.0)
@@ -672,39 +693,51 @@ impl QuickSaveState {
                     .build(cx),
             );
         }
-        let feedback = self.error.clone().or_else(|| {
-            self.review_name
-                .is_none()
-                .then(|| {
-                    name_error(&self.input.text(), &ui.store.state().read().profiles)
-                        .map(str::to_owned)
-                })
-                .flatten()
-        });
-        if !reviewing && let Some(error) = feedback {
-            content = content.push_child(review_message(error, "save-error", true));
-        }
         let cancel = send.clone();
         let actions = ActionHandler::new(move |command| {
             cancel(command);
             ActionOutcome::Consumed
         });
-        let content = ScrollView::new()
-            .shrink_wrap(true)
-            .child(
-                Padding::new(Insets {
-                    right: if reviewing { 10.0 } else { 0.0 },
-                    ..Insets::default()
-                })
-                .unwrap()
-                .child(content)
-                .build(cx),
-            )
-            .build(cx);
-        let content = Padding::all(if reviewing { 16.0 } else { 8.0 })
+        let content = if let (Some(header), Some(footer)) = (review_header, review_footer) {
+            let body = ScrollView::new()
+                .controller(self.review_scroll.clone())
+                .shrink_wrap(true)
+                .child(
+                    Padding::new(Insets {
+                        right: 10.0,
+                        ..Insets::default()
+                    })
+                    .unwrap()
+                    .child(content)
+                    .build(cx),
+                )
+                .keyed("review-body")
+                .build(cx);
+            Padding::new(Insets {
+                left: design::PANEL_PADDING,
+                right: design::PANEL_PADDING,
+                top: design::INPUT_PADDING,
+                bottom: design::INPUT_PADDING,
+            })
             .unwrap()
-            .child(content)
-            .build(cx);
+            .child(
+                Column::new()
+                    .shrink_wrap(true)
+                    .cross_axis_alignment(CrossAxisAlignment::Stretch)
+                    .gap(design::LABEL_GAP)
+                    .unwrap()
+                    .push_child(header)
+                    .push_child(harbor_widget::Flexible::new().child(body))
+                    .push_child(footer)
+                    .build(cx),
+            )
+            .build(cx)
+        } else {
+            Padding::all(design::INPUT_PADDING)
+                .unwrap()
+                .child(ScrollView::new().shrink_wrap(true).child(content).build(cx))
+                .build(cx)
+        };
         let card = appearance.panel(cx, content);
         let card = actions
             .child(
@@ -724,7 +757,7 @@ impl QuickSaveState {
         .unwrap()
         .child(
             ConstrainedBox::new()
-                .max_width(if reviewing { 600.0 } else { 480.0 })
+                .max_width(if reviewing { 600.0 } else { 620.0 })
                 .max_height(720.0)
                 .child(FocusScope::new().modal(true).child(card).build(cx))
                 .build(cx),

@@ -77,7 +77,7 @@ impl Default for FlexOptions {
 /// An axis-neutral flex container with parent-directed child measurement.
 ///
 /// Without flexible children this shrink-wraps, subject to parent bounds. With
-/// flexible children it fills a finite main-axis maximum, even under loose
+/// flexible children it defaults to filling a finite main-axis maximum, even under loose
 /// constraints. Unbounded flex is content-driven and emits `UnboundedFlex`.
 /// Unbounded cross-axis stretch first discovers natural sizes provisionally,
 /// then finalizes every child with the derived finite cross extent. Descendant
@@ -93,6 +93,7 @@ pub struct Flex {
     background: Option<Color>,
     pub(crate) gap: f32,
     wrap: bool,
+    shrink_wrap: bool,
     pub(crate) children: Vec<View>,
 }
 
@@ -105,6 +106,7 @@ impl Flex {
             background: None,
             gap: 0.0,
             wrap: false,
+            shrink_wrap: false,
             children: Vec::new(),
         }
     }
@@ -131,6 +133,14 @@ impl Flex {
         crate::layout::configuration::validate_scalar("gap", gap)?;
         self.gap = gap;
         Ok(self)
+    }
+
+    /// Size to measured children even with flexible children under a finite cap.
+    /// Loose flex children may use less than their allocation; tight children still fill it.
+    /// Defaults to false, preserving fill behavior for existing flexible layouts.
+    pub fn shrink_wrap(mut self, shrink_wrap: bool) -> Self {
+        self.shrink_wrap = shrink_wrap;
+        self
     }
 
     /// Wrap content-sized children at the main-axis cap, with `gap` between runs.
@@ -193,6 +203,7 @@ impl Flex {
             axis: self.axis,
             gap: self.gap,
             wrap: self.wrap,
+            shrink_wrap: self.shrink_wrap,
             main_axis_alignment: self.main_axis_alignment,
             cross_axis_alignment: self.cross_axis_alignment,
         }
@@ -260,6 +271,7 @@ pub(crate) struct FlexLayout {
     pub axis: Axis,
     pub gap: f32,
     pub wrap: bool,
+    pub shrink_wrap: bool,
     pub main_axis_alignment: MainAxisAlignment,
     pub cross_axis_alignment: CrossAxisAlignment,
 }
@@ -490,7 +502,7 @@ impl FlexLayout {
                 + self.gaps(runs.len())?,
         )?;
         let mut size = constraints.constrain(self.axis.size(natural_main, natural_cross));
-        if has_flex && self.axis.main(constraints.max).is_finite() {
+        if has_flex && !self.shrink_wrap && self.axis.main(constraints.max).is_finite() {
             size = self
                 .axis
                 .size(self.axis.main(constraints.max), self.axis.cross(size));
@@ -575,7 +587,7 @@ impl FlexLayout {
         }
         finite(occupied)?;
         let maximum = self.axis.main(constraints.max);
-        let main = if has_flex && maximum.is_finite() {
+        let main = if has_flex && !self.shrink_wrap && maximum.is_finite() {
             maximum
         } else {
             finite(occupied)?.clamp(self.axis.main(constraints.min), maximum)

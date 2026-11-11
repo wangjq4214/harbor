@@ -73,6 +73,7 @@ pub enum ConfigurationNoticeSource {
     Resource,
     Operation,
     Command,
+    QuickSave,
 }
 
 #[derive(Clone, Default)]
@@ -135,6 +136,7 @@ impl ConfigurationNotices {
             ConfigurationNoticeSource::Resource => "Resource operation",
             ConfigurationNoticeSource::Operation => "Operation",
             ConfigurationNoticeSource::Command => "Command",
+            ConfigurationNoticeSource::QuickSave => "Save preset",
         }
     }
 
@@ -296,6 +298,7 @@ mod tests {
             Source::Resource,
             Source::Operation,
             Source::Command,
+            Source::QuickSave,
         ] {
             let mut notices = ConfigurationNotices::default();
             notices.publish_at(source, Some("Unrecovered error".into()), start);

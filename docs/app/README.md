@@ -9,6 +9,7 @@ Harbor is a Windows-first terminal application with terminal tabs, GPU rendering
 | Look up a command ID or default shortcut | [Commands and shortcuts](commands.md) |
 | Diagnose startup, input, rendering, or compatibility problems | [Troubleshooting](troubleshooting.md) |
 | Choose MSI versus ZIP, upgrade, or build a distribution | [Windows releases](releases.md) |
+| Review application visual foundations and the Quick Save design | [Design system (draft)](design-system.md) |
 
 ## Current limitations
 

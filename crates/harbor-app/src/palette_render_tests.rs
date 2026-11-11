@@ -64,6 +64,7 @@ fn render(
     );
     let view = target.create_view(&Default::default());
     let mut encoder = device.create_command_encoder(&Default::default());
+    runtime.prepare_text(queue);
     runtime.encode_frame(
         ExternalDrawGpu::new(device, queue, format),
         &mut encoder,
