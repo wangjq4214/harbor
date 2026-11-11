@@ -34,6 +34,7 @@ Harbor watches the selected file by default and coalesces saves before reloading
 | --- | --- |
 | `history.*`, `font.*`, `colors.*`, `keybindings.*` | Live for applicable existing and future terminal/application resources |
 | `shell.program`, `shell.args`, `shell.environment`, `shell.directory` | First startup child, then **new sessions only** after reload; existing children are unchanged |
+| `profiles.<id>.*` | Accepted **named-launch policy only**; updates the shared chooser; no effect on ordinary launches or existing children; quick save pending |
 | `clipboard.osc52_write` | **Restart required**, including for new tabs in the running process |
 | Portable marker/path choice | **Restart required**; not a TOML setting |
 
@@ -46,7 +47,7 @@ Live terminal-font changes do not change UI fonts or restart shells. Resizing ca
 | `font.family` | Nonempty string after trimming; requested system family, not a font-file path | Omitted: Windows primary-font selection | System selection |
 | `font.size` | Finite integer/float, inclusive **6–144** | `24.0` | `24.0` |
 
-An unavailable font family can fall back to a system font with a warning. Missing-character fallback is separate from primary grid metrics. There is no UI-font, font-file, or profile option.
+An unavailable font family can fall back to a system font with a warning. Missing-character fallback is separate from primary grid metrics. There is no UI-font or font-file setting; session profiles do not override font policy.
 
 ## History limits
 
@@ -77,6 +78,31 @@ If a configured program fails to start, Harbor tries default shells without that
 Environment overrides affect new shells only, never Harbor or already-running shells. Windows names are case-insensitive; conflicting spellings reject the whole map. Names must be nonempty, without `=` or NUL; values must not contain NUL. An empty string sets an empty value rather than deleting the variable. Removing an override restores inheritance in later children; deleting inherited variables is not supported. `$VAR`, `%VAR%`, and shell expressions remain literal. `TERM` must stay `xterm-256color`, regardless of name casing. Review logs before sharing: shell arguments and unrelated events may contain sensitive data.
 
 Relative directories resolve against the selected **configuration file's parent**, not Harbor's launch directory, active-tab directory, or OSC 7 metadata. Paths are literal; no shell/environment expansion is provided. If a directory disappears, creating a new session fails rather than launching elsewhere. Restore it and retry; existing sessions remain intact.
+
+## Named profile launch contract
+
+Named profiles are accepted future-launch policy. Choose **New from profile…** in the tab rail (down-chevron in compact mode), or **New session from profile…** in the command palette. Both open the same second-level chooser; ordinary startup/New tab/Ctrl+T still use `[shell]`. Quick save is not implemented.
+
+```toml
+[profiles.work]
+name = "Work"
+program = "pwsh.exe"
+args = ["-NoLogo", "-NoProfile"]
+directory = "projects" # existing directory, relative to this configuration file
+
+[profiles.work.environment]
+HARBOR_EXAMPLE = "literal value"
+```
+
+The `work` table key is the stable identity: nonempty ASCII letters, digits, `_` and `-`. Editing `name` does not change it. Names are trimmed, nonempty, control-free and unique (case-sensitive). `name` and `program` are required. `args`, `directory` and `environment` follow the shell field types and literal/environment rules above, including NUL rejection and protected `TERM`. Omitted arguments/overrides are empty; an omitted directory uses the named-launch policy below. Profiles inherit neither `[shell]` nor other profiles. Unsupported profile fields are errors.
+
+An invalid profile is unavailable at startup, with a diagnostic; it never becomes a partially recovered alternative recipe. Any invalid profile rejects the **whole** live candidate, including otherwise valid live fields. Accepted add/edit/remove replaces the complete future catalog. Existing children and their recorded launch facts are not rewritten.
+
+A typed named launch resolves the current accepted identity, never a cached recipe. Its directory precedence is explicit absolute launch directory → configured profile directory → usable local source-session OSC 7 directory → Harbor's process directory. Explicit/configured invalid or disappearing directories fail rather than falling through. A failed named executable starts **no substitute shell** and leaves existing sessions intact. Restore the directory/executable and a later request may succeed.
+
+OSC 7 interpretation is explicit Host policy, not parser-driven `chdir`. The Host converts already-decoded drive URI paths such as `/C:/project name` (original URI: `file:///C:/project%20name`) to native paths without a second percent decode. Empty authority, `localhost` and OS-reported local computer names are eligible; remote authorities, UNC/device forms, mapped network drives and reparse-point paths are not inherited. Missing/reset/malformed or unusable metadata cannot defeat a higher-priority directory. No global cwd/environment changes or runtime shell/environment scraping are performed.
+
+`Terminal::launch_provenance()` exposes the successful selected program, arguments and initial directory for the later save-flow implementation, including real legacy fallback facts rather than a display title. It remains unchanged after reloads, OSC updates and commands in the child. This is not a snapshot of the running shell's current process state.
 
 ## Terminal colors
 

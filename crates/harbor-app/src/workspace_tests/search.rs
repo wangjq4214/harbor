@@ -482,7 +482,7 @@ fn disabled_search_button_has_no_hover_glass_or_activation() {
     runtime.set_viewport(Viewport::new(100, 100, 1.0));
     runtime.set_root(move |cx: &mut BuildCx| {
         let callback = callback.clone();
-        search_icon_button(LucideIcon::X, glass_icon_button_style(cx))
+        popup_icon_button(LucideIcon::X, glass_icon_button_style(cx))
             .disabled(true)
             .on_activate(move |_| callback.store(true, std::sync::atomic::Ordering::Relaxed))
             .build(cx)

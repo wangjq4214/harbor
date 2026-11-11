@@ -45,6 +45,7 @@ use crate::{PtySize, ReaderShutdown, ShellCommand};
 
 /// Windows ConPTY session and the handles that must outlive the shell process.
 pub struct Pty {
+    launch_provenance: crate::LaunchProvenance,
     /// Input write end retained so ConPTY keeps stdin open for the child.
     _input_write: Option<OwnedHandle>,
     /// ConPTY handle; must outlive the process attached through the attribute list.
@@ -71,6 +72,9 @@ pub struct PtyWriter {
 }
 
 impl Pty {
+    pub(crate) fn launch_provenance(&self) -> &crate::LaunchProvenance {
+        &self.launch_provenance
+    }
     pub fn spawn_shell(
         size: PtySize,
         command: &ShellCommand,
@@ -110,7 +114,8 @@ impl Pty {
             PseudoConsole::create(size, input_read.handle(), output_write.handle())?;
         tracing::info!("created pseudo console");
         let attribute_list = AttributeList::with_pseudo_console(pseudo_console.handle())?;
-        let (process_info, shell_name) = create_shell_process(&attribute_list, command)?;
+        let (process_info, shell_name, launch_provenance) =
+            create_shell_process(&attribute_list, command)?;
         tracing::info!("created shell process");
 
         // The suspended process cannot create children before Job assignment succeeds.
@@ -138,6 +143,7 @@ impl Pty {
 
         Ok((
             Self {
+                launch_provenance,
                 _input_write: Some(input_write),
                 _pseudo_console: Some(pseudo_console),
                 _process: Some(OwnedHandle::new(process_info.hProcess)),
@@ -374,20 +380,24 @@ impl Drop for Pty {
 fn create_shell_process(
     attribute_list: &AttributeList,
     command: &ShellCommand,
-) -> anyhow::Result<(PROCESS_INFORMATION, String)> {
+) -> anyhow::Result<(PROCESS_INFORMATION, String, crate::LaunchProvenance)> {
     let mut startup_info = STARTUPINFOEXW::default();
     startup_info.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup_info.lpAttributeList = attribute_list.as_ptr();
 
     let environment_block = build_environment_block(&command.environment)?;
-    let directory = command.directory.as_ref().map(|path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>()
-    });
-    if let Some(path) = &command.directory {
+    let initial_directory = command
+        .directory
+        .clone()
+        .map_or_else(std::env::current_dir, Ok)?;
+    let directory = initial_directory
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    {
+        let path = &initial_directory;
         ensure!(
             path.is_absolute(),
             "shell.directory must be absolute at child creation"
@@ -401,16 +411,36 @@ fn create_shell_process(
             "shell.directory is unavailable or not a directory at child creation"
         );
     }
-    create_shell_process_with(command, std::env::var_os("COMSPEC"), |program, args| {
-        let mut command_line = shell_command_line(program, args);
-        try_create_shell_process(
-            &startup_info,
-            &mut command_line,
-            &environment_block,
-            directory.as_deref(),
-        )
-        .map_err(anyhow::Error::from)
-    })
+    let ((process, program, args), name) =
+        create_shell_process_with(command, std::env::var_os("COMSPEC"), |program, args| {
+            ensure!(
+                !program.encode_wide().any(|c| c == 0),
+                "launch program contains NUL"
+            );
+            ensure!(
+                !args.iter().any(|arg| arg.contains('\0')),
+                "launch arguments contain NUL"
+            );
+            let mut command_line = shell_command_line(program, args);
+            let process = try_create_shell_process(
+                &startup_info,
+                &mut command_line,
+                &environment_block,
+                Some(&directory),
+            )
+            .map_err(anyhow::Error::from)?;
+            Ok((process, program.to_os_string(), args.to_vec()))
+        })?;
+    Ok((
+        process,
+        name,
+        crate::LaunchProvenance {
+            program,
+            args,
+            initial_directory,
+            configured_environment: command.environment.clone(),
+        },
+    ))
 }
 
 /// Try actual process creation rather than inferring availability from PATH.
@@ -420,11 +450,18 @@ fn create_shell_process_with<T>(
     comspec: Option<OsString>,
     mut create: impl FnMut(&OsStr, &[String]) -> anyhow::Result<T>,
 ) -> anyhow::Result<(T, String)> {
-    let mut failures = Vec::new();
     let configured_program = command
         .program
         .as_deref()
         .filter(|program| !program.trim().is_empty());
+    if command.executable_policy == crate::ExecutablePolicy::Strict {
+        let program = configured_program
+            .ok_or_else(|| anyhow::anyhow!("named profile requires an executable"))?;
+        let process = create(OsStr::new(program), &command.args)
+            .context("named profile executable failed (no fallback)")?;
+        return Ok((process, shell_display_name(OsStr::new(program))));
+    }
+    let mut failures = Vec::new();
     if let Some(program) = configured_program {
         match create(OsStr::new(program), &command.args) {
             Ok(process) => return Ok((process, shell_display_name(OsStr::new(program)))),

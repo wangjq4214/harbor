@@ -93,10 +93,7 @@ pub(super) fn painted(runtime: &Runtime) -> String {
     items.sort_by_key(|item| item.paint_order);
     items
         .iter()
-        .filter_map(|item| match &item.primitive {
-            Primitive::Text { text, .. } => Some(text.as_ref()),
-            _ => None,
-        })
+        .filter_map(|item| item.primitive.text_run().map(|(text, ..)| text))
         .collect::<Vec<_>>()
         .join("\n")
 }

@@ -264,10 +264,10 @@ fn compact_rail_has_no_close_control_or_close_focus_stop() {
     assert_eq!(rows.len(), 2);
     for row in &rows {
         let children = runtime.arena().get(*row).unwrap().children();
-        assert_eq!(children.len(), 1, "compact row contains only its label");
+        assert_eq!(children.len(), 1, "compact row contains only its icon slot");
         assert_eq!(
             runtime.arena().get(children[0]).unwrap().widget_type(),
-            TypeId::of::<harbor_widget::Expanded>()
+            TypeId::of::<harbor_widget::SizedBox>()
         );
         assert!(!close_is_visible(&runtime, *row));
     }
@@ -414,56 +414,254 @@ fn nested_close_click_never_activates_the_tab_and_survives_pressed_rebuilds() {
     }
 }
 
+fn rail_action_rects(runtime: &Runtime) -> Vec<Rect> {
+    ["new-terminal", "new-profile", "save-profile"]
+        .into_iter()
+        .map(|key| {
+            fiber_ids(runtime)
+                .into_iter()
+                .find_map(|id| {
+                    let fiber = runtime.arena().get(id).unwrap();
+                    fiber
+                        .key()
+                        .is_some_and(|candidate| candidate.text() == key)
+                        .then(|| fiber.layout_rect().unwrap())
+                })
+                .expect("mounted rail action")
+        })
+        .collect()
+}
+
 #[test]
-fn new_terminal_follows_tabs_and_remains_reachable_at_the_end_of_scroll() {
-    for count in [2, 20] {
-        let controller = controller(
-            1000.0,
-            (1..=count).map(|id| snapshot(id, id == 1, false)).collect(),
-            1,
-        );
-        let mut runtime = mount(controller.clone(), 1000, 320);
-        if count == 20 {
-            controller
-                .tabs
-                .scroll
-                .jump_to(controller.tabs.scroll.metrics().max_scroll_extent());
-            runtime.update(Instant::now());
-        }
-        let last = *tab_rows(&runtime).last().unwrap();
-        let last_rect = runtime.arena().get(last).unwrap().layout_rect().unwrap();
-        let delta = runtime.pending_delta().unwrap();
-        let origin = delta
-            .added
-            .iter()
-            .chain(&delta.modified)
-            .find_map(|item| match &item.primitive {
-                Primitive::Text { text, origin, .. } if text.as_ref() == "New terminal" => {
-                    Some(*origin)
-                }
-                _ => None,
-            })
-            .expect("new terminal label");
-        assert!(origin.y > last_rect.max.y);
-        assert!(origin.y < 300.0, "new control must be in the viewport");
-        if count == 2 {
-            assert!(
-                origin.y < 120.0,
-                "new control must not be pinned to the bottom"
-            );
-        }
-        for phase in [PointerPhase::Down, PointerPhase::Up] {
-            runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
-                Point::new(origin.x + 4.0, origin.y + 4.0),
-                phase,
-                PointerButton::Left,
-                7,
-            )));
-        }
+fn bottom_action_focus_survives_responsive_orientation_changes() {
+    let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
+    let mut runtime = mount(controller.clone(), 1000, 320);
+    let rect = rail_action_rects(&runtime)[0];
+    let point = Point::new(
+        (rect.min.x + rect.max.x) / 2.0,
+        (rect.min.y + rect.max.y) / 2.0,
+    );
+    for phase in [PointerPhase::Down, PointerPhase::Up] {
+        runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+            point,
+            phase,
+            PointerButton::Left,
+            7,
+        )));
+        runtime.update(Instant::now());
+    }
+    assert_eq!(
+        controller.drain_actions(),
+        [AppCommandRequest::rail(TabCommand::New)]
+    );
+    let focused = runtime.input().focused().expect("action is focused");
+    for width in [899, 900, 500, 1000] {
+        controller.tabs().update_presentation(f64::from(width));
+        runtime.set_viewport(Viewport::new(width, 320, 1.0));
+        runtime.update(Instant::now());
+        assert_eq!(runtime.input().focused(), Some(focused));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        }));
+        runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+        }));
+        runtime.update(Instant::now());
         assert_eq!(
             controller.drain_actions(),
             [AppCommandRequest::rail(TabCommand::New)]
         );
+    }
+}
+
+#[test]
+fn bottom_actions_stay_fixed_outside_the_scrolling_tab_list() {
+    for width in [899, 1000] {
+        let controller = controller(
+            f64::from(width),
+            (1..=20).map(|id| snapshot(id, id == 1, false)).collect(),
+            1,
+        );
+        let mut runtime = mount(controller.clone(), width, 320);
+        let before = rail_action_rects(&runtime);
+        assert_eq!(before.len(), 3);
+        assert!(controller.tabs.scroll.metrics().max_scroll_extent() > 0.0);
+        controller
+            .tabs
+            .scroll
+            .jump_to(controller.tabs.scroll.metrics().max_scroll_extent());
+        runtime.update(Instant::now());
+        assert_eq!(rail_action_rects(&runtime), before);
+        let last = *tab_rows(&runtime).last().unwrap();
+        let last_rect = runtime.arena().get(last).unwrap().layout_rect().unwrap();
+        assert!(
+            last_rect.max.y < before[0].min.y,
+            "tab list ends above actions"
+        );
+        // The bottom controls must also remain anchored when the list becomes short.
+        controller.tabs().sync(
+            vec![snapshot(1, true, false)],
+            Some(bridge(1)),
+            f64::from(width),
+        );
+        runtime.update(Instant::now());
+        assert_eq!(rail_action_rects(&runtime), before);
+        assert_eq!(controller.tabs.scroll.metrics().offset(), 0.0);
+        if width < 900 {
+            assert!(
+                before
+                    .windows(2)
+                    .all(|pair| pair[0].min.x == pair[1].min.x && pair[0].max.y < pair[1].min.y)
+            );
+        } else {
+            assert!(
+                before
+                    .windows(2)
+                    .all(|pair| pair[0].min.y == pair[1].min.y && pair[0].max.x < pair[1].min.x)
+            );
+        }
+        assert!((before.last().unwrap().max.y - 310.0).abs() < 0.01);
+        for rect in before {
+            assert_eq!(rect.size(), harbor_widget::layout::Size::new(32.0, 32.0));
+        }
+    }
+}
+
+#[test]
+fn rail_action_hover_hints_are_visible_and_activation_keeps_existing_commands() {
+    for width in [899, 1000] {
+        let controller = controller(f64::from(width), vec![snapshot(1, true, false)], 1);
+        let mut runtime = mount(controller.clone(), width, 320);
+        let rects = rail_action_rects(&runtime);
+        for ((label, expected), rect) in [
+            ("New terminal", AppCommandRequest::rail(TabCommand::New)),
+            (
+                "New from profile",
+                AppCommandRequest::shortcut(AppCommand::OpenProfileChooser),
+            ),
+            (
+                "Save preset",
+                AppCommandRequest::shortcut(AppCommand::SaveCurrentSession),
+            ),
+        ]
+        .into_iter()
+        .zip(rects.iter())
+        {
+            move_pointer(&mut runtime, Point::new(500.0, 100.0));
+            let position = Point::new(
+                (rect.min.x + rect.max.x) / 2.0,
+                (rect.min.y + rect.max.y) / 2.0,
+            );
+            move_pointer(&mut runtime, position);
+            assert!(
+                controller.drain_actions().is_empty(),
+                "hover cannot execute"
+            );
+            let delta = runtime.pending_delta().unwrap();
+            assert!(
+                delta.added.iter().chain(&delta.modified).any(|item| {
+                    matches!(&item.primitive, Primitive::Text { text, .. } if text.as_ref() == label)
+                }),
+                "visible short hint without an ellipsis for {label}"
+            );
+            assert_eq!(
+                rail_action_rects(&runtime),
+                rects,
+                "hints do not consume layout space"
+            );
+            for phase in [PointerPhase::Down, PointerPhase::Up] {
+                runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
+                    position,
+                    phase,
+                    PointerButton::Left,
+                    7,
+                )));
+                runtime.update(Instant::now());
+            }
+            assert_eq!(controller.drain_actions(), [expected]);
+            assert!(controller.drain_actions().is_empty());
+        }
+    }
+}
+
+#[test]
+fn compact_tab_hover_reveals_its_title_without_activation() {
+    let controller = controller(899.0, vec![snapshot(123, true, false)], 123);
+    let mut runtime = mount(controller.clone(), 899, 320);
+    let rect = runtime
+        .arena()
+        .get(tab_rows(&runtime)[0])
+        .unwrap()
+        .layout_rect()
+        .unwrap();
+    move_pointer(
+        &mut runtime,
+        Point::new(
+            (rect.min.x + rect.max.x) / 2.0,
+            (rect.min.y + rect.max.y) / 2.0,
+        ),
+    );
+    let delta = runtime.pending_delta().unwrap();
+    assert!(delta.added.iter().chain(&delta.modified).any(|item| {
+        matches!(&item.primitive, Primitive::Text { text, .. } if text.as_ref() == "Terminal 123")
+    }));
+    assert!(controller.drain_actions().is_empty());
+}
+
+#[test]
+fn rail_actions_remain_reachable_across_resizing_breakpoints_and_dpi() {
+    let controller = controller(
+        1000.0,
+        (1..=20).map(|id| snapshot(id, id == 1, false)).collect(),
+        1,
+    );
+    let mut runtime = mount(controller.clone(), 1000, 320);
+    let focus = controller.tabs().tab_focus(TabId(1)).unwrap();
+    runtime.request_focus(&focus);
+    runtime.update(Instant::now());
+    let focused = runtime.input().focused();
+    for scale in [1.0, 1.5, 2.0] {
+        for width in [1000, 899, 900] {
+            for height in [240, 480] {
+                controller.tabs().update_presentation(f64::from(width));
+                runtime.set_viewport(Viewport::new(
+                    (f64::from(width) * scale) as u32,
+                    (f64::from(height) * scale) as u32,
+                    scale as f32,
+                ));
+                runtime.update(Instant::now());
+                let rects = rail_action_rects(&runtime);
+                assert_eq!(
+                    runtime.input().focused(),
+                    focused,
+                    "responsive changes retain focus"
+                );
+                assert_eq!(controller.tabs().state.read().snapshots[0].id, TabId(1));
+                assert!(controller.drain_actions().is_empty());
+                assert!(controller.tabs.scroll.metrics().max_scroll_extent() > 0.0);
+                for rect in &rects {
+                    assert!(rect.min.y >= 0.0 && rect.max.y <= height as f32);
+                    assert!(
+                        rect.min.x >= 0.0 && rect.max.x <= if width < 900 { 56.0 } else { 200.0 }
+                    );
+                }
+                if width < 900 {
+                    assert!(rects.windows(2).all(|pair| pair[0].max.y < pair[1].min.y));
+                } else {
+                    assert!(rects.windows(2).all(|pair| pair[0].max.x < pair[1].min.x));
+                }
+                assert!(
+                    controller
+                        .latest_terminal_allocation()
+                        .unwrap()
+                        .size()
+                        .width
+                        > 0.0
+                );
+            }
+        }
     }
 }
 
@@ -501,7 +699,8 @@ fn long_unicode_titles_are_ellipsized_clipped_and_never_resize_close_controls() 
 fn many_tabs_scroll_and_offset_clamps_after_content_shrinks() {
     let snapshots = (1..=20).map(|id| snapshot(id, id == 1, false)).collect();
     let controller = controller(1000.0, snapshots, 1);
-    let mut runtime = mount(controller.clone(), 1000, 120);
+    // One tab plus ordinary-new and profile-new controls fit after shrinking.
+    let mut runtime = mount(controller.clone(), 1000, 160);
     assert!(controller.tabs.scroll.metrics().max_scroll_extent() > 0.0);
 
     for _ in 0..24 {
@@ -602,7 +801,7 @@ fn rail_icon_artwork_replaces_glyphs_in_expanded_and_compact_modes() {
             .collect();
         assert!(icons.contains(&LucideIcon::Plus));
         assert!(icons.contains(&LucideIcon::Dot));
-        assert_eq!(icons.contains(&LucideIcon::Terminal), width >= 900);
+        assert!(icons.contains(&LucideIcon::Terminal));
         assert_eq!(icons.contains(&LucideIcon::X), width >= 900);
         let labels: Vec<_> = items
             .iter()
@@ -616,11 +815,16 @@ fn rail_icon_artwork_replaces_glyphs_in_expanded_and_compact_modes() {
                 .iter()
                 .any(|text| [">_", "•", "+", "×", "+  New terminal"].contains(text))
         );
+        assert!(!labels.contains(&"New terminal"));
+        assert!(!labels.contains(&"New from profile"));
+        assert!(!labels.contains(&"Save preset"));
         if width < 900 {
-            assert!(labels.contains(&"1") && labels.contains(&"2"));
+            assert!(
+                labels.is_empty(),
+                "compact rail has icons, not numbers or captions"
+            );
         } else {
             assert!(labels.contains(&"Terminal 1") && labels.contains(&"Terminal 2"));
-            assert!(labels.contains(&"New terminal"));
         }
         for item in items {
             if let Primitive::Icon { rect, color, .. } = &item.primitive {
@@ -632,9 +836,44 @@ fn rail_icon_artwork_replaces_glyphs_in_expanded_and_compact_modes() {
 }
 
 #[test]
-fn compact_abbreviations_keep_numbers_even_when_unread() {
-    assert_eq!(abbreviation(&snapshot(123, false, true)), "3");
-    assert_eq!(abbreviation(&snapshot(123, false, false)), "3");
+fn compact_tab_icons_are_centered_without_numbers_even_when_unread() {
+    for unread in [false, true] {
+        let controller = controller(899.0, vec![snapshot(123, true, unread)], 123);
+        let runtime = mount(controller, 899, 320);
+        let row = tab_rows(&runtime)[0];
+        let row_rect = runtime.arena().get(row).unwrap().layout_rect().unwrap();
+        let items = &runtime.pending_delta().unwrap().added;
+        let icon = items
+            .iter()
+            .find_map(|item| match item.primitive {
+                Primitive::Icon {
+                    icon: harbor_widget::LucideIcon::Terminal,
+                    rect,
+                    ..
+                } => Some(rect),
+                _ => None,
+            })
+            .expect("compact terminal artwork");
+        assert!(((icon.min.x + icon.max.x) - (row_rect.min.x + row_rect.max.x)).abs() < 0.01);
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(
+                    item.primitive,
+                    Primitive::Icon {
+                        icon: harbor_widget::LucideIcon::Dot,
+                        ..
+                    }
+                ))
+                .count(),
+            usize::from(unread)
+        );
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item.primitive, Primitive::Text { .. }))
+        );
+    }
 }
 
 #[test]

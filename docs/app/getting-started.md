@@ -25,7 +25,7 @@ Harbor first attempts a configured shell, if any. Windows defaults are tried in 
 - **Ctrl+W** closes the active tab; closing the final tab requests window closure. Treat this as closing a terminal session, not hiding it.
 - Use the left tab rail to activate or close a tab or create another. It expands at 900 logical pixels of window width and compacts below that; there is no configuration option for this breakpoint.
 
-Background output marks a tab unread; activation clears the indicator. Closing an active tab selects its right neighbor, otherwise its left neighbor. Tabs are sessions, not split panes or named launch profiles.
+Background output marks a tab unread; activation clears the indicator. Closing an active tab selects its right neighbor, otherwise its left neighbor. Tabs are sessions, not split panes. To create one from a named recipe, use **New from profile…** in the rail or the palette's **New session from profile…** action; see [profile setup and launch rules](configuration.md#named-profile-launch-contract).
 
 To discover these and other existing actions, press **Ctrl+Shift+P**, type part of a command label or ID, select with Up/Down and press Enter. Escape closes the palette after cancelling any active IME composition. See [palette behavior and verification limits](commands.md#command-palette).
 

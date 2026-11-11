@@ -31,6 +31,14 @@ conpty/
   VERSION
 ```
 
+With upstream Cargo's default build layout, the build script stages this tree
+automatically. For local huacnlee/cargo shared-cache builds, use PowerShell 7:
+[`scripts/dev/run_harbor.ps1`](../../scripts/dev/run_harbor.ps1) stages the
+reported application executable, and [`scripts/dev/test_cargo.ps1`](../../scripts/dev/test_cargo.ps1)
+stages Cargo's reported test executables, including fresh artifacts. The Windows
+`just` test recipes use the latter. `-BuildOnly` stages the application without
+launching it. Neither wrapper changes CI's upstream Cargo commands.
+
 Ship this entire directory with `harbor.exe`. The DLL chooses OpenConsole for
 the native host architecture, including when Harbor runs under emulation.
 The runtime is loaded only from this executable-relative directory, and the

@@ -122,45 +122,59 @@ impl WidgetTextAtlas {
         physical / scale
     }
 
-    /// Ensures every character from the supplied retained text exists at the
-    /// physical raster density for `scale_factor`. Returns the current UV-layout
-    /// revision. Metric-only glyphs such as spaces remain available for layout.
-    pub fn ensure_scene_text<'a>(
+    /// Ensures scene text at each local font scale times display DPI. Retains all
+    /// sizes together before rasterizing any group, including across runtimes.
+    pub(crate) fn ensure_scene_text<'a>(
         &mut self,
         owner: RuntimeId,
-        texts: impl IntoIterator<Item = &'a str>,
+        texts: impl IntoIterator<Item = (&'a str, f32)>,
         scale_factor: f32,
         queue: &wgpu::Queue,
     ) -> u64 {
-        let chars = collect_unique_chars(texts);
-        let size = self.raster_size(scale_factor);
-        let active = chars
-            .iter()
-            .filter_map(
-                |ch| match self.fonts.resolve(*ch, size.get(), FontStyle::REGULAR) {
-                    GlyphResolution::Available(key) => Some(key),
-                    GlyphResolution::Unavailable => None,
-                },
-            )
+        let mut groups = std::collections::BTreeMap::<FontSize, Vec<&str>>::new();
+        for (text, text_scale) in texts {
+            groups
+                .entry(self.raster_size(scale_factor * text_scale))
+                .or_default()
+                .push(text);
+        }
+        let groups: Vec<_> = groups
+            .into_iter()
+            .map(|(size, texts)| (size, collect_unique_chars(texts)))
             .collect();
+        let mut active = HashSet::new();
+        for (size, chars) in &groups {
+            for ch in chars {
+                if let GlyphResolution::Available(key) =
+                    self.fonts.resolve(*ch, size.get(), FontStyle::REGULAR)
+                {
+                    active.insert(key);
+                }
+            }
+        }
         self.active_glyphs.insert(owner, active);
         let retained_keys: Vec<GlyphKey> = self
             .active_glyphs
             .values()
             .flat_map(|keys| keys.iter().copied())
             .collect();
-        let result =
-            self.atlas
-                .rasterize_new_at_size_retaining(&self.fonts, &chars, size, &retained_keys);
-        match upload_kind(&result) {
-            AtlasUploadKind::None => {}
-            AtlasUploadKind::Incremental => self.upload_glyphs(queue, &result.new_keys),
-            AtlasUploadKind::Full => {
-                self.upload_full(queue);
-                self.revision = self
-                    .revision
-                    .checked_add(1)
-                    .expect("widget glyph atlas revision overflow");
+        for (size, chars) in groups {
+            let result = self.atlas.rasterize_new_at_size_retaining(
+                &self.fonts,
+                &chars,
+                size,
+                &retained_keys,
+            );
+            match upload_kind(&result) {
+                AtlasUploadKind::None => {}
+                AtlasUploadKind::Incremental => self.upload_glyphs(queue, &result.new_keys),
+                AtlasUploadKind::Full => {
+                    self.upload_full(queue);
+                    self.revision = self
+                        .revision
+                        .checked_add(1)
+                        .expect("widget glyph atlas revision overflow");
+                }
             }
         }
         self.revision

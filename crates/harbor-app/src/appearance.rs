@@ -1,4 +1,5 @@
 //! Product appearance recipes. Generic paint/filter mechanisms live in harbor-widget.
+pub(crate) mod design_system;
 use harbor_widget::{
     BackdropFilter, BackdropMaterial, BackdropRim, BackdropTone, Border, BorderRadius,
     BoxDecoration, ClipBehavior, DecoratedBox, EdgeRefraction, GradientStop, InteractionState,

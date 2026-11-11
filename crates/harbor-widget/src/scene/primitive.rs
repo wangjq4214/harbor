@@ -404,6 +404,14 @@ pub enum Primitive {
         origin: Point,
         color: Color,
     },
+    /// Text rendered at a local scale relative to the independent UI font.
+    /// Layout and rasterization use the same finite, positive scale.
+    ScaledText {
+        text: Arc<str>,
+        origin: Point,
+        color: Color,
+        scale: f32,
+    },
     Border {
         rect: Rect,
         width: f32,
@@ -476,6 +484,26 @@ pub enum Primitive {
         draw: ExternalDrawId,
         rect: crate::layout::Rect,
     },
+}
+
+impl Primitive {
+    /// Shared text payload for ordinary and locally scaled labels.
+    pub fn text_run(&self) -> Option<(&str, Point, Color, f32)> {
+        match self {
+            Self::Text {
+                text,
+                origin,
+                color,
+            } => Some((text, *origin, *color, 1.0)),
+            Self::ScaledText {
+                text,
+                origin,
+                color,
+                scale,
+            } => Some((text, *origin, *color, *scale)),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

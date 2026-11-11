@@ -293,3 +293,371 @@ fn notification_material_pixels_are_local_rounded_and_retained_at_multiple_dpi()
         }
     }
 }
+
+#[test]
+#[ignore = "GPU pixel acceptance; run explicitly with --ignored --nocapture"]
+fn quick_save_review_pixels_match_palette_glass_without_dimming_the_window() {
+    let (device, queue) = crate::test_gpu::device();
+    for scale in [1.0, 1.5, 2.0] {
+        for format in [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        ] {
+            let (_, controller, mut runtime, _) = fixture();
+            let viewport = Viewport::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale);
+            runtime.set_viewport(viewport.clone());
+            runtime.init_renderer(&device, format);
+            runtime.init_text_renderer(&device, &queue, format).unwrap();
+            runtime.set_root(View::leaf(TestBackdrop));
+            runtime.update(Instant::now());
+            let baseline = render(&device, &queue, &mut runtime, viewport.clone(), format);
+
+            let focus = controller.open_quick_save(crate::QuickSaveDraft {
+                source: TabId(1),
+                launch: harbor_config::ShellSettings::default(),
+                project: Some(harbor_config::ProjectRecipe {
+                    environment: harbor_config::ProjectEnvironment::LocalPwsh,
+                    directory: "C:/synthetic-project".into(),
+                    agent: None,
+                }),
+            });
+            let root = controller.clone();
+            runtime.set_root(move |cx: &mut BuildCx| {
+                let state = root.store.watch(cx).clone();
+                let panel = state.popups.active().unwrap().build(
+                    cx,
+                    &root,
+                    &validate_keybindings(&harbor_config::RawKeybindings::default()).unwrap(),
+                    state.popups.generation().unwrap(),
+                );
+                Stack::new()
+                    .push_child(View::leaf(TestBackdrop))
+                    .push_child(panel)
+                    .build(cx)
+            });
+            runtime.request_focus(&focus);
+            runtime.update(Instant::now());
+            let delta = runtime.pending_delta().unwrap();
+            let check = delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .find_map(|item| match item.primitive {
+                    Primitive::Icon {
+                        icon: LucideIcon::Check,
+                        rect,
+                        ..
+                    } => Some(rect),
+                    _ => None,
+                })
+                .expect("naming advance checkmark");
+            let naming = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            capture_quick_save("quick-save-naming", scale, format, &viewport, &naming);
+            row_pointer(
+                &mut runtime,
+                Point::new(
+                    (check.min.x + check.max.x) / 2.0,
+                    (check.min.y + check.max.y) / 2.0,
+                ),
+                PointerPhase::Move,
+            );
+            runtime.update(Instant::now());
+            let hovered = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            assert_ne!(
+                naming, hovered,
+                "naming checkmark must reveal search-like hover feedback"
+            );
+            capture_quick_save(
+                "quick-save-naming-hover",
+                scale,
+                format,
+                &viewport,
+                &hovered,
+            );
+            row_pointer(&mut runtime, Point::ZERO, PointerPhase::Move);
+            runtime.update(Instant::now());
+            replace(&mut runtime, "Palette-like glass");
+            tap(&mut runtime, Key::Enter);
+            let request = take_one(&controller);
+            assert_eq!(request.command, AppCommand::AdvanceQuickSave);
+            runtime.request_focus(&controller.navigate_quick_save(request).unwrap());
+            runtime.update(Instant::now());
+            let delta = runtime.pending_delta().unwrap();
+            let panel = delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .find_map(|item| match item.primitive {
+                    Primitive::BackdropMaterial { rect, .. }
+                    | Primitive::BackdropBlur { rect, .. } => Some(rect),
+                    _ => None,
+                })
+                .expect("review glass panel");
+            let (title_origin, title_scale) = delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .filter_map(|item| item.primitive.text_run())
+                .find_map(|(text, origin, _, scale)| {
+                    (text == "Save preset").then_some((origin, scale))
+                })
+                .expect("review heading");
+            let title_height = runtime.text_metrics().line_height * title_scale;
+            let review = render(&device, &queue, &mut runtime, viewport.clone(), format);
+
+            capture_quick_save("quick-save", scale, format, &viewport, &review);
+
+            // The reference has the same bounds and palette recipe, but no review content.
+            runtime.set_root(move |cx: &mut BuildCx| {
+                let content = ConstrainedBox::new()
+                    .min_width(panel.size().width)
+                    .max_width(panel.size().width)
+                    .min_height(panel.size().height)
+                    .max_height(panel.size().height)
+                    .build(cx);
+                let glass = GlassAppearance::command_palette().panel(cx, content);
+                let aligned = Align::new(harbor_widget::Alignment2D::new(
+                    harbor_widget::PositionAlignment::Center,
+                    harbor_widget::PositionAlignment::Start,
+                ))
+                .insets(harbor_widget::Insets::all(12.0))
+                .unwrap()
+                .child(glass)
+                .build(cx);
+                Stack::new()
+                    .push_child(View::leaf(TestBackdrop))
+                    .push_child(aligned)
+                    .build(cx)
+            });
+            runtime.update(Instant::now());
+            let reference = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            let pixel = |pixels: &[u8], x: f32, y: f32| {
+                let offset = (((y * scale) as u32 * viewport.physical_size.0 + (x * scale) as u32)
+                    * 4) as usize;
+                pixels[offset..offset + 4].to_vec()
+            };
+            assert!(
+                (title_origin.y as u32..(title_origin.y + title_height) as u32).any(|y| {
+                    (title_origin.x as u32..(title_origin.x + 100.0) as u32).any(|x| {
+                        pixel(&review, x as f32, y as f32) != pixel(&reference, x as f32, y as f32)
+                    })
+                }),
+                "real UI glyphs must be rendered, not only empty glass surfaces"
+            );
+            let middle_y = (panel.min.y + panel.max.y) / 2.0;
+            assert_eq!(
+                pixel(&review, panel.min.x - 8.0, middle_y),
+                pixel(&baseline, panel.min.x - 8.0, middle_y),
+                "review must leave the window outside the glass undimmed"
+            );
+            for (x, y) in [
+                (panel.max.x - 8.0, middle_y),
+                ((panel.min.x + panel.max.x) / 2.0, panel.min.y + 6.0),
+            ] {
+                let actual = pixel(&review, x, y);
+                let expected = pixel(&reference, x, y);
+                assert!(
+                    actual
+                        .iter()
+                        .zip(&expected)
+                        .all(|(a, b)| a.abs_diff(*b) <= 1),
+                    "review glass must match palette transparency at {scale}, {format:?}, ({x}, {y}): {actual:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "GPU pixel acceptance; run explicitly with --ignored --nocapture"]
+fn segmented_selection_and_hover_pixels_are_local_glass_with_no_separate_press() {
+    use crate::appearance::design_system::{self as design, ControlRole};
+    use harbor_widget::{SegmentedControl, Theme, ThemeProvider, signal::Signal};
+    let (device, queue) = crate::test_gpu::device();
+    for scale in [1.0, 1.5, 2.0] {
+        for format in [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        ] {
+            let mut runtime = Runtime::new();
+            let viewport = Viewport::new((600.0 * scale) as u32, (160.0 * scale) as u32, scale);
+            runtime.set_viewport(viewport.clone());
+            runtime.init_renderer(&device, format);
+            runtime.init_text_renderer(&device, &queue, format).unwrap();
+            let mut theme = design::theme(&Theme::default());
+            let injected = Signal::new(theme.clone());
+            let control = ThemeProvider::from_signal(injected.clone()).child(|cx: &mut BuildCx| {
+                SegmentedControl::new(
+                    [
+                        ("local".into(), "Local pwsh".into()),
+                        ("wsl".into(), "WSL bash".into()),
+                        ("ssh".into(), "Direct SSH bash".into()),
+                    ],
+                    "local".into(),
+                )
+                .gap(design::LABEL_GAP)
+                .unwrap()
+                .style(design::control(cx, ControlRole::Selection))
+                .unwrap()
+                .build(cx)
+            });
+            runtime.set_root(
+                Stack::new()
+                    .push_child(View::leaf(TestBackdrop))
+                    .push_child(
+                        Align::new(harbor_widget::Alignment2D::CENTER).child(
+                            ConstrainedBox::new()
+                                .min_width(480.0)
+                                .max_width(480.0)
+                                .child(control),
+                        ),
+                    ),
+            );
+            runtime.update(Instant::now());
+            let delta = runtime.pending_delta().unwrap();
+            let surfaces: Vec<_> = delta
+                .added
+                .iter()
+                .chain(&delta.modified)
+                .filter_map(|item| match item.primitive {
+                    Primitive::BackdropMaterial { rect, .. } => Some(rect),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(surfaces.len(), 1);
+            let selection = surfaces[0];
+            let glass = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            assert_eq!(
+                glass,
+                render(&device, &queue, &mut runtime, viewport.clone(), format),
+                "static selected glass must not animate"
+            );
+            let wsl = fiber_ids(&runtime)
+                .into_iter()
+                .find_map(|id| {
+                    let fiber = runtime.arena().get(id).unwrap();
+                    fiber
+                        .key()
+                        .is_some_and(|key| key.text() == "wsl")
+                        .then(|| fiber.layout_rect().unwrap())
+                })
+                .unwrap();
+            assert!(selection.max.x < wsl.min.x);
+            let center = Point::new((wsl.min.x + wsl.max.x) / 2.0, (wsl.min.y + wsl.max.y) / 2.0);
+            row_pointer(&mut runtime, center, PointerPhase::Move);
+            let hovered = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            capture_quick_save(
+                "quick-save-segments-hover",
+                scale,
+                format,
+                &viewport,
+                &hovered,
+            );
+            let width = viewport.physical_size.0 as usize;
+            let mut hover_changed = false;
+            let mut rim_changed = false;
+            for (index, (actual, idle)) in hovered
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(glass.as_chunks::<4>().0)
+                .enumerate()
+            {
+                let point = Point::new(
+                    (index % width) as f32 / scale,
+                    (index / width) as f32 / scale,
+                );
+                if wsl.contains(point) {
+                    if actual != idle {
+                        hover_changed = true;
+                        rim_changed |= point.y < wsl.min.y + 4.0 || point.y > wsl.max.y - 4.0;
+                    }
+                } else {
+                    assert_eq!(
+                        actual, idle,
+                        "hover must not alter selection, gaps or other segments"
+                    );
+                }
+            }
+            assert!(
+                hover_changed && rim_changed,
+                "hover glass and its optical edge must be visible"
+            );
+            row_pointer(&mut runtime, center, PointerPhase::Down);
+            let pressed = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            assert!(
+                hovered == pressed,
+                "press must not add a different visual treatment"
+            );
+            row_pointer(&mut runtime, center, PointerPhase::Up);
+            row_pointer(&mut runtime, Point::ZERO, PointerPhase::Move);
+            let restored = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            assert!(
+                restored == glass,
+                "leaving hover restores the original pixels"
+            );
+            // Keep exactly the same tint, labels, focus and geometry; remove only the optics.
+            theme.button.selected_backdrop = None;
+            injected.set(theme);
+            runtime.update(Instant::now());
+            let flat = render(&device, &queue, &mut runtime, viewport.clone(), format);
+            let width = viewport.physical_size.0 as usize;
+            let mut changed_inside = false;
+            let mut changed_edge = false;
+            for (index, (actual, reference)) in glass
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(flat.as_chunks::<4>().0)
+                .enumerate()
+            {
+                let x = (index % width) as f32 / scale;
+                let y = (index / width) as f32 / scale;
+                if selection.contains(Point::new(x, y)) {
+                    if actual != reference {
+                        changed_inside = true;
+                        changed_edge |= y < selection.min.y + 4.0 || y > selection.max.y - 4.0;
+                    }
+                } else {
+                    assert_eq!(
+                        actual, reference,
+                        "material must stay inside the selected block"
+                    );
+                }
+            }
+            assert!(
+                changed_inside,
+                "alpha-only paint cannot satisfy material acceptance"
+            );
+            assert!(
+                changed_edge,
+                "the selected block needs an actual optical rim"
+            );
+        }
+    }
+}
+
+fn capture_quick_save(
+    stage: &str,
+    scale: f32,
+    format: wgpu::TextureFormat,
+    viewport: &Viewport,
+    pixels: &[u8],
+) {
+    // Opt-in, synthetic visual evidence; no captured terminal/user content.
+    let Some(directory) = std::env::var_os("HARBOR_QUICK_SAVE_CAPTURE_DIR") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let (width, height) = viewport.physical_size;
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    for bgra in pixels.as_chunks::<4>().0 {
+        ppm.extend_from_slice(&[bgra[2], bgra[1], bgra[0]]);
+    }
+    std::fs::write(
+        directory.join(format!("{stage}-{scale}-{format:?}.ppm")),
+        ppm,
+    )
+    .unwrap();
+}

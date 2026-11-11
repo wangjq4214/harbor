@@ -259,6 +259,7 @@ fn options_and_builders_share_mounted_geometry_and_diagnostics() {
         gap: 7.0,
         main_axis_alignment: MainAxisAlignment::SpaceBetween,
         cross_axis_alignment: CrossAxisAlignment::Stretch,
+        ..Default::default()
     };
     for axis in [Axis::Horizontal, Axis::Vertical] {
         for parent in [

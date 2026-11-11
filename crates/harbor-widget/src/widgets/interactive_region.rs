@@ -192,6 +192,10 @@ impl Component for InteractiveRegion {
                 next.active_pointer = None;
                 next.visual.pressed = false;
                 next.visual.cancelled = false;
+                // Focus admission is revoked during reconciliation. Do not
+                // retain a keyboard ring when routing retires the old target.
+                next.visual.focused = false;
+                next.visual.focus_visible = false;
             }
             runtime.set(next);
         }
@@ -289,11 +293,12 @@ impl AnyView for InteractiveRegionView {
         })
     }
 
-    fn paint_primitives(&self, rect: Rect, _metrics: &crate::text::TextMetrics) -> Vec<Primitive> {
+    fn paint_primitives(&self, rect: Rect, metrics: &crate::text::TextMetrics) -> Vec<Primitive> {
         self.surface.paint(
             crate::view::PaintPhase::BeforeChildren,
             rect,
             self.runtime.read().visual,
+            metrics,
         )
     }
 
@@ -301,9 +306,10 @@ impl AnyView for InteractiveRegionView {
         &self,
         phase: crate::view::PaintPhase,
         rect: Rect,
-        _metrics: &crate::text::TextMetrics,
+        metrics: &crate::text::TextMetrics,
     ) -> Vec<Primitive> {
-        self.surface.paint(phase, rect, self.runtime.read().visual)
+        self.surface
+            .paint(phase, rect, self.runtime.read().visual, metrics)
     }
 
     fn handle_event(&self, event: &UiEvent, ctx: &mut EventCtx, rect: Rect) -> EventHandled {

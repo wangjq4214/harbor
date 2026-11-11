@@ -354,6 +354,10 @@ impl TabManager {
         }
     }
 
+    /// Latest source metadata; interpretation remains explicit Host policy.
+    pub fn active_working_directory(&self) -> Option<&WorkingDirectoryMetadata> {
+        self.active_tab()?.working_directory.as_ref()
+    }
     pub fn active_terminal(&self) -> Option<Arc<Mutex<Terminal>>> {
         self.active_tab().map(|tab| Arc::clone(&tab.terminal))
     }
@@ -535,6 +539,7 @@ impl TabManager {
                     tab.shell_integration = Some(marker);
                 }
                 TerminalOutputEvent::ShellIntegrationReset => tab.shell_integration = None,
+                TerminalOutputEvent::Project(_) => {} // Retained by the terminal, not UI snapshots.
             }
         }
         let metadata_changed = tab.working_directory != previous_working_directory

@@ -17,6 +17,15 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     OpenCommandPalette,
+    OpenProfileChooser,
+    SaveCurrentSession,
+    AdvanceQuickSave,
+    CommitQuickSave,
+    EditQuickSave,
+    CancelQuickSave,
+    /// Internal selection data lives in the generation-scoped palette, not a list index.
+    LaunchProfile,
+    BackToCommands(u64),
     /// Internal close intent tied to one editor lifetime.
     CloseCommandPalette(u64),
     Tab(TabCommand),
@@ -207,6 +216,20 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             true,
         ));
     }
+    entries.push(CommandDescriptor {
+        id: "app.open-profile",
+        label: "New session from profile…",
+        command: AppCommand::OpenProfileChooser,
+        default_chords: Vec::new(),
+        palette_visible: true,
+    });
+    entries.push(CommandDescriptor {
+        id: "app.save-current-session",
+        label: "Save current session as preset…",
+        command: AppCommand::SaveCurrentSession,
+        default_chords: Vec::new(),
+        palette_visible: true,
+    });
     entries.extend([
         descriptor(
             "terminal.copy",
@@ -488,6 +511,7 @@ pub fn command_availability(
     match command {
         AppCommand::ReloadConfiguration
         | AppCommand::OpenCommandPalette
+        | AppCommand::OpenProfileChooser
         | AppCommand::Tab(TabCommand::New) => Ok(()),
         AppCommand::Tab(TabCommand::Numeric(index)) => {
             let tab = snapshots
@@ -523,9 +547,10 @@ pub fn command_availability(
             active.ok_or("No active terminal")?;
             context.search_open.then_some(()).ok_or("Search is closed")
         }
-        AppCommand::Copy | AppCommand::Paste | AppCommand::SearchOpen => {
-            active.map(|_| ()).ok_or("No active terminal")
-        }
+        AppCommand::SaveCurrentSession
+        | AppCommand::Copy
+        | AppCommand::Paste
+        | AppCommand::SearchOpen => active.map(|_| ()).ok_or("No active terminal"),
         _ => Err("Command is not available in the palette"),
     }
 }
@@ -629,7 +654,7 @@ mod tests {
     #[test]
     fn registry_ids_and_defaults_are_unique_and_complete() {
         let registry = command_registry();
-        assert_eq!(registry.len(), 26);
+        assert_eq!(registry.len(), 28);
         assert_eq!(
             registry
                 .iter()

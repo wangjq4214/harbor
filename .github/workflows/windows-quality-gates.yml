@@ -46,6 +46,15 @@ jobs:
       - name: Test Windows process sampler
         run: pwsh -NoProfile -File scripts/tests/test_sample_process.ps1
 
+      - name: Test Windows development launcher
+        run: pwsh -NoProfile -File scripts/tests/test_run_harbor.ps1
+
+      - name: Test Windows Cargo staging wrapper
+        run: pwsh -NoProfile -File scripts/tests/test_cargo_wrapper.ps1
+
+      - name: Test Windows PTY test wrapper
+        run: pwsh -NoProfile -File scripts/tests/test_pty_wrapper.ps1
+
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
         with:

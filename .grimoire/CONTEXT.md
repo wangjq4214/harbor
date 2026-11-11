@@ -643,11 +643,26 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - references TOML User Settings
   - references Manual Configuration Reload
 
+### Named Session Profile
+- **Definition:** Approved future independent named launch preset with stable identity, display name, executable, argument array, directory and environment overrides; no inheritance from other profiles or legacy `[shell]`. Ordinary launches retain `[shell]`; selected profiles fail visibly instead of changing shells. Named-launch directory priority is explicit launch directory, profile directory, usable local OSC 7 directory, then Harbor's process directory, under explicit Host policy without implicit remote access or mutation of existing sessions. See [ADR 0106](./adr/0106-independent-session-profiles-and-explicit-osc7-launch-policy.md).
+- **Synonyms:** Session profile
+- **Relationships:**
+  - references New-Session Launch Settings
+  - belongs to Application Business Host
+  - references Application Command Dispatcher
+
+### Session Profile Save
+- **Definition:** Explicit user-confirmed creation of a reusable project launch preset. The selected direction recognizes execution context (including WSL/SSH) and remembers the last recognized pi, Codex, Claude Code or OpenCode invocation with original launch arguments, even after the agent exits; it does not generally replay command history or clone running processes. Virtual-environment recognition/activation is deferred from the current scope. Guided shell integration is accepted. Last-agent records are isolated by terminal and execution environment; ordinary commands do not overwrite them. Original resume arguments are honored without adding resume options. Suspected credential arguments require user handling rather than direct persistence or silent removal. First-version coverage is local pwsh, WSL bash and direct-SSH bash, excluding multi-layer nesting. Unknown environment/current directory must be shown and correctable, never silently replaced by the initial directory. Concrete integration remains an implementation choice; these requirements are not implemented guarantees. See [ADR 0110](./adr/0110-last-recognized-agent-launch-with-original-arguments.md), partially superseding [ADR 0109](./adr/0109-environment-aware-project-presets-and-recognized-agents.md), which partially supersedes the launch-only capture boundary in [ADR 0108](./adr/0108-explicit-session-preset-snapshots-and-safe-configuration-writes.md). ADR 0108's credential protections and selected-file writes preserving unrelated settings/comments and rejecting duplicates, invalid content or external-change conflicts remain applicable. Shared palette and in-window confirmation follow [ADR 0107](./adr/0107-shared-palette-profile-flow-and-in-window-confirmation.md).
+- **Relationships:**
+  - references Named Session Profile
+  - references TOML User Settings
+  - belongs to Application Business Host
+
 ### TOML User Settings
 - **Definition:** User preferences from `~/.harbor/config.toml`, except Portable Distribution Mode. Startup uses defaults for missing files, independent scalar fallback, and whole-palette fallback for invalid colors; live reload instead uses strict complete-candidate acceptance.
 
 ### Portable Distribution Mode
-- **Definition:** Windows ZIP mode selected by `harbor.portable` beside `harbor.exe`: uses adjacent `config.toml`, never reads/writes home configuration or creates/overwrites settings. Installed builds retain the home path. See [ADR 0057](./adr/0057-windows-installation-and-portable-isolation.md).
+- **Definition:** Windows ZIP mode selected by `harbor.portable` beside `harbor.exe`: uses adjacent `config.toml` and never reads/writes home configuration. Startup/watch/reload do not automatically create or overwrite settings; explicit confirmed Session Profile Save targets only the selected portable file. Installed builds retain the home path. See [ADR 0057](./adr/0057-windows-installation-and-portable-isolation.md) and [ADR 0108](./adr/0108-explicit-session-preset-snapshots-and-safe-configuration-writes.md).
 - **Synonyms:** full portable mode, portable ZIP
 - **Relationships:**
   - references TOML User Settings

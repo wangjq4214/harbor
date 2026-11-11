@@ -169,6 +169,17 @@ fn lucide_distance(p: vec2<f32>, mode: u32) -> f32 {
         return min(segment_distance(p, vec2<f32>(6.0, 9.0), vec2<f32>(12.0, 15.0)),
                    segment_distance(p, vec2<f32>(12.0, 15.0), vec2<f32>(18.0, 9.0)));
     }
+    if mode == 9u {
+        return min(
+            segment_distance(p, vec2<f32>(19.0, 12.0), vec2<f32>(5.0, 12.0)),
+            min(segment_distance(p, vec2<f32>(12.0, 19.0), vec2<f32>(5.0, 12.0)),
+                segment_distance(p, vec2<f32>(5.0, 12.0), vec2<f32>(12.0, 5.0)))
+        );
+    }
+    if mode == 10u {
+        return min(segment_distance(p, vec2<f32>(20.0, 6.0), vec2<f32>(9.0, 17.0)),
+                   segment_distance(p, vec2<f32>(9.0, 17.0), vec2<f32>(4.0, 12.0)));
+    }
     // Lucide dot's r=1, stroke-width=2 circle, filled at its zero-radius center.
     return length(p - vec2<f32>(12.0)) - 2.0;
 }

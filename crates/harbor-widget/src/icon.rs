@@ -15,6 +15,8 @@ pub enum LucideIcon {
     Dot,
     ChevronUp,
     ChevronDown,
+    ArrowLeft,
+    Check,
 }
 
 impl LucideIcon {
@@ -27,6 +29,8 @@ impl LucideIcon {
             Self::Dot => include_str!("../assets/lucide/dot.svg"),
             Self::ChevronUp => include_str!("../assets/lucide/chevron-up.svg"),
             Self::ChevronDown => include_str!("../assets/lucide/chevron-down.svg"),
+            Self::ArrowLeft => include_str!("../assets/lucide/arrow-left.svg"),
+            Self::Check => include_str!("../assets/lucide/check.svg"),
         }
     }
 
@@ -39,6 +43,8 @@ impl LucideIcon {
             Self::Dot => 6,
             Self::ChevronUp => 7,
             Self::ChevronDown => 8,
+            Self::ArrowLeft => 9,
+            Self::Check => 10,
         }
     }
 }

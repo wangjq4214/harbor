@@ -124,8 +124,8 @@ impl Component for Button {
 
 /// Only arranges normal Icon/TextLabel children; it neither measures glyphs nor paints.
 /// Unlike a bounded flex row, this keeps a short icon/text button content-sized.
-struct IconText {
-    gap: f32,
+pub(super) struct IconText {
+    pub(super) gap: f32,
 }
 
 impl AnyView for IconText {

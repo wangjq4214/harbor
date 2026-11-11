@@ -24,9 +24,37 @@ use windows::{Pty as RawPty, PtyReader, PtyWriter as RawPtyWriter, reader_io_err
 
 use anyhow::ensure;
 
+/// Only ordinary shell launches may try platform substitutes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ExecutablePolicy {
+    #[default]
+    LegacyFallback,
+    Strict,
+}
+
+/// Immutable facts about the successful child launch, not an executable title.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LaunchProvenance {
+    pub program: std::ffi::OsString,
+    pub args: Vec<String>,
+    pub initial_directory: std::path::PathBuf,
+    /// Only configured overrides passed to this child; never inherited runtime values.
+    pub configured_environment: std::collections::BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for LaunchProvenance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LaunchProvenance")
+            .field("program", &self.program)
+            .field("argument_count", &self.args.len())
+            .field("initial_directory", &self.initial_directory)
+            .finish_non_exhaustive()
+    }
+}
 /// Per-child launch policy. Environment values are never included in Debug output.
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct ShellCommand {
+    pub executable_policy: ExecutablePolicy,
     pub program: Option<String>,
     pub args: Vec<String>,
     pub environment: std::collections::BTreeMap<String, String>,
@@ -46,8 +74,9 @@ impl ShellCommand {
 impl std::fmt::Debug for ShellCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShellCommand")
+            .field("executable_policy", &self.executable_policy)
             .field("program", &self.program)
-            .field("args", &self.args)
+            .field("argument_count", &self.args.len())
             .field("environment", &"<redacted>")
             .field("directory", &self.directory)
             .finish()
@@ -145,6 +174,7 @@ pub struct PtyEndpoints {
     writer: Option<PtyWriter>,
     control: Option<PtyControl>,
     shell_name: String,
+    launch_provenance: LaunchProvenance,
 }
 
 /// Read endpoint that acknowledges shutdown only after its blocking read has
@@ -173,10 +203,12 @@ impl PtyEndpoints {
     pub fn spawn_shell(size: TerminalSize, command: &ShellCommand) -> anyhow::Result<Self> {
         let (pty, reader, shell_name) =
             RawPty::spawn_shell(PtySize::from_terminal(size)?, command)?;
+        let launch_provenance = pty.launch_provenance().clone();
         let (reader_shutdown, completion) = ReaderShutdown::new();
         let (reader, writer, pty) = pty.into_endpoints(reader);
         Ok(Self {
             shell_name,
+            launch_provenance,
             reader: Some(PtyReaderEndpoint {
                 reader,
                 _completion: completion,
@@ -194,6 +226,9 @@ impl PtyEndpoints {
         &self.shell_name
     }
 
+    pub fn launch_provenance(&self) -> &LaunchProvenance {
+        &self.launch_provenance
+    }
     /// Transfers the I/O endpoints and their shutdown owner to a terminal.
     pub fn into_parts(mut self) -> (PtyReaderEndpoint, PtyWriter, PtyControl) {
         (

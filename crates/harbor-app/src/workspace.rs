@@ -20,6 +20,8 @@ use harbor_widget::{
 };
 #[path = "palette.rs"]
 mod palette;
+#[path = "quick_save.rs"]
+pub(crate) mod quick_save;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -110,7 +112,7 @@ fn search_bar(
     let style = glass_icon_button_style(cx);
     let button = |icon, command| {
         let dispatcher = controller.store.dispatcher();
-        search_icon_button(icon, style.clone()).on_activate(move |_| {
+        popup_icon_button(icon, style.clone()).on_activate(move |_| {
             dispatcher.dispatch(AppCommandRequest::popup(command, generation))
         })
     };
@@ -145,12 +147,11 @@ fn search_bar(
 
 // Keep the IconButton hit box and focus behavior, but include its padding inside
 // the material so hover feedback covers the entire control, not just the glyph.
-fn search_icon_button(
+fn popup_icon_button(
     icon: LucideIcon,
     mut style: harbor_widget::theme::ControlStyle,
 ) -> InteractiveRegion {
-    let horizontal_padding = style.horizontal_padding;
-    let vertical_padding = (style.min_height - style.icon_size).max(0.0) / 2.0;
+    let width = style.icon_size + style.horizontal_padding * 2.0;
     style.horizontal_padding = 0.0;
     style.radius = 12.0; // Match the search panel's outer corners.
     InteractiveRegion::new()
@@ -163,15 +164,18 @@ fn search_icon_button(
                 .foreground(style.resolve_state(&state).foreground)
                 .expect("valid color")
                 .build(cx);
-            let content = Padding::new(Insets {
-                top: vertical_padding,
-                right: horizontal_padding,
-                bottom: vertical_padding,
-                left: horizontal_padding,
-            })
-            .unwrap()
-            .child(content)
-            .build(cx);
+            // Center Icon's fixed-size artwork in the actual control allocation.
+            // A shorter parent (e.g. a palette field) must not squeeze the glyph
+            // with padding computed from the search button's 32dp minimum.
+            let content = SizedBox::width(width)
+                .unwrap()
+                .child(
+                    harbor_widget::ConstrainedBox::new()
+                        .min_height(style.min_height)
+                        .child(content)
+                        .build(cx),
+                )
+                .build(cx);
             if state.disabled || !(state.hovered || state.pressed) {
                 return content;
             }
@@ -200,6 +204,8 @@ const SEARCH_PANEL_INSET: f32 = 12.0;
 #[derive(Clone, Default)]
 struct WorkspaceUiState {
     keybindings: Option<ResolvedKeybindings>,
+    profiles: std::collections::BTreeMap<harbor_config::ProfileId, harbor_config::SessionProfile>,
+    profiles_revision: u64,
     notices: ConfigurationNotices,
     popups: crate::popups::PopupSlot,
 }

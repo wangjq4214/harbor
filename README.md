@@ -31,6 +31,21 @@ An operational PTY session currently requires Windows.
 cargo run
 ```
 
+For local development with huacnlee/cargo's shared cache, use PowerShell 7:
+
+```powershell
+./scripts/dev/run_harbor.ps1
+# Or build and stage the runtime without opening a window:
+./scripts/dev/run_harbor.ps1 -BuildOnly
+```
+
+The script reports the selected Cargo, uses its JSON executable path, and stages
+ConPTY after every build, including cache hits. `-Release` selects release mode.
+It does not change PATH or toolchains; CI continues using upstream Cargo directly.
+On Windows, `just` test recipes use a separate
+[Cargo test staging wrapper](docs/developer/testing.md) for shared-cache artifacts.
+Plain `cargo run` or `cargo test` with the shared-cache fork does not perform this staging step.
+
 Run the fetch script once after cloning, and again when the pinned runtime changes.
 Windows builds stage the pinned [Microsoft ConPTY runtime](third_party/conpty/README.md)
 in `target/<profile>/conpty/`. When distributing or moving `harbor.exe`, include

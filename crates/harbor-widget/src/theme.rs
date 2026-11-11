@@ -79,7 +79,39 @@ pub struct ControlColors {
     pub foreground: Color,
 }
 
-/// Control dimensions and state colors.
+/// Validated, opt-in native backdrop for an interactive control surface.
+/// Uses the existing material renderer; it does not change layout, hits or timing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ControlBackdrop {
+    sigma: f32,
+    refraction: crate::EdgeRefraction,
+    material: crate::BackdropMaterial,
+}
+
+impl ControlBackdrop {
+    pub fn new(
+        sigma: f32,
+        refraction: crate::EdgeRefraction,
+        material: crate::BackdropMaterial,
+    ) -> Result<Self, crate::DecorationError> {
+        crate::BackdropFilter::new(sigma)?;
+        Ok(Self {
+            sigma,
+            refraction,
+            material,
+        })
+    }
+
+    pub(crate) fn filter(self, radius: f32) -> crate::BackdropFilter {
+        crate::BackdropFilter::new(self.sigma)
+            .expect("validated control backdrop")
+            .border_radius(crate::BorderRadius::all(radius).expect("validated control radius"))
+            .edge_refraction(self.refraction)
+            .material(Some(self.material))
+    }
+}
+
+/// Control dimensions, state colors and optional visual treatments.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlStyle {
     pub min_height: f32,
@@ -91,6 +123,15 @@ pub struct ControlStyle {
     pub hovered: ControlColors,
     pub pressed: ControlColors,
     pub selected: ControlColors,
+    /// Painted behind selected content, including hovered/pressed/disabled selection.
+    /// None preserves ordinary flat controls. Supply translucent selected colors
+    /// (and usually no border) to expose the material rather than cover its rim.
+    pub selected_backdrop: Option<ControlBackdrop>,
+    /// Optional native glass behind an enabled, hovered, unselected surface.
+    pub hovered_backdrop: Option<ControlBackdrop>,
+    /// When false, state resolution retains selection/hover/idle colors while pressed.
+    /// This changes appearance only, not activation, capture, focus or disabled behavior.
+    pub pressed_feedback: bool,
     pub disabled: ControlColors,
     pub focus_ring: Color,
 }
@@ -185,7 +226,8 @@ impl ControlStyle {
         })
     }
 
-    /// Resolves colors for a discrete control visual state.
+    /// Resolves colors for an explicit discrete state. To retain the nonpressed
+    /// selection/hover/idle appearance with `pressed_feedback = false`, use `resolve_state`.
     pub fn resolve_visual_state(&self, state: ControlVisualState) -> ControlColors {
         match state {
             ControlVisualState::Disabled => self.disabled,
@@ -198,7 +240,10 @@ impl ControlStyle {
 
     /// Resolves the visual state for an interaction state snapshot.
     pub fn resolve_state(&self, state: &InteractionState) -> ControlColors {
-        self.resolve_visual_state(ControlVisualState::from(state))
+        self.resolve_visual_state(ControlVisualState::from(&InteractionState {
+            pressed: state.pressed && self.pressed_feedback,
+            ..*state
+        }))
     }
 
     /// Resolves the stable visual state precedence for a control.
@@ -270,6 +315,9 @@ impl Default for Theme {
             border_width: 1.0,
             radius: 4.0,
             normal,
+            selected_backdrop: None,
+            hovered_backdrop: None,
+            pressed_feedback: true,
             hovered: ControlColors {
                 background: Color {
                     r: 0.35,
@@ -371,6 +419,44 @@ mod tests {
             assert_eq!(
                 style.resolve(disabled, selected, hovered, pressed),
                 expected
+            );
+        }
+    }
+
+    #[test]
+    fn suppressing_pressed_feedback_retains_the_nonpressed_appearance_for_all_states() {
+        let mut style = Theme::default().button;
+        assert!(
+            style.pressed_feedback,
+            "ordinary controls retain pressed feedback"
+        );
+        assert!(style.hovered_backdrop.is_none());
+        style.pressed_feedback = false;
+        for flags in 0..8 {
+            let state = InteractionState {
+                disabled: flags & 1 != 0,
+                selected: flags & 2 != 0,
+                hovered: flags & 4 != 0,
+                pressed: true,
+                ..Default::default()
+            };
+            let expected = if state.disabled {
+                style.disabled
+            } else if state.selected {
+                style.selected
+            } else if state.hovered {
+                style.hovered
+            } else {
+                style.normal
+            };
+            assert_eq!(style.resolve_state(&state), expected);
+            assert_eq!(
+                style.resolve(state.disabled, state.selected, state.hovered, true),
+                expected
+            );
+            assert!(
+                state.pressed,
+                "appearance must not rewrite the interaction snapshot"
             );
         }
     }

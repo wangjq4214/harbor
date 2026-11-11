@@ -55,7 +55,8 @@ pub use layout::{
     Alignment2D, CrossAxisAlignment, FlexFit, Insets, LayoutConfigError, PositionAlignment,
 };
 pub use theme::{
-    AppearanceError, ColorConfigError, ControlColors, ControlStyle, ControlVisualState, Theme,
+    AppearanceError, ColorConfigError, ControlBackdrop, ControlColors, ControlStyle,
+    ControlVisualState, Theme,
 };
 pub use widgets::backdrop_filter::{
     BackdropFilter, BackdropMaterial, BackdropRim, BackdropTone, EdgeRefraction,
@@ -67,9 +68,9 @@ pub use widgets::{
     FocusHandle, FocusScope, Icon, IconButton, InteractionState, InteractiveRegion, KeyChord,
     LayoutChangedCallback, LayoutObserver, MainAxisAlignment, MouseRegion, NotificationCard,
     Portal, Row, ScrollController, ScrollMetrics, ScrollView, Separator, ShortcutMap, Spacer,
-    Stack, TextLabel, ThemeProvider,
+    Stack, TextLabel, ThemeProvider, Tooltip,
 };
-pub use widgets::{EditableText, TextField, VerticalDirection};
+pub use widgets::{Checkbox, EditableText, SegmentedControl, TextField, VerticalDirection};
 pub use widgets::{align::Align, padding::Padding, sized_box::SizedBox};
 
 #[cfg(test)]

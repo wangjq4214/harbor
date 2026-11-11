@@ -844,6 +844,7 @@ dependencies = [
  "ico",
  "image",
  "pollster",
+ "tempfile",
  "thiserror 2.0.20",
  "tracing",
  "tracing-appender",
@@ -884,6 +885,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "toml 0.9.12+spec-1.1.0",
+ "toml_edit",
  "windows",
 ]
 
@@ -2830,6 +2832,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

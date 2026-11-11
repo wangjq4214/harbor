@@ -31,6 +31,7 @@ pub(crate) fn configured_shell(settings: &harbor_config::ShellSettings) -> Shell
         args: settings.args.clone(),
         environment: settings.environment.clone(),
         directory: settings.directory.clone(),
+        ..ShellCommand::default()
     }
 }
 pub(crate) fn format_window_title(title: &str) -> String {
@@ -51,6 +52,7 @@ pub(crate) enum AppActionAdmission {
     Execute {
         request: harbor_app::command::AppCommandRequest,
         clear_palette_focus: bool,
+        profile: Option<harbor_app::profiles::ProfileLaunchIntent>,
     },
     Rejected {
         request: harbor_app::command::AppCommandRequest,
@@ -73,6 +75,7 @@ fn next_app_action(
             continue;
         }
         let palette = matches!(request.source, CommandSource::Palette { .. });
+        let profile = ui.palette_profile_intent(request);
         if palette && let Err(reason) = ui.take_palette_request(request, tabs, input_blocked) {
             return Some(AppActionAdmission::Rejected {
                 request,
@@ -80,10 +83,31 @@ fn next_app_action(
                 restore_terminal_focus: !ui.popup_is_open() && !input_blocked,
             });
         }
+        if ui.quick_save_is_open()
+            && !matches!(
+                request.command,
+                harbor_app::command::AppCommand::AdvanceQuickSave
+                    | harbor_app::command::AppCommand::EditQuickSave
+                    | harbor_app::command::AppCommand::CancelQuickSave
+                    | harbor_app::command::AppCommand::CommitQuickSave
+            )
+        {
+            continue;
+        }
         if !input_blocked {
+            if request.command == harbor_app::command::AppCommand::LaunchProfile
+                && profile.is_none()
+            {
+                return Some(AppActionAdmission::Rejected {
+                    request,
+                    reason: "Profile selection expired",
+                    restore_terminal_focus: !ui.popup_is_open(),
+                });
+            }
             return Some(AppActionAdmission::Execute {
                 request,
                 clear_palette_focus: palette,
+                profile,
             });
         }
     }
@@ -95,6 +119,7 @@ fn next_app_action(
 /// all model/render preparations and group PTY effects have succeeded.
 struct TerminalConfiguration {
     shell_command: ShellCommand,
+    profiles: std::collections::BTreeMap<harbor_config::ProfileId, harbor_config::SessionProfile>,
     font_settings: harbor_config::FontSettings,
     history: harbor_config::HistoryLimits,
     // Effective selection warnings survive no-change reloads until the font
@@ -165,6 +190,8 @@ impl TerminalConfiguration {
                 self.appearance = TerminalAppearance::from_palette(settings.colors);
             }
             self.shell_command = configured_shell(&settings.shell);
+            self.profiles = settings.profiles.clone();
+            workspace_ui.publish_profiles(self.profiles.clone());
             // Bindings and launch/restart-only changes do not depend on session resources.
             return Ok(self.font_warnings.clone());
         }
@@ -303,6 +330,8 @@ impl TerminalConfiguration {
         self.metrics = metrics;
         self.appearance = TerminalAppearance::from_palette(settings.colors);
         self.shell_command = configured_shell(&settings.shell);
+        self.profiles = settings.profiles.clone();
+        workspace_ui.publish_profiles(self.profiles.clone());
         // Effective clipboard delivery remains the startup policy, including for new tabs.
         tabs.accept_configuration_size(size);
         self.geometry_recovery_pending = false;
@@ -355,6 +384,10 @@ impl TerminalTabFactory {
         gpu: Arc<SharedGpu>,
         format: wgpu::TextureFormat,
         shell_command: ShellCommand,
+        profiles: std::collections::BTreeMap<
+            harbor_config::ProfileId,
+            harbor_config::SessionProfile,
+        >,
         font_settings: harbor_config::FontSettings,
         history: harbor_config::HistoryLimits,
         font_warnings: Vec<String>,
@@ -370,6 +403,7 @@ impl TerminalTabFactory {
             format,
             configuration: TerminalConfiguration {
                 shell_command,
+                profiles,
                 font_settings,
                 history,
                 font_warnings,
@@ -399,13 +433,30 @@ impl TerminalTabFactory {
         size: TerminalSize,
         surface_size: (u32, u32),
     ) -> anyhow::Result<TerminalTabResources> {
+        self.create_resources_with_command(
+            tab_id,
+            draw_id,
+            size,
+            surface_size,
+            &self.configuration.shell_command,
+        )
+    }
+
+    fn create_resources_with_command(
+        &self,
+        tab_id: TabId,
+        draw_id: ExternalDrawId,
+        size: TerminalSize,
+        surface_size: (u32, u32),
+        command: &ShellCommand,
+    ) -> anyhow::Result<TerminalTabResources> {
         let fonts = load_system_fonts(&self.configuration.font_settings)?;
         let endpoints = PtyEndpoints::spawn_shell(
             harbor_pty::TerminalSize {
                 rows: size.rows,
                 cols: size.cols,
             },
-            &self.configuration.shell_command,
+            command,
         )?;
         let shell_name = endpoints.shell_name().to_owned();
         let output_event_proxy = self.event_proxy.clone();
@@ -492,6 +543,12 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
+    pub(crate) fn active_id(&self) -> Option<TabId> {
+        self.tabs.active_id()
+    }
+    pub(crate) fn capture_quick_save(&self) -> Result<harbor_app::QuickSaveDraft, &'static str> {
+        crate::profile_save::capture(&self.tabs)
+    }
     pub(crate) fn acquire_configuration(
         &self,
         settings: &harbor_config::Settings,
@@ -570,6 +627,7 @@ impl TabCoordinator {
         workspace_ui: WorkspaceUiController,
         factory: TerminalTabFactory,
     ) -> Self {
+        workspace_ui.publish_profiles(factory.configuration.profiles.clone());
         Self {
             tabs,
             workspace_ui,
@@ -703,6 +761,47 @@ impl TabCoordinator {
             merge_wait(&mut result.wait, host.request_focus(&focus_handle).wait);
         }
         result
+    }
+
+    /// Typed Host operation, intentionally separate from ordinary New tab.
+    pub(crate) fn execute_profile_launch(
+        &mut self,
+        host: &mut WinitWindowHost,
+        intent: harbor_app::profiles::ProfileLaunchIntent,
+    ) -> TabDrainOutcome {
+        let surface = host.viewport().physical_size;
+        let size = self
+            .tabs
+            .last_broadcast_size()
+            .unwrap_or_else(|| self.factory.default_terminal_size(surface));
+        let result = crate::profile_launch::create_tab(
+            &mut self.tabs,
+            &self.factory.configuration.profiles,
+            &intent,
+            |id, draw, command| {
+                self.factory
+                    .create_resources_with_command(id, draw, size, surface, command)
+            },
+        );
+        match result {
+            Ok(outcome) => {
+                self.workspace_ui.publish_configuration_notice(
+                    harbor_app::notifications::ConfigurationNoticeSource::Operation,
+                    None,
+                );
+                self.apply_tab_outcome(host, outcome, TabFocusPolicy::Terminal)
+            }
+            Err(error) => {
+                self.workspace_ui.report_configuration_result(format!(
+                    "New session failed: {error:#}. Existing sessions are unchanged."
+                ));
+                TabDrainOutcome {
+                    wait: host.request_frame().wait,
+                    failed: true,
+                    close_window: false,
+                }
+            }
+        }
     }
 
     pub(crate) fn execute_tab_command(

@@ -15,6 +15,8 @@ fn lucide_icons_render_at_multiple_dpi_with_tint_and_single_coverage() {
             (LucideIcon::Dot, (12.0, 12.0)),
             (LucideIcon::ChevronUp, (12.0, 9.0)),
             (LucideIcon::ChevronDown, (12.0, 15.0)),
+            (LucideIcon::ArrowLeft, (16.0, 12.0)),
+            (LucideIcon::Check, (9.0, 17.0)),
         ] {
             let item = make_rounded_item(
                 1,

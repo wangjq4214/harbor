@@ -7,6 +7,10 @@
 #[path = "../tests/support/gpu.rs"]
 mod test_gpu;
 
+#[cfg(all(test, windows))]
+#[path = "../tests/support/launch_probe.rs"]
+mod test_launch_probe;
+
 mod backdrop;
 mod chrome;
 mod clipboard;
@@ -17,6 +21,8 @@ mod event;
 #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
 mod hot_reload;
 mod hyperlink;
+mod profile_launch;
+mod profile_save;
 mod shell;
 mod tab_coordinator;
 mod telemetry;

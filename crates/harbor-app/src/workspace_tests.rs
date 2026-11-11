@@ -18,9 +18,7 @@ pub(super) fn ctrl() -> Modifiers {
 use super::*;
 use crate::command::{AppCommand, AppCommandRequest};
 use crate::tab_manager::{TabId, TabIndex};
-use crate::tab_view::{
-    COMPACT_RAIL_WIDTH, RailPresentation, TabCommand, TabFocusPolicy, ui::abbreviation,
-};
+use crate::tab_view::{COMPACT_RAIL_WIDTH, RailPresentation, TabCommand, TabFocusPolicy};
 use harbor_terminal::Terminal;
 use harbor_widget::{
     ConstrainedBox, DecoratedBox, Row,
@@ -101,19 +99,14 @@ fn tab_rows(runtime: &Runtime) -> Vec<FiberId> {
                 .is_some_and(|key| key.text() == harbor_widget::CONTENT_SLOT_KEY);
             (fiber.widget_type() == TypeId::of::<Row>() || slot_wrapped)
                 && children.last().is_some_and(|child| {
-                    let kind = runtime.arena().get(*child).unwrap().widget_type();
-                    (kind == TypeId::of::<ConstrainedBox>() && children.len() == 3)
-                        || (kind == TypeId::of::<harbor_widget::Expanded>()
-                            && runtime
-                                .arena()
-                                .get(*child)
-                                .unwrap()
-                                .children()
-                                .first()
-                                .is_some_and(|label| {
-                                    runtime.arena().get(*label).unwrap().widget_type()
-                                        == TypeId::of::<harbor_widget::DecoratedBox>()
-                                }))
+                    let child = runtime.arena().get(*child).unwrap();
+                    (child.widget_type() == TypeId::of::<ConstrainedBox>() && children.len() == 3)
+                        || (children.len() == 1
+                            && child.widget_type() == TypeId::of::<harbor_widget::SizedBox>()
+                            && child.children().first().is_some_and(|stack| {
+                                runtime.arena().get(*stack).unwrap().widget_type()
+                                    == TypeId::of::<harbor_widget::Stack>()
+                            }))
                 })
         })
         .collect();
@@ -204,6 +197,11 @@ fn search_button_surfaces(runtime: &Runtime) -> Vec<(Rect, f32)> {
         })
         .collect()
 }
+
+#[path = "profile_chooser_tests.rs"]
+mod profile_chooser;
+#[path = "quick_save_tests.rs"]
+mod quick_save;
 
 #[path = "palette_tests.rs"]
 mod palette_support;

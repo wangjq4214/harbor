@@ -11,6 +11,9 @@ pub struct PtyReader;
 pub struct PtyWriter;
 
 impl Pty {
+    pub(crate) fn launch_provenance(&self) -> &crate::LaunchProvenance {
+        unreachable!("Unix PTY creation is not implemented")
+    }
     pub fn spawn_shell(
         _size: PtySize,
         _command: &ShellCommand,

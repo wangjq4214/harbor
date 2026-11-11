@@ -19,3 +19,5 @@ The Rust libraries are pre-1.0 workspace packages. Pin a repository revision whe
 ## Contribute to Harbor
 
 The [developer guide](developer/README.md) contains architecture notes, the roadmap, current progress and profiling methods. Public guides stay in the sections above; test reports and run artifacts are not kept in `docs/`.
+
+- [Application design system](app/design-system.md): draft visual foundations and Quick Save design rules; not a claim of implemented behavior.

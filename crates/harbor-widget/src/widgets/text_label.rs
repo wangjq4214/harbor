@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
-/// A non-interactive, single-line label measured with the renderer's glyph advances.
+/// A non-interactive label measured with the renderer's glyph advances.
 ///
 /// There is no implicit padding; compose with `Padding` when spacing is desired.
 /// Without font resources, measurement uses the renderer's per-scalar fallback.
@@ -14,8 +14,16 @@ use unicode_segmentation::UnicodeSegmentation;
 pub struct TextLabel {
     text: String,
     color: Color,
-    ellipsis: bool,
+    scale: f32,
+    mode: LabelMode,
     geometry: RefCell<Option<LabelGeometry>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LabelMode {
+    SingleLine,
+    Ellipsis,
+    Wrap,
 }
 
 impl TextLabel {
@@ -23,7 +31,8 @@ impl TextLabel {
         TextLabel {
             text: text.into(),
             color: Color::WHITE,
-            ellipsis: false,
+            scale: 1.0,
+            mode: LabelMode::SingleLine,
             geometry: RefCell::new(None),
         }
     }
@@ -31,8 +40,38 @@ impl TextLabel {
     /// Truncates overflowing text at grapheme boundaries using measured advances,
     /// including the ellipsis glyph. Keeps the source for subsequent wider layouts.
     pub fn ellipsis(mut self) -> Self {
-        self.ellipsis = true;
+        self.mode = LabelMode::Ellipsis;
         self
+    }
+
+    /// Wraps at measured grapheme boundaries and explicit line breaks, without
+    /// an ellipsis or line cap. Source text survives every re-layout.
+    /// A single grapheme wider than the available width overflows intact rather
+    /// than disappearing. Parents own clipping/scrolling for constrained heights.
+    /// `wrap` and `ellipsis` are exclusive; the last builder call wins.
+    pub fn wrap(mut self) -> Self {
+        self.mode = LabelMode::Wrap;
+        self
+    }
+
+    /// Scales this label relative to the UI font, including wrapping and line height.
+    /// Glyphs are rasterized at the local scale and display DPI, not stretched bitmaps.
+    /// A finite, nonnegative factor is required; zero suppresses the label.
+    pub fn scale(mut self, scale: f32) -> Result<Self, crate::LayoutConfigError> {
+        crate::layout::configuration::validate_scalar("TextLabel.scale", scale)?;
+        self.scale = scale;
+        *self.geometry.borrow_mut() = None;
+        Ok(self)
+    }
+
+    fn with_geometry<T>(&self, metrics: &TextMetrics, f: impl FnOnce(&LabelGeometry) -> T) -> T {
+        let geometry = self.geometry.borrow();
+        match geometry.as_ref() {
+            Some(geometry) => f(geometry),
+            None => f(&LabelGeometry::measure(&self.text, &mut |_| {
+                metrics.cell_width * self.scale
+            })),
+        }
     }
 
     pub fn foreground(mut self, color: Color) -> Result<Self, crate::theme::ColorConfigError> {
@@ -49,12 +88,26 @@ impl Component for TextLabel {
 }
 
 impl AnyView for TextLabel {
+    fn text_scale(&self) -> f32 {
+        self.scale
+    }
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
-        let width = self.geometry.borrow().as_ref().map_or_else(
-            || self.text.chars().count() as f32 * metrics.cell_width,
-            LabelGeometry::width,
-        );
-        constraints.constrain(Size::new(width, metrics.line_height))
+        self.with_geometry(metrics, |geometry| {
+            let size = if self.mode == LabelMode::Wrap {
+                let ranges = geometry.line_ranges(&self.text, constraints.max.width, true);
+                let width = ranges
+                    .iter()
+                    .map(|&(start, end)| geometry.prefixes[end].1 - geometry.prefixes[start].1)
+                    .fold(0.0, f32::max);
+                Size::new(
+                    width,
+                    ranges.len() as f32 * metrics.line_height * self.scale,
+                )
+            } else {
+                Size::new(geometry.width(), metrics.line_height * self.scale)
+            };
+            constraints.constrain(size)
+        })
     }
 
     fn prepare_text_geometry(&self, _metrics: &TextMetrics, advance: &mut dyn FnMut(char) -> f32) {
@@ -62,28 +115,39 @@ impl AnyView for TextLabel {
     }
 
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
-        let text = if self.ellipsis {
-            let geometry = self.geometry.borrow();
-            let fallback;
-            let geometry = match geometry.as_ref() {
-                Some(geometry) => geometry,
-                None => {
-                    fallback = LabelGeometry::measure(&self.text, &mut |_| metrics.cell_width);
-                    &fallback
-                }
-            };
-            geometry.ellipsized(&self.text, rect.size().width)
-        } else {
-            self.text.clone()
-        };
-        if self.ellipsis && text.is_empty() {
+        if self.scale == 0.0 {
             return Vec::new();
         }
-        vec![Primitive::Text {
-            text: Arc::from(text),
-            origin: rect.min,
-            color: self.color,
-        }]
+        let lines = self.with_geometry(metrics, |geometry| match self.mode {
+            LabelMode::Wrap => geometry.wrapped(&self.text, rect.size().width, None),
+            LabelMode::Ellipsis => vec![geometry.ellipsized(&self.text, rect.size().width)],
+            LabelMode::SingleLine => vec![self.text.clone()],
+        });
+        lines
+            .into_iter()
+            .enumerate()
+            .filter(|(_, text)| !text.is_empty() || self.mode == LabelMode::SingleLine)
+            .map(|(index, text)| {
+                let origin = crate::layout::Point::new(
+                    rect.min.x,
+                    rect.min.y + index as f32 * metrics.line_height * self.scale,
+                );
+                if self.scale == 1.0 {
+                    Primitive::Text {
+                        text: Arc::from(text),
+                        origin,
+                        color: self.color,
+                    }
+                } else {
+                    Primitive::ScaledText {
+                        text: Arc::from(text),
+                        origin,
+                        color: self.color,
+                        scale: self.scale,
+                    }
+                }
+            })
+            .collect()
     }
 }
 
@@ -120,42 +184,72 @@ impl LabelGeometry {
     }
 
     /// Wrap with the exact advances used by UI rendering, never terminal cells.
-    /// Explicit newlines and grapheme clusters survive; a capped last line signals overflow.
+    /// Uncapped text always retains oversized graphemes; only capped displays truncate.
     pub(super) fn wrapped(&self, text: &str, width: f32, max_lines: Option<usize>) -> Vec<String> {
-        if !width.is_finite() || width <= 0.0 || max_lines == Some(0) {
+        if width.is_nan()
+            || width < 0.0
+            || max_lines == Some(0)
+            || (max_lines.is_some() && (!width.is_finite() || width == 0.0))
+        {
             return Vec::new();
         }
-        let mut ranges = Vec::new();
-        let mut start = 0;
-        let end = self.prefixes.len() - 1;
-        for i in 0..end {
-            let grapheme = &text[self.prefixes[i].0..self.prefixes[i + 1].0];
-            if matches!(grapheme, "\n" | "\r\n" | "\r") {
-                ranges.push((start, i));
-                start = i + 1;
-            } else if i > start && self.prefixes[i + 1].1 - self.prefixes[start].1 > width {
-                ranges.push((start, i));
-                start = i;
-            }
-        }
-        ranges.push((start, end));
+        let ranges = self.line_ranges(text, width, max_lines.is_none());
         let count = max_lines.unwrap_or(ranges.len()).min(ranges.len());
         ranges
             .iter()
             .take(count)
             .enumerate()
             .map(|(i, &(start, end))| {
-                self.display_range(
-                    text,
-                    start,
-                    end,
-                    width,
-                    i + 1 == count && count < ranges.len(),
-                )
+                if max_lines.is_none() {
+                    text[self.prefixes[start].0..self.prefixes[end].0].to_owned()
+                } else {
+                    self.display_range(
+                        text,
+                        start,
+                        end,
+                        width,
+                        i + 1 == count && count < ranges.len(),
+                    )
+                }
             })
             .collect()
     }
 
+    fn line_ranges(&self, text: &str, width: f32, word_wrap: bool) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::new();
+        let mut start = 0;
+        let end = self.prefixes.len() - 1;
+        let mut last_break = None;
+        let mut i = 0;
+        while i < end {
+            let grapheme = &text[self.prefixes[i].0..self.prefixes[i + 1].0];
+            if matches!(grapheme, "\n" | "\r\n" | "\r") {
+                ranges.push((start, i));
+                start = i + 1;
+                last_break = None;
+            } else {
+                if i > start && self.prefixes[i + 1].1 - self.prefixes[start].1 > width {
+                    let split = last_break
+                        .filter(|&boundary| word_wrap && boundary > start)
+                        .unwrap_or(i);
+                    ranges.push((start, split));
+                    start = split;
+                    last_break = None;
+                    if split < i {
+                        // Revisit the carried word; it may itself need grapheme wrapping.
+                        i = split;
+                        continue;
+                    }
+                }
+                if grapheme.chars().all(char::is_whitespace) {
+                    last_break = Some(i + 1);
+                }
+            }
+            i += 1;
+        }
+        ranges.push((start, end));
+        ranges
+    }
     fn display_range(
         &self,
         text: &str,
@@ -190,6 +284,58 @@ mod tests {
     use crate::input::event_ctx::{EventCtx, EventHandled};
     use crate::layout::Point;
 
+    #[test]
+    fn display_mode_builders_replace_each_other_without_changing_empty_text_behavior() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        let constraints = BoxConstraints::loose(Size::new(2.0, 1000.0));
+        let label = TextLabel::new("ab\ncd");
+        for (label, expected) in [
+            (label.clone(), vec!["ab\ncd"]),
+            (label.clone().wrap(), vec!["ab", "cd"]),
+            (label.clone().ellipsis(), vec!["a…"]),
+            (label.clone().wrap().ellipsis(), vec!["a…"]),
+            (label.clone().ellipsis().wrap(), vec!["ab", "cd"]),
+            (label.clone().wrap().wrap(), vec!["ab", "cd"]),
+            (label.ellipsis().ellipsis(), vec!["a…"]),
+        ] {
+            label.prepare_text_geometry(&metrics, &mut |_| 1.0);
+            let size = label.intrinsic_size(constraints, &metrics);
+            assert_eq!(size.height, expected.len() as f32 * metrics.line_height);
+            let primitives =
+                label.paint_primitives(Rect::from_min_size(Point::ZERO, size), &metrics);
+            let text: Vec<_> = primitives
+                .iter()
+                .filter_map(Primitive::text_run)
+                .map(|run| run.0)
+                .collect();
+            assert_eq!(text, expected);
+        }
+        let empty = TextLabel::new("");
+        for (label, count) in [
+            (empty.clone(), 1),
+            (empty.clone().wrap(), 0),
+            (empty.ellipsis(), 0),
+        ] {
+            let rect = Rect::from_min_size(Point::ZERO, Size::new(2.0, 100.0));
+            assert_eq!(label.paint_primitives(rect, &metrics).len(), count);
+        }
+    }
+
+    #[test]
+    fn uncapped_wrapping_prefers_words_without_losing_whitespace_or_long_tokens() {
+        let text = "a word longtoken\n项目 text";
+        let geometry = LabelGeometry::measure(text, &mut |_| 1.0);
+        assert_eq!(
+            geometry.wrapped("a word longtoken\n项目 text", 5.0, None),
+            ["a ", "word ", "longt", "oken", "项目 ", "text"]
+        );
+        let lines = geometry.wrapped(text, 5.0, None);
+        assert_eq!(lines.concat(), text.replace('\n', ""));
+        assert_eq!(
+            geometry.wrapped(text, 100.0, None),
+            ["a word longtoken", "项目 text"]
+        );
+    }
     fn painted_text(label: &TextLabel, width: f32) -> String {
         let rect = Rect::from_min_size(Point::ZERO, Size::new(width, 20.0));
         label
@@ -237,6 +383,69 @@ mod tests {
         assert_eq!(geometry.wrapped(text, 4.0, Some(2)), ["e\u{0301}", "…"]);
         // Truncation never mutates the source/geometry used by wider layouts.
         assert_eq!(geometry.wrapped(text, 50.0, Some(4)), [text]);
+    }
+
+    #[test]
+    fn uncapped_wrap_preserves_oversized_graphemes_and_remeasures_height() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        let source = "iiiiWe\u{0301}👩\u{200d}💻项目\r\n\nlast\n";
+        let label = TextLabel::new(source).ellipsis().wrap();
+        label.prepare_text_geometry(&metrics, &mut |ch| match ch {
+            'i' => 1.0,
+            'W' => 8.0,
+            '\u{0301}' | '\u{200d}' | '\r' | '\n' => 0.0,
+            _ => 2.0,
+        });
+        for width in [4.0, 1.0, 0.0, 80.0, f32::INFINITY, 4.0] {
+            let size = label.intrinsic_size(
+                BoxConstraints::loose(Size::new(width, f32::INFINITY)),
+                &metrics,
+            );
+            let geometry = label.geometry.borrow();
+            let lines = geometry.as_ref().unwrap().wrapped(source, width, None);
+            assert_eq!(lines.concat(), source.replace(['\r', '\n'], ""));
+            assert_eq!(size.height, lines.len() as f32 * metrics.line_height);
+            assert!(lines.iter().all(|line| !line.contains('…')));
+            let painted =
+                label.paint_primitives(Rect::from_min_size(Point::new(3.0, 7.0), size), &metrics);
+            assert_eq!(
+                painted_text(&label, width),
+                source.replace(['\r', '\n'], "")
+            );
+            assert!(painted.iter().all(|p| matches!(p,
+                Primitive::Text { origin, .. } if origin.x == 3.0 && origin.y >= 7.0
+            )));
+        }
+        assert_eq!(
+            label
+                .geometry
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .wrapped(source, 4.0, None),
+            [
+                "iiii",
+                "W",
+                "e\u{0301}",
+                "👩\u{200d}💻",
+                "项目",
+                "",
+                "la",
+                "st",
+                ""
+            ]
+        );
+        // The explicit single-line mode remains available (last builder wins).
+        let single = label.ellipsis();
+        assert_eq!(
+            single
+                .intrinsic_size(
+                    BoxConstraints::loose(Size::new(4.0, f32::INFINITY)),
+                    &metrics,
+                )
+                .height,
+            metrics.line_height
+        );
     }
 
     #[test]
@@ -357,5 +566,53 @@ mod tests {
             }
             _ => panic!("expected Text"),
         }
+    }
+    #[test]
+    fn scaled_labels_wrap_at_local_advances_and_keep_scaled_line_height() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        let label = TextLabel::new("WiWi").wrap().scale(1.5).unwrap();
+        // Runtime supplies actual advances at the requested local font scale.
+        label.prepare_text_geometry(&metrics, &mut |ch| if ch == 'W' { 12.0 } else { 3.0 });
+        assert_eq!(label.text_scale(), 1.5);
+        let narrow = label.intrinsic_size(BoxConstraints::loose(Size::new(15.0, 500.0)), &metrics);
+        assert_eq!(narrow, Size::new(15.0, metrics.line_height * 3.0));
+        let primitives = label.paint_primitives(Rect::from_min_size(Point::ZERO, narrow), &metrics);
+        let runs: Vec<_> = primitives.iter().filter_map(Primitive::text_run).collect();
+        assert_eq!(
+            runs.iter().map(|run| run.0).collect::<Vec<_>>(),
+            ["Wi", "Wi"]
+        );
+        assert!(runs.iter().all(|run| run.3 == 1.5));
+        assert_eq!(runs[1].1.y - runs[0].1.y, metrics.line_height * 1.5);
+        let wide = label.intrinsic_size(BoxConstraints::loose(Size::new(100.0, 500.0)), &metrics);
+        assert_eq!(wide, Size::new(30.0, metrics.line_height * 1.5));
+    }
+
+    #[test]
+    fn label_scale_validates_and_resets_prepared_geometry_without_affecting_other_labels() {
+        let metrics = crate::runtime::DEFAULT_TEXT_METRICS;
+        let bounds = BoxConstraints::loose(Size::new(1000.0, 1000.0));
+        for scale in [-1.0, f32::INFINITY, f32::NAN] {
+            let error = TextLabel::new("test").scale(scale).err().unwrap();
+            assert_eq!(error.field, "TextLabel.scale");
+        }
+        let label = TextLabel::new("WW");
+        label.prepare_text_geometry(&metrics, &mut |_| 2.0);
+        let scaled = label.clone().scale(2.0).unwrap();
+        assert_eq!(
+            scaled.intrinsic_size(bounds, &metrics).width,
+            4.0 * metrics.cell_width
+        );
+        assert_eq!(label.intrinsic_size(bounds, &metrics).width, 4.0);
+        let hidden = scaled.scale(0.0).unwrap();
+        assert_eq!(hidden.intrinsic_size(bounds, &metrics), Size::ZERO);
+        assert!(
+            hidden
+                .paint_primitives(
+                    Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0)),
+                    &metrics
+                )
+                .is_empty()
+        );
     }
 }
