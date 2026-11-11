@@ -68,7 +68,7 @@ pub use widgets::{
     FocusHandle, FocusScope, Icon, IconButton, InteractionState, InteractiveRegion, KeyChord,
     LayoutChangedCallback, LayoutObserver, MainAxisAlignment, MouseRegion, NotificationCard,
     Portal, Row, ScrollController, ScrollMetrics, ScrollView, Separator, ShortcutMap, Spacer,
-    Stack, TextLabel, ThemeProvider,
+    Stack, TextLabel, ThemeProvider, Tooltip,
 };
 pub use widgets::{Checkbox, EditableText, SegmentedControl, TextField, VerticalDirection};
 pub use widgets::{align::Align, padding::Padding, sized_box::SizedBox};

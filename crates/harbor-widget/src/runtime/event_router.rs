@@ -267,6 +267,10 @@ impl EventRouter {
                     Some(pointer.position),
                 );
             }
+            UiEvent::Pointer(pointer) if pointer.phase == PointerPhase::Cancel => {
+                hover_needs_redraw =
+                    self.update_hover_path(arena, root_id, pointer.pointer_id, None);
+            }
             UiEvent::PointerBoundary(boundary) => {
                 let position = match boundary.kind {
                     PointerBoundaryKind::Enter => boundary.position,
@@ -331,10 +335,10 @@ impl EventRouter {
                     if let Some(captor) = self.input.captor(pointer.pointer_id) {
                         self.input.release_pointer(pointer.pointer_id);
                         if arena.contains(captor) {
-                            return self.route_to_single(arena, captor, event);
+                            return self.route_to_single(arena, captor, event) | hover_needs_redraw;
                         }
                     }
-                    return false;
+                    return hover_needs_redraw;
                 }
                 self.input
                     .captor(pointer.pointer_id)

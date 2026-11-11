@@ -772,13 +772,21 @@ impl Runtime {
         self.events.begin_key_press(key);
     }
 
-    /// Cancels every pointer currently captured by a widget.
+    /// Clears hover and cancels every pointer currently captured by a widget.
     ///
     /// Hosts use this at lifecycle boundaries such as window focus loss so a
     /// widget cannot observe a later button-up from a different interaction.
     pub fn cancel_pointer_captures(&mut self, position: Point) -> RuntimeEffects {
         let pointer_ids = self.events.input().captured_pointer_ids();
-        let mut effects = RuntimeEffects::default();
+        // Lifecycle cancellation ends hover as well as captured presses. This
+        // also dismisses hover-only help when no pointer was ever captured.
+        let mut effects = self.dispatch(UiEvent::PointerBoundary(
+            crate::input::event::PointerBoundaryEvent {
+                pointer_id: 0,
+                position: None,
+                kind: crate::input::event::PointerBoundaryKind::Leave,
+            },
+        ));
         for pointer_id in pointer_ids {
             effects.merge(
                 self.dispatch(UiEvent::Pointer(crate::input::event::PointerEvent::new(

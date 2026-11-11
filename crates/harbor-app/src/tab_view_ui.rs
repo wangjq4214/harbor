@@ -1,39 +1,81 @@
 //! Tab rail presentation and tab-specific controls.
 
 use super::{RailPresentation, TabCommand, TabUiController, TabUiState};
-use crate::{command::AppCommandRequest, tab_manager::TabSnapshot};
+use crate::{
+    command::{AppCommand, AppCommandRequest},
+    tab_manager::TabSnapshot,
+};
 use harbor_widget::{
-    BoxDecoration, ClipBehavior, Column, ComponentExt as _, ConstrainedBox, ControlColors,
-    ControlStyle, CrossAxisAlignment, DecoratedBox, Dispatcher, Expanded, FlexOptions, Icon,
-    IconButton, Insets, InteractionState, InteractiveRegion, LucideIcon, Row, ScrollView, SizedBox,
+    Align, Alignment2D, Axis, BoxDecoration, ClipBehavior, Column, ComponentExt as _,
+    ConstrainedBox, ControlColors, ControlStyle, CrossAxisAlignment, DecoratedBox, Dispatcher,
+    Expanded, Flex, FlexOptions, Icon, IconButton, Insets, InteractionState, InteractiveRegion,
+    LucideIcon, Row, ScrollView, Separator, SizedBox, Stack,
+    layout::Size,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
-    widgets::{padding::Padding, text_label::TextLabel},
+    widgets::{Tooltip, padding::Padding, text_label::TextLabel},
 };
-pub(crate) fn abbreviation(snapshot: &TabSnapshot) -> String {
-    (snapshot.id.get() % 10).to_string()
-}
+
 pub(crate) fn tab_rail(
     cx: &mut BuildCx,
     state: &TabUiState,
     controller: &TabUiController,
     dispatcher: Dispatcher<AppCommandRequest>,
 ) -> View {
+    let compact = state.presentation == RailPresentation::Compact;
+    let actions = [
+        (
+            LucideIcon::Plus,
+            "New terminal",
+            AppCommandRequest::rail(TabCommand::New),
+            "new-terminal",
+        ),
+        (
+            LucideIcon::ChevronDown,
+            "New from profile",
+            AppCommandRequest::shortcut(AppCommand::OpenProfileChooser),
+            "new-profile",
+        ),
+        (
+            LucideIcon::Check,
+            "Save preset",
+            AppCommandRequest::shortcut(AppCommand::SaveCurrentSession),
+            "save-profile",
+        ),
+    ]
+    .map(|(icon, label, request, key)| {
+        rail_action(cx, icon, label, request, dispatcher.clone()).keyed(key)
+    });
+    let action_options = FlexOptions {
+        gap: 4.0,
+        cross_axis_alignment: CrossAxisAlignment::Center,
+        ..Default::default()
+    };
+    let foreground = cx.theme().button.normal.foreground;
     harbor_widget::view! { SizedBox::width(state.presentation.width()) => {
-            ScrollView::new().controller(controller.scroll.clone()) => {
-                Padding::new(Insets { top: 0.0, right: 6.0, bottom: 4.0, left: 6.0 }) => {
-                    Column::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: CrossAxisAlignment::Stretch, ..Default::default() }) => {
-                        for snapshot in state.snapshots.iter() {
-                            tab_row(cx, snapshot, state.presentation, controller, dispatcher.clone());
+        Column::with_options(FlexOptions { cross_axis_alignment: CrossAxisAlignment::Stretch, ..Default::default() }) => {
+            Expanded::new() => {
+                ScrollView::new().controller(controller.scroll.clone()) => {
+                    Padding::new(Insets { top: 0.0, right: 6.0, bottom: 4.0, left: 6.0 }) => {
+                        Column::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: CrossAxisAlignment::Stretch, ..Default::default() }) => {
+                            for snapshot in state.snapshots.iter() {
+                                tab_row(cx, snapshot, state.presentation, controller, dispatcher.clone());
+                            }
                         }
-                        new_tab_button(state.presentation, dispatcher.clone()).keyed("new-terminal");
-                        profile_button(state.presentation, dispatcher.clone()).keyed("new-profile");
-                        save_profile_button(state.presentation, dispatcher).keyed("save-profile");
                     }
                 }
             }
+            Padding::new(Insets { top: 0.0, right: 6.0, bottom: 0.0, left: 6.0 }) => {
+                Separator::horizontal().color(Color { a: 0.12, ..foreground }).expect("valid separator color");
+            }
+            Padding::all(6.0) => {
+                // Keep the same keyed controls mounted when only orientation changes.
+                Flex::with_options(if compact { Axis::Vertical } else { Axis::Horizontal }, action_options).expect("valid action layout") => {
+                    for action in actions { action; }
+                }
+            }
         }
-    }
+    } }
 }
 
 fn tab_row(
@@ -52,7 +94,6 @@ fn tab_row(
     } else {
         LucideIcon::Terminal
     };
-    let short = abbreviation(snapshot);
     let select_dispatcher = dispatcher.clone();
     let region = InteractiveRegion::new()
         .style(rail_style(cx, compact)).expect("valid control style")
@@ -63,31 +104,39 @@ fn tab_row(
         })
         .child_with(move |cx, state| {
             let color = rail_style(cx, compact).resolve_state(&state).foreground;
-            harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 2.0 } else { 8.0 }, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
-                    if !compact {
-                        SizedBox::width(24.0) => {
-                            Icon::new(icon).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
+            if compact {
+                return harbor_widget::view! {
+                    Align::new(Alignment2D::CENTER) => {
+                        SizedBox::new(Size::new(24.0, 24.0)) => {
+                            Stack::new() => {
+                                Icon::new(LucideIcon::Terminal).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
+                                if unread {
+                                    Padding::new(Insets { top: 0.0, right: 0.0, bottom: 12.0, left: 12.0 }) => {
+                                        Icon::new(LucideIcon::Dot).size(12.0).expect("valid icon size").foreground(color).expect("valid color");
+                                    }
+                                }
+                            }
                         }
                     }
-                    if compact && unread {
-                        Icon::new(LucideIcon::Dot).size(12.0).expect("valid icon size").foreground(color).expect("valid color");
+                };
+            }
+            harbor_widget::view! {
+                Row::with_options(FlexOptions { gap: 8.0, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
+                    SizedBox::width(24.0) => {
+                        Icon::new(icon).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
                     }
                     Expanded::new() => {
                         DecoratedBox::new(BoxDecoration::new()).clip_behavior(ClipBehavior::HardEdge) => {
-                            TextLabel::new(if compact { short.clone() } else { title.clone() })
-                                .foreground(color).expect("valid color").ellipsis();
+                            TextLabel::new(title.clone()).foreground(color).expect("valid color").ellipsis();
                         }
                     }
-                    if !compact {
-                        close_tab_button(cx, id, state, dispatcher.clone());
-                    }
+                    close_tab_button(cx, id, state, dispatcher.clone());
                 }
             }
         });
-    // The region is a deferred component of its own keyed fiber; the padding
-    // wrapper that used to isolate it from the workspace's positional hooks
-    // is no longer needed (ADR 0079).
-    region.keyed(format!("terminal-tab-{id}"))
+    Tooltip::new(snapshot.title.clone())
+        .child(region)
+        .keyed(format!("terminal-tab-{id}"))
 }
 
 fn rail_style(cx: &BuildCx, compact: bool) -> ControlStyle {
@@ -112,87 +161,28 @@ fn rail_style(cx: &BuildCx, compact: bool) -> ControlStyle {
     style
 }
 
-fn new_tab_button(
-    presentation: RailPresentation,
+fn rail_action(
+    cx: &BuildCx,
+    icon: LucideIcon,
+    label: &'static str,
+    request: AppCommandRequest,
     dispatcher: Dispatcher<AppCommandRequest>,
-) -> impl Component {
-    move |cx: &mut BuildCx| {
-        let compact = presentation == RailPresentation::Compact;
-        InteractiveRegion::new()
-            .style(rail_style(cx, compact)).expect("valid control style")
-            .on_activate({
-                let dispatcher = dispatcher.clone();
-                move |_| dispatcher.dispatch(AppCommandRequest::rail(TabCommand::New))
-            })
-            .child_with(move |cx, state| {
-                let color = rail_style(cx, compact).resolve_state(&state).foreground;
-                harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 0.0 } else { 8.0 }, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
-                        SizedBox::width(24.0) => {
-                            Icon::new(LucideIcon::Plus).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
-                        }
-                        if !compact {
-                            Expanded::new() => {
-                                TextLabel::new("New terminal").foreground(color).expect("valid color").ellipsis();
-                            }
-                        }
-                    }
-                }
-            })
-            .build(cx)
-    }
-}
-
-fn profile_button(
-    presentation: RailPresentation,
-    dispatcher: Dispatcher<AppCommandRequest>,
-) -> impl Component {
-    move |cx: &mut BuildCx| {
-        let compact = presentation == RailPresentation::Compact;
-        InteractiveRegion::new()
-            .style(rail_style(cx, compact)).expect("valid control style")
-            .on_activate({
-                let dispatcher = dispatcher.clone();
-                move |_| dispatcher.dispatch(AppCommandRequest::shortcut(
-                    crate::command::AppCommand::OpenProfileChooser,
-                ))
-            })
-            .child_with(move |cx, state| {
-                let color = rail_style(cx, compact).resolve_state(&state).foreground;
-                harbor_widget::view! { Row::with_options(FlexOptions { gap: if compact { 0.0 } else { 8.0 }, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
-                    SizedBox::width(24.0) => {
-                        Icon::new(LucideIcon::ChevronDown).size(20.0).expect("valid icon size").foreground(color).expect("valid color");
-                    }
-                    if !compact {
-                        Expanded::new() => {
-                            TextLabel::new("New from profile…").foreground(color).expect("valid color").ellipsis();
-                        }
-                    }
-                } }
-            })
-            .build(cx)
-    }
-}
-fn save_profile_button(
-    presentation: RailPresentation,
-    dispatcher: Dispatcher<AppCommandRequest>,
-) -> impl Component {
-    move |cx: &mut BuildCx| {
-        let compact = presentation == RailPresentation::Compact;
-        let dispatcher = dispatcher.clone();
-        InteractiveRegion::new().style(rail_style(cx, compact)).unwrap()
-            .on_activate(move |_| dispatcher.dispatch(AppCommandRequest::shortcut(crate::command::AppCommand::SaveCurrentSession)))
-            .child_with(move |cx, state| {
-                let color = rail_style(cx, compact).resolve_state(&state).foreground;
-                harbor_widget::view! { Row::new() => {
-                    SizedBox::width(24.0) => {
-                        Icon::new(LucideIcon::Check).size(20.0).unwrap().foreground(color).unwrap();
-                    }
-                    if !compact {
-                        TextLabel::new("Save current session…").foreground(color).unwrap().ellipsis();
-                    }
-                } }
-            }).build(cx)
-    }
+) -> impl Component + use<> {
+    let mut style = rail_style(cx, true);
+    style.min_height = 32.0;
+    style.horizontal_padding = 0.0;
+    Tooltip::new(label).child(
+        SizedBox::new(Size::new(32.0, 32.0))
+            .expect("valid action size")
+            .child(
+                IconButton::new(icon, label)
+                    .style(style)
+                    .expect("valid control style")
+                    .icon_size(18.0)
+                    .expect("valid icon size")
+                    .on_click(move |_| dispatcher.dispatch(request)),
+            ),
+    )
 }
 
 fn close_tab_button(
