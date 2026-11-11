@@ -58,7 +58,7 @@ Select **New session from profile…** (`app.open-profile`, unbound by default) 
 
 Accepted reloads update choices; rejected candidates retain them. A removed selection cannot turn into another profile by list position. Edited/deleted queued recipes are rejected; select again. Successful launch targets the resulting terminal; creation failure shows a notice and leaves existing sessions intact. Replacing search or the palette retires the old editor rather than suspending/restoring it. Existing native paste-confirmation gating is unchanged.
 
-Mounted/adapter tests and a Windows ConPTY chooser-to-child test pass; production desktop IME, OS-level focus and packaged-build observations remain **NOT RUN** for this slice. See [T0002 evidence](../verification/T0002-two-level-profile-chooser.md), not a claim of complete #157 acceptance.
+Mounted/adapter tests and a Windows ConPTY chooser-to-child test pass; production desktop IME, OS-level focus and packaged-build observations remain **NOT RUN** for this slice. This is not a claim of complete #157 acceptance.
 
 ## Where shortcuts apply
 

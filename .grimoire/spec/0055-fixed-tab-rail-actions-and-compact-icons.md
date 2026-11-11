@@ -69,7 +69,7 @@ Relevant current surfaces are [`tab_view_ui.rs`](../../crates/harbor-app/src/tab
 ## Decisions and Source Traceability
 
 - **Two separate regions and icon-only actions:** Owner's initial request. This is a layout/presentation refinement, not a command or persistence redesign.
-- **Three actions, horizontal expanded / vertical compact:** Prior recommendation explicitly accepted by the owner's second request, “按照建议进行”.
+- **Three actions, horizontal expanded / vertical compact:** Prior recommendation explicitly accepted by the owner's second request, “proceed as recommended”.
 - **Centered compact icons, no numbers:** Owner's explicit second-turn addition. This narrows Spec 0010's earlier “icons/abbreviations” allowance to icons; the old numeric choice is no longer permitted for compact labels. Other tab/session contracts remain unchanged.
 - **Retained breakpoint, title hints and session behavior:** [Spec 0010](./0010-desktop-terminal-tabs-and-view-macro.md), especially “Resize and responsive layout”, plus current `RailPresentation` and tab controls. No existing spec is rewritten by this document; this focused contract governs the changed presentation.
 - **Retained chooser and save authorization:** [Spec 0052](./0052-named-session-profiles-and-quick-save.md), especially R1/R4/R5/R7, and the current commands dispatched by the three rail actions. Existing [Spec 0054](./0054-harbor-design-system-and-quick-save.md) / [application design system](../../docs/app/design-system.md) continue to govern Quick Save itself and shared visual roles; this spec changes only its rail entry presentation.

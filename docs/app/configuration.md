@@ -81,7 +81,7 @@ Relative directories resolve against the selected **configuration file's parent*
 
 ## Named profile launch contract
 
-Named profiles are accepted future-launch policy. Choose **New from profile…** in the tab rail (down-chevron in compact mode), or **New session from profile…** in the command palette. Both open the same second-level chooser; ordinary startup/New tab/Ctrl+T still use `[shell]`. Quick save is not implemented. See [launch-contract evidence](../verification/T0001-profile-launch-contract.md) and [chooser evidence and native limitations](../verification/T0002-two-level-profile-chooser.md).
+Named profiles are accepted future-launch policy. Choose **New from profile…** in the tab rail (down-chevron in compact mode), or **New session from profile…** in the command palette. Both open the same second-level chooser; ordinary startup/New tab/Ctrl+T still use `[shell]`. Quick save is not implemented.
 
 ```toml
 [profiles.work]
