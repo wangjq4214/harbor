@@ -27,10 +27,10 @@ class TemporaryTree(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def run_main(self):
+    def run_main(self, *args):
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.object(checker, "ROOT", self.root), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = checker.main([])
+            code = checker.main(list(args))
         return code, stdout.getvalue(), stderr.getvalue()
 
 
@@ -89,6 +89,204 @@ class GitSelectionTests(TemporaryTree):
         self.assertEqual(code, 1)
         self.assertIn("broken local link: docs/verification/missing.log", stderr)
 
+    def test_existing_ignored_link_targets_fail_until_explicitly_tracked(self):
+        self.write(".gitignore", "/docs/verification/*\n")
+        self.write("README.md", "[evidence](docs/verification/local.md#result)\n"
+                   "![image](docs/verification/screen.png)\n"
+                   "[directory](docs/verification/)\n")
+        self.write("docs/verification/local.md", "# Result\n")
+        self.write("docs/verification/screen.png")
+        self.git("add", "README.md")
+        code, stdout, stderr = self.run_main()
+        self.assertEqual(code, 1, stdout)
+        self.assertEqual(stderr.count("not in the Git file set"), 3, stderr)
+        self.git("add", "-f", "docs/verification/local.md", "docs/verification/screen.png")
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 0, stderr)
+
+    def test_new_nonignored_targets_pass_worktree_but_not_staged_check(self):
+        self.write("README.md", "[guide](docs/new%20guide.md#api)\n![image](assets/new.png)\n")
+        self.write("docs/new guide.md", "# API\n")
+        self.write("assets/new.png")
+        self.git("add", "README.md")
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 0, stderr)
+        code, stdout, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1, stdout)
+        self.assertIn("broken local link: docs/new%20guide.md#api", stderr)
+        self.assertIn("broken local link: assets/new.png", stderr)
+        self.git("add", "docs/new guide.md", "assets/new.png")
+        code, stdout, stderr = self.run_main("--staged")
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("staged snapshot", stdout)
+
+    def test_staged_check_reads_index_text_and_fragments_without_mutation(self):
+        source = self.write("README.md", "[guide](docs/guide.md#staged)\n")
+        target = self.write("docs/guide.md", "# Staged\n")
+        self.git("add", "README.md", "docs/guide.md")
+        source.write_text("[guide](docs/guide.md#worktree)\n", encoding="utf-8")
+        target.write_text("# Worktree\n", encoding="utf-8")
+        self.git("add", "docs/guide.md")
+        index_bytes = (self.root / ".git/index").read_bytes()
+        before = self.git("ls-files", "--stage", "-z").stdout
+        status = self.git("status", "--porcelain=v1", "-z").stdout
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1)
+        self.assertIn("missing Markdown fragment: docs/guide.md#staged", stderr)
+        self.assertEqual((self.root / ".git/index").read_bytes(), index_bytes)
+        self.assertEqual(self.git("ls-files", "--stage", "-z").stdout, before)
+        self.assertEqual(self.git("status", "--porcelain=v1", "-z").stdout, status)
+        self.assertEqual(source.read_text(encoding="utf-8"), "[guide](docs/guide.md#worktree)\n")
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 0, stderr)
+
+    def test_staged_check_includes_files_deleted_only_from_worktree(self):
+        self.write("README.md", "[guide](docs/guide.md#api)\n")
+        target = self.write("docs/guide.md", "# API\n")
+        self.git("add", "README.md", "docs/guide.md")
+        target.unlink()
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("broken local link", stderr)
+
+    def test_staged_removal_is_not_masked_by_existing_worktree_target(self):
+        self.write("README.md", "[guide](docs/guide.md#api)\n")
+        self.write("docs/guide.md", "# API\n")
+        self.git("add", "README.md", "docs/guide.md")
+        self.git("rm", "--cached", "docs/guide.md")
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1)
+        self.assertIn("broken local link: docs/guide.md#api", stderr)
+
+    def test_intent_to_add_is_not_a_staged_delivery_target(self):
+        self.write("README.md", "[pending](docs/pending.md)\n")
+        self.write("docs/pending.md", "# Pending\n")
+        self.git("add", "README.md")
+        self.git("add", "--intent-to-add", "docs/pending.md")
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1)
+        self.assertIn("broken local link: docs/pending.md", stderr)
+
+    def test_staged_language_check_does_not_read_unstaged_source_edits(self):
+        source = self.write("README.md", "# Indexed\n")
+        self.git("add", "README.md")
+        source.write_text("# \u4e2d\n", encoding="utf-8")
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 0, stderr)
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("non-English Han character", stderr)
+        self.git("add", "README.md")
+        source.write_text("# Repaired only locally\n", encoding="utf-8")
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1)
+        self.assertIn("non-English Han character", stderr)
+
+    def test_directory_with_only_deleted_candidates_and_ignored_files_fails(self):
+        self.write("README.md", "[directory](docs/)\n")
+        self.write(".gitignore", "*.log\n")
+        target = self.write("docs/guide.md", "# API\n")
+        self.git("add", "README.md", "docs/guide.md")
+        target.unlink()
+        self.write("docs/local.log", "Local evidence\n")
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("not in the Git file set: docs/", stderr)
+
+    def test_intent_to_add_renamed_from_worktree_deletion_is_not_staged(self):
+        self.write("README.md", "[pending](docs/pending.md)\n")
+        original = self.write("docs/original.md", "# Identical contents\n")
+        self.git("add", "README.md", "docs/original.md")
+        original.unlink()
+        self.write("docs/pending.md", "# Identical contents\n")
+        self.git("add", "--intent-to-add", "docs/pending.md")
+        self.git("config", "diff.renames", "true")
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1)
+        self.assertIn("broken local link: docs/pending.md", stderr)
+
+    def test_missing_intent_to_add_file_is_not_in_the_staged_snapshot(self):
+        self.write("README.md", "[pending](docs/pending.md)\n")
+        target = self.write("docs/pending.md", "# Pending\n")
+        self.git("add", "README.md")
+        self.git("add", "--intent-to-add", "docs/pending.md")
+        target.unlink()
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1)
+        self.assertIn("broken local link: docs/pending.md", stderr)
+
+    def test_staged_fragments_use_raw_blobs_not_checkout_smudge_filters(self):
+        self.write("README.md", "[guide](docs/guide.md#smudged)\n")
+        self.write("docs/guide.md", "# Stored\n")
+        self.write(".gitattributes", "docs/guide.md filter=preview\n")
+        self.git("config", "filter.preview.smudge", "echo '# Smudged'")
+        self.git("add", "README.md", "docs/guide.md", ".gitattributes")
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1)
+        self.assertIn("missing Markdown fragment: docs/guide.md#smudged", stderr)
+
+    def test_staged_symbolic_links_are_isolated_and_checked(self):
+        probe = self.root / "symlink-probe"
+        try:
+            probe.symlink_to("README.md")
+        except OSError:
+            self.skipTest("Symbolic link creation is unavailable")
+        probe.unlink()
+        self.write("README.md", "[alias](docs/alias.md#api)\n")
+        self.write("docs/guide.md", "# API\n")
+        self.git("add", "README.md", "docs/guide.md")
+        link = self.write("link-target.txt", "guide.md")
+        object_id = self.git("hash-object", "-w", "--", str(link)).stdout.decode().strip()
+        self.git("update-index", "--add", "--cacheinfo", f"120000,{object_id},docs/alias.md")
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 0, stderr)
+        link.write_text("../../outside.md", encoding="utf-8")
+        object_id = self.git("hash-object", "-w", "--", str(link)).stdout.decode().strip()
+        self.git("update-index", "--cacheinfo", f"120000,{object_id},docs/alias.md")
+        code, _, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1)
+        self.assertIn("Staged symbolic link escapes snapshot", stderr)
+
+    def test_directory_replacing_tracked_file_is_not_a_delivery_candidate(self):
+        self.write("README.md", "[asset](assets/image.png)\n[folder](assets/)\n")
+        self.write(".gitignore", "*.log\n")
+        target = self.write("assets/image.png")
+        self.git("add", "README.md", "assets/image.png")
+        target.unlink()
+        target.mkdir()
+        self.write("assets/image.png/local.log", "Local only\n")
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertEqual(stderr.count("not in the Git file set"), 2, stderr)
+
+    def test_ignored_symlink_aliases_and_intermediate_links_are_not_delivered(self):
+        self.write("README.md", "[alias](alias.md#api)\n")
+        self.write("docs/guide.md", "# API\n")
+        self.write(".gitignore", "/alias.md\n/middle.md\n")
+        alias = self.root / "alias.md"
+        try:
+            alias.symlink_to(Path("docs/guide.md"))
+        except OSError:
+            self.skipTest("Symbolic link creation is unavailable")
+        self.git("add", "README.md", "docs/guide.md")
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("not in the Git file set: alias.md#api", stderr)
+        self.git("add", "-f", "alias.md")
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 0, stderr)
+        alias.unlink()
+        alias.symlink_to("middle.md")
+        (self.root / "middle.md").symlink_to(Path("docs/guide.md"))
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("not in the Git file set: alias.md#api", stderr)
+        self.git("add", "-f", "middle.md")
+        code, _, stderr = self.run_main()
+        self.assertEqual(code, 0, stderr)
+
     def test_worktree_not_index_contents_and_deleted_sources_are_excluded(self):
         path = self.write("README.md", "# Indexed\n")
         self.git("add", "README.md")
@@ -141,6 +339,28 @@ class EnumerationFailureTests(TemporaryTree):
         self.assertIn("source-tree fallback", stderr.getvalue())
         self.assertIn("Git ignores are unavailable", stderr.getvalue())
         self.assertIn("local docs/evidence included", stderr.getvalue())
+
+    def test_staged_mode_requires_git_metadata(self):
+        self.write("README.md", "# Export\n")
+        code, stdout, stderr = self.run_main("--staged")
+        self.assertEqual(code, 1)
+        self.assertNotIn("passed", stdout)
+        self.assertIn("--staged requires Git metadata", stderr)
+        self.assertNotIn("fallback", stderr)
+
+    def test_staged_export_failure_never_passes_or_falls_back(self):
+        source = self.write("README.md", "# Indexed\n")
+        for failure in [FileNotFoundError("git unavailable"),
+                        subprocess.CalledProcessError(1, ["git", "cat-file"]),
+                        subprocess.TimeoutExpired(["git"], 30)]:
+            with self.subTest(failure=type(failure).__name__), \
+                    patch.object(checker, "git_files", return_value={source}), \
+                    patch.object(checker.subprocess, "run", side_effect=failure):
+                code, stdout, stderr = self.run_main("--staged")
+                self.assertEqual(code, 1)
+                self.assertNotIn("passed", stdout)
+                self.assertIn("Git staged snapshot export failed", stderr)
+                self.assertNotIn("fallback", stderr)
 
     def test_empty_export_is_not_a_success(self):
         code, stdout, stderr = self.run_main()

@@ -35,6 +35,8 @@ from the repository root unless noted otherwise. Automated script tests live in
 
 # Check documentation and compile/run public-guide Rust examples (not release acceptance).
 python scripts/docs/check_docs.py
+# Before committing, check indexed content separately (does not stage or reset files).
+python scripts/docs/check_docs.py --staged
 python scripts/docs/check_examples.py
 
 # Analyze a DHAT report in the current working directory.
@@ -54,7 +56,9 @@ Packaging prerequisites and release-payload details are described in the
 [release guide](../docs/app/releases.md). Read each packaging script's help for
 optional real MSI/ZIP test arguments. See the [developer profiling guide](../docs/developer/profiling.md) for capture procedures, or use `just dhat-run` to capture a DHAT report.
 
-The documentation checker covers tracked and nonignored untracked Markdown, including local links and heading fragments. It does not validate external sites or factual claims.
+The documentation checker covers tracked and nonignored untracked Markdown, including local links and heading fragments. In a Git checkout, a local link target must belong to that same candidate file set; a directory needs at least one candidate file. An ignored local evidence file cannot satisfy a public link unless it is explicitly tracked. New nonignored documents and assets remain valid working-tree candidates before staging, but this does not prove they will be committed.
+
+Use `python scripts/docs/check_docs.py --staged` before committing to check an isolated export of the index, including staged Markdown contents, target files and heading fragments. Snapshot contents come from raw Git blobs, without checkout/smudge filters. It excludes unstaged/untracked and intent-to-add files, honors staged additions/deletions, and never stages or resets files. CI's existing default check runs on its clean checkout; no workflow change is needed. Without Git metadata, only the available source tree can be checked, with an explicit warning; `--staged` is unavailable. Neither mode validates external sites or factual claims.
 
 The example checker generates an isolated package/cache under `target/` and runs public widget/terminal Rustdoc examples; native `no_run` snippets compile only.
 
