@@ -14,7 +14,7 @@ pub(crate) fn create_tab(
     profiles: &BTreeMap<ProfileId, SessionProfile>,
     intent: &ProfileLaunchIntent,
     factory: impl FnOnce(
-        harbor_app::tab_manager::TabId,
+        harbor_app::tab_manager::SessionId,
         harbor_widget::scene::primitive::ExternalDrawId,
         &ShellCommand,
     ) -> anyhow::Result<harbor_app::tab_manager::TerminalTabResources>,
@@ -24,7 +24,7 @@ pub(crate) fn create_tab(
             tabs.active_live(source),
             "profile source is no longer active and live"
         );
-        tabs.active_working_directory()
+        tabs.session_working_directory(source)
     } else {
         None
     };

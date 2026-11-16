@@ -68,7 +68,7 @@ fn third_popup_uses_the_same_slot_cleanup_focus_and_notification_contract() {
         runtime.update(Instant::now());
         assert!(ui.popup_is_open());
         assert_eq!(runtime.input().focused(), focus);
-        ui.open_search(tabs.active_id().unwrap());
+        ui.open_search(tabs.active_session_id().unwrap());
         runtime.request_focus(&ui.search_focus());
         runtime.update(Instant::now());
         assert_eq!(editor.text(), "");
@@ -101,7 +101,7 @@ fn replacement_and_same_kind_reopen_reject_clipboard_ime_and_old_close() {
     for search_first in [false, true] {
         let (tabs, ui, mut runtime, bytes) = fixture();
         if search_first {
-            ui.open_search(tabs.active_id().unwrap());
+            ui.open_search(tabs.active_session_id().unwrap());
             runtime.request_focus(&ui.search_focus());
             runtime.update(Instant::now());
         } else {
@@ -123,10 +123,10 @@ fn replacement_and_same_kind_reopen_reject_clipboard_ime_and_old_close() {
         // must create a new editor lifetime, not reuse the retired Fiber.
         if search_first {
             ui.open_palette();
-            ui.open_search(tabs.active_id().unwrap());
+            ui.open_search(tabs.active_session_id().unwrap());
             runtime.request_focus(&ui.search_focus());
         } else {
-            ui.open_search(tabs.active_id().unwrap());
+            ui.open_search(tabs.active_session_id().unwrap());
             ui.open_palette();
             runtime.request_focus(&ui.palette_focus);
         }

@@ -877,6 +877,13 @@ impl TerminalIo {
         }
     }
 
+    /// Explicit Host retirement, independent of retained engine/UI references.
+    pub(crate) fn retire_session(&mut self, screen: &mut Screen) {
+        self.observe_reader_disconnect(screen);
+        self.session.barrier = None;
+        self.session.pty = None;
+    }
+
     /// Writes bytes synchronously through the session's input endpoint.
     pub(crate) fn write_pty(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         self.session.write_pty(bytes)

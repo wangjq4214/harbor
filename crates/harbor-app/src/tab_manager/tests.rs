@@ -18,20 +18,26 @@ fn create(manager: &mut TabManager) -> (TabId, ExternalDrawId) {
     (snapshot.id, snapshot.draw_id)
 }
 
-fn terminal(manager: &TabManager, id: TabId) -> Arc<Mutex<Terminal>> {
+fn session(manager: &TabManager, id: TabId) -> SessionId {
     manager
-        .tabs
+        .snapshots()
         .iter()
         .find(|tab| tab.id == id)
-        .map(|tab| Arc::clone(&tab.terminal))
         .unwrap()
+        .binding
+        .session
+}
+fn terminal(manager: &TabManager, id: TabId) -> Arc<Mutex<Terminal>> {
+    manager.session_terminal(session(manager, id)).unwrap()
 }
 
 #[test]
 fn clipboard_output_preserves_sources_and_unrelated_events() {
     let mut manager = TabManager::new();
     let (a, _) = create(&mut manager);
+    let a_session = manager.active_session_id().unwrap();
     let (b, _) = create(&mut manager);
+    let b_session = manager.active_session_id().unwrap();
     terminal(&manager, a).lock().unwrap().put_bytes(
         b"\x1b]52;c;Zmlyc3Q=\x07\x1b]2;source title\x07\x1b]7;file:///source\x07\x1b]133;A\x07\x1b]52;c;c2Vjb25k\x07",
     );
@@ -40,18 +46,18 @@ fn clipboard_output_preserves_sources_and_unrelated_events() {
         .unwrap()
         .put_bytes(b"\x1b]52;;YWN0aXZl\x1b\\");
 
-    let output = manager.process_output(a);
+    let output = manager.process_output(a_session);
     assert!(output.title_changed);
     assert!(output.metadata_changed);
     assert!(!output.active_title_changed);
     assert!(!output.request_active_invalidation);
     assert!(!output.unread_changed);
     let write = output.clipboard_write.unwrap();
-    assert_eq!(write.source, a);
+    assert_eq!(write.source, a_session);
     assert_eq!(write.contents.as_str(), "second");
     assert!(!format!("{write:?}").contains("second"));
     assert!(!manager.active_live(write.source));
-    assert_eq!(manager.source_label(a), "source title");
+    assert_eq!(manager.source_label(a_session), "source title");
     assert_eq!(manager.active_title(), Some("test-shell"));
     let snapshot = &manager.snapshots()[0];
     assert_eq!(snapshot.working_directory().unwrap().path(), "/source");
@@ -59,42 +65,50 @@ fn clipboard_output_preserves_sources_and_unrelated_events() {
         snapshot.shell_integration(),
         Some(ShellIntegrationMarker::PromptStart)
     );
-    assert!(manager.process_output(a).clipboard_write.is_none());
+    assert!(manager.process_output(a_session).clipboard_write.is_none());
 
-    let write = manager.process_output(b).clipboard_write.unwrap();
-    assert_eq!(write.source, b);
+    let write = manager.process_output(b_session).clipboard_write.unwrap();
+    assert_eq!(write.source, b_session);
     assert_eq!(write.contents.into_text(), "active");
-    assert!(manager.active_live(b));
+    assert!(manager.active_live(b_session));
 }
 
 #[test]
 fn clipboard_source_eligibility_rejects_invalid_removed_and_changed_sessions() {
     let mut manager = TabManager::new();
     let (a, _) = create(&mut manager);
-    assert!(manager.active_live(a));
-    assert!(!manager.active_live(TabId(u64::MAX)));
+    let a_session = manager.active_session_id().unwrap();
+    assert!(manager.active_live(a_session));
+    assert!(!manager.active_live(SessionId(u64::MAX)));
     terminal(&manager, a)
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07");
-    let write = manager.process_output(a).clipboard_write.unwrap();
+    let write = manager.process_output(a_session).clipboard_write.unwrap();
     let (b, _) = create(&mut manager);
+    let b_session = manager.active_session_id().unwrap();
     assert!(!manager.active_live(write.source));
     manager.close(a);
     assert!(!manager.active_live(write.source));
-    assert_eq!(manager.process_output(a), TabOutputOutcome::default());
     assert_eq!(
-        manager.process_output(TabId(u64::MAX)),
+        manager.process_output(a_session),
         TabOutputOutcome::default()
     );
-    assert!(manager.active_live(b));
-    assert_eq!(manager.source_label(a), format!("Session {a}"));
+    assert_eq!(
+        manager.process_output(SessionId(u64::MAX)),
+        TabOutputOutcome::default()
+    );
+    assert!(manager.active_live(b_session));
+    assert_eq!(
+        manager.source_label(a_session),
+        format!("Session {a_session}")
+    );
     manager.close(b);
     let (c, _) = create(&mut manager);
     assert_ne!(c, a);
     assert_ne!(c, b);
-    assert!(!manager.active_live(a));
-    assert!(!manager.active_live(b));
+    assert!(!manager.active_live(a_session));
+    assert!(!manager.active_live(b_session));
 }
 
 #[test]
@@ -104,13 +118,14 @@ fn clipboard_delivery_settings_apply_to_current_and_future_sessions() {
     manager.set_clipboard_delivery(ClipboardDelivery::First);
     let (b, _) = create(&mut manager);
     for id in [a, b] {
+        let id_session = session(&manager, id);
         terminal(&manager, id)
             .lock()
             .unwrap()
             .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07");
         assert_eq!(
             manager
-                .process_output(id)
+                .process_output(id_session)
                 .clipboard_write
                 .unwrap()
                 .contents
@@ -120,13 +135,14 @@ fn clipboard_delivery_settings_apply_to_current_and_future_sessions() {
     }
     manager.set_clipboard_delivery(ClipboardDelivery::Latest);
     for id in [a, b] {
+        let id_session = session(&manager, id);
         terminal(&manager, id)
             .lock()
             .unwrap()
             .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07\x1b]52;c;invalid!\x07");
         assert_eq!(
             manager
-                .process_output(id)
+                .process_output(id_session)
                 .clipboard_write
                 .unwrap()
                 .contents
@@ -137,11 +153,12 @@ fn clipboard_delivery_settings_apply_to_current_and_future_sessions() {
     manager.set_clipboard_delivery(ClipboardDelivery::Discard);
     let (c, _) = create(&mut manager);
     for id in [a, b, c] {
+        let id_session = session(&manager, id);
         terminal(&manager, id)
             .lock()
             .unwrap()
             .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]2;still works\x07");
-        let output = manager.process_output(id);
+        let output = manager.process_output(id_session);
         assert!(output.clipboard_write.is_none());
         assert!(output.title_changed);
     }
@@ -151,6 +168,7 @@ fn clipboard_delivery_settings_apply_to_current_and_future_sessions() {
 fn clipboard_delivery_changes_preserve_or_release_pending_candidates() {
     let mut manager = TabManager::new();
     let (id, _) = create(&mut manager);
+    let id_session = manager.active_session_id().unwrap();
     terminal(&manager, id)
         .lock()
         .unwrap()
@@ -162,7 +180,7 @@ fn clipboard_delivery_changes_preserve_or_release_pending_candidates() {
         .put_bytes(b"\x1b]52;c;c2Vjb25k\x07");
     assert_eq!(
         manager
-            .process_output(id)
+            .process_output(id_session)
             .clipboard_write
             .unwrap()
             .contents
@@ -181,7 +199,7 @@ fn clipboard_delivery_changes_preserve_or_release_pending_candidates() {
         .put_bytes(b"\x1b]52;c;c2Vjb25k\x07");
     assert_eq!(
         manager
-            .process_output(id)
+            .process_output(id_session)
             .clipboard_write
             .unwrap()
             .contents
@@ -194,7 +212,7 @@ fn clipboard_delivery_changes_preserve_or_release_pending_candidates() {
         .unwrap()
         .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]2;retained title\x07");
     manager.set_clipboard_delivery(ClipboardDelivery::Discard);
-    let output = manager.process_output(id);
+    let output = manager.process_output(id_session);
     assert!(output.clipboard_write.is_none());
     assert!(output.title_changed);
 }
@@ -214,13 +232,14 @@ fn clipboard_factory_delivery_is_preserved_without_manager_override() {
         })
         .unwrap();
     let id = manager.active_id().unwrap();
+    let id_session = manager.active_session_id().unwrap();
     terminal(&manager, id)
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]52;c;Zmlyc3Q=\x07\x1b]52;c;c2Vjb25k\x07");
     assert_eq!(
         manager
-            .process_output(id)
+            .process_output(id_session)
             .clipboard_write
             .unwrap()
             .contents
@@ -255,6 +274,7 @@ fn closed_reader_session_is_ineligible_even_while_tab_remains_active() {
         })
         .unwrap();
     let id = manager.active_id().unwrap();
+    let id_session = manager.active_session_id().unwrap();
     let terminal = terminal(&manager, id);
     // An EOF reader may already have finished before this UI turn; no live precondition.
     terminal
@@ -273,8 +293,8 @@ fn closed_reader_session_is_ineligible_even_while_tab_remains_active() {
         std::thread::yield_now();
     }
     assert_eq!(manager.active_id(), Some(id));
-    assert!(!manager.active_live(id));
-    let output = manager.process_output(id);
+    assert!(!manager.active_live(id_session));
+    let output = manager.process_output(id_session);
     assert!(output.clipboard_write.is_none());
     assert!(output.title_changed);
     assert_eq!(manager.active_title(), Some("closing title"));
@@ -284,26 +304,31 @@ fn closed_reader_session_is_ineligible_even_while_tab_remains_active() {
 fn poisoned_clipboard_source_is_ineligible() {
     let mut manager = TabManager::new();
     let (id, _) = create(&mut manager);
+    let id_session = manager.active_session_id().unwrap();
     let terminal = terminal(&manager, id);
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _guard = terminal.lock().unwrap();
         panic!("synthetic lock poison");
     }));
-    assert!(!manager.active_live(id));
-    assert_eq!(manager.process_output(id), TabOutputOutcome::default());
+    assert!(!manager.active_live(id_session));
+    assert_eq!(
+        manager.process_output(id_session),
+        TabOutputOutcome::default()
+    );
 }
 
 #[test]
 fn clipboard_source_label_is_bounded_without_changing_the_title() {
     let mut manager = TabManager::new();
     let (id, _) = create(&mut manager);
+    let id_session = manager.active_session_id().unwrap();
     let title = "界".repeat(100);
     terminal(&manager, id)
         .lock()
         .unwrap()
         .put_bytes(format!("\x1b]2;{title}\x07").as_bytes());
-    manager.process_output(id);
-    assert_eq!(manager.source_label(id).chars().count(), 80);
+    manager.process_output(id_session);
+    assert_eq!(manager.source_label(id_session).chars().count(), 80);
     assert_eq!(manager.active_title(), Some(title.as_str()));
 }
 
@@ -357,12 +382,13 @@ fn active_tab_changes_clear_the_previous_terminal_preedit() {
 fn activation_wraps_supports_numeric_lookup_and_clears_unread() {
     let mut manager = TabManager::new();
     let (a, _) = create(&mut manager);
+    let a_session = manager.active_session_id().unwrap();
     let (b, _) = create(&mut manager);
     let (c, _) = create(&mut manager);
     manager
-        .tabs
+        .sessions
         .iter_mut()
-        .find(|tab| tab.id == a)
+        .find(|tab| tab.id == a_session)
         .unwrap()
         .unread = true;
 
@@ -400,13 +426,14 @@ fn shell_osc_titles_use_the_same_short_display_name_as_the_fallback() {
 fn title_events_update_tabs_and_only_active_window_metadata() {
     let mut manager = TabManager::new();
     let (background, _) = create(&mut manager);
+    let background_session = manager.active_session_id().unwrap();
     let (active, _) = create(&mut manager);
 
     terminal(&manager, background)
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]2;background title\x07");
-    let background_outcome = manager.process_output(background);
+    let background_outcome = manager.process_output(background_session);
     assert!(background_outcome.title_changed);
     assert!(!background_outcome.active_title_changed);
     assert_eq!(manager.active_title(), Some("test-shell"));
@@ -418,19 +445,19 @@ fn title_events_update_tabs_and_only_active_window_metadata() {
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]2;\x1b\\");
-    let reset = manager.process_output(background);
+    let reset = manager.process_output(background_session);
     assert!(reset.active_title_changed);
     assert_eq!(manager.active_title(), Some("test-shell"));
     terminal(&manager, background)
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]2;test-shell\x07");
-    let duplicate = manager.process_output(background);
+    let duplicate = manager.process_output(background_session);
     assert!(!duplicate.title_changed);
     assert!(!duplicate.active_title_changed);
 
     assert_eq!(
-        manager.process_output(TabId(u64::MAX)),
+        manager.process_output(SessionId(u64::MAX)),
         TabOutputOutcome::default()
     );
     assert_eq!(manager.active_id(), Some(background));
@@ -440,13 +467,15 @@ fn title_events_update_tabs_and_only_active_window_metadata() {
 fn working_directory_metadata_is_retained_per_tab_and_reports_real_changes() {
     let mut manager = TabManager::new();
     let (background, _) = create(&mut manager);
+    let background_session = manager.active_session_id().unwrap();
     let (active, _) = create(&mut manager);
+    let active_session = manager.active_session_id().unwrap();
 
     terminal(&manager, background)
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]7;file://host/home/one\x07");
-    let changed = manager.process_output(background);
+    let changed = manager.process_output(background_session);
     assert!(changed.metadata_changed);
     assert!(!changed.title_changed);
     assert!(!changed.active_title_changed);
@@ -461,13 +490,13 @@ fn working_directory_metadata_is_retained_per_tab_and_reports_real_changes() {
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]7;file://host/home/one\x07\x1b]7;invalid\x07");
-    assert!(!manager.process_output(background).metadata_changed);
+    assert!(!manager.process_output(background_session).metadata_changed);
 
     terminal(&manager, active)
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]7;file:///active\x07");
-    let active_changed = manager.process_output(active);
+    let active_changed = manager.process_output(active_session);
     assert!(active_changed.metadata_changed);
     assert!(!active_changed.title_changed);
     assert!(!active_changed.active_title_changed);
@@ -480,10 +509,10 @@ fn working_directory_metadata_is_retained_per_tab_and_reports_real_changes() {
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]7;\x07");
-    assert!(manager.process_output(background).metadata_changed);
+    assert!(manager.process_output(background_session).metadata_changed);
     assert_eq!(manager.snapshots()[0].working_directory, None);
     assert_eq!(
-        manager.process_output(TabId(u64::MAX)),
+        manager.process_output(SessionId(u64::MAX)),
         TabOutputOutcome::default()
     );
 }
@@ -492,13 +521,15 @@ fn working_directory_metadata_is_retained_per_tab_and_reports_real_changes() {
 fn shell_integration_metadata_is_retained_per_tab_and_reports_real_changes() {
     let mut manager = TabManager::new();
     let (background, _) = create(&mut manager);
+    let background_session = manager.active_session_id().unwrap();
     let (active, _) = create(&mut manager);
+    let active_session = manager.active_session_id().unwrap();
 
     terminal(&manager, background)
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]133;A\x07");
-    let changed = manager.process_output(background);
+    let changed = manager.process_output(background_session);
     assert!(changed.metadata_changed);
     assert!(!changed.title_changed);
     assert!(!changed.active_title_changed);
@@ -514,7 +545,7 @@ fn shell_integration_metadata_is_retained_per_tab_and_reports_real_changes() {
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]133;unknown\x07");
-    assert!(!manager.process_output(background).metadata_changed);
+    assert!(!manager.process_output(background_session).metadata_changed);
     assert_eq!(
         manager.snapshots()[0].shell_integration(),
         Some(ShellIntegrationMarker::PromptStart)
@@ -526,7 +557,7 @@ fn shell_integration_metadata_is_retained_per_tab_and_reports_real_changes() {
         .lock()
         .unwrap()
         .put_bytes(oversized.as_bytes());
-    assert!(!manager.process_output(background).metadata_changed);
+    assert!(!manager.process_output(background_session).metadata_changed);
     assert_eq!(
         manager.snapshots()[0].shell_integration(),
         Some(ShellIntegrationMarker::PromptStart)
@@ -535,7 +566,7 @@ fn shell_integration_metadata_is_retained_per_tab_and_reports_real_changes() {
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]133;D;0\x07");
-    let active_changed = manager.process_output(active);
+    let active_changed = manager.process_output(active_session);
     assert!(active_changed.metadata_changed);
     let snapshots = manager.snapshots();
     assert_eq!(
@@ -547,7 +578,7 @@ fn shell_integration_metadata_is_retained_per_tab_and_reports_real_changes() {
         .lock()
         .unwrap()
         .put_bytes(b"\x1b]133;\x07");
-    assert!(manager.process_output(background).metadata_changed);
+    assert!(manager.process_output(background_session).metadata_changed);
     assert_eq!(manager.snapshots()[0].shell_integration(), None);
 
     // RIS clears shell integration
@@ -555,7 +586,7 @@ fn shell_integration_metadata_is_retained_per_tab_and_reports_real_changes() {
         .lock()
         .unwrap()
         .put_bytes(b"\x1bc");
-    assert!(manager.process_output(active).metadata_changed);
+    assert!(manager.process_output(active_session).metadata_changed);
     assert_eq!(manager.snapshots()[1].shell_integration(), None);
 }
 
@@ -589,13 +620,14 @@ fn inactive_output_marks_unread_only_when_bytes_are_ingested() {
         })
         .unwrap();
     let background = manager.active_id().unwrap();
+    let background_session = manager.active_session_id().unwrap();
     create(&mut manager);
     wake_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("reader should announce queued output");
 
-    assert!(manager.process_output(background).unread_changed);
-    assert!(!manager.process_output(background).unread_changed);
+    assert!(manager.process_output(background_session).unread_changed);
+    assert!(!manager.process_output(background_session).unread_changed);
     assert!(
         manager
             .snapshots()
@@ -631,6 +663,7 @@ fn close_active_selects_right_then_left_and_final_requests_window_close() {
 fn close_inactive_requests_redraw_while_stale_ids_are_noops() {
     let mut manager = TabManager::new();
     let (a, _) = create(&mut manager);
+    let a_session = manager.active_session_id().unwrap();
     let (b, _) = create(&mut manager);
     assert_eq!(
         manager.close(a),
@@ -641,7 +674,10 @@ fn close_inactive_requests_redraw_while_stale_ids_are_noops() {
     );
     assert_eq!(manager.active_id(), Some(b));
     assert_eq!(manager.close(a), TabActionOutcome::default());
-    assert_eq!(manager.process_output(a), TabOutputOutcome::default());
+    assert_eq!(
+        manager.process_output(a_session),
+        TabOutputOutcome::default()
+    );
 }
 
 #[test]
@@ -742,7 +778,7 @@ fn resize_broadcast_updates_all_live_tabs_and_deduplicates_grid() {
     assert_eq!(manager.last_broadcast_size(), None);
     assert_eq!(manager.advance_resizes().attempted, 2);
     assert_eq!(manager.last_broadcast_size(), Some(requested));
-    for tab in &manager.tabs {
+    for tab in &manager.sessions {
         let snapshot = tab.terminal.lock().unwrap().drain_and_snapshot();
         assert_eq!((snapshot.rows, snapshot.cols), (12, 42));
     }
@@ -753,7 +789,7 @@ fn resize_broadcast_updates_all_live_tabs_and_deduplicates_grid() {
 
 fn dimensions(manager: &TabManager) -> Vec<TerminalSize> {
     manager
-        .tabs
+        .sessions
         .iter()
         .map(|tab| {
             let terminal = tab.terminal.lock().unwrap();
@@ -894,7 +930,7 @@ fn resize_return_to_completed_a_cancels_b_with_and_without_partial_commits() {
         assert!(dimensions(&manager).iter().all(|s| *s == a));
         assert!(
             manager
-                .tabs
+                .sessions
                 .iter()
                 .all(|tab| !tab.terminal.lock().unwrap().resize_pending())
         );
@@ -999,7 +1035,7 @@ fn failed_factory_burns_ids_without_mutating_tabs() {
     assert!(manager.snapshots().is_empty());
 
     let (id, draw_id) = create(&mut manager);
-    assert_eq!(id.get(), 2);
+    assert_eq!(id.0, 2);
     assert_eq!(draw_id, 2);
 }
 

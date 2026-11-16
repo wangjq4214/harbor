@@ -240,7 +240,7 @@ fn color_only_prepares_all_palettes_atomically_without_renderer_or_resize_work()
 fn background_opacity_reload_updates_existing_sessions_and_future_policy() {
     let mut f = Fixture::new();
     let targets = f.tabs.configuration_targets();
-    assert_ne!(f.tabs.active_id(), Some(targets[0].0));
+    assert_ne!(f.tabs.active_session_id(), Some(targets[0].0));
     let size = f.tabs.last_broadcast_size();
     let metrics = f.policy.metrics;
     // Keep a background OSC override in an inactive alternate screen.

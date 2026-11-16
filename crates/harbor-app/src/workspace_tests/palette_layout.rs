@@ -9,7 +9,7 @@ fn palette_row_height_is_uniform_across_navigation_and_filtered_result_counts() 
         (320, 1200, 1.0, 28.0),
     ] {
         for multiple_bindings in [false, true] {
-            let (_, controller, mut runtime, bytes) = fixture();
+            let (_tabs, controller, mut runtime, bytes) = fixture();
             runtime.set_viewport(Viewport::new(width, height, scale));
             runtime.set_text_metrics(harbor_widget::text::TextMetrics {
                 line_height,
@@ -84,7 +84,7 @@ fn palette_row_height_is_uniform_across_navigation_and_filtered_result_counts() 
 #[test]
 fn palette_rows_reserve_a_gutter_with_right_aligned_keycaps_and_translucent_selection() {
     for (width, height, scale) in [(1000, 700, 1.0), (1500, 1000, 1.5), (320, 700, 1.0)] {
-        let (_, controller, mut runtime, bytes) = fixture();
+        let (_tabs, controller, mut runtime, bytes) = fixture();
         runtime.set_viewport(Viewport::new(width, height, scale));
         runtime.update(Instant::now());
         open(&controller, &mut runtime);

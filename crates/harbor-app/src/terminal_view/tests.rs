@@ -1,6 +1,30 @@
 #[path = "tests/gpu.rs"]
 mod gpu;
 
+#[test]
+fn unmount_keeps_session_but_retirement_revokes_retained_callbacks() {
+    #[allow(clippy::arc_with_non_send_sync)]
+    let terminal = Arc::new(Mutex::new(Terminal::new_headless(4, 20)));
+    let bridge = TerminalWidgetBridge::new(999, terminal.clone(), Arc::new(AtomicBool::new(false)));
+    terminal.lock().unwrap().put_str("retained");
+    let version = terminal.lock().unwrap().content_version();
+    (bridge.on_unmount)();
+    assert!(!terminal.lock().unwrap().is_session_closed());
+    assert_eq!(terminal.lock().unwrap().content_version(), version);
+    assert!((bridge.schedule)(bridge.draw_id(), std::time::Instant::now()).redraw_now);
+    let old_callback = bridge.schedule.clone();
+    bridge.retire();
+    assert_eq!(
+        old_callback(bridge.draw_id(), std::time::Instant::now()),
+        ExternalScheduleDemand::empty()
+    );
+    let context = ExternalDrawContext::new(
+        Rect::from_min_size(Point::ZERO, Size::new(100.0, 100.0)),
+        Viewport::new(100, 100, 1.0),
+    );
+    assert!((bridge.ime)(bridge.draw_id(), &context).is_none());
+}
+
 use super::*;
 use harbor_widget::input::event::{
     Key as WidgetKey, KeyboardEvent, Modifiers, PointerButton, PointerEvent, PointerPhase, UiEvent,

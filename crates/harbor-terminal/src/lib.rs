@@ -134,6 +134,14 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    /// Release process/reader ownership once without requiring UI clones to drop.
+    /// Unlike unmount/hide this is irreversible; content identity is not recycled.
+    pub fn retire_session(&mut self) {
+        self.cancel_resize();
+        self.clear_preedit();
+        self.io.retire_session(&mut self.screen);
+    }
+
     /// Successful launch facts survive commands, metadata updates and config reloads.
     pub fn project_snapshot(&self) -> Option<harbor_config::ProjectRecipe> {
         self.project_recognition.snapshot()

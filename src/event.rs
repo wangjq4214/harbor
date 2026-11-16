@@ -5,15 +5,15 @@
 
 use harbor_widget::effects::ExternalInvalidation;
 
-use harbor_app::tab_manager::TabId;
+use harbor_app::tab_manager::SessionId;
 
 /// Events posted back to the winit event loop from background workers.
 #[derive(Debug)]
 pub(crate) enum AppEvent {
     /// The terminal reader queued output for one Host-owned session.
-    TerminalOutputReady(TabId),
+    TerminalOutputReady(SessionId),
     /// A confirmed terminal hyperlink click ready for Host policy.
-    OpenHyperlink(String),
+    OpenHyperlink(SessionId, String),
     /// Default-on configuration observation; never carries a parsed candidate.
     ConfigurationWatch,
     /// Device-level work; not terminal invalidation or a redraw.
@@ -35,7 +35,7 @@ pub(crate) fn external_invalidation_for_app_event(
 ) -> Option<ExternalInvalidation> {
     match event {
         AppEvent::TerminalOutputReady(_) => Some(ExternalInvalidation::new()),
-        AppEvent::OpenHyperlink(_) | AppEvent::ConfigurationWatch | AppEvent::GpuWake => None,
+        AppEvent::OpenHyperlink(_, _) | AppEvent::ConfigurationWatch | AppEvent::GpuWake => None,
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         AppEvent::WidgetHostWork(_) => None,
     }
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn terminal_output_event_maps_only_to_generic_external_invalidation() {
-        let event = AppEvent::TerminalOutputReady(TabId(7));
+        let event = AppEvent::TerminalOutputReady(SessionId(7));
         assert_eq!(
             external_invalidation_for_app_event(&event),
             Some(ExternalInvalidation::new())

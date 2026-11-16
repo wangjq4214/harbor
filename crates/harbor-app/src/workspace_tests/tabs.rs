@@ -1069,7 +1069,7 @@ fn unchanged_global_publications_do_not_rebuild_the_workspace() {
     let bindings =
         crate::command::validate_keybindings(&harbor_config::RawKeybindings::default()).unwrap();
     controller.publish_keybindings(bindings.clone());
-    controller.open_search(TabId(1));
+    controller.open_search(SessionId(1));
     controller.publish_configuration_notice(
         ConfigurationNoticeSource::Reload,
         Some("invalid TOML".into()),

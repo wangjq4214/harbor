@@ -19,7 +19,7 @@ use winit::{event_loop::EventLoopProxy, window::Window};
 use crate::effects::merge_wait;
 use crate::event::AppEvent;
 use harbor_app::{
-    tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources},
+    tab_manager::{SessionId, TabActionOutcome, TabManager, TerminalTabResources},
     tab_view::{TabCommand, TabFocusPolicy},
     terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation},
     workspace::WorkspaceUiController,
@@ -428,13 +428,13 @@ impl TerminalTabFactory {
 
     pub(crate) fn create_resources(
         &self,
-        tab_id: TabId,
+        session_id: SessionId,
         draw_id: ExternalDrawId,
         size: TerminalSize,
         surface_size: (u32, u32),
     ) -> anyhow::Result<TerminalTabResources> {
         self.create_resources_with_command(
-            tab_id,
+            session_id,
             draw_id,
             size,
             surface_size,
@@ -444,7 +444,7 @@ impl TerminalTabFactory {
 
     fn create_resources_with_command(
         &self,
-        tab_id: TabId,
+        session_id: SessionId,
         draw_id: ExternalDrawId,
         size: TerminalSize,
         surface_size: (u32, u32),
@@ -473,7 +473,7 @@ impl TerminalTabFactory {
         // Only the session takes endpoint ownership and starts the reader.
         let terminal = terminal.start_session_from_endpoints(endpoints, move || {
             output_event_proxy
-                .send_event(AppEvent::TerminalOutputReady(tab_id))
+                .send_event(AppEvent::TerminalOutputReady(session_id))
                 .is_ok()
         })?;
         #[allow(clippy::arc_with_non_send_sync)]
@@ -484,7 +484,7 @@ impl TerminalTabFactory {
             renderer,
             Arc::clone(&self.input_gate),
             Arc::new(move |uri| {
-                let _ = hyperlink_event_proxy.send_event(AppEvent::OpenHyperlink(uri));
+                let _ = hyperlink_event_proxy.send_event(AppEvent::OpenHyperlink(session_id, uri));
             }),
         );
         Ok(TerminalTabResources::new(terminal, bridge, shell_name))
@@ -494,7 +494,7 @@ impl TerminalTabFactory {
 /// Owns cancellation, never Terminal mutex guards, across event-loop turns.
 pub(crate) struct ConfigurationAcquisition {
     members: Vec<(
-        TabId,
+        SessionId,
         Arc<Mutex<Terminal>>,
         harbor_terminal::ConfigurationBarrier,
     )>,
@@ -543,8 +543,8 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
-    pub(crate) fn active_id(&self) -> Option<TabId> {
-        self.tabs.active_id()
+    pub(crate) fn active_session_id(&self) -> Option<SessionId> {
+        self.tabs.active_session_id()
     }
     pub(crate) fn capture_quick_save(&self) -> Result<harbor_app::QuickSaveDraft, &'static str> {
         crate::profile_save::capture(&self.tabs)
@@ -571,7 +571,7 @@ impl TabCoordinator {
 
     /// Return work to the existing output-event path so OSC events, unread flags,
     /// clipboard authorization and presentation notifications are not bypassed.
-    pub(crate) fn pending_resize_tabs(&self) -> Vec<TabId> {
+    pub(crate) fn pending_resize_sessions(&self) -> Vec<SessionId> {
         self.tabs
             .configuration_targets()
             .into_iter()
@@ -668,12 +668,13 @@ impl TabCoordinator {
         self.tabs.active_terminal()
     }
 
-    pub(crate) fn active_live(&self, source: TabId) -> bool {
+    pub(crate) fn active_live(&self, source: SessionId) -> bool {
         self.tabs.active_live(source)
     }
 
     pub(crate) fn sync_ui(&self, window: &Window) {
-        self.workspace_ui.sync_search_source(self.tabs.active_id());
+        self.workspace_ui
+            .sync_search_source(self.tabs.active_session_id());
         if let Some(title) = self.tabs.active_title() {
             window.set_title(&format_window_title(title));
         }
@@ -696,9 +697,9 @@ impl TabCoordinator {
 
     pub(crate) fn process_output(
         &mut self,
-        tab_id: TabId,
+        session_id: SessionId,
     ) -> harbor_app::tab_manager::TabOutputOutcome {
-        self.tabs.process_output(tab_id)
+        self.tabs.process_output(session_id)
     }
 
     pub(crate) fn apply_pending_allocation(
@@ -823,9 +824,9 @@ impl TabCoordinator {
             .tabs
             .last_broadcast_size()
             .unwrap_or_else(|| self.factory.default_terminal_size(surface_size));
-        let outcome = match self.tabs.execute_command(command, |tab_id, draw_id| {
+        let outcome = match self.tabs.execute_command(command, |session_id, draw_id| {
             self.factory
-                .create_resources(tab_id, draw_id, size, surface_size)
+                .create_resources(session_id, draw_id, size, surface_size)
         }) {
             Ok(outcome) => {
                 if command == TabCommand::New {

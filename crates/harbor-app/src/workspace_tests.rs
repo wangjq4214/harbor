@@ -17,7 +17,7 @@ pub(super) fn ctrl() -> Modifiers {
 }
 use super::*;
 use crate::command::{AppCommand, AppCommandRequest};
-use crate::tab_manager::{TabId, TabIndex};
+use crate::tab_manager::{PaneBinding, PaneId, SessionId, TabId, TabIndex};
 use crate::tab_view::{COMPACT_RAIL_WIDTH, RailPresentation, TabCommand, TabFocusPolicy};
 use harbor_terminal::Terminal;
 use harbor_widget::{
@@ -36,6 +36,11 @@ use std::{any::TypeId, sync::atomic::AtomicBool, time::Instant};
 fn snapshot(id: u64, active: bool, unread: bool) -> TabSnapshot {
     TabSnapshot {
         id: TabId(id),
+        binding: PaneBinding {
+            workspace: TabId(id),
+            pane: PaneId(id),
+            session: SessionId(id),
+        },
         title: format!("Terminal {id}"),
         unread,
         draw_id: ExternalDrawId::new(id),

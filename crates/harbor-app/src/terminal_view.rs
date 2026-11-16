@@ -293,6 +293,7 @@ impl DecorationProjection {
 /// Component that owns the widget draw id and embeds a shared [`Terminal`] via [`ExternalSurface`].
 #[derive(Clone)]
 pub struct TerminalWidgetBridge {
+    retired: Arc<AtomicBool>,
     decorations: Arc<Mutex<DecorationProjection>>,
     #[cfg(test)]
     alt_screen_queries: Arc<std::sync::atomic::AtomicUsize>,
@@ -354,6 +355,8 @@ impl TerminalWidgetBridge {
         gate_active: Arc<AtomicBool>,
         activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Self {
+        let retired = Arc::new(AtomicBool::new(false));
+        let draw_retired = Arc::clone(&retired);
         let decorations = Arc::new(Mutex::new(DecorationProjection::default()));
         let draw_decorations = Arc::clone(&decorations);
         let draw_terminal = Arc::clone(&terminal);
@@ -362,6 +365,9 @@ impl TerminalWidgetBridge {
         #[allow(clippy::arc_with_non_send_sync)]
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(
             move |id, context, external_gpu, pass, mode| {
+                if draw_retired.load(Ordering::Acquire) {
+                    return;
+                }
                 dispatch_matched_draw(draw_id, id, context, |target| {
                     let Some(renderer) = &draw_renderer else {
                         // Headless bridges used by tests and the HMR host have no GPU projection.
@@ -428,17 +434,22 @@ impl TerminalWidgetBridge {
             },
         );
 
+        let schedule_retired = Arc::clone(&retired);
         let schedule_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]
         let schedule: Arc<ExternalScheduleFn> = Arc::new(move |id, now| {
+            if schedule_retired.load(Ordering::Acquire) {
+                return ExternalScheduleDemand::empty();
+            }
             schedule_demand_for_terminal(draw_id, id, &schedule_terminal, now)
         });
 
+        let ime_retired = Arc::clone(&retired);
         let ime_terminal = Arc::clone(&terminal);
         let ime_renderer = renderer.clone();
         #[allow(clippy::arc_with_non_send_sync)]
         let ime: Arc<ExternalImeFn> = Arc::new(move |id, context| {
-            if id != draw_id {
+            if ime_retired.load(Ordering::Acquire) || id != draw_id {
                 return None;
             }
             let target = render_target_from_context(context);
@@ -455,10 +466,13 @@ impl TerminalWidgetBridge {
             Some(effect)
         });
 
+        let input_retired = Arc::clone(&retired);
         let input_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]
         let on_input: Arc<ExternalInputFn> = Arc::new(move |event, ctx| {
-            if gate_suppresses_event(gate_active.load(Ordering::Acquire), event) {
+            if input_retired.load(Ordering::Acquire)
+                || gate_suppresses_event(gate_active.load(Ordering::Acquire), event)
+            {
                 return EventHandled::Handled;
             }
 
@@ -512,6 +526,7 @@ impl TerminalWidgetBridge {
             });
 
         Self {
+            retired,
             decorations,
             #[cfg(test)]
             alt_screen_queries: Arc::default(),
@@ -543,6 +558,16 @@ impl TerminalWidgetBridge {
             .set_ranges(ranges);
     }
 
+    pub(crate) fn is_bound_to(&self, terminal: &Arc<Mutex<Terminal>>) -> bool {
+        Arc::ptr_eq(&self.terminal, terminal)
+    }
+
+    /// Revokes all retained callbacks; unmount alone deliberately does not do this.
+    pub(crate) fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+        self.set_decorations(Vec::new());
+    }
+
     /// Widget-facing external draw identifier owned by this bridge.
     pub fn draw_id(&self) -> ExternalDrawId {
         self.draw_id
@@ -550,20 +575,23 @@ impl TerminalWidgetBridge {
 
     /// Reports whether the active selection would produce non-empty copied text.
     pub fn has_non_empty_selection(&self) -> bool {
-        self.terminal
-            .lock()
-            .is_ok_and(|terminal| terminal.has_non_empty_selection())
+        !self.retired.load(Ordering::Acquire)
+            && self
+                .terminal
+                .lock()
+                .is_ok_and(|terminal| terminal.has_non_empty_selection())
     }
 
     /// Reports whether terminal input currently targets the alternate screen.
     pub fn is_alt_screen(&self) -> bool {
         #[cfg(test)]
         self.alt_screen_queries.fetch_add(1, Ordering::Relaxed);
-        self.terminal.lock().is_ok_and(|mut terminal| {
-            // Preserve fresh mode ingestion without copying the visible grid.
-            terminal.drain_pty();
-            terminal.is_alt_screen()
-        })
+        !self.retired.load(Ordering::Acquire)
+            && self.terminal.lock().is_ok_and(|mut terminal| {
+                // Preserve fresh mode ingestion without copying the visible grid.
+                terminal.drain_pty();
+                terminal.is_alt_screen()
+            })
     }
 }
 

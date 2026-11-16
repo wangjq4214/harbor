@@ -9,7 +9,7 @@ use harbor_widget::{
 };
 
 use crate::{
-    tab_manager::{TabId, TabIndex},
+    tab_manager::{SessionId, TabId, TabIndex},
     tab_view::{TabCommand, TabFocusPolicy},
 };
 
@@ -57,7 +57,7 @@ pub enum CommandSource {
     },
     Palette {
         generation: u64,
-        target: Option<TabId>,
+        target: Option<SessionId>,
     },
 }
 /// A typed command plus source-specific focus disposition.

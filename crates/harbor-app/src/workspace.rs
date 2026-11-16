@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 struct SearchUiState {
-    source: crate::tab_manager::TabId,
+    source: crate::tab_manager::SessionId,
     input: TextEditingController,
     status: String,
     focus: FocusHandle,
@@ -237,7 +237,7 @@ impl WorkspaceUiController {
         }
     }
 
-    pub fn open_search(&self, source: crate::tab_manager::TabId) {
+    pub fn open_search(&self, source: crate::tab_manager::SessionId) {
         let mut state = self.store.state().read().clone();
         if state
             .popups
@@ -271,7 +271,7 @@ impl WorkspaceUiController {
         self.search_focus
     }
 
-    pub fn search_query(&self) -> Option<(crate::tab_manager::TabId, String)> {
+    pub fn search_query(&self) -> Option<(crate::tab_manager::SessionId, String)> {
         let state = self.store.state().read();
         let search = state.popups.get::<SearchUiState>()?;
         Some((search.source, search.input.text()))
@@ -283,7 +283,7 @@ impl WorkspaceUiController {
         }
     }
 
-    pub fn sync_search_source(&self, active: Option<crate::tab_manager::TabId>) {
+    pub fn sync_search_source(&self, active: Option<crate::tab_manager::SessionId>) {
         if self
             .search_query()
             .is_some_and(|(source, _)| Some(source) != active)

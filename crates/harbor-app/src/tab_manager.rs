@@ -1,4 +1,4 @@
-//! Host-owned terminal tab/session state and routing.
+//! Host-owned workspaces, pane bindings and independent session lifetimes.
 
 use std::sync::{Arc, Mutex};
 
@@ -11,16 +11,9 @@ use harbor_widget::scene::primitive::ExternalDrawId;
 
 use crate::terminal_view::TerminalWidgetBridge;
 
-/// Stable terminal-session identity. Values are monotonic and never reused.
+/// Stable workspace (tab rail) identity; never a session or external draw identity.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TabId(pub u64);
-
-impl TabId {
-    #[inline]
-    pub(crate) const fn get(self) -> u64 {
-        self.0
-    }
-}
 
 impl std::fmt::Display for TabId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -69,6 +62,7 @@ pub struct TerminalTabResources {
     terminal: Arc<Mutex<Terminal>>,
     bridge: TerminalWidgetBridge,
     shell_fallback: String,
+    published: bool,
 }
 
 impl TerminalTabResources {
@@ -81,25 +75,87 @@ impl TerminalTabResources {
             terminal,
             bridge,
             shell_fallback: shell_fallback.into(),
+            published: false,
         }
     }
 }
 
+impl Drop for TerminalTabResources {
+    fn drop(&mut self) {
+        if !self.published {
+            self.bridge.retire();
+            self.terminal
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .retire_session();
+        }
+    }
+}
+
+/// A pane is a presentation leaf, not an owner of the process. Workspace removal
+/// retires its sessions explicitly; UI unmount/root replacement does not.
 struct TerminalTab {
     id: TabId,
+    focused: PaneId,
+    panes: Vec<TerminalPane>,
+}
+
+struct TerminalPane {
+    id: PaneId,
+    session: SessionId,
+}
+
+/// Host routing token reserved BEFORE resource creation. This is not the engine's
+/// read_model::SessionId: content/revision proofs continue to use that engine identity.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SessionId(pub u64);
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Stable presentation identity, independent of position, session and draw registration.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PaneId(pub u64);
+
+/// Source capability for delayed Host operations. Revalidate the complete binding
+/// with contains_binding before attaching a result; never substitute the active pane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PaneBinding {
+    pub workspace: TabId,
+    pub pane: PaneId,
+    pub session: SessionId,
+}
+
+struct TerminalSession {
+    id: SessionId,
     title: String,
     shell_fallback: String,
     working_directory: Option<WorkingDirectoryMetadata>,
     shell_integration: Option<ShellIntegrationMarker>,
     unread: bool,
     terminal: Arc<Mutex<Terminal>>,
+    // One projection per session (mirrored sessions are out of scope).
     bridge: TerminalWidgetBridge,
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        self.bridge.retire();
+        self.terminal
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .retire_session();
+    }
 }
 
 /// Read-only product state for a tab rail or Host test.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TabSnapshot {
     pub(crate) id: TabId,
+    pub(crate) binding: PaneBinding,
     pub(crate) title: String,
     pub(crate) working_directory: Option<WorkingDirectoryMetadata>,
     pub(crate) shell_integration: Option<ShellIntegrationMarker>,
@@ -134,7 +190,7 @@ pub struct TabActionOutcome {
 /// Routing alone does not authorize the host clipboard effect.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SessionClipboardWrite {
-    pub source: TabId,
+    pub source: SessionId,
     pub contents: ClipboardWrite,
 }
 
@@ -194,8 +250,11 @@ pub struct ResizeBatchOutcome {
 pub struct TabManager {
     pub(crate) search: crate::search::SessionSearch,
     tabs: Vec<TerminalTab>,
+    sessions: Vec<TerminalSession>,
     active: Option<TabId>,
     next_tab_id: u64,
+    next_pane_id: u64,
+    next_session_id: u64,
     next_draw_id: ExternalDrawId,
     last_broadcast_size: Option<TerminalSize>,
     resize_target: Option<TerminalSize>,
@@ -215,8 +274,11 @@ impl TabManager {
         Self {
             search: crate::search::SessionSearch::default(),
             tabs: Vec::new(),
+            sessions: Vec::new(),
             active: None,
             next_tab_id: 1,
+            next_pane_id: 1,
+            next_session_id: 1,
             next_draw_id: ExternalDrawId::new(1),
             last_broadcast_size: None,
             resize_target: None,
@@ -229,10 +291,11 @@ impl TabManager {
     /// queued stale wake to target a later session.
     pub fn create_tab(
         &mut self,
-        factory: impl FnOnce(TabId, ExternalDrawId) -> Result<TerminalTabResources>,
+        factory: impl FnOnce(SessionId, ExternalDrawId) -> Result<TerminalTabResources>,
     ) -> Result<TabActionOutcome> {
-        let (id, draw_id) = self.reserve_ids()?;
-        let resources = factory(id, draw_id).context("create terminal tab resources")?;
+        let (binding, draw_id) = self.reserve_ids()?;
+        let mut resources =
+            factory(binding.session, draw_id).context("create terminal tab resources")?;
         if resources.bridge.draw_id() != draw_id {
             return Err(anyhow!(
                 "terminal bridge draw id mismatch: allocated {draw_id}, received {}",
@@ -240,6 +303,10 @@ impl TabManager {
             ));
         }
 
+        anyhow::ensure!(
+            resources.bridge.is_bound_to(&resources.terminal),
+            "terminal bridge engine mismatch"
+        );
         if let Some(delivery) = self.clipboard_delivery {
             resources
                 .terminal
@@ -255,19 +322,28 @@ impl TabManager {
             .use_host_resize_scheduling();
         self.last_broadcast_size = None;
         let title = resources.shell_fallback.clone();
-        self.tabs.push(TerminalTab {
-            id,
+        self.sessions.push(TerminalSession {
+            id: binding.session,
             title,
-            shell_fallback: resources.shell_fallback,
+            shell_fallback: resources.shell_fallback.clone(),
             working_directory: None,
             shell_integration: None,
             unread: false,
-            terminal: resources.terminal,
-            bridge: resources.bridge,
+            terminal: Arc::clone(&resources.terminal),
+            bridge: resources.bridge.clone(),
+        });
+        resources.published = true;
+        self.tabs.push(TerminalTab {
+            id: binding.workspace,
+            focused: binding.pane,
+            panes: vec![TerminalPane {
+                id: binding.pane,
+                session: binding.session,
+            }],
         });
         self.cancel_search();
         self.clear_active_preedit();
-        self.active = Some(id);
+        self.active = Some(binding.workspace);
         Ok(TabActionOutcome {
             active_bridge_changed: true,
             request_redraw: true,
@@ -282,7 +358,7 @@ impl TabManager {
     pub fn execute_command(
         &mut self,
         command: crate::tab_view::TabCommand,
-        create: impl FnOnce(TabId, ExternalDrawId) -> Result<TerminalTabResources>,
+        create: impl FnOnce(SessionId, ExternalDrawId) -> Result<TerminalTabResources>,
     ) -> Result<TabActionOutcome> {
         use crate::tab_view::TabCommand;
         Ok(match command {
@@ -300,22 +376,83 @@ impl TabManager {
         self.active
     }
 
-    /// Session eligibility only; the host must separately validate window focus.
-    pub fn active_live(&self, id: TabId) -> bool {
-        self.active == Some(id)
-            && self.tabs.iter().any(|tab| {
-                tab.id == id
-                    && tab
-                        .terminal
-                        .lock()
-                        .is_ok_and(|terminal| !terminal.is_session_closed())
+    /// Resolve a captured routing identity back to its current workspace/pane,
+    /// without assuming one session per tab or converting numeric IDs.
+    pub fn binding_for_session(&self, id: SessionId) -> Option<PaneBinding> {
+        self.tabs.iter().find_map(|tab| {
+            tab.panes
+                .iter()
+                .find(|pane| pane.session == id)
+                .map(|pane| PaneBinding {
+                    workspace: tab.id,
+                    pane: pane.id,
+                    session: id,
+                })
+        })
+    }
+
+    /// Current focused leaf. Capture this before asynchronous work.
+    pub fn active_binding(&self) -> Option<PaneBinding> {
+        let workspace = self.tabs.iter().find(|tab| Some(tab.id) == self.active)?;
+        let pane = workspace
+            .panes
+            .iter()
+            .find(|pane| pane.id == workspace.focused)?;
+        Some(PaneBinding {
+            workspace: workspace.id,
+            pane: pane.id,
+            session: pane.session,
+        })
+    }
+
+    pub fn active_session_id(&self) -> Option<SessionId> {
+        self.active_binding().map(|binding| binding.session)
+    }
+
+    pub fn contains_binding(&self, binding: PaneBinding) -> bool {
+        self.tabs.iter().any(|tab| {
+            tab.id == binding.workspace
+                && tab
+                    .panes
+                    .iter()
+                    .any(|pane| pane.id == binding.pane && pane.session == binding.session)
+        }) && self
+            .sessions
+            .iter()
+            .any(|session| session.id == binding.session)
+    }
+
+    /// Resolve the original session, not whichever pane is now focused. Callers
+    /// still apply their own foreground/permission policy (e.g. paste and OSC 52).
+    pub fn session_terminal(&self, id: SessionId) -> Option<Arc<Mutex<Terminal>>> {
+        self.sessions
+            .iter()
+            .find(|session| session.id == id)
+            .map(|session| Arc::clone(&session.terminal))
+    }
+
+    pub fn session_working_directory(&self, id: SessionId) -> Option<&WorkingDirectoryMetadata> {
+        self.sessions
+            .iter()
+            .find(|session| session.id == id)?
+            .working_directory
+            .as_ref()
+    }
+
+    /// Session eligibility only; the host separately validates window focus.
+    pub fn active_live(&self, id: SessionId) -> bool {
+        self.active_session_id() == Some(id)
+            && self.session_terminal(id).is_some_and(|terminal| {
+                terminal
+                    .lock()
+                    .is_ok_and(|terminal| !terminal.is_session_closed())
             })
     }
 
     /// Bounded display-only label, never a replacement for stable source identity.
-    pub fn source_label(&self, id: TabId) -> String {
+    pub fn source_label(&self, id: SessionId) -> String {
         const MAX_TITLE_CHARS: usize = 80;
-        match self.tabs.iter().find(|tab| tab.id == id) {
+        match self.sessions.iter().find(|tab| tab.id == id) {
             Some(tab) if !tab.title.is_empty() => tab.title.chars().take(MAX_TITLE_CHARS).collect(),
             _ => format!("Session {id}"),
         }
@@ -325,7 +462,7 @@ impl TabManager {
     /// Without an override, each factory's terminal delivery setting is preserved.
     pub fn set_clipboard_delivery(&mut self, delivery: ClipboardDelivery) {
         self.clipboard_delivery = Some(delivery);
-        for tab in &self.tabs {
+        for tab in &self.sessions {
             if let Ok(mut terminal) = tab.terminal.lock() {
                 terminal.set_clipboard_delivery(delivery);
             }
@@ -341,9 +478,9 @@ impl TabManager {
             .map(|tab| tab.id)
     }
 
-    fn active_tab(&self) -> Option<&TerminalTab> {
-        let id = self.active?;
-        self.tabs.iter().find(|tab| tab.id == id)
+    fn active_tab(&self) -> Option<&TerminalSession> {
+        let id = self.active_session_id()?;
+        self.sessions.iter().find(|session| session.id == id)
     }
 
     fn clear_active_preedit(&self) {
@@ -364,8 +501,8 @@ impl TabManager {
     /// Stable identities and shared engines/bridges for one application-thread transaction.
     pub fn configuration_targets(
         &self,
-    ) -> Vec<(TabId, Arc<Mutex<Terminal>>, TerminalWidgetBridge)> {
-        self.tabs
+    ) -> Vec<(SessionId, Arc<Mutex<Terminal>>, TerminalWidgetBridge)> {
+        self.sessions
             .iter()
             .map(|tab| (tab.id, Arc::clone(&tab.terminal), tab.bridge.clone()))
             .collect()
@@ -387,14 +524,33 @@ impl TabManager {
     pub fn snapshots(&self) -> Vec<TabSnapshot> {
         self.tabs
             .iter()
-            .map(|tab| TabSnapshot {
-                id: tab.id,
-                title: tab.title.clone(),
-                working_directory: tab.working_directory.clone(),
-                shell_integration: tab.shell_integration,
-                unread: tab.unread,
-                draw_id: tab.bridge.draw_id(),
-                active: self.active == Some(tab.id),
+            .filter_map(|workspace| {
+                let pane = workspace
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == workspace.focused)?;
+                let tab = self
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == pane.session)?;
+                Some(TabSnapshot {
+                    id: workspace.id,
+                    binding: PaneBinding {
+                        workspace: workspace.id,
+                        pane: pane.id,
+                        session: pane.session,
+                    },
+                    title: tab.title.clone(),
+                    working_directory: tab.working_directory.clone(),
+                    shell_integration: tab.shell_integration,
+                    unread: workspace.panes.iter().any(|pane| {
+                        self.sessions
+                            .iter()
+                            .any(|session| session.id == pane.session && session.unread)
+                    }),
+                    draw_id: tab.bridge.draw_id(),
+                    active: self.active == Some(workspace.id),
+                })
             })
             .collect()
     }
@@ -409,7 +565,13 @@ impl TabManager {
         self.cancel_search();
         self.clear_active_preedit();
         self.active = Some(id);
-        let unread_changed = std::mem::take(&mut self.tabs[index].unread);
+        let session = self.tabs[index]
+            .panes
+            .iter()
+            .find(|pane| pane.id == self.tabs[index].focused)
+            .unwrap()
+            .session;
+        let unread_changed = self.take_unread(session);
         TabActionOutcome {
             active_bridge_changed: true,
             request_redraw: true,
@@ -457,11 +619,8 @@ impl TabManager {
             self.cancel_search();
         }
         let removed = self.tabs.remove(index);
-        if let Ok(mut terminal) = removed.terminal.lock() {
-            terminal.cancel_resize();
-            if was_active {
-                terminal.clear_preedit();
-            }
+        for pane in removed.panes {
+            self.retire_session(pane.session);
         }
 
         if self.tabs.is_empty() {
@@ -483,9 +642,10 @@ impl TabManager {
 
         // The old right neighbor moves into `index`; when there was none, use the new last item.
         let replacement_index = index.min(self.tabs.len() - 1);
-        let replacement = &mut self.tabs[replacement_index];
-        self.active = Some(replacement.id);
-        let unread_changed = std::mem::take(&mut replacement.unread);
+        self.active = Some(self.tabs[replacement_index].id);
+        let unread_changed = self
+            .active_session_id()
+            .is_some_and(|id| self.take_unread(id));
         TabActionOutcome {
             active_bridge_changed: true,
             request_redraw: true,
@@ -493,6 +653,21 @@ impl TabManager {
             active_title_changed: true,
             close_window: false,
         }
+    }
+
+    fn take_unread(&mut self, id: SessionId) -> bool {
+        self.sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+            .is_some_and(|session| std::mem::take(&mut session.unread))
+    }
+
+    fn retire_session(&mut self, id: SessionId) {
+        let Some(index) = self.sessions.iter().position(|session| session.id == id) else {
+            return;
+        };
+        // Drop retires PTY/reader ownership even while UI/configuration clones remain.
+        self.sessions.remove(index);
     }
 
     pub fn close_active(&mut self) -> TabActionOutcome {
@@ -504,8 +679,9 @@ impl TabManager {
 
     /// Drains output for a live tab. Only an active tab asks Runtime to invalidate its mounted
     /// external draw; inactive tabs update model state without exposing a schedule provider.
-    pub fn process_output(&mut self, id: TabId) -> TabOutputOutcome {
-        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+    pub fn process_output(&mut self, id: SessionId) -> TabOutputOutcome {
+        let active = self.active_session_id() == Some(id);
+        let Some(tab) = self.sessions.iter_mut().find(|tab| tab.id == id) else {
             return TabOutputOutcome::default();
         };
         let Ok(mut terminal) = tab.terminal.lock() else {
@@ -545,7 +721,6 @@ impl TabManager {
         let metadata_changed = tab.working_directory != previous_working_directory
             || tab.shell_integration != previous_shell_integration;
         let title_changed = tab.title != previous_title;
-        let active = self.active == Some(id);
         let unread_changed =
             !active && ingested_output && !std::mem::replace(&mut tab.unread, true);
         TabOutputOutcome {
@@ -575,17 +750,16 @@ impl TabManager {
         // Never deduplicate against completed geometry: A -> pending B -> A must
         // cancel B in every terminal, even when A was the last completed broadcast.
         self.resize_target = Some(size);
-        for tab in &mut self.tabs {
+        for tab in &mut self.sessions {
             match tab.terminal.lock() {
                 Ok(mut terminal) => {
                     if let Err(error) = terminal.request_resize(size) {
-                        tracing::warn!(tab_id = tab.id.get(), %error, "failed to request terminal resize");
+                        tracing::warn!(tab_id = tab.id.0, %error, "failed to request terminal resize");
                     }
                 }
-                Err(_) => tracing::warn!(
-                    tab_id = tab.id.get(),
-                    "terminal lock unavailable during resize"
-                ),
+                Err(_) => {
+                    tracing::warn!(tab_id = tab.id.0, "terminal lock unavailable during resize")
+                }
             }
         }
         self.refresh_resize_completion()
@@ -594,8 +768,8 @@ impl TabManager {
     fn refresh_resize_completion(&mut self) -> bool {
         let previous = self.last_broadcast_size;
         self.last_broadcast_size = self.resize_target.filter(|size| {
-            !self.tabs.is_empty()
-                && self.tabs.iter().all(|tab| {
+            !self.sessions.is_empty()
+                && self.sessions.iter().all(|tab| {
                     tab.terminal.lock().is_ok_and(|terminal| {
                         terminal.screen().rows() == size.rows
                             && terminal.screen().cols() == size.cols
@@ -609,25 +783,25 @@ impl TabManager {
     /// merely submit targets or dispatch ordered reader events.
     pub fn advance_resizes(&mut self) -> ResizeBatchOutcome {
         let mut outcome = ResizeBatchOutcome::default();
-        let active = self.active;
-        if let Some(tab) = self.tabs.iter().find(|tab| Some(tab.id) == active) {
+        let active = self.active_session_id();
+        if let Some(tab) = self.sessions.iter().find(|tab| Some(tab.id) == active) {
             Self::advance_tab_resize(tab, true, &mut outcome);
         }
         // A persistent cursor, not Vec order or the current active identity, owns
         // background fairness. Failure attempts also consume a slot.
-        for _ in 0..self.tabs.len() {
+        for _ in 0..self.sessions.len() {
             if outcome.attempted == RESIZE_BATCH_LIMIT {
                 break;
             }
-            self.resize_cursor %= self.tabs.len();
+            self.resize_cursor %= self.sessions.len();
             let index = self.resize_cursor;
-            self.resize_cursor = (index + 1) % self.tabs.len();
-            let tab = &self.tabs[index];
+            self.resize_cursor = (index + 1) % self.sessions.len();
+            let tab = &self.sessions[index];
             if Some(tab.id) != active {
                 Self::advance_tab_resize(tab, false, &mut outcome);
             }
         }
-        outcome.ready_remaining = self.tabs.iter().any(|tab| {
+        outcome.ready_remaining = self.sessions.iter().any(|tab| {
             tab.terminal
                 .lock()
                 .is_ok_and(|terminal| terminal.resize_status().needs_advance())
@@ -636,7 +810,7 @@ impl TabManager {
         outcome
     }
 
-    fn advance_tab_resize(tab: &TerminalTab, active: bool, outcome: &mut ResizeBatchOutcome) {
+    fn advance_tab_resize(tab: &TerminalSession, active: bool, outcome: &mut ResizeBatchOutcome) {
         let Ok(mut terminal) = tab.terminal.lock() else {
             return;
         };
@@ -647,7 +821,7 @@ impl TabManager {
         match terminal.advance_resize() {
             Ok(changed) => outcome.active_changed |= active && changed.committed(),
             Err(error) => {
-                tracing::warn!(tab_id = tab.id.get(), %error, "failed to complete terminal resize")
+                tracing::warn!(tab_id = tab.id.0, %error, "failed to complete terminal resize")
             }
         }
     }
@@ -656,20 +830,40 @@ impl TabManager {
         self.last_broadcast_size
     }
 
-    fn reserve_ids(&mut self) -> Result<(TabId, ExternalDrawId)> {
-        let id = self.next_tab_id;
+    fn reserve_ids(&mut self) -> Result<(PaneBinding, ExternalDrawId)> {
+        let binding = PaneBinding {
+            workspace: TabId(self.next_tab_id),
+            pane: PaneId(self.next_pane_id),
+            session: SessionId(self.next_session_id),
+        };
         let draw_id = self.next_draw_id;
-        self.next_tab_id = self
+        // Compute every successor before publishing any counter.
+        let tab = self
             .next_tab_id
             .checked_add(1)
-            .ok_or_else(|| anyhow!("terminal tab id space exhausted"))?;
-        self.next_draw_id = self
+            .context("workspace id space exhausted")?;
+        let pane = self
+            .next_pane_id
+            .checked_add(1)
+            .context("pane id space exhausted")?;
+        let session = self
+            .next_session_id
+            .checked_add(1)
+            .context("session id space exhausted")?;
+        let draw = self
             .next_draw_id
             .checked_add(1)
-            .ok_or_else(|| anyhow!("external draw id space exhausted"))?;
-        Ok((TabId(id), draw_id))
+            .context("external draw id space exhausted")?;
+        self.next_tab_id = tab;
+        self.next_pane_id = pane;
+        self.next_session_id = session;
+        self.next_draw_id = draw;
+        Ok((binding, draw_id))
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod identity_tests;

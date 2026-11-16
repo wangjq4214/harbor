@@ -349,7 +349,7 @@ impl ActiveSession {
 
     fn clipboard_eligible(
         &self,
-        source: harbor_app::tab_manager::TabId,
+        source: harbor_app::tab_manager::SessionId,
         continuation: bool,
     ) -> bool {
         if continuation
@@ -779,7 +779,7 @@ impl ActiveSession {
                     merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
                 }
                 AppCommand::SaveCurrentSession => {
-                    if let Some(source) = self.tabs.active_id() {
+                    if let Some(source) = self.tabs.active_session_id() {
                         merge_wait(
                             &mut result.wait,
                             self.process_terminal_output(event_loop, source),
@@ -1068,7 +1068,10 @@ impl ActiveSession {
                 }
                 merge_wait(&mut wait, self.main_host.request_frame().wait);
             }
-            AppEvent::OpenHyperlink(uri) => {
+            AppEvent::OpenHyperlink(source, uri) => {
+                if !self.tabs.active_live(source) {
+                    return;
+                }
                 if let Err(error) = crate::hyperlink::open(&uri) {
                     tracing::warn!(
                         uri,
@@ -1094,7 +1097,7 @@ impl ActiveSession {
     fn process_terminal_output(
         &mut self,
         event_loop: &ActiveEventLoop,
-        tab_id: harbor_app::tab_manager::TabId,
+        tab_id: harbor_app::tab_manager::SessionId,
     ) -> Option<ControlFlowEffect> {
         let mut wait = None;
         let outcome = self.tabs.process_output(tab_id);
@@ -1135,7 +1138,7 @@ impl ActiveSession {
         self.reconcile_clipboard();
         let now = Instant::now();
         let mut resize_wait = None;
-        for id in self.tabs.pending_resize_tabs() {
+        for id in self.tabs.pending_resize_sessions() {
             merge_wait(
                 &mut resize_wait,
                 self.process_terminal_output(event_loop, id),

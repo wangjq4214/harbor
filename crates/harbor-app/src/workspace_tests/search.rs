@@ -24,7 +24,7 @@ fn search_button_rects(runtime: &Runtime) -> Vec<Rect> {
 #[test]
 fn search_editor_publishes_initial_no_result_instead_of_an_immediate_busy_hint() {
     let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
-    controller.open_search(TabId(1));
+    controller.open_search(SessionId(1));
     let mut runtime = mount(controller.clone(), 1000, 500);
     runtime.request_focus(&controller.search_focus());
     controller.publish_search_status("1 / 3");
@@ -78,7 +78,7 @@ fn search_status_changes_do_not_resize_input_or_shift_result_and_buttons() {
             vec![snapshot(1, true, false)],
             1,
         );
-        controller.open_search(TabId(1));
+        controller.open_search(SessionId(1));
         let mut runtime = mount(controller.clone(), width, height);
         // Native font metrics can be wider than the headless 10px default.
         runtime.set_text_metrics(harbor_widget::text::TextMetrics {
@@ -184,7 +184,7 @@ fn search_overlay_preserves_terminal_geometry_and_uses_equal_icon_controls() {
         runtime.request_focus(&controller.terminal_focus());
         let terminal_focus = runtime.input().focused();
         let allocation = controller.latest_terminal_allocation();
-        controller.open_search(TabId(1));
+        controller.open_search(SessionId(1));
         runtime.request_focus(&controller.search_focus());
         runtime.update(Instant::now());
         assert_eq!(controller.latest_terminal_allocation(), allocation);
@@ -367,7 +367,7 @@ fn search_buttons_show_transient_glass_without_geometry_cursor_or_command_regres
             vec![snapshot(1, true, false)],
             1,
         );
-        controller.open_search(TabId(1));
+        controller.open_search(SessionId(1));
         let mut runtime = mount(controller.clone(), width, height);
         runtime.set_viewport(Viewport::new(width, height, scale));
         runtime.request_focus(&controller.search_focus());
@@ -533,7 +533,7 @@ fn configuration_notice_stays_below_search_and_returns_when_search_closes() {
     };
     let original_y = notice_top_y(&runtime);
     let allocation = controller.latest_terminal_allocation();
-    controller.open_search(TabId(1));
+    controller.open_search(SessionId(1));
     runtime.update(Instant::now());
     let panel = search_panel_rect(&runtime);
     assert!(notice_top_y(&runtime) > panel.max.y);
@@ -658,7 +658,7 @@ fn current_session_search_entry_routes_typed_commands_without_pty_leakage() {
 #[test]
 fn search_entry_limits_and_query_cancellation_are_visible_and_coalesced() {
     let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
-    controller.open_search(TabId(1));
+    controller.open_search(SessionId(1));
     let mut runtime = mount(controller.clone(), 1000, 500);
     runtime.request_focus(&controller.search_focus());
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("a".repeat(128))));
@@ -672,7 +672,7 @@ fn search_entry_limits_and_query_cancellation_are_visible_and_coalesced() {
         }));
     }
     assert_eq!(controller.search_query().unwrap().1, "");
-    controller.sync_search_source(Some(TabId(2)));
+    controller.sync_search_source(Some(SessionId(2)));
     assert!(controller.search_query().is_none());
     runtime.update(Instant::now());
 }
@@ -681,7 +681,7 @@ fn search_entry_limits_and_query_cancellation_are_visible_and_coalesced() {
 fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_commands() {
     use harbor_widget::{TextSelection, effects::ClipboardEffect};
     let controller = controller(1000.0, vec![snapshot(1, true, false)], 1);
-    controller.open_search(TabId(1));
+    controller.open_search(SessionId(1));
     let mut runtime = mount(controller.clone(), 1000, 500);
     runtime.request_focus(&controller.search_focus());
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("a".repeat(128))));
@@ -754,8 +754,8 @@ fn reusable_search_editor_replaces_at_limit_and_keeps_clipboard_out_of_terminal_
     let Some(ClipboardEffect::Editor(request)) = late.clipboard else {
         panic!("expected editor paste");
     };
-    controller.sync_search_source(Some(TabId(2)));
-    controller.open_search(TabId(2));
+    controller.sync_search_source(Some(SessionId(2)));
+    controller.open_search(SessionId(2));
     runtime.update(Instant::now());
     runtime.request_focus(&controller.search_focus());
     runtime.complete_clipboard(request.id, Ok("wrong session".into()));

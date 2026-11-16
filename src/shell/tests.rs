@@ -17,7 +17,7 @@ fn shared_gpu_exit_cancels_pending_actions_before_exit() {
         let mut clipboard =
             crate::clipboard::ClipboardPolicy::new(harbor_config::Osc52WritePolicy::Confirm);
         clipboard.retain(harbor_app::tab_manager::SessionClipboardWrite {
-            source: harbor_app::tab_manager::TabId(7),
+            source: harbor_app::tab_manager::SessionId(7),
             contents: harbor_terminal::ClipboardWrite::new("never approve".into()).unwrap(),
         });
         let mut window = None;

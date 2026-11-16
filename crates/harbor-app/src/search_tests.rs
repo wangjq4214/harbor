@@ -4,7 +4,7 @@ use crate::{
 };
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
-fn create(tabs: &mut TabManager, rows: usize, cols: usize) -> TabId {
+fn create(tabs: &mut TabManager, rows: usize, cols: usize) -> crate::tab_manager::TabId {
     tabs.create_tab(|_, draw| {
         #[allow(clippy::arc_with_non_send_sync)]
         let terminal = Arc::new(Mutex::new(Terminal::new_headless(rows, cols)));
@@ -307,7 +307,7 @@ fn typed_host_dispatch_scopes_query_and_wraps_previous_next_navigation() {
     assert_eq!(published(&tabs), 0);
     let old_ui = ui.clone();
     create(&mut tabs, 3, 8);
-    old_ui.open_search(TabId(1));
+    old_ui.open_search(SessionId(1));
     tabs.dispatch_search_command(AppCommand::SearchChanged, &old_ui);
     assert!(tabs.search.source.is_none());
 }
@@ -458,7 +458,7 @@ fn presented_invalidation_clears_evidence_through_host_and_navigation_paths() {
         assert_eq!(tabs.search.selected, None);
         assert_eq!(published(&tabs), 0);
         assert!(!tabs.search_status().contains("1 / 1"));
-        assert_eq!(tabs.search.source, tabs.active_id());
+        assert_eq!(tabs.search.source, tabs.active_session_id());
         assert_eq!(tabs.search.query, "needle");
 
         complete(&mut tabs);
@@ -550,7 +550,7 @@ fn history_budget_reload_invalidates_old_search_targets_and_refreshes_survivors(
 fn popup_retirement_revokes_pending_completion_and_busy_hint_before_the_next_work_step() {
     let mut tabs = setup("needle other");
     let ui = ui(&tabs);
-    ui.open_search(tabs.active_id().unwrap());
+    ui.open_search(tabs.active_session_id().unwrap());
     tabs.set_search_query("needle");
     ui.bind_search_cancellation(tabs.search.cancellation.as_ref().unwrap().clone());
     pending(&mut tabs);
@@ -570,7 +570,7 @@ fn popup_retirement_revokes_pending_completion_and_busy_hint_before_the_next_wor
     assert!(tabs.search.query.is_empty());
     assert_eq!(published(&tabs), 0);
     assert!(!tabs.navigate_search(false));
-    ui.open_search(tabs.active_id().unwrap());
+    ui.open_search(tabs.active_session_id().unwrap());
     assert_eq!(ui.search_query().unwrap().1, "");
     tabs.set_search_query("other");
     ui.bind_search_cancellation(tabs.search.cancellation.as_ref().unwrap().clone());
