@@ -17,6 +17,7 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use crate::effects::merge_wait;
 use harbor_app::command::CommandCompletion;
 use harbor_app::confirmation::CONFIRMATION_PREVIEW_VISIBLE_LINES as PREVIEW_VISIBLE_LINES;
+use harbor_app::tab_manager::PaneBinding;
 use harbor_terminal::safe_preview_line;
 use harbor_terminal::{InputModes, PasteDisposition, Terminal};
 use harbor_widget::effects::ControlFlowEffect;
@@ -162,7 +163,7 @@ pub(crate) enum PasteEventOutcome {
 pub(crate) struct PasteController {
     window: Option<ConfirmationWindow>,
     input_gate: Arc<AtomicBool>,
-    // Completion origin only; confirmation retains the existing current-target policy.
+    target: Option<PasteTarget>,
     palette_invocation: bool,
 }
 
@@ -170,6 +171,7 @@ impl PasteController {
     pub(crate) fn new(input_gate: Arc<AtomicBool>) -> Self {
         Self {
             window: None,
+            target: None,
             input_gate,
             palette_invocation: false,
         }
@@ -183,8 +185,18 @@ impl PasteController {
         self.window.as_ref().map(|w| w.window_id())
     }
 
+    pub(crate) fn source(&self) -> Option<PaneBinding> {
+        self.target.as_ref().map(|target| target.binding)
+    }
+    pub(crate) fn retire_target(&mut self) -> Option<Result<CommandCompletion, &'static str>> {
+        let report = self.palette_invocation;
+        self.cancel();
+        report.then_some(Err("Rejected: paste target retired"))
+    }
+
     pub(crate) fn cancel(&mut self) {
         self.window = None;
+        self.target = None;
         self.input_gate.store(false, Ordering::Release);
         self.palette_invocation = false;
     }
@@ -200,12 +212,17 @@ impl PasteController {
         &mut self,
         event: &WindowEvent,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
+        active_binding: Option<PaneBinding>,
     ) -> PasteEventOutcome {
         let (result, wait) = self.handle_event(event);
 
         match &result {
             DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
-                let completion = complete_paste_confirmation(&result, active_terminal);
+                let completion = complete_paste_confirmation(
+                    &result,
+                    self.target.take().as_ref(),
+                    active_binding.zip(active_terminal),
+                );
                 let palette_completion =
                     std::mem::take(&mut self.palette_invocation).then_some(completion);
                 self.input_gate.store(false, Ordering::Release);
@@ -216,6 +233,7 @@ impl PasteController {
                 }
             }
             DialogOutcome::Fatal(error) => {
+                self.target = None;
                 self.input_gate.store(false, Ordering::Release);
                 self.palette_invocation = false;
                 PasteEventOutcome::Fatal {
@@ -254,11 +272,15 @@ impl PasteController {
         event_loop: &ActiveEventLoop,
         main_host: &mut WinitWindowHost,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
+        active_binding: Option<PaneBinding>,
         palette_invocation: bool,
     ) -> Result<(HostIdleOutcome, CommandCompletion), &'static str> {
         if self.is_active() {
             return Err("Rejected: paste confirmation is active");
         }
+        let binding = active_binding.ok_or("Rejected: no live pane for paste")?;
+        let terminal = active_terminal.ok_or("Rejected: no active terminal for paste")?;
+        let target = PasteTarget::new(binding, terminal);
         let raw_text = arboard::Clipboard::new()
             .and_then(|mut clipboard| clipboard.get_text())
             .map_err(|error| {
@@ -280,6 +302,7 @@ impl PasteController {
                     "Failed: could not open paste confirmation"
                 })?;
                 self.window = Some(confirmation);
+                self.target = Some(target);
                 self.input_gate.store(true, Ordering::Release);
                 self.palette_invocation = palette_invocation;
                 Ok((
@@ -301,6 +324,9 @@ fn prepare_paste(
         .lock()
         .map_err(|_| "Failed: terminal lock unavailable for paste")?;
     let input_modes = terminal.drain_and_snapshot().input_modes;
+    if terminal.is_session_closed() || terminal.shell_process_exited() {
+        return Err("Rejected: paste target retired");
+    }
     let disposition = PasteDisposition::decide(input_modes, raw_text);
     if matches!(disposition, PasteDisposition::SendDirect) {
         terminal.write_pty(input_modes.paste(raw_text.as_bytes()).as_ref()).map_err(|error| {
@@ -311,19 +337,41 @@ fn prepare_paste(
     Ok(disposition)
 }
 
-/// Finish the same Host write path at approval time; no target or input modes are captured.
+/// Retain identity, not ownership: a dialog cannot keep retired I/O alive.
+struct PasteTarget {
+    binding: PaneBinding,
+    terminal: std::sync::Weak<Mutex<Terminal>>,
+}
+impl PasteTarget {
+    fn new(binding: PaneBinding, terminal: &Arc<Mutex<Terminal>>) -> Self {
+        Self {
+            binding,
+            terminal: Arc::downgrade(terminal),
+        }
+    }
+}
+
+/// Revalidate the original live target; use its modes at approval, never at capture.
 fn complete_paste_confirmation(
     outcome: &DialogOutcome,
-    active_terminal: Option<&Arc<Mutex<Terminal>>>,
+    target: Option<&PasteTarget>,
+    current: Option<(PaneBinding, &Arc<Mutex<Terminal>>)>,
 ) -> Result<CommandCompletion, &'static str> {
     let DialogOutcome::Confirmed(raw_text) = outcome else {
         return Err("Cancelled: paste was not confirmed");
     };
-    let terminal = active_terminal.ok_or("Rejected: no active terminal for confirmed paste")?;
+    let target = target.ok_or("Rejected: paste target retired")?;
+    let (binding, terminal) = current.ok_or("Rejected: paste target retired")?;
+    if target.binding != binding || !target.terminal.ptr_eq(&Arc::downgrade(terminal)) {
+        return Err("Rejected: paste target changed");
+    }
     let mut terminal = terminal
         .lock()
         .map_err(|_| "Failed: terminal lock unavailable for confirmed paste")?;
     let modes = terminal.drain_and_snapshot().input_modes;
+    if terminal.is_session_closed() || terminal.shell_process_exited() {
+        return Err("Rejected: paste target retired");
+    }
     write_confirmation_outcome(outcome, modes, |bytes| terminal.write_pty(bytes)).map_err(
         |error| {
             tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");

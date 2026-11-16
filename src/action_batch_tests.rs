@@ -88,7 +88,7 @@ fn real_inbox_preserves_fifo_source_and_tab_focus_disposition() {
     let (mut tabs, ui, mut runtime, bytes) = fixture();
     shortcut(&mut runtime, 't', false);
     shortcut(&mut runtime, 'r', true);
-    shortcut(&mut runtime, 'w', false);
+    shortcut(&mut runtime, 'w', true);
     let mut actions = ui.drain_actions().into_iter();
     let mut seen = Vec::new();
     while let Some(admission) = next_app_action(&mut actions, &ui, &tabs, false) {

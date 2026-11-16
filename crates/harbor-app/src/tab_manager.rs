@@ -465,9 +465,9 @@ impl TabManager {
     pub fn active_live(&self, id: SessionId) -> bool {
         self.active_session_id() == Some(id)
             && self.session_terminal(id).is_some_and(|terminal| {
-                terminal
-                    .lock()
-                    .is_ok_and(|terminal| !terminal.is_session_closed())
+                terminal.lock().is_ok_and(|terminal| {
+                    !terminal.is_session_closed() && !terminal.shell_process_exited()
+                })
             })
     }
 
@@ -607,6 +607,83 @@ impl TabManager {
         }
     }
 
+    /// Focus is presentation state; a delayed click cannot activate another workspace.
+    pub fn focus_pane(&mut self, binding: PaneBinding) -> TabActionOutcome {
+        if self.active != Some(binding.workspace)
+            || !self.contains_binding(binding)
+            || self.active_binding() == Some(binding)
+        {
+            return TabActionOutcome::default();
+        }
+        self.cancel_search();
+        self.clear_active_preedit();
+        let tab = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == binding.workspace)
+            .unwrap();
+        tab.focused = binding.pane;
+        if tab.maximized.is_some() {
+            tab.maximized = Some(binding.pane);
+        }
+        self.freeze_hidden_grids();
+        let unread_changed = self.take_unread(binding.session);
+        TabActionOutcome {
+            active_bridge_changed: true,
+            active_title_changed: true,
+            request_redraw: true,
+            unread_changed,
+            ..Default::default()
+        }
+    }
+
+    pub fn execute_pane_command(
+        &mut self,
+        command: crate::command::PaneCommand,
+    ) -> TabActionOutcome {
+        use crate::command::PaneCommand;
+        let Some(binding) = self.active_binding() else {
+            return TabActionOutcome::default();
+        };
+        match command {
+            PaneCommand::Focus(target) => {
+                if !self.visible_bindings().contains(&target) {
+                    return TabActionOutcome::default();
+                }
+                self.focus_pane(target)
+            }
+            PaneCommand::Next | PaneCommand::Previous => {
+                let tab = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == binding.workspace)
+                    .unwrap();
+                let index = tab
+                    .panes
+                    .iter()
+                    .position(|pane| pane.id == binding.pane)
+                    .unwrap();
+                let count = tab.panes.len();
+                let index = if command == PaneCommand::Next {
+                    (index + 1) % count
+                } else {
+                    (index + count - 1) % count
+                };
+                let pane = &tab.panes[index];
+                self.focus_pane(PaneBinding {
+                    workspace: binding.workspace,
+                    pane: pane.id,
+                    session: pane.session,
+                })
+            }
+            PaneCommand::Maximize => self.maximize_pane(binding),
+            PaneCommand::Close => self.close_pane(binding),
+            PaneCommand::SplitHorizontal | PaneCommand::SplitVertical => {
+                TabActionOutcome::default()
+            }
+        }
+    }
+
     pub fn activate_next(&mut self) -> TabActionOutcome {
         let Some(active) = self.active else {
             return TabActionOutcome::default();
@@ -698,6 +775,24 @@ impl TabManager {
         // Drop retires PTY/reader ownership even while UI/configuration clones remain.
         self.pane_targets.remove(&id);
         self.sessions.remove(index);
+    }
+
+    /// Source-qualified shell exit reduction. EOF and OSC 133 command completion
+    /// alone do not establish shell exit. Late duplicate wakes are harmless.
+    pub fn close_exited_session(&mut self, session: SessionId) -> TabActionOutcome {
+        let Some(binding) = self.binding_for_session(session) else {
+            return TabActionOutcome::default();
+        };
+        let exited = self.session_terminal(session).is_some_and(|terminal| {
+            terminal
+                .lock()
+                .is_ok_and(|terminal| terminal.shell_process_exited())
+        });
+        if exited {
+            self.close_pane(binding)
+        } else {
+            TabActionOutcome::default()
+        }
     }
 
     pub fn close_active(&mut self) -> TabActionOutcome {
@@ -1057,6 +1152,7 @@ impl TabManager {
         if !self.contains_binding(binding) {
             return TabActionOutcome::default();
         }
+        self.focus_pane(binding);
         let tab = self
             .tabs
             .iter_mut()
@@ -1083,6 +1179,7 @@ impl TabManager {
         if tab.panes.len() == 1 {
             return self.close(binding.workspace);
         }
+        let focus_changed = self.active == Some(binding.workspace) && tab.focused == binding.pane;
         tab.panes.retain(|pane| pane.id != binding.pane);
         tab.tree = tab
             .tree
@@ -1097,12 +1194,14 @@ impl TabManager {
         }
         self.split_reservations
             .retain(|_, (source, _, _)| *source != binding);
-        self.cancel_search();
+        if focus_changed {
+            self.cancel_search();
+        }
         self.retire_session(binding.session);
         TabActionOutcome {
-            active_bridge_changed: true,
+            active_bridge_changed: focus_changed,
             request_redraw: true,
-            active_title_changed: true,
+            active_title_changed: focus_changed,
             ..Default::default()
         }
     }
@@ -1155,10 +1254,18 @@ impl TabManager {
                 continue;
             };
             self.pane_targets.insert(session.id, size);
-            if let Ok(mut terminal) = session.terminal.lock()
-                && let Err(error) = terminal.request_resize(size)
-            {
-                tracing::warn!(%error, "failed to request pane resize");
+            if let Ok(mut terminal) = session.terminal.lock() {
+                let context = harbor_widget::scene::primitive::ExternalDrawContext::new(
+                    allocation.rect,
+                    harbor_widget::renderer::Viewport::new(surface.0, surface.1, scale),
+                );
+                terminal.set_input_geometry(
+                    crate::terminal_view::render_target_from_context(&context),
+                    metrics,
+                );
+                if let Err(error) = terminal.request_resize(size) {
+                    tracing::warn!(%error, "failed to request pane resize");
+                }
             }
         }
     }

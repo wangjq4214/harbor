@@ -29,6 +29,8 @@ pub enum AppCommand {
     /// Internal close intent tied to one editor lifetime.
     CloseCommandPalette(u64),
     Tab(TabCommand),
+    Pane(PaneCommand),
+    CancelSplit(crate::tab_manager::PaneBinding),
     Copy,
     CopyOrInterrupt,
     Paste,
@@ -45,6 +47,18 @@ pub enum AppCommand {
     ReloadConfiguration,
     /// Internal presentation intent, deliberately absent from the command registry.
     DismissNotification(u64),
+}
+
+/// Workspace operations; explicit focus carries the complete original binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaneCommand {
+    SplitHorizontal,
+    SplitVertical,
+    Next,
+    Previous,
+    Maximize,
+    Close,
+    Focus(crate::tab_manager::PaneBinding),
 }
 
 /// Invocation origin is independent of shortcut consumption and focus disposition.
@@ -175,7 +189,7 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             "app.close-active-tab",
             "Close active tab",
             AppCommand::Tab(TabCommand::CloseActive),
-            chord(Key::Character('w'), true, false),
+            chord(Key::Character('w'), true, true),
             true,
         ),
         descriptor(
@@ -193,6 +207,48 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             true,
         ),
     ];
+    for (id, label, command, key) in [
+        (
+            "app.split-horizontal",
+            "Split left/right",
+            PaneCommand::SplitHorizontal,
+            'd',
+        ),
+        (
+            "app.split-vertical",
+            "Split top/bottom",
+            PaneCommand::SplitVertical,
+            'e',
+        ),
+        ("app.next-pane", "Focus next pane", PaneCommand::Next, ']'),
+        (
+            "app.previous-pane",
+            "Focus previous pane",
+            PaneCommand::Previous,
+            '[',
+        ),
+        (
+            "app.maximize-pane",
+            "Maximize/restore pane",
+            PaneCommand::Maximize,
+            'm',
+        ),
+    ] {
+        entries.push(descriptor(
+            id,
+            label,
+            AppCommand::Pane(command),
+            chord(Key::Character(key), true, true),
+            true,
+        ));
+    }
+    entries.push(descriptor(
+        "app.close-pane",
+        "Close focused pane",
+        AppCommand::Pane(PaneCommand::Close),
+        chord(Key::Character('w'), true, false),
+        true,
+    ));
     for (index, (id, label)) in (1..=9_u8).zip([
         ("app.select-tab-1", "Select tab 1"),
         ("app.select-tab-2", "Select tab 2"),
@@ -547,6 +603,7 @@ pub fn command_availability(
             active.ok_or("No active terminal")?;
             context.search_open.then_some(()).ok_or("Search is closed")
         }
+        AppCommand::Pane(_) => active.map(|_| ()).ok_or("No active terminal"),
         AppCommand::SaveCurrentSession
         | AppCommand::Copy
         | AppCommand::Paste
@@ -654,7 +711,7 @@ mod tests {
     #[test]
     fn registry_ids_and_defaults_are_unique_and_complete() {
         let registry = command_registry();
-        assert_eq!(registry.len(), 28);
+        assert_eq!(registry.len(), 34);
         assert_eq!(
             registry
                 .iter()
@@ -778,5 +835,61 @@ mod tests {
                 .iter()
                 .any(|message| message.contains("keybindings.app.new-tab.bindings[1]"))
         );
+    }
+
+    #[test]
+    fn pane_bindings_keep_close_tab_intent_and_atomic_conflicts_unbinding() {
+        let defaults = validate_keybindings(&RawKeybindings::default()).unwrap();
+        assert!(
+            defaults
+                .bindings()
+                .any(|(key, cmd)| key == chord(Key::Character('w'), true, false)
+                    && cmd == AppCommand::Pane(PaneCommand::Close))
+        );
+        assert!(
+            defaults
+                .bindings()
+                .any(|(key, cmd)| key == chord(Key::Character('w'), true, true)
+                    && cmd == AppCommand::Tab(TabCommand::CloseActive))
+        );
+        let conflict = raw(vec![(
+            "app.close-active-tab",
+            vec![binding(&["ctrl"], "w")],
+        )]);
+        assert!(validate_keybindings(&conflict).is_err());
+        assert_eq!(resolve_keybindings(&conflict).keybindings, defaults);
+        for id in [
+            "app.split-horizontal",
+            "app.split-vertical",
+            "app.next-pane",
+            "app.previous-pane",
+            "app.maximize-pane",
+            "app.close-pane",
+        ] {
+            let command = command_registry()
+                .into_iter()
+                .find(|entry| entry.id == id)
+                .unwrap()
+                .command;
+            let unbound = validate_keybindings(&raw(vec![(id, vec![])])).unwrap();
+            assert!(!unbound.bindings().any(|(_, cmd)| cmd == command));
+            assert!(
+                validate_keybindings(&raw(vec![(
+                    id,
+                    vec![binding(&["alt"], "x"), binding(&["alt"], "x")]
+                )]))
+                .is_err()
+            );
+            assert!(validate_keybindings(&raw(vec![(id, vec![binding(&["ctrl"], "t")])])).is_err());
+            let overridden =
+                validate_keybindings(&raw(vec![(id, vec![binding(&["alt"], "x")])])).unwrap();
+            assert_eq!(
+                overridden
+                    .bindings()
+                    .filter(|(_, cmd)| *cmd == command)
+                    .count(),
+                1
+            );
+        }
     }
 }

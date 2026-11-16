@@ -1,7 +1,7 @@
 //! Application split-tree projection and identity-qualified allocation exchange.
 use crate::{
     tab_manager::{PaneBinding, PaneId},
-    terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
+    terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge},
 };
 use harbor_widget::{
     Component as _, ComponentExt as _, LayoutObserver, SplitAxis, SplitController, SplitPane,
@@ -88,22 +88,25 @@ impl PaneLayout {
     pub(crate) fn build(
         &self,
         cx: &mut BuildCx,
-        allocations: &PaneAllocations,
-        focused: PaneId,
-        focus: harbor_widget::FocusHandle,
+        ui: &crate::workspace::WorkspaceUiController,
     ) -> View {
         match self {
             Self::Leaf { binding, bridge } => {
+                let allocations = &ui.pane_allocations;
                 let observer = allocations.observer(*binding, bridge.draw_id());
-                let leaf = terminal_widget(bridge.clone()).build(cx);
-                let leaf = if binding.pane == focused {
-                    harbor_widget::Focus::new()
-                        .focus_handle(focus)
-                        .child(leaf)
-                        .build(cx)
-                } else {
-                    leaf
-                };
+                let focus_ui = ui.clone();
+                let target = *binding;
+                let geometry = allocations.clone();
+                let leaf = crate::terminal_view::terminal_widget_with_focus(
+                    bridge.clone(),
+                    move || focus_ui.pane_focused(target),
+                    move || geometry.input_geometry(target),
+                )
+                .build(cx);
+                let leaf = harbor_widget::Focus::new()
+                    .focus_handle(ui.pane_focus(*binding))
+                    .child(leaf)
+                    .build(cx);
                 observer
                     .child(TerminalDecorationPreset::container().child(leaf))
                     .keyed(format!(
@@ -119,8 +122,8 @@ impl PaneLayout {
                 first,
                 second,
             } => {
-                let first = first.build(cx, allocations, focused, focus);
-                let second = second.build(cx, allocations, focused, focus);
+                let first = first.build(cx, ui);
+                let second = second.build(cx, ui);
                 SplitPane::new(*axis, ratio.clone(), first, second).build(cx)
             }
         }
@@ -139,6 +142,7 @@ struct AllocationState {
     generation: u64,
     visible: Vec<(PaneBinding, ExternalDrawId)>,
     observed: Vec<PaneAllocation>,
+    input_metrics: Option<(f32, (u32, u32), harbor_terminal::TextMetrics)>,
 }
 #[derive(Clone, Default)]
 pub(crate) struct PaneAllocations(Arc<Mutex<AllocationState>>);
@@ -154,6 +158,39 @@ impl PaneAllocations {
             state.visible = visible;
             state.observed.clear();
         }
+    }
+    pub(crate) fn set_input_metrics(
+        &self,
+        scale: f32,
+        surface: (u32, u32),
+        metrics: harbor_terminal::TextMetrics,
+    ) {
+        self.0.lock().expect("pane allocations").input_metrics = Some((scale, surface, metrics));
+    }
+    pub(crate) fn input_geometry(
+        &self,
+        binding: PaneBinding,
+    ) -> Option<(harbor_terminal::RenderTarget, harbor_terminal::TextMetrics)> {
+        let state = self.0.lock().ok()?;
+        let (scale, surface, metrics) = state.input_metrics?;
+        let allocation = state
+            .observed
+            .iter()
+            .find(|allocation| allocation.binding == binding)?;
+        crate::terminal_view::terminal_size_from_allocation(
+            allocation.rect,
+            scale,
+            surface,
+            &metrics,
+        )?;
+        let context = harbor_widget::scene::primitive::ExternalDrawContext::new(
+            allocation.rect,
+            harbor_widget::renderer::Viewport::new(surface.0, surface.1, scale),
+        );
+        Some((
+            crate::terminal_view::render_target_from_context(&context),
+            metrics,
+        ))
     }
     fn generation(&self) -> u64 {
         self.0.lock().expect("pane allocations").generation

@@ -11,6 +11,12 @@ pub struct PtyReader;
 pub struct PtyWriter;
 
 impl Pty {
+    pub(crate) fn observe_exit(
+        &self,
+        _notify: impl FnOnce() + Send + 'static,
+    ) -> anyhow::Result<()> {
+        bail!("pty is not implemented on unix")
+    }
     pub(crate) fn process_exited(&self) -> bool {
         false // Unix PTY creation is not implemented.
     }

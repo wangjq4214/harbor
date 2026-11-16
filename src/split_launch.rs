@@ -1,6 +1,5 @@
-//! Split-only launch transaction. Deliberately not admitted by production commands (T0004).
-//! Host owns one operation through claim/cancel; layout owns attachment (T0003).
-#![allow(dead_code)] // Exchange seam consumed by the later pane-layout/command tickets.
+//! Split-only launch transaction, owned by production pane command admission.
+//! Host owns one operation through claim/cancel; layout attachment is atomic with claim.
 
 use harbor_app::tab_manager::{PaneBinding, TabManager, TerminalTabResources};
 use harbor_pty::{ShellCommand, ShutdownReceipt};

@@ -442,6 +442,7 @@ impl EventRouter {
         let mut target_visible = self.input.focus_visible;
         let mut needs_paint = false;
         let mut navigated_scopes = Vec::new();
+        let mut pointer_commands = Vec::new();
 
         let commands = ctx.take_commands();
         for cmd in commands {
@@ -464,11 +465,9 @@ impl EventRouter {
                         target_visible = true;
                     }
                 }
-                EventCommand::CapturePointer { pointer_id, captor } => {
-                    self.input.capture_pointer(pointer_id, captor);
-                }
-                EventCommand::ReleasePointer(pointer_id) => {
-                    self.input.release_pointer(pointer_id);
+                command @ (EventCommand::CapturePointer { .. }
+                | EventCommand::ReleasePointer(_)) => {
+                    pointer_commands.push(command);
                 }
                 EventCommand::InvalidatePaint => {
                     needs_paint = true;
@@ -478,6 +477,9 @@ impl EventRouter {
 
         let focus_needs_paint =
             self.transition_focus_with_visibility(arena, target_focus, target_visible);
+        // Retire the old focus's gesture before installing this event's new
+        // capture. Its FocusLost release must not revoke the new press.
+        self.input.apply(pointer_commands, arena);
         needs_paint || ctx.needs_paint() || focus_needs_paint
     }
 
@@ -498,7 +500,9 @@ impl EventRouter {
         }
         self.input.focused = next;
         self.input.focus_visible = next_visible;
-        if previous != next {
+        if previous.map(|id| Self::resolve_focused_event_target(arena, id))
+            != next.map(|id| Self::resolve_focused_event_target(arena, id))
+        {
             if self.ime_target.is_some() {
                 self.ime_target = Some(None);
             }

@@ -243,6 +243,19 @@ impl PtyEndpoints {
         })
     }
 
+    /// Notify once when the exact session shell exits, not when a foreground job finishes.
+    /// The callback must be nonblocking and must not re-enter the session. Dropping
+    /// the session terminates its process tree and releases the platform waiter.
+    pub fn observe_exit(&self, notify: impl FnOnce() + Send + 'static) -> anyhow::Result<()> {
+        self.control
+            .as_ref()
+            .expect("intact endpoints")
+            .pty
+            .as_ref()
+            .expect("live shell")
+            .observe_exit(notify)
+    }
+
     /// Observe raw output on the reader thread, before normal bounded ingestion.
     /// Empty output denotes EOF. The observer must not block or re-enter the terminal.
     pub fn observe_output(&mut self, observer: impl FnMut(&[u8]) + Send + 'static) {

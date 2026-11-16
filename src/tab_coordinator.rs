@@ -534,6 +534,12 @@ impl TerminalTabFactory {
             endpoints.observe_output(probe.observer());
         }
         let shell_name = endpoints.shell_name().to_owned();
+        let exit_event_proxy = self.event_proxy.clone();
+        endpoints.observe_exit(move || {
+            // Reuse the source-qualified Host wake. The reducer checks the actual
+            // shell handle; an OSC 133 foreground-completion marker is not exit.
+            let _ = exit_event_proxy.send_event(AppEvent::TerminalOutputReady(session_id));
+        })?;
         let output_event_proxy = self.event_proxy.clone();
         let hyperlink_event_proxy = self.event_proxy.clone();
         let gpu = TerminalGpuAccess::new(self.gpu.device(), self.gpu.queue(), self.format);
@@ -618,8 +624,7 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
-    /// Capture only on an explicit split action. No production command calls this yet.
-    #[allow(dead_code)]
+    /// Capture only on an explicit production split action, never on metadata.
     pub(crate) fn begin_split(&mut self) -> anyhow::Result<crate::split_launch::SplitOperation> {
         crate::split_launch::SplitOperation::begin(
             &mut self.tabs,
@@ -628,7 +633,6 @@ impl TabCoordinator {
     }
 
     /// Poll from the Host turn/deadline, not draw or metadata callbacks.
-    #[allow(dead_code)]
     pub(crate) fn poll_split(
         &self,
         operation: &mut crate::split_launch::SplitOperation,
@@ -654,7 +658,6 @@ impl TabCoordinator {
     }
 
     /// Claim and attach atomically in this Host turn; caller owns UI admission/focus policy.
-    #[allow(dead_code)]
     pub(crate) fn attach_split(
         &mut self,
         ready: crate::split_launch::SplitReady,
@@ -662,6 +665,7 @@ impl TabCoordinator {
         axis: harbor_widget::SplitAxis,
     ) -> anyhow::Result<(TabActionOutcome, crate::split_launch::LaunchKind)> {
         let prepared = ready.claim(&self.tabs, operation)?;
+        tracing::debug!(operation = ?prepared.operation, "attaching ready split operation");
         let outcome = self.tabs.attach_split(
             prepared.source,
             prepared.target,
@@ -674,8 +678,48 @@ impl TabCoordinator {
         self.workspace_ui.publish_panes(&self.tabs);
         Ok((outcome, prepared.kind))
     }
-    pub(crate) fn active_session_id(&self) -> Option<SessionId> {
-        self.tabs.active_session_id()
+    pub(crate) fn split_source_size(&self) -> Option<TerminalSize> {
+        let terminal = self.tabs.active_terminal()?;
+        let terminal = terminal.lock().ok()?;
+        Some(TerminalSize {
+            rows: terminal.screen().rows(),
+            cols: terminal.screen().cols(),
+        })
+    }
+    pub(crate) fn cancel_split_reservation(
+        &mut self,
+        target: harbor_app::tab_manager::PaneBinding,
+    ) {
+        self.tabs.cancel_split_reservation(target);
+    }
+    pub(crate) fn focus_split_result(&mut self, target: harbor_app::tab_manager::PaneBinding) {
+        self.tabs.focus_pane(target);
+    }
+    pub(crate) fn execute_pane_command(
+        &mut self,
+        host: &mut WinitWindowHost,
+        command: harbor_app::command::PaneCommand,
+    ) -> TabDrainOutcome {
+        let mut outcome = self.tabs.execute_pane_command(command);
+        // A mounted surface already performed the focus transition and captured its
+        // press. Do not cancel that new gesture or reset its focus visibility.
+        let pointer_focus = matches!(command, harbor_app::command::PaneCommand::Focus(_));
+        if pointer_focus {
+            outcome.active_bridge_changed = false;
+        }
+        self.apply_tab_outcome(
+            host,
+            outcome,
+            if pointer_focus {
+                TabFocusPolicy::PreserveRail
+            } else {
+                TabFocusPolicy::Terminal
+            },
+        )
+    }
+
+    pub(crate) fn active_binding(&self) -> Option<harbor_app::tab_manager::PaneBinding> {
+        self.tabs.active_binding()
     }
     pub(crate) fn capture_quick_save(&self) -> Result<harbor_app::QuickSaveDraft, &'static str> {
         crate::profile_save::capture(&self.tabs)
@@ -743,7 +787,7 @@ impl TabCoordinator {
             self.factory.gpu.queue(),
             self.factory.format,
         );
-        self.factory.configuration.apply(
+        let result = self.factory.configuration.apply(
             &mut self.tabs,
             &self.workspace_ui,
             gpu,
@@ -751,7 +795,10 @@ impl TabCoordinator {
             scale,
             surface,
             |_, _| Ok(()),
-        )
+        );
+        self.workspace_ui
+            .publish_pane_input_metrics(scale, surface, self.factory.metrics());
+        result
     }
     pub(crate) fn new(
         tabs: TabManager,
@@ -824,6 +871,10 @@ impl TabCoordinator {
             .update_presentation(logical_window_width(window))
     }
 
+    pub(crate) fn close_exited_session(&mut self, source: SessionId) -> TabActionOutcome {
+        self.tabs.close_exited_session(source)
+    }
+
     pub(crate) fn process_output(
         &mut self,
         session_id: SessionId,
@@ -836,6 +887,11 @@ impl TabCoordinator {
         scale_factor: f32,
         physical_size: (u32, u32),
     ) -> bool {
+        self.workspace_ui.publish_pane_input_metrics(
+            scale_factor,
+            physical_size,
+            self.factory.metrics(),
+        );
         self.tabs.observe_pane_allocations(
             &self.workspace_ui.pane_allocations(),
             scale_factor,
@@ -995,6 +1051,9 @@ mod action_batch_tests;
 #[cfg(test)]
 #[path = "configuration_reload_tests.rs"]
 mod configuration_reload_tests;
+#[cfg(all(test, windows))]
+#[path = "pane_lifecycle_tests.rs"]
+mod pane_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

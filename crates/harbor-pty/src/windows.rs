@@ -73,6 +73,38 @@ pub struct PtyWriter {
 }
 
 impl Pty {
+    /// Wait on the exact shell process, independently of ConPTY output/EOF.
+    /// The waiter owns only a duplicated process handle, never the PTY or reader.
+    pub(crate) fn observe_exit(
+        &self,
+        notify: impl FnOnce() + Send + 'static,
+    ) -> anyhow::Result<()> {
+        use std::os::windows::io::BorrowedHandle;
+        let process = self
+            ._process
+            .as_ref()
+            .context("shell process unavailable")?;
+        // SAFETY: the borrowed handle remains owned by self throughout duplication.
+        let process = unsafe { BorrowedHandle::borrow_raw(process.handle().0) }
+            .try_clone_to_owned()
+            .context("duplicate shell wait handle")?;
+        std::thread::Builder::new()
+            .name("harbor-shell-exit".into())
+            .spawn(move || {
+                // The process owner terminates its job on explicit close. Even when
+                // ConPTY keeps stdout open, process termination releases this wait.
+                let result =
+                    unsafe { WaitForSingleObject(HANDLE(process.as_raw_handle()), u32::MAX) };
+                if result == WAIT_OBJECT_0 {
+                    notify();
+                } else {
+                    tracing::error!(?result, "shell exit wait failed");
+                }
+            })
+            .context("spawn shell exit observer")?;
+        Ok(())
+    }
+
     pub(crate) fn process_exited(&self) -> bool {
         self._process.as_ref().is_some_and(|process| unsafe {
             WaitForSingleObject(process.handle(), 0) == WAIT_OBJECT_0

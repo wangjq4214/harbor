@@ -286,6 +286,18 @@ impl Terminal {
         }
     }
 
+    /// Publish committed pane-local input geometry without drawing, draining, or resizing.
+    pub fn set_input_geometry(
+        &mut self,
+        target: RenderTarget,
+        metrics: &TextMetrics,
+    ) -> RenderViewport {
+        let viewport = RenderViewport::from_target(target, metrics);
+        self.pointer.set_viewport(viewport);
+        self.pointer.set_input_scale(target.scale_factor);
+        viewport
+    }
+
     /// Advances the GPU-independent engine for a live host draw. A failed PTY resize
     /// leaves the old grid intact so a subsequent draw can retry it.
     pub fn prepare_render_frame(
@@ -294,9 +306,7 @@ impl Terminal {
         metrics: &TextMetrics,
         now: Instant,
     ) -> (RenderViewport, bool) {
-        let viewport = RenderViewport::from_target(target, metrics);
-        self.pointer.set_viewport(viewport);
-        self.pointer.set_input_scale(target.scale_factor);
+        let viewport = self.set_input_geometry(target, metrics);
         // Managed terminals take geometry intent only from their allocation owner.
         let grid_changed =
             !self.host_driven_resize && self.resize_if_changed(viewport.compute_grid_size());

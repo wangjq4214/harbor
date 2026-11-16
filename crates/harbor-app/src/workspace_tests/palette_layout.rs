@@ -143,7 +143,7 @@ fn palette_rows_reserve_a_gutter_with_right_aligned_keycaps_and_translucent_sele
             .collect();
         assert_eq!(
             caps.len(),
-            12,
+            13,
             "each key in the five default shortcuts has a frame"
         );
         let mut rows: Vec<f32> = caps.iter().map(|rect| rect.min.y).collect();

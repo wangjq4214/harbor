@@ -19,3 +19,6 @@ pub mod tab_view;
 mod terminal_commands;
 pub mod terminal_view;
 pub mod workspace;
+
+#[cfg(test)]
+mod pane_input_tests;

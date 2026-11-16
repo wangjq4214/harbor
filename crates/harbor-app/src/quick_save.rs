@@ -258,7 +258,7 @@ impl WorkspaceUiController {
         let focus = match result {
             Ok(()) => {
                 state.popups.close(generation);
-                self.terminal_focus
+                self.terminal_focus()
             }
             Err(error) => {
                 state.popups.update::<QuickSaveState>(|save| {

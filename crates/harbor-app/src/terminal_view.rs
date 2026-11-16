@@ -236,7 +236,11 @@ fn is_terminal_wheel(event: &UiEvent) -> bool {
 
 /// Returns true when the Host gate should suppress delivery of this event.
 pub(crate) fn gate_suppresses_event(gate_active: bool, event: &UiEvent) -> bool {
-    gate_active && !is_terminal_wheel(event)
+    gate_active
+        && !is_terminal_wheel(event)
+        && !matches!(event, UiEvent::Focus(FocusEvent::Lost))
+        && !matches!(event, UiEvent::Pointer(pointer) if pointer.phase == PointerPhase::Cancel)
+        && !matches!(event, UiEvent::ImePreedit(preedit) if preedit.text.is_empty())
 }
 
 fn wakes_redraw_for_routed_input(event: &UiEvent) -> bool {
@@ -535,7 +539,8 @@ impl TerminalWidgetBridge {
         let on_unmount: Arc<harbor_widget::widgets::external_surface::ExternalUnmountFn> =
             Arc::new(move || {
                 if let Ok(mut term) = unmount_terminal.lock() {
-                    term.clear_preedit();
+                    let _ = term
+                        .handle_event_with_outcome(TerminalEvent::Focus(TerminalFocusEvent::Lost));
                 }
             });
 
@@ -629,6 +634,38 @@ pub(crate) fn terminal_widget(bridge: TerminalWidgetBridge) -> ExternalSurface {
         .ime_with(Arc::clone(&bridge.ime))
         .on_input(Arc::clone(&bridge.on_input))
         .on_unmount(Arc::clone(&bridge.on_unmount))
+}
+
+/// Attach product focus intent without making the generic surface interpret pane IDs.
+pub(crate) fn terminal_widget_with_focus(
+    bridge: TerminalWidgetBridge,
+    focused: impl Fn() + 'static,
+    geometry: impl Fn() -> Option<(RenderTarget, TextMetrics)> + 'static,
+) -> ExternalSurface {
+    let input = bridge.on_input.clone();
+    let retired = bridge.retired.clone();
+    let terminal = bridge.terminal.clone();
+    #[allow(clippy::arc_with_non_send_sync)]
+    let handler: Arc<ExternalInputFn> = Arc::new(move |event, ctx| {
+        if !retired.load(Ordering::Acquire)
+            && matches!(
+                event,
+                UiEvent::Focus(FocusEvent::Gained | FocusEvent::GainedVisible)
+            )
+        {
+            focused();
+        }
+        // Runtime commits layout before dispatch. Refresh from that exact pane
+        // observation so the first click after a split/drag need not wait for draw.
+        if !retired.load(Ordering::Acquire)
+            && let Some((target, metrics)) = geometry()
+            && let Ok(mut terminal) = terminal.lock()
+        {
+            terminal.set_input_geometry(target, &metrics);
+        }
+        input(event, ctx)
+    });
+    terminal_widget(bridge).on_input(handler)
 }
 
 /// Maps terminal Frame Demand into the widget schedule contract for a matched id.

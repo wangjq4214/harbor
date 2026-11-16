@@ -125,6 +125,39 @@ fn mixed_panes_present_simultaneous_output_clip_and_suspend_hidden_draw_and_blin
                 "every visible bridge draws without focus"
             );
         }
+        // Actual rendered bridges publish candidate geometry from each pane,
+        // not the outer terminal panel or a sibling's origin.
+        for (index, binding) in [a, b, c].iter().enumerate() {
+            targets[index].1.lock().unwrap().put_bytes(b"\x1b[2;3H");
+            rt.request_focus(&ui.pane_focus(*binding));
+            for request in ui.drain_actions() {
+                if let crate::command::AppCommand::Pane(command) = request.command {
+                    tabs.execute_pane_command(command);
+                }
+            }
+            ui.sync_panes(&tabs, 1000.0);
+            rt.update(Instant::now());
+            let effect = rt.dispatch(UiEvent::ImePreedit(
+                harbor_widget::input::event::ImePreedit::new("x", Some((1, 1))),
+            ));
+            let position = effect
+                .ime
+                .and_then(|ime| ime.position)
+                .expect("candidate geometry");
+            let rect = allocation(&ui, *binding).rect;
+            assert!(
+                (position.x - (rect.min.x + (16.0 + 3.0 * metrics.cell_width) / scale)).abs() < 1.0
+            );
+            assert!((position.y - (rect.min.y + (16.0 + metrics.line_height) / scale)).abs() < 1.0);
+            for (other, (_, terminal, _)) in targets.iter().enumerate() {
+                if other != index {
+                    assert!(terminal.lock().unwrap().preedit().is_none());
+                }
+            }
+            rt.dispatch(UiEvent::ImePreedit(
+                harbor_widget::input::event::ImePreedit::new("", None),
+            ));
+        }
         let left = allocation(&ui, a).rect;
         let gap = sample(Point::new(left.max.x + 3.0, left.min.y + 30.0));
         assert!(
