@@ -108,6 +108,8 @@ struct TerminalTab {
     id: TabId,
     focused: PaneId,
     panes: Vec<TerminalPane>,
+    tree: crate::pane_layout::PaneTree,
+    maximized: Option<PaneId>,
 }
 
 struct TerminalPane {
@@ -215,6 +217,7 @@ impl std::fmt::Debug for SessionClipboardWrite {
 /// Classification of one tab-qualified PTY wake.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TabOutputOutcome {
+    /// A visible leaf of the active workspace may need presentation, regardless of focus.
     pub request_active_invalidation: bool,
     pub unread_changed: bool,
     pub title_changed: bool,
@@ -251,6 +254,7 @@ const RESIZE_BATCH_LIMIT: usize = 2;
 /// Effects of the single ordinary resize admission batch in a host turn.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ResizeBatchOutcome {
+    /// Any visible leaf changed; the historical field name does not imply keyboard focus.
     pub active_changed: bool,
     pub ready_remaining: bool,
     pub attempted: usize,
@@ -270,6 +274,9 @@ pub struct TabManager {
     resize_target: Option<TerminalSize>,
     resize_cursor: usize,
     clipboard_delivery: Option<ClipboardDelivery>,
+    split_reservations:
+        std::collections::HashMap<PaneId, (PaneBinding, PaneBinding, ExternalDrawId)>,
+    pane_targets: std::collections::HashMap<SessionId, TerminalSize>,
 }
 
 impl Default for TabManager {
@@ -294,6 +301,8 @@ impl TabManager {
             resize_target: None,
             resize_cursor: 0,
             clipboard_delivery: None,
+            split_reservations: Default::default(),
+            pane_targets: Default::default(),
         }
     }
 
@@ -346,6 +355,8 @@ impl TabManager {
         self.tabs.push(TerminalTab {
             id: binding.workspace,
             focused: binding.pane,
+            tree: crate::pane_layout::PaneTree::Leaf(binding.pane),
+            maximized: None,
             panes: vec![TerminalPane {
                 id: binding.pane,
                 session: binding.session,
@@ -354,6 +365,7 @@ impl TabManager {
         self.cancel_search();
         self.clear_active_preedit();
         self.active = Some(binding.workspace);
+        self.freeze_hidden_grids();
         Ok(TabActionOutcome {
             active_bridge_changed: true,
             request_redraw: true,
@@ -519,6 +531,9 @@ impl TabManager {
     }
 
     pub fn accept_configuration_size(&mut self, size: TerminalSize) {
+        for session in &self.sessions {
+            self.pane_targets.insert(session.id, size);
+        }
         self.resize_target = Some(size);
         self.last_broadcast_size = Some(size);
     }
@@ -575,6 +590,7 @@ impl TabManager {
         self.cancel_search();
         self.clear_active_preedit();
         self.active = Some(id);
+        self.freeze_hidden_grids();
         let session = self.tabs[index]
             .panes
             .iter()
@@ -629,6 +645,8 @@ impl TabManager {
             self.cancel_search();
         }
         let removed = self.tabs.remove(index);
+        self.split_reservations
+            .retain(|_, (source, _, _)| source.workspace != id);
         for pane in removed.panes {
             self.retire_session(pane.session);
         }
@@ -653,6 +671,7 @@ impl TabManager {
         // The old right neighbor moves into `index`; when there was none, use the new last item.
         let replacement_index = index.min(self.tabs.len() - 1);
         self.active = Some(self.tabs[replacement_index].id);
+        self.freeze_hidden_grids();
         let unread_changed = self
             .active_session_id()
             .is_some_and(|id| self.take_unread(id));
@@ -677,6 +696,7 @@ impl TabManager {
             return;
         };
         // Drop retires PTY/reader ownership even while UI/configuration clones remain.
+        self.pane_targets.remove(&id);
         self.sessions.remove(index);
     }
 
@@ -687,10 +707,14 @@ impl TabManager {
         }
     }
 
-    /// Drains output for a live tab. Only an active tab asks Runtime to invalidate its mounted
-    /// external draw; inactive tabs update model state without exposing a schedule provider.
+    /// Drain one live session. All visible leaves may invalidate presentation;
+    /// hidden sessions ingest the same bounded output without a schedule provider.
     pub fn process_output(&mut self, id: SessionId) -> TabOutputOutcome {
         let active = self.active_session_id() == Some(id);
+        let visible = self
+            .visible_bindings()
+            .iter()
+            .any(|binding| binding.session == id);
         let Some(tab) = self.sessions.iter_mut().find(|tab| tab.id == id) else {
             return TabOutputOutcome::default();
         };
@@ -732,9 +756,9 @@ impl TabManager {
             || tab.shell_integration != previous_shell_integration;
         let title_changed = tab.title != previous_title;
         let unread_changed =
-            !active && ingested_output && !std::mem::replace(&mut tab.unread, true);
+            !visible && ingested_output && !std::mem::replace(&mut tab.unread, true);
         TabOutputOutcome {
-            request_active_invalidation: active,
+            request_active_invalidation: visible,
             unread_changed,
             title_changed,
             active_title_changed: active && title_changed,
@@ -743,8 +767,8 @@ impl TabManager {
         }
     }
 
-    /// Submit the latest valid allocation to every live terminal without running
-    /// any expensive transaction. Returns true only on newly observed all-tab completion.
+    /// Explicit uniform request helper for embedders/tests, not window allocation propagation.
+    /// Production panes use observe_pane_allocations; hidden grids are not broadcast.
     /// The host must call advance_resizes once per turn and continue ready work.
     pub fn resize_all_if_changed(&mut self, size: TerminalSize) -> bool {
         if size.rows == 0 || size.cols == 0 {
@@ -793,6 +817,7 @@ impl TabManager {
     /// merely submit targets or dispatch ordered reader events.
     pub fn advance_resizes(&mut self) -> ResizeBatchOutcome {
         let mut outcome = ResizeBatchOutcome::default();
+        let visible = self.visible_bindings();
         let active = self.active_session_id();
         if let Some(tab) = self.sessions.iter().find(|tab| Some(tab.id) == active) {
             Self::advance_tab_resize(tab, true, &mut outcome);
@@ -808,7 +833,8 @@ impl TabManager {
             self.resize_cursor = (index + 1) % self.sessions.len();
             let tab = &self.sessions[index];
             if Some(tab.id) != active {
-                Self::advance_tab_resize(tab, false, &mut outcome);
+                let visible = visible.iter().any(|binding| binding.session == tab.id);
+                Self::advance_tab_resize(tab, visible, &mut outcome);
             }
         }
         outcome.ready_remaining = self.sessions.iter().any(|tab| {
@@ -840,6 +866,327 @@ impl TabManager {
         self.last_broadcast_size
     }
 
+    /// Current visible leaves, independent of keyboard focus.
+    pub fn visible_bindings(&self) -> Vec<PaneBinding> {
+        let Some(tab) = self.tabs.iter().find(|tab| Some(tab.id) == self.active) else {
+            return Vec::new();
+        };
+        tab.panes
+            .iter()
+            .filter(|pane| tab.maximized.is_none_or(|id| id == pane.id))
+            .map(|pane| PaneBinding {
+                workspace: tab.id,
+                pane: pane.id,
+                session: pane.session,
+            })
+            .collect()
+    }
+
+    pub fn active_layout(&self) -> Option<crate::pane_layout::PaneLayout> {
+        use crate::pane_layout::{PaneLayout, PaneTree};
+        let tab = self.tabs.iter().find(|tab| Some(tab.id) == self.active)?;
+        fn project(tabs: &TabManager, tab: &TerminalTab, tree: &PaneTree) -> Option<PaneLayout> {
+            Some(match tree {
+                PaneTree::Leaf(id) => {
+                    let pane = tab.panes.iter().find(|pane| pane.id == *id)?;
+                    let session = tabs
+                        .sessions
+                        .iter()
+                        .find(|session| session.id == pane.session)?;
+                    PaneLayout::Leaf {
+                        binding: PaneBinding {
+                            workspace: tab.id,
+                            pane: *id,
+                            session: pane.session,
+                        },
+                        bridge: session.bridge.clone(),
+                    }
+                }
+                PaneTree::Split {
+                    axis,
+                    ratio,
+                    first,
+                    second,
+                } => PaneLayout::Split {
+                    axis: *axis,
+                    ratio: ratio.clone(),
+                    first: Box::new(project(tabs, tab, first)?),
+                    second: Box::new(project(tabs, tab, second)?),
+                },
+            })
+        }
+        project(
+            self,
+            tab,
+            &tab.maximized
+                .map_or_else(|| tab.tree.clone(), PaneTree::Leaf),
+        )
+    }
+
+    /// Atomic publication of independent resources at the reserved original leaf.
+    /// On every rejection the unpublished owner retires its resources. No focus lookup.
+    pub fn attach_split(
+        &mut self,
+        source: PaneBinding,
+        target: PaneBinding,
+        draw: ExternalDrawId,
+        mut resources: TerminalTabResources,
+        axis: harbor_widget::SplitAxis,
+    ) -> Result<TabActionOutcome> {
+        let live_engine = self
+            .sessions
+            .iter()
+            .any(|session| Arc::ptr_eq(&session.terminal, &resources.terminal));
+        let live_registration = self
+            .sessions
+            .iter()
+            .any(|session| session.bridge.shares_registration(&resources.bridge));
+        if live_engine || live_registration {
+            // A malformed owner must not revoke a published survivor on rejection.
+            if !live_engine {
+                resources
+                    .terminal
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .retire_session();
+            }
+            if !live_registration {
+                resources.bridge.retire();
+            }
+            resources.published = true;
+            return Err(anyhow!("split resources are already published"));
+        }
+        let reservation = self.split_reservations.remove(&target.pane);
+        anyhow::ensure!(
+            reservation == Some((source, target, draw)) && self.contains_binding(source),
+            "stale split attachment"
+        );
+        anyhow::ensure!(
+            resources.bridge.draw_id() == draw && resources.bridge.is_bound_to(&resources.terminal),
+            "split registration mismatch"
+        );
+        anyhow::ensure!(
+            !self
+                .sessions
+                .iter()
+                .any(|session| session.id == target.session
+                    || session.bridge.draw_id() == draw
+                    || Arc::ptr_eq(&session.terminal, &resources.terminal)),
+            "split resources are not independent"
+        );
+        {
+            let mut terminal = resources
+                .terminal
+                .lock()
+                .map_err(|_| anyhow!("split terminal lock unavailable"))?;
+            anyhow::ensure!(
+                !terminal.is_session_closed() && !terminal.shell_process_exited(),
+                "split session is closed"
+            );
+            terminal.use_host_resize_scheduling();
+            if let Some(delivery) = self.clipboard_delivery {
+                terminal.set_clipboard_delivery(delivery);
+            }
+        }
+        let tab = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == source.workspace)
+            .expect("validated workspace");
+        let mut tree = tab.tree.clone();
+        anyhow::ensure!(
+            tree.split(source.pane, target.pane, axis),
+            "split source has no layout leaf"
+        );
+        tab.tree = tree;
+        tab.panes.push(TerminalPane {
+            id: target.pane,
+            session: target.session,
+        });
+        // A new leaf is visible on restoration; maximizing never destroys the tree.
+        self.sessions.push(TerminalSession {
+            id: target.session,
+            title: resources.shell_fallback.clone(),
+            shell_fallback: resources.shell_fallback.clone(),
+            working_directory: None,
+            shell_integration: None,
+            unread: false,
+            terminal: Arc::clone(&resources.terminal),
+            bridge: resources.bridge.clone(),
+        });
+        resources.published = true;
+        Ok(TabActionOutcome {
+            active_bridge_changed: self.active == Some(source.workspace),
+            request_redraw: true,
+            ..Default::default()
+        })
+    }
+
+    /// Seed only bounded startup display metadata; never replay startup clipboard effects.
+    pub fn seed_split_metadata(&mut self, binding: PaneBinding, events: Vec<TerminalOutputEvent>) {
+        if !self.contains_binding(binding) {
+            return;
+        }
+        let session = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == binding.session)
+            .unwrap();
+        for event in events {
+            match event {
+                TerminalOutputEvent::TitleChanged(title) => {
+                    session.title = normalize_shell_title(title, &session.shell_fallback)
+                }
+                TerminalOutputEvent::TitleReset => {
+                    session.title.clone_from(&session.shell_fallback)
+                }
+                TerminalOutputEvent::WorkingDirectoryChanged(metadata) => {
+                    session.working_directory = Some(metadata)
+                }
+                TerminalOutputEvent::WorkingDirectoryReset => session.working_directory = None,
+                TerminalOutputEvent::ShellIntegration(marker) => {
+                    session.shell_integration = Some(marker)
+                }
+                TerminalOutputEvent::ShellIntegrationReset => session.shell_integration = None,
+                _ => {}
+            }
+        }
+    }
+    /// Model/presentation seam only; production focus/close command policy is T0004.
+    pub fn maximize_pane(&mut self, binding: PaneBinding) -> TabActionOutcome {
+        if !self.contains_binding(binding) {
+            return TabActionOutcome::default();
+        }
+        let tab = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == binding.workspace)
+            .unwrap();
+        tab.maximized = (tab.maximized != Some(binding.pane)).then_some(binding.pane);
+        self.freeze_hidden_grids();
+        TabActionOutcome {
+            active_bridge_changed: true,
+            request_redraw: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn close_pane(&mut self, binding: PaneBinding) -> TabActionOutcome {
+        if !self.contains_binding(binding) {
+            return TabActionOutcome::default();
+        }
+        let tab = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == binding.workspace)
+            .unwrap();
+        if tab.panes.len() == 1 {
+            return self.close(binding.workspace);
+        }
+        tab.panes.retain(|pane| pane.id != binding.pane);
+        tab.tree = tab
+            .tree
+            .clone()
+            .remove(binding.pane)
+            .expect("surviving leaf");
+        if tab.focused == binding.pane {
+            tab.focused = tab.panes[0].id;
+        }
+        if tab.maximized == Some(binding.pane) {
+            tab.maximized = None;
+        }
+        self.split_reservations
+            .retain(|_, (source, _, _)| *source != binding);
+        self.cancel_search();
+        self.retire_session(binding.session);
+        TabActionOutcome {
+            active_bridge_changed: true,
+            request_redraw: true,
+            active_title_changed: true,
+            ..Default::default()
+        }
+    }
+
+    fn freeze_hidden_grids(&mut self) {
+        let visible = self.visible_bindings();
+        for session in &self.sessions {
+            if self.pane_targets.contains_key(&session.id)
+                && !visible.iter().any(|binding| binding.session == session.id)
+                && let Ok(mut terminal) = session.terminal.lock()
+            {
+                terminal.cancel_resize();
+                self.pane_targets.insert(
+                    session.id,
+                    TerminalSize {
+                        rows: terminal.screen().rows(),
+                        cols: terminal.screen().cols(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Submit only current visible, registration-qualified observations; no transactions here.
+    pub fn observe_pane_allocations(
+        &mut self,
+        observations: &[crate::pane_layout::PaneAllocation],
+        scale: f32,
+        surface: (u32, u32),
+        metrics: &harbor_terminal::TextMetrics,
+    ) {
+        self.freeze_hidden_grids();
+        let visible = self.visible_bindings();
+        for allocation in observations {
+            if !visible.contains(&allocation.binding) {
+                continue;
+            }
+            let Some(session) = self.sessions.iter().find(|session| {
+                session.id == allocation.binding.session
+                    && session.bridge.draw_id() == allocation.draw_id
+            }) else {
+                continue;
+            };
+            let Some(size) = crate::terminal_view::terminal_size_from_allocation(
+                allocation.rect,
+                scale,
+                surface,
+                metrics,
+            ) else {
+                continue;
+            };
+            self.pane_targets.insert(session.id, size);
+            if let Ok(mut terminal) = session.terminal.lock()
+                && let Err(error) = terminal.request_resize(size)
+            {
+                tracing::warn!(%error, "failed to request pane resize");
+            }
+        }
+    }
+
+    pub fn configuration_size(&self, id: SessionId) -> Option<TerminalSize> {
+        self.pane_targets.get(&id).copied()
+    }
+
+    /// Accepted configuration geometry is per session, including retained hidden grids.
+    pub fn accept_configuration_sizes(&mut self, sizes: &[(SessionId, TerminalSize)]) {
+        for (id, size) in sizes {
+            self.pane_targets.insert(*id, *size);
+        }
+        self.last_broadcast_size = None;
+        self.resize_target = None;
+    }
+
+    /// Host cancellation discards an unpublished reservation without reusing its IDs.
+    pub fn cancel_split_reservation(&mut self, target: PaneBinding) {
+        if self
+            .split_reservations
+            .get(&target.pane)
+            .is_some_and(|(_, reserved, _)| *reserved == target)
+        {
+            self.split_reservations.remove(&target.pane);
+        }
+    }
+
     /// Reserve an unpublished split leaf in the original workspace. IDs are burned
     /// even on failure/cancellation; T0003 owns layout attachment, not reservation.
     pub fn reserve_split_ids(
@@ -862,6 +1209,18 @@ impl TabManager {
         self.next_pane_id = next_pane;
         self.next_session_id = next_session;
         self.next_draw_id = next_draw;
+        self.split_reservations.insert(
+            pane,
+            (
+                source,
+                PaneBinding {
+                    workspace: source.workspace,
+                    pane,
+                    session,
+                },
+                draw,
+            ),
+        );
         Ok((
             PaneBinding {
                 workspace: source.workspace,

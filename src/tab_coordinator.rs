@@ -228,16 +228,39 @@ impl TerminalConfiguration {
                 fonts.push(font);
             }
         }
-        let size = if font_changed {
-            let rect = workspace_ui
-                .latest_terminal_allocation()
-                .context("terminal allocation is unavailable for font reload")?;
-            terminal_size_from_allocation(rect, scale, surface, &metrics)
-                .context("terminal allocation/metrics are not drawable for font reload")?
-        } else {
-            tabs.last_broadcast_size()
-                .context("terminal geometry is unavailable")?
-        };
+        let visible = tabs.visible_bindings();
+        let allocations = workspace_ui.pane_allocations();
+        let sizes = targets
+            .iter()
+            .map(|(id, terminal, bridge)| {
+                let visible_binding = visible.iter().find(|binding| binding.session == *id);
+                let size = if let Some(binding) = visible_binding.filter(|_| font_changed) {
+                    let rect = allocations
+                        .iter()
+                        .find(|allocation| {
+                            allocation.binding == *binding && allocation.draw_id == bridge.draw_id()
+                        })
+                        .map(|allocation| allocation.rect)
+                        .context("visible pane allocation is unavailable for font reload")?;
+                    terminal_size_from_allocation(rect, scale, surface, &metrics)
+                        .context("pane allocation/metrics are not drawable for font reload")?
+                } else {
+                    let terminal = terminal
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("session {id}: terminal lock unavailable"))?;
+                    let current = TerminalSize {
+                        rows: terminal.screen().rows(),
+                        cols: terminal.screen().cols(),
+                    };
+                    if self.geometry_recovery_pending {
+                        tabs.configuration_size(*id).unwrap_or(current)
+                    } else {
+                        current
+                    }
+                };
+                Ok((*id, size))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let mut terminals = targets
             .iter()
             .map(|(id, terminal, _)| {
@@ -274,7 +297,7 @@ impl TerminalConfiguration {
                     )
                 })?;
                 terminal
-                    .prepare_configuration_with_history(size, settings.history)
+                    .prepare_configuration_with_history(sizes[index].1, settings.history)
                     .with_context(|| {
                         format!(
                             "session {}: reader barrier/model preparation",
@@ -333,7 +356,7 @@ impl TerminalConfiguration {
         self.profiles = settings.profiles.clone();
         workspace_ui.publish_profiles(self.profiles.clone());
         // Effective clipboard delivery remains the startup policy, including for new tabs.
-        tabs.accept_configuration_size(size);
+        tabs.accept_configuration_sizes(&sizes);
         self.geometry_recovery_pending = false;
         Ok(warnings)
     }
@@ -630,6 +653,27 @@ impl TabCoordinator {
         ready.claim(&self.tabs, operation)
     }
 
+    /// Claim and attach atomically in this Host turn; caller owns UI admission/focus policy.
+    #[allow(dead_code)]
+    pub(crate) fn attach_split(
+        &mut self,
+        ready: crate::split_launch::SplitReady,
+        operation: crate::split_launch::OperationId,
+        axis: harbor_widget::SplitAxis,
+    ) -> anyhow::Result<(TabActionOutcome, crate::split_launch::LaunchKind)> {
+        let prepared = ready.claim(&self.tabs, operation)?;
+        let outcome = self.tabs.attach_split(
+            prepared.source,
+            prepared.target,
+            prepared.draw,
+            prepared.resources,
+            axis,
+        )?;
+        self.tabs
+            .seed_split_metadata(prepared.target, prepared.metadata);
+        self.workspace_ui.publish_panes(&self.tabs);
+        Ok((outcome, prepared.kind))
+    }
     pub(crate) fn active_session_id(&self) -> Option<SessionId> {
         self.tabs.active_session_id()
     }
@@ -715,6 +759,7 @@ impl TabCoordinator {
         factory: TerminalTabFactory,
     ) -> Self {
         workspace_ui.publish_profiles(factory.configuration.profiles.clone());
+        workspace_ui.publish_panes(&tabs);
         Self {
             tabs,
             workspace_ui,
@@ -769,11 +814,8 @@ impl TabCoordinator {
     }
 
     pub(crate) fn sync_tab_ui(&self, window: &Window) {
-        self.workspace_ui.tabs().sync(
-            self.tabs.snapshots(),
-            self.tabs.active_bridge(),
-            logical_window_width(window),
-        );
+        self.workspace_ui
+            .sync_panes(&self.tabs, logical_window_width(window));
     }
 
     pub(crate) fn update_presentation(&self, window: &Window) -> bool {
@@ -794,18 +836,13 @@ impl TabCoordinator {
         scale_factor: f32,
         physical_size: (u32, u32),
     ) -> bool {
-        let Some(rect) = self.workspace_ui.latest_terminal_allocation() else {
-            return false;
-        };
-        let Some(size) = terminal_size_from_allocation(
-            rect,
+        self.tabs.observe_pane_allocations(
+            &self.workspace_ui.pane_allocations(),
             scale_factor,
             physical_size,
             &self.factory.metrics(),
-        ) else {
-            return false;
-        };
-        self.tabs.resize_all_if_changed(size)
+        );
+        false
     }
 
     pub(crate) fn apply_tab_outcome(

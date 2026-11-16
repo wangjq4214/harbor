@@ -77,7 +77,9 @@ pub fn terminal_size_from_allocation(
     if target.allocation_size.0 == 0 || target.allocation_size.1 == 0 {
         return None;
     }
-    Some(RenderViewport::from_target(target, metrics).compute_grid_size())
+    let size = RenderViewport::from_target(target, metrics).compute_grid_size();
+    // Reject unsupported PTY extents before acquiring a barrier or allocating a model.
+    (size.rows <= i16::MAX as usize && size.cols <= i16::MAX as usize).then_some(size)
 }
 
 /// Invokes `draw` only when the Runtime-supplied id matches the bridge-owned id.
@@ -297,6 +299,8 @@ pub struct TerminalWidgetBridge {
     decorations: Arc<Mutex<DecorationProjection>>,
     #[cfg(test)]
     alt_screen_queries: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    activity: Arc<[std::sync::atomic::AtomicUsize; 2]>,
     draw_id: ExternalDrawId,
     terminal: Arc<Mutex<Terminal>>,
     handler: Arc<ExternalDrawFn<'static>>,
@@ -356,6 +360,12 @@ impl TerminalWidgetBridge {
         activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Self {
         let retired = Arc::new(AtomicBool::new(false));
+        #[cfg(test)]
+        let activity: Arc<[std::sync::atomic::AtomicUsize; 2]> = Arc::default();
+        #[cfg(test)]
+        let draw_activity = activity.clone();
+        #[cfg(test)]
+        let schedule_activity = activity.clone();
         let draw_retired = Arc::clone(&retired);
         let decorations = Arc::new(Mutex::new(DecorationProjection::default()));
         let draw_decorations = Arc::clone(&decorations);
@@ -368,6 +378,8 @@ impl TerminalWidgetBridge {
                 if draw_retired.load(Ordering::Acquire) {
                     return;
                 }
+                #[cfg(test)]
+                draw_activity[0].fetch_add(1, Ordering::Relaxed);
                 dispatch_matched_draw(draw_id, id, context, |target| {
                     let Some(renderer) = &draw_renderer else {
                         // Headless bridges used by tests and the HMR host have no GPU projection.
@@ -441,6 +453,8 @@ impl TerminalWidgetBridge {
             if schedule_retired.load(Ordering::Acquire) {
                 return ExternalScheduleDemand::empty();
             }
+            #[cfg(test)]
+            schedule_activity[1].fetch_add(1, Ordering::Relaxed);
             schedule_demand_for_terminal(draw_id, id, &schedule_terminal, now)
         });
 
@@ -530,6 +544,8 @@ impl TerminalWidgetBridge {
             decorations,
             #[cfg(test)]
             alt_screen_queries: Arc::default(),
+            #[cfg(test)]
+            activity,
             draw_id,
             renderer,
             terminal,
@@ -550,6 +566,13 @@ impl TerminalWidgetBridge {
     pub(crate) fn alt_screen_queries(&self) -> usize {
         self.alt_screen_queries.load(Ordering::Relaxed)
     }
+    #[cfg(test)]
+    pub(crate) fn activity(&self) -> (usize, usize) {
+        (
+            self.activity[0].load(Ordering::Relaxed),
+            self.activity[1].load(Ordering::Relaxed),
+        )
+    }
     /// Application-published proven ranges, never physical coordinates or query policy.
     pub fn set_decorations(&self, ranges: Vec<harbor_terminal::read_model::ContentRange>) {
         self.decorations
@@ -558,6 +581,9 @@ impl TerminalWidgetBridge {
             .set_ranges(ranges);
     }
 
+    pub(crate) fn shares_registration(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.retired, &other.retired)
+    }
     pub(crate) fn is_bound_to(&self, terminal: &Arc<Mutex<Terminal>>) -> bool {
         Arc::ptr_eq(&self.terminal, terminal)
     }

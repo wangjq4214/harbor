@@ -219,6 +219,7 @@ pub struct WorkspaceUiController {
     search_focus: FocusHandle,
     palette_focus: FocusHandle,
     allocation: TerminalAllocationMailbox,
+    pane_allocations: crate::pane_layout::PaneAllocations,
 }
 
 impl WorkspaceUiController {
@@ -234,6 +235,7 @@ impl WorkspaceUiController {
             search_focus: FocusHandle::new(),
             palette_focus: FocusHandle::new(),
             allocation: TerminalAllocationMailbox::new(),
+            pane_allocations: Default::default(),
         }
     }
 
@@ -329,6 +331,21 @@ impl WorkspaceUiController {
     }
     pub fn terminal_focus(&self) -> FocusHandle {
         self.terminal_focus
+    }
+    /// Publish model visibility and registration identity before mounting its projection.
+    pub fn sync_panes(&self, tabs: &crate::tab_manager::TabManager, logical_width: f64) {
+        self.publish_panes(tabs);
+        self.tabs
+            .sync(tabs.snapshots(), tabs.active_bridge(), logical_width);
+        self.tabs.publish_layout(tabs.active_layout());
+    }
+    pub fn publish_panes(&self, tabs: &crate::tab_manager::TabManager) {
+        let layout = tabs.active_layout();
+        self.pane_allocations.publish(layout.as_ref());
+        self.tabs.publish_layout(layout);
+    }
+    pub fn pane_allocations(&self) -> Vec<crate::pane_layout::PaneAllocation> {
+        self.pane_allocations.latest()
     }
     pub fn latest_terminal_allocation(&self) -> Option<Rect> {
         self.allocation.latest()
@@ -499,7 +516,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
                     shortcuts => {
                         Row::new() => {
                             tab_rail(cx, &tab_state, &props.controller.tabs, dispatcher);
-                            terminal_panel(cx, &props.controller, active_bridge, bindings);
+                            terminal_panel(cx, &props.controller, active_bridge, tab_state.layout.as_ref(), bindings);
                         }
                     }
                 }
@@ -515,6 +532,7 @@ fn terminal_panel(
     cx: &mut BuildCx,
     controller: &WorkspaceUiController,
     active_bridge: TerminalWidgetBridge,
+    layout: Option<&crate::pane_layout::PaneLayout>,
     bindings: &ResolvedKeybindings,
 ) -> View {
     let popup_state = controller.store.state().read().clone();
@@ -522,9 +540,11 @@ fn terminal_panel(
         harbor_widget::Column::new() => {
             Expanded::new().keyed("terminal-surface") => {
                 controller.allocation.observer() => {
-                    TerminalDecorationPreset::container() => {
-                        Focus::new().focus_handle(controller.terminal_focus) => {
-                            terminal_widget(active_bridge);
+                    if let Some(layout) = layout {
+                        layout.build(cx, &controller.pane_allocations, controller.tabs.state.read().snapshots.iter().find(|snapshot| snapshot.active).expect("active workspace").binding.pane, controller.terminal_focus);
+                    } else {
+                        TerminalDecorationPreset::container() => {
+                            Focus::new().focus_handle(controller.terminal_focus) => { terminal_widget(active_bridge); }
                         }
                     }
                 }

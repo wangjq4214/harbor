@@ -2,6 +2,8 @@
 //! Only pre-effect rejection is mocked; native PTY effects, barriers and GPU preparation are real.
 #[path = "configuration_reload_tests/gpu.rs"]
 mod gpu;
+#[path = "configuration_reload_tests/panes.rs"]
+mod panes;
 #[path = "configuration_reload_tests/pty.rs"]
 mod pty;
 
@@ -23,6 +25,12 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::new_layout(false)
+    }
+    fn panes() -> Self {
+        Self::new_layout(true)
+    }
+    fn new_layout(panes: bool) -> Self {
         // Fail rather than silently count an unavailable GPU as a passing test.
         let (device, queue) = crate::test_gpu::device();
         let accepted = Settings::default();
@@ -41,7 +49,7 @@ impl Fixture {
         };
         let mut tabs = TabManager::new();
         for index in 0..2 {
-            tabs.create_tab(|_, draw| {
+            let create = |_: SessionId, draw| {
                 let (mut terminal, renderer) = policy.prepare_new_terminal(
                     TerminalGpuAccess::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm),
                     load_system_fonts(&policy.font_settings)?,
@@ -68,11 +76,25 @@ impl Fixture {
                     bridge,
                     "existing-child".to_owned(),
                 ))
-            })
-            .unwrap();
+            };
+            if panes && index == 1 {
+                let source = tabs.active_binding().unwrap();
+                let (target, draw) = tabs.reserve_split_ids(source).unwrap();
+                tabs.attach_split(
+                    source,
+                    target,
+                    draw,
+                    create(target.session, draw).unwrap(),
+                    harbor_widget::SplitAxis::Horizontal,
+                )
+                .unwrap();
+            } else {
+                tabs.create_tab(create).unwrap();
+            }
         }
         tabs.accept_configuration_size(TerminalSize { rows: 10, cols: 40 });
         let ui = WorkspaceUiController::new(tabs.snapshots(), tabs.active_bridge().unwrap(), 640.0);
+        ui.sync_panes(&tabs, 640.0);
         ui.publish_keybindings(
             harbor_app::command::validate_keybindings(&accepted.keybindings).unwrap(),
         );
@@ -94,6 +116,14 @@ impl Fixture {
         }
     }
 
+    fn active_grid(&self) -> TerminalSize {
+        let terminal = self.tabs.active_terminal().unwrap();
+        let terminal = terminal.lock().unwrap();
+        TerminalSize {
+            rows: terminal.screen().rows(),
+            cols: terminal.screen().cols(),
+        }
+    }
     fn reload(&mut self, candidate: Settings, fail: Option<ReloadStage>) -> anyhow::Result<String> {
         self.reload_with(candidate, |index, stage| {
             if index == 1 && fail == Some(stage) {
@@ -302,7 +332,13 @@ impl Fixture {
 
 #[cfg(windows)]
 fn native_group_rejection_and_retry(compensation_fails: bool) {
-    let mut f = Fixture::new();
+    let mut f = Fixture::panes();
+    // Establish real pane geometry before the children emit READY. Shrinking an
+    // arbitrarily seeded wide ConPTY grid is not a marker-retention fixture.
+    f.tabs
+        .observe_pane_allocations(&f.ui.pane_allocations(), 1.0, (640, 320), &f.policy.metrics);
+    while f.tabs.advance_resizes().ready_remaining {}
+    f.tabs.accept_configuration_size(f.active_grid());
     f.attach_native_children();
     f.assert_reload_binding('r');
     let accepted = f.accepted.clone();
@@ -438,7 +474,7 @@ fn native_group_rejection_and_retry(compensation_fails: bool) {
     assert_eq!(f.policy.font_settings, candidate.font);
     assert_eq!(f.policy.appearance.palette(), candidate.colors);
     assert_ne!(f.policy.metrics, metrics);
-    let size = f.tabs.last_broadcast_size().unwrap();
+    let size = f.active_grid();
     for (_, terminal, bridge) in &targets {
         let terminal = terminal.lock().unwrap();
         assert_eq!(

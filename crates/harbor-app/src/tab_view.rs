@@ -62,6 +62,7 @@ pub enum TabFocusPolicy {
 pub(crate) struct TabUiState {
     pub(crate) snapshots: Vec<TabSnapshot>,
     pub(crate) active_bridge: Option<TerminalWidgetBridge>,
+    pub(crate) layout: Option<crate::pane_layout::PaneLayout>,
     pub(crate) presentation: RailPresentation,
 }
 
@@ -85,6 +86,7 @@ impl TabUiController {
             .collect();
         Self {
             state: Signal::new(TabUiState {
+                layout: None,
                 snapshots,
                 active_bridge: Some(active_bridge),
                 presentation: RailPresentation::for_logical_width(logical_width),
@@ -107,12 +109,18 @@ impl TabUiController {
             }
         }
         self.state.set(TabUiState {
+            layout: None,
             snapshots,
             active_bridge,
             presentation: RailPresentation::for_logical_width(logical_width),
         });
     }
 
+    pub(crate) fn publish_layout(&self, layout: Option<crate::pane_layout::PaneLayout>) {
+        let mut state = self.state.read().clone();
+        state.layout = layout;
+        self.state.set(state);
+    }
     pub fn update_presentation(&self, logical_width: f64) -> bool {
         let current = self.state.read().clone();
         let presentation = RailPresentation::for_logical_width(logical_width);
