@@ -1,5 +1,5 @@
 //! Explicit Host policy. Terminal OSC parsing never inspects the filesystem.
-mod project;
+pub(crate) mod project;
 use std::{collections::BTreeMap, path::PathBuf};
 
 use harbor_app::profiles::ProfileLaunchIntent;

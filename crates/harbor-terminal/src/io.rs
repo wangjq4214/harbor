@@ -739,6 +739,13 @@ impl TerminalIo {
     pub(crate) fn drain_output_events(&mut self) -> Vec<crate::TerminalOutputEvent> {
         self.parser.drain_output_events()
     }
+    pub(crate) fn shell_process_exited(&self) -> bool {
+        self.session
+            .pty
+            .as_ref()
+            .and_then(|pty| pty.control.as_ref())
+            .is_some_and(PtyControl::process_exited)
+    }
     pub(crate) fn is_session_closed(&self) -> bool {
         self.session.closed_observed
             || self

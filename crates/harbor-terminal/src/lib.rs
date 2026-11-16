@@ -449,6 +449,11 @@ impl Terminal {
         self.pending_resize.is_some() || self.io.configuration_barrier_active()
     }
 
+    /// Independently observe shell-process exit even if ConPTY keeps its output pipe open.
+    /// This does not retire the reader or impose a Host close/restart policy.
+    pub fn shell_process_exited(&self) -> bool {
+        self.io.shell_process_exited()
+    }
     /// Whether reader EOF/disconnection is observed or the reader has already finished.
     /// Checks reader completion even before UI output draining. Headless terminals remain open.
     pub fn is_session_closed(&self) -> bool {

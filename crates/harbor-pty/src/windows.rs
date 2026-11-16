@@ -15,7 +15,7 @@ use ::windows::{
     Win32::{
         Foundation::{
             CloseHandle, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE, WAIT_FAILED,
-            WAIT_TIMEOUT,
+            WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
@@ -58,6 +58,7 @@ pub struct Pty {
     _job: Option<OwnedHandle>,
     /// Whether an explicit job termination request has already been issued.
     terminated: bool,
+    shutdown_receipt: crate::ShutdownReceipt,
 }
 
 /// Read side of the ConPTY output pipe consumed by the background pump.
@@ -72,6 +73,14 @@ pub struct PtyWriter {
 }
 
 impl Pty {
+    pub(crate) fn process_exited(&self) -> bool {
+        self._process.as_ref().is_some_and(|process| unsafe {
+            WaitForSingleObject(process.handle(), 0) == WAIT_OBJECT_0
+        })
+    }
+    pub(crate) fn shutdown_receipt(&self) -> crate::ShutdownReceipt {
+        self.shutdown_receipt.clone()
+    }
     pub(crate) fn launch_provenance(&self) -> &crate::LaunchProvenance {
         &self.launch_provenance
     }
@@ -150,6 +159,7 @@ impl Pty {
                 _thread: Some(OwnedHandle::new(process_info.hThread)),
                 _job: Some(job),
                 terminated: false,
+                shutdown_receipt: crate::ShutdownReceipt::pending(),
             },
             PtyReader { output_read },
             shell_name,
@@ -374,6 +384,7 @@ impl Drop for Pty {
         if self._pseudo_console.is_some() {
             drop(self._pseudo_console.take());
         }
+        self.shutdown_receipt.complete();
     }
 }
 

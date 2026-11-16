@@ -442,6 +442,30 @@ impl TerminalTabFactory {
         )
     }
 
+    /// T0002 factory seam: preserve cleanup proof across every post-spawn error.
+    #[allow(dead_code)]
+    pub(crate) fn create_split_attempt(
+        &self,
+        session_id: SessionId,
+        draw_id: ExternalDrawId,
+        size: TerminalSize,
+        surface_size: (u32, u32),
+        command: &ShellCommand,
+        probe: Option<&crate::split_launch::StartupProbe>,
+    ) -> crate::split_launch::AttemptLaunch {
+        let mut cleanup = None;
+        let resources = self.create_resources_observed(
+            session_id,
+            draw_id,
+            size,
+            surface_size,
+            command,
+            probe,
+            &mut cleanup,
+        );
+        crate::split_launch::AttemptLaunch { resources, cleanup }
+    }
+
     fn create_resources_with_command(
         &self,
         session_id: SessionId,
@@ -450,14 +474,42 @@ impl TerminalTabFactory {
         surface_size: (u32, u32),
         command: &ShellCommand,
     ) -> anyhow::Result<TerminalTabResources> {
+        self.create_resources_observed(
+            session_id,
+            draw_id,
+            size,
+            surface_size,
+            command,
+            None,
+            &mut None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_resources_observed(
+        &self,
+        session_id: SessionId,
+        draw_id: ExternalDrawId,
+        size: TerminalSize,
+        surface_size: (u32, u32),
+        command: &ShellCommand,
+        probe: Option<&crate::split_launch::StartupProbe>,
+        cleanup: &mut Option<crate::split_launch::Cleanup>,
+    ) -> anyhow::Result<TerminalTabResources> {
         let fonts = load_system_fonts(&self.configuration.font_settings)?;
-        let endpoints = PtyEndpoints::spawn_shell(
+        let mut endpoints = PtyEndpoints::spawn_shell(
             harbor_pty::TerminalSize {
                 rows: size.rows,
                 cols: size.cols,
             },
             command,
         )?;
+        *cleanup = Some(crate::split_launch::Cleanup::Native(
+            endpoints.shutdown_receipt(),
+        ));
+        if let Some(probe) = probe {
+            endpoints.observe_output(probe.observer());
+        }
         let shell_name = endpoints.shell_name().to_owned();
         let output_event_proxy = self.event_proxy.clone();
         let hyperlink_event_proxy = self.event_proxy.clone();
@@ -543,6 +595,41 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
+    /// Capture only on an explicit split action. No production command calls this yet.
+    #[allow(dead_code)]
+    pub(crate) fn begin_split(&mut self) -> anyhow::Result<crate::split_launch::SplitOperation> {
+        crate::split_launch::SplitOperation::begin(
+            &mut self.tabs,
+            self.factory.configuration.shell_command.clone(),
+        )
+    }
+
+    /// Poll from the Host turn/deadline, not draw or metadata callbacks.
+    #[allow(dead_code)]
+    pub(crate) fn poll_split(
+        &self,
+        operation: &mut crate::split_launch::SplitOperation,
+        size: TerminalSize,
+        surface: (u32, u32),
+        now: std::time::Instant,
+    ) -> crate::split_launch::SplitPoll {
+        let (target, draw) = operation.target();
+        operation.poll(&self.tabs, now, |command, probe| {
+            self.factory
+                .create_split_attempt(target.session, draw, size, surface, command, probe)
+        })
+    }
+
+    /// Claim immediately before layout attachment in this Host turn.
+    #[allow(dead_code)]
+    pub(crate) fn claim_split(
+        &self,
+        ready: crate::split_launch::SplitReady,
+        operation: crate::split_launch::OperationId,
+    ) -> anyhow::Result<crate::split_launch::PreparedSplit> {
+        ready.claim(&self.tabs, operation)
+    }
+
     pub(crate) fn active_session_id(&self) -> Option<SessionId> {
         self.tabs.active_session_id()
     }

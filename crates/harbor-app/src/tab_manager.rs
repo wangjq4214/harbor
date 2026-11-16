@@ -66,6 +66,16 @@ pub struct TerminalTabResources {
 }
 
 impl TerminalTabResources {
+    /// Access an unpublished session while its Host startup operation owns it.
+    /// Dropping the resource owner still retires this engine even if a clone remains.
+    pub fn terminal(&self) -> &Arc<Mutex<Terminal>> {
+        &self.terminal
+    }
+    /// Presentation/authentication seam for a still-unpublished startup attempt.
+    /// The resource owner, not a retained presentation clone, controls retirement.
+    pub fn bridge(&self) -> &TerminalWidgetBridge {
+        &self.bridge
+    }
     pub fn new(
         terminal: Arc<Mutex<Terminal>>,
         bridge: TerminalWidgetBridge,
@@ -830,6 +840,37 @@ impl TabManager {
         self.last_broadcast_size
     }
 
+    /// Reserve an unpublished split leaf in the original workspace. IDs are burned
+    /// even on failure/cancellation; T0003 owns layout attachment, not reservation.
+    pub fn reserve_split_ids(
+        &mut self,
+        source: PaneBinding,
+    ) -> Result<(PaneBinding, ExternalDrawId)> {
+        anyhow::ensure!(self.contains_binding(source), "split source is unavailable");
+        let pane = PaneId(self.next_pane_id);
+        let session = SessionId(self.next_session_id);
+        let draw = self.next_draw_id;
+        let next_pane = self
+            .next_pane_id
+            .checked_add(1)
+            .context("pane identity exhausted")?;
+        let next_session = self
+            .next_session_id
+            .checked_add(1)
+            .context("session identity exhausted")?;
+        let next_draw = draw.checked_add(1).context("draw identity exhausted")?;
+        self.next_pane_id = next_pane;
+        self.next_session_id = next_session;
+        self.next_draw_id = next_draw;
+        Ok((
+            PaneBinding {
+                workspace: source.workspace,
+                pane,
+                session,
+            },
+            draw,
+        ))
+    }
     fn reserve_ids(&mut self) -> Result<(PaneBinding, ExternalDrawId)> {
         let binding = PaneBinding {
             workspace: TabId(self.next_tab_id),

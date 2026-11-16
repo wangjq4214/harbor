@@ -24,6 +24,7 @@ mod hyperlink;
 mod profile_launch;
 mod profile_save;
 mod shell;
+mod split_launch;
 mod tab_coordinator;
 mod telemetry;
 

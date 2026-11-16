@@ -11,6 +11,12 @@ pub struct PtyReader;
 pub struct PtyWriter;
 
 impl Pty {
+    pub(crate) fn process_exited(&self) -> bool {
+        false // Unix PTY creation is not implemented.
+    }
+    pub(crate) fn shutdown_receipt(&self) -> crate::ShutdownReceipt {
+        unreachable!("Unix PTY creation is not implemented")
+    }
     pub(crate) fn launch_provenance(&self) -> &crate::LaunchProvenance {
         unreachable!("Unix PTY creation is not implemented")
     }

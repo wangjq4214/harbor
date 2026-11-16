@@ -177,11 +177,32 @@ pub struct PtyEndpoints {
     launch_provenance: LaunchProvenance,
 }
 
+type OutputObserver = Box<dyn FnMut(&[u8]) + Send>;
+
+/// Nonblocking proof that a PTY's shutdown owner has released its native resources.
+/// A failed/leaked shutdown deliberately never reports completion.
+#[derive(Clone)]
+pub struct ShutdownReceipt(Arc<AtomicBool>);
+
+impl ShutdownReceipt {
+    #[cfg(windows)]
+    fn pending() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+    pub fn is_complete(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+    #[cfg(windows)]
+    pub(crate) fn complete(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
 /// Read endpoint that acknowledges shutdown only after its blocking read has
 /// returned and the reader thread releases it.
 pub struct PtyReaderEndpoint {
     reader: PtyReader,
     _completion: ReaderCompletion,
+    observer: Option<OutputObserver>,
 }
 
 /// Write-only PTY input endpoint for the terminal UI thread.
@@ -212,6 +233,7 @@ impl PtyEndpoints {
             reader: Some(PtyReaderEndpoint {
                 reader,
                 _completion: completion,
+                observer: None,
             }),
             writer: Some(PtyWriter { writer }),
             control: Some(PtyControl {
@@ -221,6 +243,21 @@ impl PtyEndpoints {
         })
     }
 
+    /// Observe raw output on the reader thread, before normal bounded ingestion.
+    /// Empty output denotes EOF. The observer must not block or re-enter the terminal.
+    pub fn observe_output(&mut self, observer: impl FnMut(&[u8]) + Send + 'static) {
+        self.reader.as_mut().expect("intact endpoints").observer = Some(Box::new(observer));
+    }
+
+    pub fn shutdown_receipt(&self) -> ShutdownReceipt {
+        self.control
+            .as_ref()
+            .expect("intact endpoints")
+            .pty
+            .as_ref()
+            .expect("live PTY")
+            .shutdown_receipt()
+    }
     /// Display name of the executable that actually started after platform fallback.
     pub fn shell_name(&self) -> &str {
         &self.shell_name
@@ -259,7 +296,11 @@ impl Drop for PtyEndpoints {
 
 impl Read for PtyReaderEndpoint {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.reader.read(buffer).map_err(reader_io_error)
+        let count = self.reader.read(buffer).map_err(reader_io_error)?;
+        if let Some(observer) = &mut self.observer {
+            observer(&buffer[..count]);
+        }
+        Ok(count)
     }
 }
 
@@ -274,6 +315,11 @@ impl Write for PtyWriter {
 }
 
 impl PtyControl {
+    /// Nonblocking observation of the session shell/launcher, not its foreground jobs.
+    /// ConPTY output EOF alone need not accompany shell-process exit.
+    pub fn process_exited(&self) -> bool {
+        self.pty.as_ref().is_some_and(RawPty::process_exited)
+    }
     /// Interrupts the reader thread's current blocking read without terminating the PTY.
     ///
     /// The reader protocol decides whether the interruption is a resize barrier or shutdown.
