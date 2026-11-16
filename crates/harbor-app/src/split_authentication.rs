@@ -7,6 +7,7 @@ struct SplitAuthentication {
     target: PaneBinding,
     bridge: TerminalWidgetBridge,
     focus: FocusHandle,
+    allocation: Arc<Mutex<Option<Rect>>>,
 }
 impl crate::popups::Popup for SplitAuthentication {
     fn build(
@@ -18,6 +19,10 @@ impl crate::popups::Popup for SplitAuthentication {
     ) -> View {
         let dispatcher = ui.store.dispatcher();
         let target = self.target;
+        let allocation = self.allocation.clone();
+        let observe = harbor_widget::LayoutObserver::new(move |rect| {
+            *allocation.lock().expect("authentication allocation") = Some(rect);
+        });
         harbor_widget::view! { FocusScope::new().modal(true) => { harbor_widget::Column::new() => {
             harbor_widget::Row::new() => {
                 harbor_widget::TextLabel::new("Starting split — authenticate in this reserved session");
@@ -26,7 +31,7 @@ impl crate::popups::Popup for SplitAuthentication {
                 });
             }
             SizedBox::height(240.0).expect("valid authentication height") => {
-                Focus::new().focus_handle(self.focus) => { terminal_widget(self.bridge.clone()); }
+                observe => { Focus::new().focus_handle(self.focus) => { terminal_widget(self.bridge.clone()); } }
             }
         } } }
     }
@@ -49,9 +54,42 @@ impl WorkspaceUiController {
             target,
             bridge,
             focus: FocusHandle::new(),
+            allocation: Arc::default(),
         });
         self.store.set_state(state);
         focus
+    }
+
+    /// Host-turn-only admission for the one unpublished authentication terminal.
+    /// At most one resize advances per call; drawing/observers never resize a PTY.
+    pub fn advance_split_authentication(
+        &self,
+        target: PaneBinding,
+        scale: f32,
+        surface: (u32, u32),
+        metrics: &harbor_terminal::TextMetrics,
+    ) -> bool {
+        let auth = self
+            .store
+            .state()
+            .read()
+            .popups
+            .get::<SplitAuthentication>()
+            .cloned();
+        let Some(auth) = auth.filter(|auth| auth.target == target) else {
+            return false;
+        };
+        let allocation = *auth.allocation.lock().expect("authentication allocation");
+        match auth
+            .bridge
+            .advance_allocation_resize(allocation, scale, surface, metrics)
+        {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::warn!(%error, "authentication allocation resize failed");
+                false
+            }
+        }
     }
     pub fn close_split_authentication(&self, target: PaneBinding) {
         let mut state = self.store.state().read().clone();

@@ -139,9 +139,27 @@ impl EventRouter {
         std::mem::take(&mut self.pending_external_input)
     }
 
+    /// Snapshot the public identity before reconciliation can unmount its Fiber.
+    pub(crate) fn focused_handle(&self, arena: &FiberArena) -> Option<u64> {
+        let mut focused = self.input.focused;
+        while let Some(id) = focused {
+            let fiber = arena.get(id)?;
+            if let Some(handle) = fiber.view.as_ref()?.focus_metadata().and_then(|m| m.handle) {
+                return Some(handle);
+            }
+            focused = fiber.parent;
+        }
+        None
+    }
+
     /// Clears stale routing identities after reconciliation and resolves a pending
     /// public focus-handle request when its target has appeared.
-    pub(crate) fn clear_dead_targets(&mut self, arena: &FiberArena, root: Option<FiberId>) {
+    pub(crate) fn clear_dead_targets(
+        &mut self,
+        arena: &FiberArena,
+        root: Option<FiberId>,
+        previous_handle: Option<u64>,
+    ) {
         let focus_visible = self.input.focus_visible();
         let focused_became_invalid = self.input.clear_focus_if(|focused| {
             arena
@@ -166,10 +184,16 @@ impl EventRouter {
         });
         self.set_cursor(cursor);
         if focused_became_invalid && self.pending_focus_handle.is_none() {
-            let fallback = self
-                .last_focus_scope
-                .filter(|scope| arena.contains(*scope))
-                .and_then(|scope| Self::find_next_focusable(arena, scope, None, true));
+            // A remounted/reparented focus target keeps its public identity, not its
+            // stale FiberId. Explicit requests still win; vanished handles fall back.
+            let restored = previous_handle
+                .zip(root)
+                .and_then(|(handle, root)| Self::find_by_focus_handle(arena, root, handle));
+            let fallback = restored.or_else(|| {
+                self.last_focus_scope
+                    .filter(|scope| arena.contains(*scope))
+                    .and_then(|scope| Self::find_next_focusable(arena, scope, None, true))
+            });
             self.transition_focus_with_visibility(arena, fallback, focus_visible);
         }
         if let (Some(handle), Some(root)) = (self.pending_focus_handle, root)

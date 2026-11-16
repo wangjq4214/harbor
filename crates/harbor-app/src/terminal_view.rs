@@ -599,6 +599,26 @@ impl TerminalWidgetBridge {
         self.set_decorations(Vec::new());
     }
 
+    /// Advance one Host-admitted resize for an unpublished allocation.
+    pub(crate) fn advance_allocation_resize(
+        &self,
+        allocation: Option<Rect>,
+        scale: f32,
+        surface: (u32, u32),
+        metrics: &TextMetrics,
+    ) -> anyhow::Result<bool> {
+        let mut terminal = self
+            .terminal
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal lock unavailable"))?;
+        terminal.use_host_resize_scheduling();
+        if let Some(size) =
+            allocation.and_then(|rect| terminal_size_from_allocation(rect, scale, surface, metrics))
+        {
+            let _ = terminal.request_resize(size)?;
+        }
+        Ok(terminal.advance_resize()?.committed())
+    }
     /// Widget-facing external draw identifier owned by this bridge.
     pub fn draw_id(&self) -> ExternalDrawId {
         self.draw_id

@@ -9,6 +9,8 @@ agent. Workspaces are not persisted and cannot move between windows.
 ## Split, focus and close
 
 - **Ctrl+Shift+D** splits left/right; **Ctrl+Shift+E** splits top/bottom.
+  Pane-cycle keys below describe the US bracket keys; their configured logical
+  symbols are `}` / `{` with Ctrl+Shift (see [shortcut semantics](commands.md#built-in-shortcuts)).
 - Click a terminal to focus it. **Ctrl+Shift+] / Ctrl+Shift+[** cycle panes in
   creation order, wrapping (not directional/geometric navigation).
 - Drag a divider to change its ratio. **Ctrl+Shift+M** maximizes/restores the
@@ -17,9 +19,10 @@ agent. Workspaces are not persisted and cannot move between windows.
   as does its rail close control. Explicit `app.close-active-tab` overrides still
   mean whole-tab close; rebinding does not change command meaning.
 - A session shell exiting closes that pane; a foreground program finishing does
-  not. Closing a leaf collapses its redundant split and focuses the first surviving
-  pane in creation order. The last pane closes its tab; the final tab closes the
-  window without a replacement shell.
+  not. Closing the focused leaf selects the first surviving pane in creation order;
+  an unfocused exit preserves the survivor's actual focus (including rail/editor
+  focus). The last pane closes its tab; the final tab closes the window without a
+  replacement shell.
 
 Commands are also available through the palette and the configurable registry.
 See [all IDs/defaults](commands.md#built-in-shortcuts) before changing bindings.
@@ -42,6 +45,11 @@ Only requesting a split authorizes the inherited connection/directory entry;
 receiving/rendering metadata alone never connects or changes directory. Normal
 WSL/SSH authentication still applies. A pending inherited launch has a dedicated
 in-window authentication terminal and Cancel action, without clipboard access.
+Its grid follows the mounted 240-logical-pixel-high allocation, current DPI and
+accepted terminal metrics through one bounded Host resize admission per turn;
+drawing never resizes it. Late-row prompts reflow into the visible grid. Publication
+waits for bounded parser progress through the readiness marker, so older buffered
+startup clipboard requests cannot become foreground requests after attachment.
 Readiness is attempt-qualified; merely spawning `wsl.exe`/`ssh.exe` is not success.
 
 Missing/unusable recognition, startup/connection/cwd failure or the current
@@ -67,7 +75,8 @@ All visible panes can update regardless of keyboard focus. Maximized siblings an
 inactive-tab panes keep their last valid grid and bounded output ingestion, but
 have no mounted terminal draw/cursor schedule provider. Restore measures current
 allocation/DPI. Ordinary native resize admission is at most two attempts per Host
-turn; that is not a constant-total-work or latency promise. Configuration reload
+turn for published sessions, plus at most one for the sole pending authentication
+session; that is not a constant-total-work or latency promise. Configuration reload
 still coordinates applicable resources for all live sessions, including hidden
 ones, without broadcasting one pane's size to differently sized siblings.
 

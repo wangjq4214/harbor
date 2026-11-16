@@ -208,7 +208,7 @@ fn mixed_panes_focus_markers_commands_overrides_and_consumption() {
             assert_eq!(*f.bytes[index].lock().unwrap(), marker.as_bytes());
         }
         f.clear_bytes();
-        f.chord('[', true);
+        f.chord('{', true);
         assert_eq!(f.reduce(), [AppCommand::Pane(PaneCommand::Previous)]);
         assert_eq!(f.tabs.active_binding(), Some(f.panes[1]));
         f.chord('m', true);
@@ -220,7 +220,7 @@ fn mixed_panes_focus_markers_commands_overrides_and_consumption() {
         for (key, command) in [
             ('d', PaneCommand::SplitHorizontal),
             ('e', PaneCommand::SplitVertical),
-            (']', PaneCommand::Next),
+            ('}', PaneCommand::Next),
         ] {
             f.chord(key, true);
             assert_eq!(f.ui.drain_actions()[0].command, AppCommand::Pane(command));
@@ -493,4 +493,142 @@ fn unpublished_authentication_routes_to_reserved_session_across_source_changes()
     assert!(terminal.lock().unwrap().is_session_closed());
     assert!(terminal.lock().unwrap().preedit().is_none());
     assert_eq!(*data.lock().unwrap(), b"RESERVED_ONLY");
+}
+
+#[test]
+fn native_shifted_pane_cycle_is_consumed_once() {
+    use harbor_widget::winit::WinitAdapter;
+    use winit::{
+        event::{ElementState, WindowEvent},
+        keyboard::{Key as NativeKey, KeyLocation, ModifiersState},
+    };
+    let mut f = Fixture::new(1.0);
+    let mut adapter = WinitAdapter::new();
+    adapter.handle_event(
+        &mut f.rt,
+        &WindowEvent::ModifiersChanged((ModifiersState::CONTROL | ModifiersState::SHIFT).into()),
+    );
+    for (logical, command, index) in [("{", PaneCommand::Previous, 2), ("}", PaneCommand::Next, 0)]
+    {
+        for state in [ElementState::Pressed, ElementState::Released] {
+            adapter.handle_keyboard_input(
+                &mut f.rt,
+                &NativeKey::Character(logical.into()),
+                state,
+                KeyLocation::Standard,
+            );
+        }
+        assert_eq!(f.reduce(), [AppCommand::Pane(command)]);
+        assert_eq!(f.tabs.active_binding(), Some(f.panes[index]));
+        assert!(f.ui.drain_actions().is_empty());
+        assert!(f.bytes.iter().all(|bytes| bytes.lock().unwrap().is_empty()));
+    }
+    // Defaults use shifted logical symbols, without changing explicit key semantics.
+    let settings = harbor_config::RawKeybindings {
+        entries: [(
+            "app.next-pane".into(),
+            vec![harbor_config::RawKeybinding {
+                modifiers: vec!["ctrl".into(), "shift".into()],
+                key: "]".into(),
+            }],
+        )]
+        .into(),
+        valid: true,
+    };
+    f.ui.publish_keybindings(crate::command::validate_keybindings(&settings).unwrap());
+    f.rt.update(Instant::now());
+    for logical in ["}", "]"] {
+        for state in [ElementState::Pressed, ElementState::Released] {
+            adapter.handle_keyboard_input(
+                &mut f.rt,
+                &NativeKey::Character(logical.into()),
+                state,
+                KeyLocation::Standard,
+            );
+        }
+        let actions = f.ui.drain_actions();
+        if logical == "}" {
+            assert!(actions.is_empty());
+        } else {
+            assert_eq!(
+                actions,
+                [AppCommandRequest::shortcut(AppCommand::Pane(
+                    PaneCommand::Next
+                ))]
+            );
+        }
+    }
+    f.clear_bytes();
+    adapter.handle_event(
+        &mut f.rt,
+        &WindowEvent::ModifiersChanged(ModifiersState::SHIFT.into()),
+    );
+    for state in [ElementState::Pressed, ElementState::Released] {
+        adapter.handle_keyboard_input(
+            &mut f.rt,
+            &NativeKey::Character("{".into()),
+            state,
+            KeyLocation::Standard,
+        );
+    }
+    assert_eq!(*f.bytes[0].lock().unwrap(), b"{");
+    assert!(f.ui.drain_actions().is_empty());
+}
+
+#[test]
+fn unfocused_pane_exit_preserves_actual_runtime_focus_without_request() {
+    for focus in ["terminal-handle", "terminal-click", "rail", "editor"] {
+        let mut f = Fixture::new(1.0);
+        match focus {
+            "terminal-click" => {
+                let p = f.point(0, 0, 0);
+                f.pointer(p, PointerPhase::Down);
+                f.reduce();
+                f.pointer(p, PointerPhase::Up);
+                f.reduce();
+            }
+            "rail" => {
+                f.rt.request_focus(&f.ui.tabs().tab_focus(f.panes[2].workspace).unwrap());
+            }
+            "editor" => {
+                f.ui.open_search(f.panes[2].session);
+                f.rt.request_focus(&f.ui.search_focus());
+            }
+            _ => {}
+        }
+        f.geometry();
+        f.ui.drain_actions();
+        let before = f.rt.input().focused();
+        let outcome = f.tabs.close_pane(f.panes[1]);
+        assert!(!outcome.active_bridge_changed);
+        // Production PreserveRail path: publish the new projection, reconcile, no focus request.
+        f.ui.sync_panes(&f.tabs, 1200.0);
+        f.geometry();
+        if focus.starts_with("terminal") {
+            for ch in "SURVIVOR".chars() {
+                f.rt.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+                    key: Key::Character(ch),
+                    modifiers: Modifiers::default(),
+                }));
+                f.rt.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyUp {
+                    key: Key::Character(ch),
+                    modifiers: Modifiers::default(),
+                }));
+            }
+        } else {
+            f.rt.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime("SURVIVOR".into())));
+        }
+        if focus.starts_with("terminal") {
+            assert_eq!(*f.bytes[0].lock().unwrap(), b"SURVIVOR");
+        } else {
+            assert_eq!(f.rt.input().focused(), before, "{focus} focus moved");
+            assert!(
+                f.bytes.iter().all(|bytes| bytes.lock().unwrap().is_empty()),
+                "{focus} focus stolen"
+            );
+            if focus == "editor" {
+                assert_eq!(f.ui.search_query().unwrap().1, "SURVIVOR");
+            }
+        }
+    }
 }

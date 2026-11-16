@@ -63,8 +63,8 @@ impl ActiveSession {
                 );
                 self.workspace_ui.close_split_authentication(target);
                 if let Some(resources) = resources {
-                    // Authentication is an unpublished fixed-grid presentation.
-                    // Its draw must not admit extra native resizes outside the Host budget.
+                    // Draw remains projection-only; the Host admits one reserved
+                    // authentication resize per turn below.
                     if let Ok(mut terminal) = resources.terminal().lock() {
                         terminal.use_host_resize_scheduling();
                     }
@@ -82,6 +82,14 @@ impl ActiveSession {
                 }
                 merge_wait(&mut wait, self.main_host.request_frame().wait);
                 pending.auth_draw = draw;
+            }
+            let viewport = self.main_host.viewport();
+            if self.tabs.advance_split_authentication(
+                target,
+                viewport.scale_factor,
+                viewport.physical_size,
+            ) {
+                merge_wait(&mut wait, self.main_host.request_frame().wait);
             }
             self.pending_split = Some(pending);
             return wait;

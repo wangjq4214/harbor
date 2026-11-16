@@ -346,7 +346,7 @@ fn mounted_native_mixed_panes_route_markers_under_output_resize_and_close() {
         runtime.update(Instant::now());
         assert_eq!(tabs.active_binding(), Some(*binding));
         runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::Ime(format!(
-            "echo MARKER_{index}>\"{}\"\rfor /L %i in (1,1,200) do @echo PRODUCER_{index}_%i\r",
+            "set HARBOR_PANE_TEST={index}\recho MARKER_{index}>\"{}\"\rfor /L %i in (1,1,200) do @echo PRODUCER_{index}_%i\r",
             reports[index].display()
         ))));
         runtime.dispatch(UiEvent::Pointer(PointerEvent::new(
@@ -399,17 +399,69 @@ fn mounted_native_mixed_panes_route_markers_under_output_resize_and_close() {
     }
     let survivor = shell(&tabs, a);
     let identity = survivor.lock().unwrap().content_version().session;
-    assert!(!tabs.close_pane(bindings[1]).close_window);
-    ui.sync_panes(&tabs, 1000.0);
-    runtime.request_focus(&ui.terminal_focus());
-    runtime.update(Instant::now());
-    assert_eq!(survivor.lock().unwrap().content_version().session, identity);
-    assert!(!survivor.lock().unwrap().shell_process_exited());
-    wait_receipt(&receipts[1]);
+    // Exit the visible, unfocused middle pane through the real shell observer/reducer.
+    let focused = tabs.active_binding().unwrap();
+    assert_eq!(focused, bindings[2]);
+    send(&shell(&tabs, bindings[1]), "exit\r");
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(15)).unwrap(),
         bindings[1].session
     );
+    let outcome = tabs.close_exited_session(bindings[1].session);
+    assert!(!outcome.close_window && !outcome.active_bridge_changed);
+    ui.sync_panes(&tabs, 1000.0);
+    runtime.update(Instant::now()); // PreserveRail: no manual focus restoration
+    assert_eq!(survivor.lock().unwrap().content_version().session, identity);
+    assert!(!survivor.lock().unwrap().shell_process_exited());
+    let report = root.path().join("after-unfocused-exit.txt");
+    for ch in format!(
+        "echo SURVIVOR_FOCUS_%HARBOR_PANE_TEST%>\"{}\"\r",
+        report.display()
+    )
+    .chars()
+    {
+        let key = if ch == '\r' {
+            harbor_widget::input::event::Key::Enter
+        } else {
+            harbor_widget::input::event::Key::Character(ch)
+        };
+        for down in [true, false] {
+            let event = if down {
+                KeyboardEvent::KeyDown {
+                    key,
+                    modifiers: Default::default(),
+                }
+            } else {
+                KeyboardEvent::KeyUp {
+                    key,
+                    modifiers: Default::default(),
+                }
+            };
+            runtime.dispatch(UiEvent::Keyboard(event));
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&report).is_ok_and(|s| s.trim() == "SURVIVOR_FOCUS_2") {
+        tabs.process_output(focused.session);
+        assert!(
+            Instant::now() < deadline,
+            "focused native survivor lost input after sibling exit: report={:?}, screen={:?}",
+            std::fs::read_to_string(&report),
+            {
+                let t = shell(&tabs, focused);
+                let t = t.lock().unwrap();
+                let s = t.screen();
+                s.selected_text(harbor_terminal::SelectionBounds {
+                    start_row: s.history_start(),
+                    start_col: 0,
+                    end_row: s.history_start() + (s.scroll_count() + s.rows() - 1) as u64,
+                    end_col: s.cols() - 1,
+                })
+            }
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    wait_receipt(&receipts[1]);
     assert_eq!(
         tabs.close_exited_session(bindings[1].session),
         TabActionOutcome::default()
@@ -556,4 +608,149 @@ fn repeated_native_split_hide_restore_exit_and_close_release_owners() {
     );
     // Handle samples characterize this test process, not a universal leak threshold
     // or native desktop/GPU residency claim. Ownership/receipt assertions are gates.
+}
+
+#[test]
+#[cfg(windows)]
+#[ignore = "pty: mounted unpublished authentication allocation with real ConPTY resize"]
+#[allow(clippy::arc_with_non_send_sync)]
+fn pending_authentication_host_resize_preserves_late_prompt_and_identity() {
+    use harbor_widget::{renderer::Viewport, runtime::Runtime};
+    let (tx, _rx) = mpsc::channel();
+    let mut tabs = TabManager::new();
+    let mut source_receipt = None;
+    tabs.create_tab(|id, draw| {
+        let n = native(draw, id, tx.clone());
+        source_receipt = Some(n.receipt);
+        Ok(n.resources)
+    })
+    .unwrap();
+    let source = tabs.active_binding().unwrap();
+    let (target, draw) = tabs.reserve_split_ids(source).unwrap();
+    let endpoints = PtyEndpoints::spawn_shell(
+        harbor_pty::TerminalSize {
+            rows: 40,
+            cols: 100,
+        },
+        &ShellCommand {
+            program: Some("pwsh.exe".into()),
+            args: vec![
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-Command".into(),
+                "[Console]::Write(\"`e[20;1HPassword: \"); [void][Console]::ReadLine()".into(),
+            ],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let receipt = endpoints.shutdown_receipt();
+    let terminal = Arc::new(Mutex::new(
+        Terminal::new_headless(40, 100)
+            .start_session_from_endpoints(endpoints, || true)
+            .unwrap(),
+    ));
+    terminal.lock().unwrap().use_host_resize_scheduling();
+    terminal
+        .lock()
+        .unwrap()
+        .set_clipboard_delivery(harbor_terminal::ClipboardDelivery::Discard);
+    let bridge =
+        TerminalWidgetBridge::new(draw, terminal.clone(), Arc::new(AtomicBool::new(false)));
+    let resources = TerminalTabResources::new(terminal.clone(), bridge.clone(), "pending");
+    let ui = WorkspaceUiController::new(tabs.snapshots(), tabs.active_bridge().unwrap(), 1000.0);
+    ui.sync_panes(&tabs, 1000.0);
+    let focus = ui.show_split_authentication(target, bridge);
+    let mut rt = Runtime::new();
+    rt.set_viewport(Viewport::new(1500, 900, 1.5));
+    rt.set_root(harbor_app::workspace::tab_workspace(ui.clone(), false));
+    rt.request_focus(&focus);
+    rt.update(Instant::now());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    // The dedicated local child writes a synthetic prompt at row 20, then waits.
+    loop {
+        let mut t = terminal.lock().unwrap();
+        t.drain_pty();
+        if t.screen()
+            .selected_text(harbor_terminal::SelectionBounds {
+                start_row: 0,
+                start_col: 0,
+                end_row: 39,
+                end_col: 99,
+            })
+            .contains("Password:")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        drop(t);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let metrics = TextMetrics {
+        cell_width: 8.0,
+        line_height: 16.0,
+        ..harbor_widget::runtime::DEFAULT_TEXT_METRICS
+    };
+    loop {
+        terminal.lock().unwrap().drain_pty();
+        ui.advance_split_authentication(target, 1.5, (1500, 900), &metrics);
+        let t = terminal.lock().unwrap();
+        if t.screen().rows() != 40 && !t.resize_pending() {
+            let s = t.screen();
+            let visible = s.selected_text(harbor_terminal::SelectionBounds {
+                start_row: s.history_start() + s.scroll_count() as u64,
+                start_col: 0,
+                end_row: s.history_start() + (s.scroll_count() + s.rows() - 1) as u64,
+                end_col: s.cols() - 1,
+            });
+            if visible.contains("Password:") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "late native prompt lost: {visible:?}, rows={}, cursor={}, history={}",
+                s.rows(),
+                s.cursor_y(),
+                s.scroll_count()
+            );
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reserved ConPTY resize did not converge"
+        );
+        drop(t);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let t = terminal.lock().unwrap();
+    let screen = t.screen();
+    let visible = screen.selected_text(harbor_terminal::SelectionBounds {
+        start_row: screen.history_start() + screen.scroll_count() as u64,
+        start_col: 0,
+        end_row: screen.history_start() + (screen.scroll_count() + screen.rows() - 1) as u64,
+        end_col: screen.cols() - 1,
+    });
+    assert!(
+        visible.contains("Password:"),
+        "late prompt lost during native resize: {visible:?}"
+    );
+    assert_eq!(
+        screen.rows(),
+        20,
+        "240dp at 1.5x minus 32px padding / 16px cells"
+    );
+    assert_eq!(
+        screen.cols(),
+        144,
+        "792dp mounted width at 1.5x with 8px cells"
+    );
+    assert!(screen.cursor_y() < screen.rows());
+    assert!(!tabs.contains_binding(target));
+    assert_eq!(tabs.active_binding(), Some(source));
+    drop(t);
+    ui.close_split_authentication(target);
+    drop(resources);
+    wait_receipt(&receipt);
+    assert!(terminal.lock().unwrap().is_session_closed());
+    tabs.close_active();
+    wait_receipt(source_receipt.as_ref().unwrap());
 }

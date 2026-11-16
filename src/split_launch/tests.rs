@@ -123,6 +123,12 @@ fn recognition_captures_current_environment_not_initial_or_later_focus_or_agent(
             SplitPoll::Pending
         ));
         let p = probe.unwrap();
+        op.pending_resources()
+            .unwrap()
+            .terminal()
+            .lock()
+            .unwrap()
+            .put_bytes(&p.ready);
         (p.observer())(&p.ready);
         let complete = ready(op.poll(&tabs, Instant::now(), no_launch));
         let prepared = complete.claim(&tabs, op.id()).unwrap();
@@ -330,6 +336,12 @@ fn closure_cancellation_and_stale_ready_never_retarget_replacement() {
                     .retire_session();
             }
             source(&mut tabs);
+            op.pending_resources()
+                .unwrap()
+                .terminal()
+                .lock()
+                .unwrap()
+                .put_bytes(&probe.as_ref().unwrap().ready);
             (probe.as_ref().unwrap().observer())(&probe.as_ref().unwrap().ready);
             assert!(matches!(
                 op.poll(&tabs, Instant::now(), no_launch),
@@ -341,6 +353,12 @@ fn closure_cancellation_and_stale_ready_never_retarget_replacement() {
             ));
         } else {
             let p = probe.unwrap();
+            op.pending_resources()
+                .unwrap()
+                .terminal()
+                .lock()
+                .unwrap()
+                .put_bytes(&p.ready);
             (p.observer())(&p.ready);
             let r = ready(op.poll(&tabs, Instant::now(), no_launch));
             match stage {
@@ -384,6 +402,12 @@ fn timeout_and_pre_ready_exit_fallback_but_post_ready_exit_never_restarts() {
         assert!(op.next_poll(now).unwrap() <= now + POLL_INTERVAL);
         if reason == "natural-after-ready" {
             let p = probe.unwrap();
+            op.pending_resources()
+                .unwrap()
+                .terminal()
+                .lock()
+                .unwrap()
+                .put_bytes(&p.ready);
             (p.observer())(&p.ready);
             let prepared = ready(op.poll(&tabs, now, no_launch))
                 .claim(&tabs, op.id())
@@ -526,6 +550,12 @@ fn pending_output_keeps_only_latest_display_metadata_and_never_replays_clipboard
         assert_eq!(op.metadata.len(), 3);
     }
     let p = probe.unwrap();
+    op.pending_resources()
+        .unwrap()
+        .terminal()
+        .lock()
+        .unwrap()
+        .put_bytes(&p.ready);
     (p.observer())(&p.ready);
     let prepared = ready(op.poll(&tabs, Instant::now(), no_launch))
         .claim(&tabs, op.id())
@@ -615,3 +645,125 @@ mod pty;
 
 #[cfg(windows)]
 mod native;
+
+#[test]
+#[allow(clippy::arc_with_non_send_sync)]
+fn queued_startup_clipboard_before_readiness_cannot_escape_after_publication() {
+    use std::io::Read;
+    use std::sync::mpsc;
+    struct QueuedReader<F> {
+        chunks: std::collections::VecDeque<Vec<u8>>,
+        observe: F,
+        finished: mpsc::Sender<()>,
+        hold: mpsc::Receiver<()>,
+    }
+    impl<F: FnMut(&[u8])> Read for QueuedReader<F> {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(chunk) = self.chunks.pop_front() {
+                bytes[..chunk.len()].copy_from_slice(&chunk);
+                (self.observe)(&chunk);
+                Ok(chunk.len())
+            } else {
+                let _ = self.finished.send(());
+                let _ = self.hold.recv();
+                Ok(0)
+            }
+        }
+    }
+    let (mut tabs, source) = fixture();
+    let mut op = SplitOperation::begin(&mut tabs, ShellCommand::default()).unwrap();
+    let (queued_tx, queued_rx) = mpsc::channel();
+    let (_hold_tx, hold_rx) = mpsc::channel();
+    let mut hold_rx = Some(hold_rx);
+    let (target, draw) = op.target();
+    op.poll(&tabs, Instant::now(), |_, probe| {
+        let probe = probe.unwrap();
+        let mut chunks: std::collections::VecDeque<_> =
+            (0..24).map(|_| b"startup\r\n".to_vec()).collect();
+        chunks.push_back(b"\x1b]52;c;ZG8tbm90LXJlcGxheQ==\x07".to_vec());
+        chunks.push_back(probe.ready.clone());
+        let reader = QueuedReader {
+            chunks,
+            observe: probe.observer(),
+            finished: queued_tx.clone(),
+            hold: hold_rx.take().unwrap(),
+        };
+        let terminal = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+            40,
+            100,
+            reader,
+            std::io::sink(),
+            || true,
+        )));
+        AttemptLaunch {
+            resources: Ok(TerminalTabResources::new(
+                terminal.clone(),
+                TerminalWidgetBridge::new(draw, terminal, Arc::new(AtomicBool::new(false))),
+                "queued",
+            )),
+            cleanup: None,
+        }
+    });
+    queued_rx.recv_timeout(Duration::from_secs(3)).unwrap(); // all 26 chunks are enqueued, reader remains alive
+    assert!(
+        matches!(
+            op.poll(&tabs, Instant::now(), no_launch),
+            SplitPoll::Pending
+        ),
+        "raw readiness cannot publish ahead of parser progress"
+    );
+    assert_eq!(
+        op.pending_resources()
+            .unwrap()
+            .terminal()
+            .lock()
+            .unwrap()
+            .parsed_output_bytes(),
+        16 * 9,
+        "one poll must retain the 16-chunk ingestion budget"
+    );
+    let mut complete = None;
+    for _ in 0..8 {
+        match op.poll(&tabs, Instant::now(), no_launch) {
+            SplitPoll::Ready(result) => {
+                complete = Some(*result);
+                break;
+            }
+            SplitPoll::Pending => {}
+            _ => panic!("unexpected startup result"),
+        }
+    }
+    let prepared = complete
+        .expect("bounded startup progress")
+        .claim(&tabs, op.id())
+        .unwrap();
+    let terminal = prepared.resources.terminal().clone();
+    tabs.attach_split(
+        source,
+        target,
+        draw,
+        prepared.resources,
+        harbor_widget::SplitAxis::Horizontal,
+    )
+    .unwrap();
+    // Exercise only the existing parser delivery path, never an OS clipboard.
+    let mut terminal = terminal.lock().unwrap();
+    for _ in 0..8 {
+        terminal.drain_pty();
+    }
+    assert!(
+        terminal.drain_output_events().iter().all(|event| !matches!(
+            event,
+            harbor_terminal::TerminalOutputEvent::ClipboardWrite(_)
+        )),
+        "startup OSC52 escaped after attach"
+    );
+    terminal.put_bytes(b"\x1b]52;c;bGl2ZQ==\x07");
+    assert!(
+        terminal.drain_output_events().iter().any(|event| matches!(
+            event,
+            harbor_terminal::TerminalOutputEvent::ClipboardWrite(_)
+        )),
+        "live parser delivery path remains intact"
+    );
+}

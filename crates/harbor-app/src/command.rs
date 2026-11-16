@@ -220,12 +220,12 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
             PaneCommand::SplitVertical,
             'e',
         ),
-        ("app.next-pane", "Focus next pane", PaneCommand::Next, ']'),
+        ("app.next-pane", "Focus next pane", PaneCommand::Next, '}'),
         (
             "app.previous-pane",
             "Focus previous pane",
             PaneCommand::Previous,
-            '[',
+            '{',
         ),
         (
             "app.maximize-pane",

@@ -470,6 +470,13 @@ impl Terminal {
         self.io.is_session_closed()
     }
 
+    /// Monotonic byte offset of parsed output in this session's input stream.
+    /// Hosts can compare a raw-reader observation with parser progress before publication.
+    /// Direct `process_output`/`put_bytes` feeds also advance this offset; do not mix streams.
+    pub fn parsed_output_bytes(&self) -> u64 {
+        self.io.parsed_output_bytes()
+    }
+
     /// Set bounded pending clipboard retention; authorization remains the host's responsibility.
     pub fn set_clipboard_delivery(&mut self, delivery: ClipboardDelivery) {
         self.io.set_clipboard_delivery(delivery);

@@ -240,3 +240,105 @@ fn mixed_panes_present_simultaneous_output_clip_and_suspend_hidden_draw_and_blin
             .is_empty()
     );
 }
+
+#[test]
+#[ignore = "gpu: run the matching explicit test recipe"]
+#[allow(clippy::arc_with_non_send_sync)]
+fn pending_authentication_late_prompt_is_visible_and_reachable() {
+    use harbor_widget::input::event::ImePreedit;
+    let (device, queue) = crate::test_gpu::device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    for scale in [1.0, 1.5, 2.0] {
+        let (mut tabs, panes, ui, _) = fixture();
+        let (target, draw) = tabs.reserve_split_ids(panes[0]).unwrap();
+        let terminal = Arc::new(Mutex::new(Terminal::new_headless(40, 100)));
+        terminal.lock().unwrap().use_host_resize_scheduling();
+        terminal
+            .lock()
+            .unwrap()
+            .set_clipboard_delivery(harbor_terminal::ClipboardDelivery::Discard);
+        let fonts = load_system_fonts(&harbor_config::FontSettings::default()).unwrap();
+        let metrics = TextMetrics::from_font_metrics(fonts.font_metrics());
+        let renderer = TerminalRenderPipeline::new(
+            TerminalGpuAccess::new(&device, &queue, format),
+            (1000, 600),
+            fonts,
+            metrics,
+            &terminal.lock().unwrap().read_update(Instant::now()),
+        )
+        .unwrap();
+        let bridge = TerminalWidgetBridge::new_rendered_with_hyperlink_activation(
+            draw,
+            terminal.clone(),
+            renderer,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(|_| {}),
+        );
+        let resources = TerminalTabResources::new(terminal.clone(), bridge.clone(), "unpublished");
+        let focus = ui.show_split_authentication(target, bridge);
+        let viewport = Viewport::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale);
+        let mut rt = Runtime::new();
+        rt.init_renderer(&device, format);
+        rt.init_text_renderer(&device, &queue, format).unwrap();
+        rt.set_viewport(viewport.clone());
+        rt.set_root(tab_workspace(ui.clone(), false));
+        rt.request_focus(&focus);
+        terminal
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b[20;1H\x1b[42mPassword: \x1b[0m");
+        rt.update(Instant::now());
+        let _ = render(&device, &queue, &mut rt, viewport.clone());
+        assert_eq!(
+            terminal.lock().unwrap().screen().rows(),
+            40,
+            "drawing must not resize the unpublished PTY"
+        );
+        // The same bounded Host admission used by ActiveSession, after mounted layout.
+        for _ in 0..8 {
+            ui.advance_split_authentication(target, scale, viewport.physical_size, &metrics);
+            rt.update(Instant::now());
+        }
+        assert_eq!(
+            terminal.lock().unwrap().screen().rows(),
+            ((240.0 * scale - 32.0) / metrics.line_height)
+                .floor()
+                .max(1.0) as usize,
+            "grid must fit the mounted allocation at current DPI"
+        );
+        let pixels = render(&device, &queue, &mut rt, viewport.clone());
+        assert!(
+            pixels.as_chunks::<4>().0.iter().any(|p| p[1] > 90
+                && p[1] > p[0].saturating_add(40)
+                && p[1] > p[2].saturating_add(40)),
+            "late Password prompt clipped at DPI {scale}"
+        );
+        let effects = rt.dispatch(UiEvent::ImePreedit(ImePreedit::new("x", None)));
+        let position = effects
+            .ime
+            .and_then(|ime| ime.position)
+            .expect("cursor candidate position");
+        assert!(position.y < 276.0 && position.x < 1000.0);
+        assert!(
+            terminal.lock().unwrap().preedit().is_some(),
+            "reserved terminal receives input"
+        );
+        assert!(!tabs.contains_binding(target));
+        terminal
+            .lock()
+            .unwrap()
+            .put_bytes(b"\x1b]52;c;bm90LWF1dGhvcml6ZWQ=\x07");
+        assert!(
+            terminal
+                .lock()
+                .unwrap()
+                .drain_output_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    harbor_terminal::TerminalOutputEvent::ClipboardWrite(_)
+                ))
+        );
+        drop(resources);
+    }
+}

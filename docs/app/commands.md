@@ -6,6 +6,13 @@
 
 Shortcuts use exact simultaneous modifiers, not multi-stroke sequences. These are application command IDs, **not shell commands or CLI subcommands**.
 
+Pane-cycle defaults use logical `}` / `{` with Ctrl+Shift (the `]` / `[` keys on
+US layouts). For explicit TOML bindings use `key = "}"` / `key = "{"` with
+`modifiers = ["ctrl", "shift"]`. Punctuation is matched as reported by the
+keyboard layout, not converted to its unshifted symbol; plain text and explicitly
+configured `[` / `]` bindings retain their existing meaning. Rebind as needed on
+other layouts.
+
 | Command ID | Built-in shortcut | Meaning / context |
 | --- | --- | --- |
 | `app.command-palette` | Ctrl+Shift+P | Open/focus the command palette for existing application commands |

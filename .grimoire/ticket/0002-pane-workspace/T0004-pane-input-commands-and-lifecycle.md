@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0004
 **Source:** [Spec 0056](../../spec/0056-pane-workspace.md), R6–R7; command/attachment integration of R1–R5; E1–E12, especially E4/E7–E10.
-**Status:** Done — T0004 production/component integration only; T0005 runtime acceptance not claimed
+**Status:** In Progress — reopened by independent QA; corrective component evidence below, full native/remote acceptance pending
 
 ## Goal
 
@@ -49,6 +49,13 @@ Retain the meaning of the existing close-tab command ID and rail close action. C
 Cross-window pane movement, persisted workspaces, new clipboard permission modes, global search, arbitrary process replay and unrelated profile-save redesign.
 
 ## Delivery Evidence
+
+> Historical T0004 delivery at `2af7639`, not an unqualified certificate for HEAD.
+> Independent QA at `7539847` invalidated the native pane-cycle, survivor-focus,
+> fixed-grid authentication and startup clipboard-backlog assumptions. The
+> [corrective cycle](evidence/T0004-T0005-independent-qa-repair.md) supersedes those
+> claims with regression failures, repairs and current-snapshot evidence; original
+> requirements and historical command results below are preserved.
 
 ### Scope, recovery and execution
 
@@ -115,3 +122,10 @@ Fault detection and repairs: before the Runtime focus repair, both mounted captu
 - **NOT RUN:** actual native-desktop multi-pane pointer/IME/candidate/clipboard/window-exit observations, full E1–E12 runtime acceptance, sustained latency/idle/resource measurements and repeated process/handle-leak soak. **BLOCKED / NOT RUN:** real WSL/direct-SSH environment/cwd/authentication/fallback observations without controlled pre-existing integrated targets. Client installation, local Bash surrogates and local fallback do not establish them.
 - **T0005 handoff only:** execute its original matrix against the resulting integrated revision; include actual local/WSL/SSH child environment/cwd, pending authentication and source closure, DPI/drag/input/clipboard races, final window and repeated lifecycle/resource observations. Retain T0002's pending remote evidence. Do not close #158 or mutate GitHub without separate authority. T0005 remains untouched/Todo.
 - The one ticket-only local commit is created only after documentation checks, full cached-diff review and index isolation. Its actual hash is returned after success, not embedded self-referentially. No push, amend or hook bypass.
+
+## Independent-QA corrective refresh over 7539847
+
+- All four findings/concerns are confirmed and repaired at their production boundaries; see the [causal reproducers, changed API handoff, combined checks and joint review](evidence/T0004-T0005-independent-qa-repair.md). Native defaults now register shifted logical braces; Runtime restores surviving stable focus without discarding allocation generations or stealing rail/editor focus; reserved authentication follows mounted allocation/DPI through bounded Host resize; publication waits for bounded parser progress through raw readiness and discards older external startup effects without changing normal clipboard authorization/delivery.
+- Original `Done` is reopened to **In Progress** because independently demonstrated regressions invalidated the earlier evidence, not merely because remote prerequisites are unavailable. Corrective local component evidence is not full native/remote acceptance. The original checked criterion mapping is historical; it must be read with this refresh, especially criteria 1/4/5/6/7/10/12.
+- Current combined gates: workspace **2953 passed / 232 ignored**, core **876 / 6 ignored**, mounted pane **16 / 2 GPU ignored**, app WARP **8**, Host resources **24**, native lifecycle/auth **5**, native split **4**, native paste **1**, PTY **3**, strict check/Clippy/fmt/rustdoc/docs and compiled guide examples. Exact commands, failure/restoration evidence, snapshot applicability and native probe details are in the linked record.
+- T0005's E2/E3 remain BLOCKED and seven full native scenarios remain NOT RUN. No OS clipboard, remote connection, installation, GitHub change, history rewrite or unrelated file staging is authorized by these repairs. One separate corrective local commit is authorized after the full cached diff is reviewed; its actual hash is returned after success.

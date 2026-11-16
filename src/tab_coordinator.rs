@@ -624,6 +624,20 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
+    /// One extra bounded admission for the sole unpublished session, never a draw sweep.
+    pub(crate) fn advance_split_authentication(
+        &self,
+        target: harbor_app::tab_manager::PaneBinding,
+        scale: f32,
+        surface: (u32, u32),
+    ) -> bool {
+        self.workspace_ui.advance_split_authentication(
+            target,
+            scale,
+            surface,
+            &self.factory.metrics(),
+        )
+    }
     /// Capture only on an explicit production split action, never on metadata.
     pub(crate) fn begin_split(&mut self) -> anyhow::Result<crate::split_launch::SplitOperation> {
         crate::split_launch::SplitOperation::begin(

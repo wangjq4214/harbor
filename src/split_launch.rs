@@ -30,6 +30,7 @@ pub(crate) struct StartupProbe {
     ready: Vec<u8>,
     failed: Vec<u8>,
     status: Arc<AtomicU8>,
+    ready_end: Arc<AtomicU64>,
 }
 impl StartupProbe {
     fn new(operation: OperationId) -> anyhow::Result<Self> {
@@ -49,12 +50,14 @@ impl StartupProbe {
             ready: marker("ready"),
             failed: marker("failed"),
             status: Arc::new(AtomicU8::new(PENDING)),
+            ready_end: Arc::new(AtomicU64::new(u64::MAX)),
         })
     }
     /// Bounded streaming matcher; no terminal contents or runtime environment are retained.
     pub(crate) fn observer(&self) -> impl FnMut(&[u8]) + Send + 'static {
         let probe = self.clone();
         let mut tail = Vec::new();
+        let mut observed_bytes = 0_u64;
         move |bytes| {
             if probe.status.load(Ordering::Acquire) != PENDING {
                 return;
@@ -64,8 +67,10 @@ impl StartupProbe {
                 return;
             }
             for &byte in bytes {
+                observed_bytes = observed_bytes.saturating_add(1);
                 tail.push(byte);
                 if tail.ends_with(&probe.ready) {
+                    probe.ready_end.store(observed_bytes, Ordering::Relaxed);
                     probe.status.store(READY, Ordering::Release);
                     return;
                 }
@@ -342,17 +347,26 @@ impl SplitOperation {
                 deadline,
                 cleanup,
             } => {
-                let closed = resources.terminal().lock().map_or(true, |mut t| {
+                let (closed, parsed) = resources.terminal().lock().map_or((true, 0), |mut t| {
                     // Keep the bounded pump moving while unpublished, without authorizing
                     // clipboard or other external effects from a not-yet-attached child.
                     t.drain_pty();
                     for event in t.drain_output_events() {
                         retain_metadata(&mut self.metadata, event);
                     }
-                    t.is_session_closed() || t.shell_process_exited()
+                    (
+                        t.is_session_closed() || t.shell_process_exited(),
+                        t.parsed_output_bytes(),
+                    )
                 });
                 let status = probe.status.load(Ordering::Acquire);
-                if !cancelled && status == READY {
+                // Raw readiness precedes queued parsing. Keep bounded polls unpublished
+                // until bytes through that marker and their side effects have been drained.
+                if !cancelled
+                    && !closed
+                    && status == READY
+                    && parsed >= probe.ready_end.load(Ordering::Relaxed)
+                {
                     return self.ready(*resources, LaunchKind::Inherited);
                 }
                 if cancelled || status == FAILED || closed || now >= deadline {
