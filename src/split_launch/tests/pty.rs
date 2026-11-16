@@ -96,6 +96,58 @@ fn wait_receipt(receipt: &Cleanup) {
 
 #[test]
 #[ignore = "pty: Windows ConPTY and local PowerShell 7"]
+fn ready_immediate_exit_before_waiting_poll_never_launches_default() {
+    let root = tempfile::tempdir().unwrap();
+    let current = local_path(root.path());
+    let (mut tabs, source) = fixture();
+    context(
+        &mut tabs,
+        source,
+        &ProjectEnvironment::LocalPwsh,
+        current.to_str().unwrap(),
+    );
+    let mut op = SplitOperation::begin(&mut tabs, ShellCommand::default()).unwrap();
+    let (_, draw) = op.target();
+    let mut probe = None;
+    let mut receipt = None;
+    op.poll(&tabs, Instant::now(), |command, p| {
+        probe = p.cloned();
+        let mut command = command.clone();
+        // Keep real cwd entry and attempt marker, then exit without any Host poll.
+        command.args.last_mut().unwrap().push_str("; exit 0");
+        let attempt = native_attempt(&command, p, draw);
+        if let Some(Cleanup::Native(native)) = &attempt.cleanup {
+            receipt = Some(Cleanup::Native(native.clone()));
+        }
+        attempt
+    });
+    let child = op.pending_resources().unwrap().terminal().clone();
+    let p = probe.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    // Observe only process state/raw readiness, not startup polling or parser progress.
+    while p.status.load(Ordering::Acquire) != READY || !child.lock().unwrap().shell_process_exited()
+    {
+        assert!(Instant::now() < deadline, "READY plus immediate shell exit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(child.lock().unwrap().parsed_output_bytes(), 0);
+    match poll_until(&mut op, &tabs, no_launch) {
+        SplitPoll::Failed(error) => {
+            assert_eq!(error.to_string(), "split session exited before attachment");
+        }
+        _ => panic!("dead successful child must not publish or restart"),
+    }
+    assert!(child.lock().unwrap().is_session_closed());
+    assert!(receipt.unwrap().complete());
+    assert!(tabs.contains_binding(source));
+    assert!(matches!(
+        op.poll(&tabs, Instant::now(), no_launch),
+        SplitPoll::Finished
+    ));
+}
+
+#[test]
+#[ignore = "pty: Windows ConPTY and local PowerShell 7"]
 fn local_current_not_initial_quoted_directory_independent_child_and_later_natural_exit() {
     let root = tempfile::tempdir().unwrap();
     let initial = root.path().join("initial");

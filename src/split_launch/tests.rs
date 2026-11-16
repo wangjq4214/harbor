@@ -676,7 +676,9 @@ fn queued_startup_clipboard_before_readiness_cannot_escape_after_publication() {
     let (_hold_tx, hold_rx) = mpsc::channel();
     let mut hold_rx = Some(hold_rx);
     let (target, draw) = op.target();
-    op.poll(&tabs, Instant::now(), |_, probe| {
+    let now = Instant::now();
+    let after_deadline = now + STARTUP_TIMEOUT;
+    op.poll(&tabs, now, |_, probe| {
         let probe = probe.unwrap();
         let mut chunks: std::collections::VecDeque<_> =
             (0..24).map(|_| b"startup\r\n".to_vec()).collect();
@@ -705,16 +707,21 @@ fn queued_startup_clipboard_before_readiness_cannot_escape_after_publication() {
         }
     });
     queued_rx.recv_timeout(Duration::from_secs(3)).unwrap(); // all 26 chunks are enqueued, reader remains alive
+    assert_eq!(
+        op.next_poll(after_deadline),
+        Some(after_deadline + POLL_INTERVAL),
+        "recognized success must not keep scheduling an expired startup deadline"
+    );
     assert!(
         matches!(
-            op.poll(&tabs, Instant::now(), no_launch),
+            op.poll(&tabs, after_deadline, no_launch),
             SplitPoll::Pending
         ),
         "raw readiness cannot publish ahead of parser progress"
     );
     assert_eq!(
         op.pending_resources()
-            .unwrap()
+            .expect("READY must survive the startup deadline while parsing catches up")
             .terminal()
             .lock()
             .unwrap()
@@ -724,7 +731,7 @@ fn queued_startup_clipboard_before_readiness_cannot_escape_after_publication() {
     );
     let mut complete = None;
     for _ in 0..8 {
-        match op.poll(&tabs, Instant::now(), no_launch) {
+        match op.poll(&tabs, after_deadline + POLL_INTERVAL, no_launch) {
             SplitPoll::Ready(result) => {
                 complete = Some(*result);
                 break;
@@ -767,3 +774,5 @@ fn queued_startup_clipboard_before_readiness_cannot_escape_after_publication() {
         "live parser delivery path remains intact"
     );
 }
+
+mod ready_lifecycle;

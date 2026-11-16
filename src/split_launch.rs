@@ -295,7 +295,11 @@ impl SplitOperation {
     pub(crate) fn next_poll(&self, now: Instant) -> Option<Instant> {
         match &self.state {
             State::Done => None,
-            State::Waiting { deadline, .. } => Some((*deadline).min(now + POLL_INTERVAL)),
+            State::Waiting {
+                deadline, probe, ..
+            } if probe.status.load(Ordering::Acquire) != READY => {
+                Some((*deadline).min(now + POLL_INTERVAL))
+            }
             _ => Some(now + POLL_INTERVAL),
         }
     }
@@ -369,13 +373,18 @@ impl SplitOperation {
                 {
                     return self.ready(*resources, LaunchKind::Inherited);
                 }
-                if cancelled || status == FAILED || closed || now >= deadline {
+                // Observed attempt-qualified READY is irreversible startup success.
+                // Parser catch-up gates publication, never fallback or its deadline.
+                if cancelled || closed || (status != READY && (status == FAILED || now >= deadline))
+                {
                     drop(resources); // retire bridge/I/O before waiting for native teardown
                     self.metadata.clear(); // No inherited metadata may label a default result.
                     self.state = State::Cleaning {
                         cleanup,
                         next: if cancelled {
                             Next::Cancelled
+                        } else if status == READY {
+                            Next::Failed(anyhow::anyhow!("split session exited before attachment"))
                         } else {
                             Next::Fallback
                         },
