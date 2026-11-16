@@ -22,10 +22,10 @@ Harbor first attempts a configured shell, if any. Windows defaults are tried in 
 - **Ctrl+T** creates and activates a terminal tab.
 - **Ctrl+Tab / Ctrl+Shift+Tab** cycle forward/backward, wrapping around.
 - **Ctrl+1…Ctrl+9** select the corresponding one-based position when it exists. Ctrl+9 means ninth, not last.
-- **Ctrl+W** closes the active tab; closing the final tab requests window closure. Treat this as closing a terminal session, not hiding it.
+- **Ctrl+W** closes the focused pane; **Ctrl+Shift+W** closes the whole active tab. The last pane closes its tab; the final tab closes the window. Closing is not hiding.
 - Use the left tab rail to activate or close a tab or create another. It expands at 900 logical pixels of window width and compacts below that; there is no configuration option for this breakpoint.
 
-Background output marks a tab unread; activation clears the indicator. Closing an active tab selects its right neighbor, otherwise its left neighbor. Tabs are sessions, not split panes. To create one from a named recipe, use **New from profile…** in the rail or the palette's **New session from profile…** action; see [profile setup and launch rules](configuration.md#named-profile-launch-contract).
+Background output marks a tab unread; activation clears the indicator. Closing an active tab selects its right neighbor, otherwise its left neighbor. Each tab is a workspace of independent sessions: **Ctrl+Shift+D / Ctrl+Shift+E** split left/right or top/bottom, **Ctrl+Shift+] / Ctrl+Shift+[** cycle pane focus, and **Ctrl+Shift+M** maximizes/restores. Click to focus or drag a divider. See [pane inheritance/fallback, geometry and verification limits](panes.md); current-directory recognition requires opt-in shell integration. To create a tab from a named recipe, use **New from profile…** in the rail or the palette's **New session from profile…** action; see [profile setup and launch rules](configuration.md#named-profile-launch-contract).
 
 To discover these and other existing actions, press **Ctrl+Shift+P**, type part of a command label or ID, select with Up/Down and press Enter. Escape closes the palette after cancelling any active IME composition. See [palette behavior and verification limits](commands.md#command-palette).
 

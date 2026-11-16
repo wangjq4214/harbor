@@ -2,7 +2,7 @@
 
 **Source:** [Spec 0056](../../spec/0056-pane-workspace.md), including its C1–C6 owner handoff, R1–R8 requirements and E1–E12 acceptance; [GitHub #158](https://github.com/wangjq4214/harbor/issues/158).
 **Ticket folder:** `.grimoire/ticket/0002-pane-workspace/`
-**Status:** Todo; requirements/decomposition only, no implementation or runtime acceptance.
+**Status:** Implementation delivery recorded through T0004; full runtime acceptance pending. T0002 remains In Progress for controlled WSL/SSH evidence; T0005 is not Done.
 
 ## Overview
 
@@ -12,7 +12,7 @@ Do not confuse same-environment splitting with process cloning or saved-agent re
 
 ## Permissions and Knowledge Boundary
 
-The selected route is refine → spec → slice. These local artifacts do not authorize implementation, QA execution, CONTEXT/ADR edits, GitHub mutation, staging or commits. Implementation may begin only under a separate execution request.
+The original route was refine → spec → slice; these artifacts alone did not authorize execution. Subsequent user execution/option-2 requests authorize ticket-scoped implementation, QA and one local commit per ticket while real remote acceptance remains pending. They do not waive the original criteria or authorize CONTEXT/ADR changes, GitHub mutation, pushes or history rewriting.
 
 Consume the settled spec and its cited sources. Organize, decompose and sequence them without inventing or changing domain facts, architecture, requirements, constraints or acceptance semantics. If a new material decision is needed, return it to refinement rather than invent it downstream. Existing requirements and compatibility changes are stated in spec 0056; ordinary named-profile and preset-save behavior remain separate.
 

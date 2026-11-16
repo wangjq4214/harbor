@@ -179,6 +179,36 @@ fn mixed_panes_present_simultaneous_output_clip_and_suspend_hidden_draw_and_blin
         rt.update(Instant::now());
         render(&device, &queue, &mut rt, viewport.clone());
     }
+    let quiet_before = targets[0].2.activity();
+    for _ in 0..120 {
+        let effects = rt.update(Instant::now());
+        assert!(!effects.request_redraw);
+        assert!(matches!(
+            effects.control_flow,
+            None | Some(harbor_widget::effects::ControlFlowEffect::Wait)
+        ));
+    }
+    assert_eq!(targets[0].2.activity().0, quiet_before.0);
+    let output_before = targets[0].2.activity();
+    for tick in 0..60 {
+        for (index, (session, terminal, _)) in targets.iter().enumerate() {
+            terminal
+                .lock()
+                .unwrap()
+                .put_bytes(format!("\rwork-{index}-{tick}\x1b[K").as_bytes());
+            assert_eq!(
+                tabs.process_output(*session).request_active_invalidation,
+                index == 0
+            );
+        }
+        rt.update(Instant::now());
+        render(&device, &queue, &mut rt, viewport.clone());
+    }
+    println!(
+        "T0005_WORK quiet_updates=120 quiet_draws=0 output_ticks=60 visible_draws={} hidden_draws=0 hidden_schedule_calls=0",
+        targets[0].2.activity().0 - output_before.0
+    );
+    assert_eq!(targets[0].2.activity().0 - output_before.0, 60);
     assert_eq!([targets[1].2.activity(), targets[2].2.activity()], hidden);
     // Visible cursor is disabled and its projection acknowledged: hidden cursor/output
     // cannot create a deadline or request a redraw.

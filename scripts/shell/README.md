@@ -1,7 +1,8 @@
-# Opt-in project capture integration
+# Opt-in project context integration
 
-These scripts provide metadata for **Save current session as preset**. They do not
-install themselves, edit profiles, recover history, or contact another machine.
+These scripts provide current environment/directory metadata for **pane splitting**
+and **Save current session as preset**. They do not install themselves, edit profiles,
+recover history, or contact another machine.
 Source them only in a shell where you deliberately want this integration. Closing
 that shell removes its hooks. Existing configured Harbor environment overrides
 remain a separate, default-off save choice; no runtime environment is captured.
@@ -46,6 +47,24 @@ existing `DEBUG` trap, `PROMPT_COMMAND`, or `functrace`. It refuses competing ho
 instead of silently replacing them. If necessary, explicitly start a disposable
 `bash --noprofile --norc` first. This may require setting your agent executable's
 PATH in that disposable shell. Nested WSL/SSH combinations are not supported.
+
+## Split-time recognition and fallback
+
+A user-requested split captures the source session's current recognized environment
+and directory, without its remembered agent invocation. Only that action authorizes
+connection/directory entry. Metadata parsing, hover and rendering do not. Local pwsh
+reports its location; bash uses the user-declared distribution/target above, not
+verified automatic environment discovery. OSC 7 and the initial launch directory
+are not substitutes for this current context; arbitrary nested environments are
+not supported recognition paths.
+
+Unknown/unusable context or inherited startup failure falls back to the accepted
+default `[shell]` launch after partial-attempt cleanup. A created launcher alone is
+not readiness; the split path waits for its qualified startup observation. Fallback
+is not inheritance, does not merge a remote cwd into a local shell, and does not
+change named-profile fail-visible behavior or saved-agent relaunch policy. New
+shells do not automatically install these integration hooks. See the
+[pane guide](../../docs/app/panes.md) for commands and verification limits.
 
 ## Capture, review and relaunch
 
@@ -103,6 +122,10 @@ Focused tests: `python scripts/shell/test_project_integration.py` exercises isol
 pwsh and bash processes with synthetic agents (not an actual SSH connection).
 Rust tests cover parser/scoping, mounted review, safe persistence/publication and
 Host launch templates. An explicitly ignored ConPTY test exercises local pwsh and
-four synthetic executable names. **Actual WSL/SSH connections, real agents, native
-IME/window interaction and combined chooser/restart evidence remain T0004 work**;
-these focused tests do not establish that end-to-end matrix.
+four synthetic executable names. Pane delivery additionally has real local pwsh
+ConPTY and bounded native-window inheritance/fallback observations. Actual controlled
+WSL/direct-SSH target/cwd/authentication/failure observations and manual native
+IME/clipboard interaction remain pending in
+[T0005](../../.grimoire/ticket/0002-pane-workspace/T0005-windows-acceptance-and-scope-evidence.md).
+Local Bash surrogates, target declarations and client versions are not remote passes;
+saved-project/agent acceptance remains separate from pane acceptance.

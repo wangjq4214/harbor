@@ -419,3 +419,141 @@ fn mounted_native_mixed_panes_route_markers_under_output_resize_and_close() {
         wait_receipt(receipt);
     }
 }
+
+#[test]
+#[cfg(windows)]
+#[ignore = "pty: bounded 12-cycle resource characterization; run serially with --nocapture"]
+fn repeated_native_split_hide_restore_exit_and_close_release_owners() {
+    use harbor_widget::SplitAxis;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+    let handles = || {
+        let mut count = 0;
+        // The pseudo handle is process-local and must not be closed.
+        unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) }.unwrap();
+        count
+    };
+    let started = Instant::now();
+    let (tx, rx) = mpsc::channel();
+    let mut tabs = TabManager::new();
+    let mut survivor_receipt = None;
+    tabs.create_tab(|id, draw| {
+        let child = native(draw, id, tx.clone());
+        survivor_receipt = Some(child.receipt);
+        Ok(child.resources)
+    })
+    .unwrap();
+    let source = tabs.active_binding().unwrap();
+    let survivor = shell(&tabs, source);
+    let identity = survivor.lock().unwrap().content_version().session;
+    let baseline = handles();
+    println!("T0005_RESOURCE baseline_handles={baseline}");
+    for cycle in 0..12 {
+        let (target, draw) = tabs.reserve_split_ids(source).unwrap();
+        let child = native(draw, target.session, tx.clone());
+        let receipt = child.receipt;
+        tabs.attach_split(
+            source,
+            target,
+            draw,
+            child.resources,
+            if cycle % 2 == 0 {
+                SplitAxis::Horizontal
+            } else {
+                SplitAxis::Vertical
+            },
+        )
+        .unwrap();
+        let engine = shell(&tabs, target);
+        let weak = Arc::downgrade(&engine);
+        tabs.maximize_pane(source);
+        let retained = {
+            let terminal = engine.lock().unwrap();
+            (terminal.screen().rows(), terminal.screen().cols())
+        };
+        send(&engine, "for /L %i in (1,1,200) do @echo T0005_HIDDEN_%i\r");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            assert!(
+                !tabs
+                    .process_output(target.session)
+                    .request_active_invalidation
+            );
+            let terminal = engine.lock().unwrap();
+            assert_eq!(
+                (terminal.screen().rows(), terminal.screen().cols()),
+                retained
+            );
+            // Bounded viewport only: no history scan in this polling loop.
+            let screen = terminal.screen();
+            let found = (0..screen.rows()).any(|row| {
+                (0..screen.cols())
+                    .map(|col| screen.cell(row, col).raw_text())
+                    .collect::<String>()
+                    .contains("T0005_HIDDEN_200")
+            });
+            if found {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "hidden producer did not progress"
+            );
+            drop(terminal);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        tabs.maximize_pane(source);
+        assert!(tabs.visible_bindings().contains(&target));
+        let _ = engine
+            .lock()
+            .unwrap()
+            .request_resize(TerminalSize { rows: 15, cols: 91 })
+            .unwrap();
+        if cycle % 2 == 0 {
+            send(&engine, "exit\r");
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(15)).unwrap(),
+                target.session
+            );
+            assert!(!tabs.close_exited_session(target.session).close_window);
+        } else {
+            assert!(!tabs.close_pane(target).close_window);
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(15)).unwrap(),
+                target.session
+            );
+        }
+        assert!(engine.lock().unwrap().is_session_closed());
+        assert!(!engine.lock().unwrap().resize_pending());
+        assert_eq!(
+            tabs.close_exited_session(target.session),
+            TabActionOutcome::default()
+        );
+        assert_eq!(tabs.process_output(target.session), Default::default());
+        wait_receipt(&receipt);
+        drop(engine);
+        assert!(weak.upgrade().is_none(), "retired engine owner leaked");
+        assert_eq!(survivor.lock().unwrap().content_version().session, identity);
+        assert!(!survivor.lock().unwrap().shell_process_exited());
+        assert_eq!(tabs.active_binding(), Some(source));
+        println!(
+            "T0005_RESOURCE cycle={cycle} handles={} cleanup_complete=true hidden_rows=200",
+            handles()
+        );
+    }
+    send(&survivor, "exit\r");
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(15)).unwrap(),
+        source.session
+    );
+    assert!(tabs.close_exited_session(source.session).close_window);
+    wait_receipt(survivor_receipt.as_ref().unwrap());
+    drop(survivor);
+    drop(tabs);
+    println!(
+        "T0005_RESOURCE final_handles={} elapsed_ms={}",
+        handles(),
+        started.elapsed().as_millis()
+    );
+    // Handle samples characterize this test process, not a universal leak threshold
+    // or native desktop/GPU residency claim. Ownership/receipt assertions are gates.
+}

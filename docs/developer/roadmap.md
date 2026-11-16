@@ -10,8 +10,8 @@ Harbor remains Windows-first: stabilize content, input and session lifecycle, th
 | --- | --- | --- |
 | M0 — Establish compatibility | Reproducible Windows application, code-page and extension-transport investigation | Still needed alongside correctness work; a probe or configured workflow is not broad compatibility. |
 | M1 — Preserve content | Coherent Unicode, anchors and resize/reflow | Implementation is present, including the scoped no-wrap sequence-promotion repair. Integrated native/performance coverage remains. |
-| M2 — Configure and discover | Reload, command palette and profiles | Reload, new-session launch settings and the existing-command palette are integrated. Native acceptance remains incomplete; profiles are not implemented. |
-| M3 — Work in panes | Independent panes, search and shell workflows | Current-session literal search is implemented. Panes and broader shell workflows are not. |
+| M2 — Configure and discover | Reload, command palette and profiles | Reload, launch settings, palette and named-profile/quick-save flows are integrated with scoped acceptance; native acceptance remains incomplete. |
+| M3 — Work in panes | Independent panes, search and shell workflows | Pane commands, per-session allocation/input/lifecycle and opt-in inherited split/fallback are integrated. Native/remote/resource acceptance remains pending; current-session search is implemented. |
 | M4 — Extend compatibility | Selected VT gaps, Kitty keyboard and bounded graphics | Modern SGR, palette and mouse slices exist; Kitty negotiation/transport and graphics remain investigation-gated. |
 | M5 — Polish | Unified product themes/glass and release hardening | Acrylic and search-panel blur/gradient/refraction primitives exist. Whole-product composition and measured acceptance remain. |
 | M6 — Expand workspace/platform | Cross-window movement, restoration/persistence and native Unix | Deferred behind relevant Windows stability, lifecycle and resource-ownership work. |
@@ -28,11 +28,11 @@ These identifiers preserve references used by existing issues/specifications wit
 | N02 | Unicode text correctness | Combining/VS/ZWJ and the no-wrap two-cell promotion repair are implemented; integrated native coverage remains. |
 | N03 | `chcp` / legacy Windows compatibility | [#154](https://github.com/wangjq4214/harbor/issues/154) is closed; [#171](https://github.com/wangjq4214/harbor/issues/171) still tracks overlapping code-page evidence and separate Kitty transport gates. Reconcile reusable evidence before repeating probes; closure alone is not a compatibility result. ConPTY remains UTF-8, not a GBK parser mode. |
 | N04 | Configuration reload | Manual/watched reload and launch settings implemented; remaining integrated human/runtime acceptance. |
-| N05 | Command palette | Existing visible commands integrated through the shared registry; [native acceptance and readability work remain](../../.grimoire/spec/0030-command-palette.md#delivery-and-outstanding-acceptance). #156 still defers profiles/panes/appearance scope. |
-| N06 | Named session profiles | Not implemented; retain new-session-only launch policy. |
-| N07 | Pane workspace | Not implemented; independent allocation, focus, routing, resize and close lifetimes required. |
+| N05 | Command palette | Current catalog includes pane and named-profile flows; [historical native acceptance/readability work](../../.grimoire/spec/0030-command-palette.md#delivery-and-outstanding-acceptance) remains scoped. Appearance switching is deferred. |
+| N06 | Named session profiles | Implemented with scoped native verification; retain new-session-only launch policy and fail-visible named launches. |
+| N07 | Pane workspace | Implemented through T0004; [T0005 evidence](../../.grimoire/ticket/0002-pane-workspace/T0005-windows-acceptance-and-scope-evidence.md) distinguishes local automated observations from pending native/remote acceptance. |
 | N08 | Scrollback search | Bounded current-session literal search delivered; retained acceptance/cost work and broader search scope remain separate. |
-| N09 | Shell-integration workflows | OSC 7/8/133 metadata foundations exist; directory inheritance, command navigation and complete workflows remain. |
+| N09 | Shell-integration workflows | Opt-in context supports split-time environment/cwd inheritance with default-shell fallback; no zero-configuration/nested discovery or complete command-navigation workflow is claimed. |
 | N10 | Kitty keyboard | Not implemented; verify application-visible negotiation/input through ConPTY first. |
 | N11 | Compatibility-driven extensions | Modern SGR, OSC palette, multi-encoding mouse and procedural boxes delivered as bounded slices, not full VT coverage. |
 | N12 | Kitty graphics | Not implemented; transport feasibility, static-image subset, limits and lifecycle need separate delivery. |
@@ -52,6 +52,6 @@ Code-page findings cannot satisfy Kitty keyboard or APC graphics feasibility. Ke
 
 1. Complete remaining integrated Windows correctness/lifecycle cases, including native acceptance of the sequence-promotion repair; do not reimplement delivered reflow, reload or search.
 2. Complete comparable current-tree performance and targeted code-page/extension transport investigations. Record unavailable scenarios honestly; preserve payload confidentiality.
-3. Continue discoverability and workspace work in dependency order: palette acceptance/profiles, independent panes, then richer shell workflows. Independent bounded compatibility or appearance fixes need not wait for every pane feature.
+3. Complete native pane and controlled WSL/direct-SSH acceptance before claiming full workspace completion; retain palette/profile verification gaps and keep richer shell workflows separate. Independent bounded compatibility or appearance fixes need not wait for every pane acceptance case.
 
 Keep one major implementation stream plus a short investigation/polish stream, rather than marking all future packages in progress. Advance release/platform claims only for the actual accepted scope. Test reports and run artifacts do not belong in this roadmap.
