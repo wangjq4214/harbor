@@ -1062,7 +1062,7 @@ fn should_return_empty_schedule_demand_for_mismatched_draw_id() {
 
 #[test]
 fn should_map_headless_frame_demand_to_empty_schedule_demand() {
-    // Arrange — headless engine still owns cursor blink timing.
+    // No terminal owns focus before the host delivers a focus gain.
     let terminal = headless_terminal(2, 4);
     let now = std::time::Instant::now();
 
@@ -1071,7 +1071,7 @@ fn should_map_headless_frame_demand_to_empty_schedule_demand() {
 
     // Assert
     assert!(!demand.redraw_now);
-    assert!(demand.deadline.is_some());
+    assert!(demand.deadline.is_none());
     assert!(demand.ordinary_present_eligible);
 }
 
@@ -1119,14 +1119,17 @@ fn should_emit_wait_until_from_runtime_when_bridge_registers_schedule() {
     use harbor_widget::effects::ControlFlowEffect;
     use std::time::Duration;
 
-    // Arrange — fake schedule via ExternalSurface-equivalent bridge registration
-    // is exercised through Runtime with a scripted provider in widget tests;
-    // here verify bridge root registers a schedule that headless empties.
     let terminal = headless_terminal(2, 4);
-    let mut rt = runtime_with_bridge(terminal, Arc::new(AtomicBool::new(false)));
+    let mut rt = runtime_with_bridge(terminal.clone(), Arc::new(AtomicBool::new(false)));
     let now = std::time::Instant::now();
 
-    // Act — clean idle turn after initial build consumed dirty work
+    // The helper focused the surface. A headless draw has no renderer to acknowledge
+    // that first visible frame, so acknowledge it before observing the idle schedule.
+    {
+        let mut term = terminal.lock().unwrap();
+        let update = term.read_update(now);
+        assert!(term.acknowledge_update(&update));
+    }
     let _ = rt.update(now);
     let idle = rt.update(now + Duration::from_millis(1));
 

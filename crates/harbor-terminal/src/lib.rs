@@ -116,9 +116,11 @@ pub struct Terminal {
     backdrop_available: bool,
     /// Terminal-owned transient IME composition presentation state.
     preedit: Option<Preedit>,
-    /// Set when ingest returns synchronized output to eligible; consumed by `frame_demand`.
+    /// Host keyboard focus, independent of the child application's DEC focus-reporting mode.
+    focused: bool,
     /// GPU-independent cursor blink and redraw timing.
     blink: Revisioned<CursorBlinkState>,
+    /// Set when ingest returns synchronized output to eligible; cleared on acknowledgement.
     pending_ordinary_present: bool,
     /// Redraw for transient preedit changes, retained until preparation or acknowledgement.
     pending_preedit_redraw: bool,
@@ -230,6 +232,7 @@ impl Terminal {
             appearance,
             backdrop_available: false,
             preedit: None,
+            focused: false,
             blink: CursorBlinkState::new(Instant::now()).into(),
             pending_ordinary_present: false,
             pending_preedit_redraw: false,
@@ -317,7 +320,7 @@ impl Terminal {
 
     /// Engine-owned cursor-blink phase for the current renderer projection.
     pub fn blink_visible_at(&self, now: Instant) -> bool {
-        self.blink.phase_visible(now)
+        !self.focused || self.blink.phase_visible(now)
     }
     /// Whether retained projection or logical pointer mapping needs a live frame.
     /// A scale-only DPI change keeps physical geometry but changes input coordinates.
@@ -357,7 +360,7 @@ impl Terminal {
                 && (self.blink.pending_redraw()
                     || self.pending_ordinary_present
                     || self.pending_preedit_redraw),
-            deadline: (self.screen.cursor_visible() && self.screen.cursor_blink())
+            deadline: (self.focused && self.screen.cursor_visible() && self.screen.cursor_blink())
                 .then(|| self.blink.next_deadline(now)),
             ordinary_present_eligible,
         };
@@ -558,10 +561,18 @@ impl Terminal {
                     return Ok(outcome);
                 }
             }
-            TerminalEvent::Focus(TerminalFocusEvent::Lost) => {
-                outcome = self.pointer.cancel();
-                outcome.redraw |= self.clear_preedit();
-                self.io.set_suppress_scroll_snap(false);
+            TerminalEvent::Focus(focus) => {
+                let focused = *focus == TerminalFocusEvent::Gained;
+                if !focused {
+                    outcome = self.pointer.cancel();
+                    outcome.redraw |= self.clear_preedit();
+                    self.io.set_suppress_scroll_snap(false);
+                }
+                if self.focused != focused {
+                    self.focused = focused;
+                    self.blink.reset(Instant::now());
+                    outcome.redraw = true;
+                }
             }
             _ => {}
         }

@@ -9,6 +9,38 @@ use std::{
 };
 
 #[test]
+fn cursor_only_blinks_while_terminal_has_focus() {
+    let mut terminal = Terminal::new_headless(3, 8);
+    let interval = std::time::Duration::from_millis(harbor_config::BLINK_INTERVAL_MS);
+    let now = Instant::now();
+    assert_eq!(terminal.frame_demand(now).deadline, None);
+    assert!(terminal.blink_visible_at(now + interval));
+
+    for _ in 0..2 {
+        terminal
+            .handle_event(TerminalEvent::Focus(TerminalFocusEvent::Gained))
+            .unwrap();
+        let now = Instant::now();
+        let edge = terminal
+            .frame_demand(now)
+            .deadline
+            .expect("focused blink deadline");
+        assert!(terminal.blink_visible_at(now));
+        assert!(!terminal.blink_visible_at(edge));
+        let focused = terminal.read_update(now);
+        assert!(terminal.acknowledge_update(&focused));
+
+        let lost = terminal
+            .handle_event_with_outcome(TerminalEvent::Focus(TerminalFocusEvent::Lost))
+            .unwrap();
+        assert!(lost.redraw);
+        assert_eq!(terminal.frame_demand(now).deadline, None);
+        assert!(terminal.blink_visible_at(edge));
+        assert!(terminal.blink_visible_at(edge + interval));
+    }
+}
+
+#[test]
 fn polling_and_updates_share_scheduling_without_consuming_redraw() {
     let mut terminal = Terminal::new_headless(3, 8);
     let now = Instant::now();

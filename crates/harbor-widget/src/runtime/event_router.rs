@@ -24,6 +24,8 @@ struct ConsumedShortcut {
 /// Owns input state and routes UI events through capture → target → bubble.
 pub(crate) struct EventRouter {
     input: InputState,
+    // Keep logical focus for restoration without activating a widget in a blurred window.
+    window_focused: bool,
     pending_clipboard: Option<String>,
     pending_editor_clipboard: Option<crate::effects::EditorClipboardRequest>,
     clipboard_target: Option<(u64, FiberId)>,
@@ -46,6 +48,7 @@ impl EventRouter {
     pub(crate) fn new() -> Self {
         Self {
             input: InputState::new(),
+            window_focused: true,
             pending_clipboard: None,
             pending_editor_clipboard: None,
             clipboard_target: None,
@@ -242,8 +245,14 @@ impl EventRouter {
                     return true;
                 }
             }
-            UiEvent::Focus(FocusEvent::Lost) if self.ime_target.is_some() => {
-                self.ime_target = Some(None);
+            UiEvent::Focus(FocusEvent::Lost) => {
+                self.window_focused = false;
+                if self.ime_target.is_some() {
+                    self.ime_target = Some(None);
+                }
+            }
+            UiEvent::Focus(FocusEvent::Gained | FocusEvent::GainedVisible) => {
+                self.window_focused = true;
             }
             UiEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
                 if let Some(index) = self.consumed_shortcuts.iter().position(|shortcut| {
@@ -626,6 +635,9 @@ impl EventRouter {
     }
 
     fn notify_focus(&mut self, arena: &FiberArena, fiber: FiberId, event: FocusEvent) -> bool {
+        if !self.window_focused {
+            return false;
+        }
         let fiber = Self::resolve_focused_event_target(arena, fiber);
         let mut ctx = EventCtx::new();
         if let Some(entry) = arena.get(fiber)

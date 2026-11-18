@@ -1544,7 +1544,9 @@ impl ActiveSession {
             let _ = frame.next_steady_state_deadline();
         }
         if policy.show_window {
-            self.main_host.window().set_visible(true);
+            let window = self.main_host.window();
+            window.set_visible(true);
+            window.focus_window();
             self.show_pending = false;
             self.startup_retry_deadline = None;
         }
@@ -1759,6 +1761,7 @@ impl Shell {
         }
 
         let mut wait = None;
+        // The HWND may already be active without a Focused(true) event.
         let focus = session.workspace_ui.terminal_focus();
         merge_wait(&mut wait, session.main_host.request_focus(&focus).wait);
         let allocation_wait = session.sync_terminal_allocation();
