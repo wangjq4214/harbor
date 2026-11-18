@@ -13,8 +13,9 @@ agent. Workspaces are not persisted and cannot move between windows.
   symbols are `}` / `{` with Ctrl+Shift (see [shortcut semantics](commands.md#built-in-shortcuts)).
 - Click a terminal to focus it. **Ctrl+Shift+] / Ctrl+Shift+[** cycle panes in
   creation order, wrapping (not directional/geometric navigation).
-- Drag a divider to change its ratio. **Ctrl+Shift+M** maximizes/restores the
-  focused pane without destroying siblings or the split tree.
+- Hover over the transparent gap between panes for the resize cursor, then drag
+  to change the split ratio. **Ctrl+Shift+M** maximizes/restores the focused pane
+  without destroying siblings or the split tree.
 - **Ctrl+W** closes only the focused pane. **Ctrl+Shift+W** closes the entire tab,
   as does its rail close control. Explicit `app.close-active-tab` overrides still
   mean whole-tab close; rebinding does not change command meaning.

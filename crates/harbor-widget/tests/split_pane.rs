@@ -1,5 +1,6 @@
 use harbor_widget::{
     ExternalSurface, SplitAxis, SplitController, SplitPane,
+    effects::{CursorEffect, CursorShape},
     input::{
         event::{PointerButton, PointerEvent, PointerPhase, UiEvent},
         event_ctx::EventHandled,
@@ -41,6 +42,28 @@ fn split_divider_capture_cancel_and_unmount_never_deliver_drag_to_children() {
         rt.set_viewport(Viewport::new(400, 400, 1.0));
         rt.set_root(SplitPane::new(axis, ratio.clone(), leaf(1), leaf(2)));
         rt.update(Instant::now());
+        assert_eq!(
+            rt.pending_delta().unwrap().added.len(),
+            2,
+            "only the two child surfaces should paint, not the {axis:?} divider"
+        );
+        // Hover routing samples the cursor before dispatching the move to the split.
+        pointer(&mut rt, 199.0, 199.0, PointerPhase::Move);
+        let cursor = rt
+            .dispatch(UiEvent::Pointer(PointerEvent::new(
+                Point::new(200.0, 200.0),
+                PointerPhase::Move,
+                PointerButton::Left,
+                12,
+            )))
+            .cursor;
+        assert_eq!(
+            cursor,
+            Some(CursorEffect::Set(match axis {
+                SplitAxis::Horizontal => CursorShape::ResizeHorizontal,
+                SplitAxis::Vertical => CursorShape::ResizeVertical,
+            }))
+        );
         pointer(&mut rt, 200.0, 200.0, PointerPhase::Down);
         pointer(&mut rt, 350.0, 350.0, PointerPhase::Move);
         assert!(ratio.ratio() > 0.8);

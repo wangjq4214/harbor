@@ -8,7 +8,6 @@ use crate::{
         event_ctx::{EventCtx, EventHandled},
     },
     layout::{BoxConstraints, ChildMeasurer, LayoutError, ParentLayout, Point, Rect, Size},
-    scene::primitive::{Color, Primitive},
     signal::Signal,
     text::TextMetrics,
     view::{AnyView, BuildCx, Component, View},
@@ -148,18 +147,6 @@ impl AnyView for SplitPane {
             placements: vec![(0, Point::ZERO), (1, origin)],
             diagnostics: Vec::new(),
         })
-    }
-    fn paint_primitives(&self, rect: Rect, _: &TextMetrics) -> Vec<Primitive> {
-        vec![Primitive::Quad {
-            rect: self.divider(rect),
-            color: Color {
-                r: 0.5,
-                g: 0.5,
-                b: 0.5,
-                a: 0.15,
-            },
-            corner_radius: 0.0,
-        }]
     }
     fn pointer_cursor(&self) -> Option<CursorShape> {
         (self.controller.hovered.get() || self.controller.gesture.get().is_some()).then_some(
