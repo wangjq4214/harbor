@@ -10,6 +10,7 @@ dhat-heap.json
 .pi/
 .vscode/
 .codegraph
+.omnidiff.toml
 
 third_party/*
 !third_party/.gitkeep
