@@ -9,7 +9,7 @@ On Windows, the `just` test recipes use PowerShell 7 and require the locally
 restored ConPTY source (`./scripts/setup/fetch_conpty.ps1`). For direct use:
 
 ```powershell
-./scripts/dev/test_cargo.ps1 --locked -p harbor-pty filter -- --ignored --test-threads=1
+pwsh -NoProfile -File scripts/dev/test_cargo.ps1 --locked -p harbor-pty filter -- --ignored --test-threads=1
 ```
 
 The wrapper runs `cargo test --no-run` with the same Cargo selections, features,
@@ -21,8 +21,10 @@ are not reported as Cargo artifacts, and those modes cannot use this contract.
 Ordinary `cargo test` may also run doctests; their transient executables are not
 staged by this wrapper and must not rely on an adjacent ConPTY bundle. The two
 Cargo invocations assume artifacts are not concurrently relocated or replaced
-between staging and execution. CI's direct upstream Cargo commands and
-non-Windows recipes are unchanged.
+between staging and execution. Windows CI uses this wrapper for the default
+workspace and offscreen GPU suites, and `scripts/dev/test_pty.ps1` to build the
+launch probe and run the ConPTY suite. The renderer-free terminal checks still
+run directly through Cargo.
 
 The Windows wrapper deliberately sets `CARGO_SHARE_WORKSPACE_UNITS=0` for both
 Cargo invocations and their children (including trybuild): the huacnlee/cargo

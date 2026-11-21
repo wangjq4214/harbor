@@ -101,9 +101,9 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      # Keep these suites together to reuse the same compiled test binaries.
+      # Stage ConPTY beside the executables Cargo reports, not just under target/*/deps.
       - name: Run default workspace tests
-        run: cargo test --locked --workspace
+        run: pwsh -NoProfile -File scripts/dev/test_cargo.ps1 --locked --workspace
 
       - name: Test renderer-free terminal core
         run: cargo test --locked -p harbor-terminal --no-default-features
@@ -111,12 +111,12 @@ jobs:
       - name: Run required offscreen GPU tests
         env:
           HARBOR_TEST_GPU: dx12-warp
-        run: 'cargo test --locked --workspace gpu:: -- --ignored --test-threads=1'
+        run: 'pwsh -NoProfile -File scripts/dev/test_cargo.ps1 --locked --workspace gpu:: -- --ignored --test-threads=1'
 
       - name: Run real ConPTY integration tests
         env:
           HARBOR_TEST_GPU: dx12-warp
-        run: 'cargo test --locked --workspace pty:: -- --ignored --test-threads=1'
+        run: ./scripts/dev/test_pty.ps1
 
       - name: Set up Python for documentation tools
         uses: actions/setup-python@v5
