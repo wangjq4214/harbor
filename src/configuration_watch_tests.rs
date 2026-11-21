@@ -80,7 +80,7 @@ fn assert_generation(f: &mut Fixture, color: Rgba, size: f32, key: char) {
         .prepare_new_terminal(
             TerminalGpuAccess::new(&f.device, &f.queue, wgpu::TextureFormat::Rgba8Unorm),
             load_system_fonts(&f.policy.font_settings).unwrap(),
-            f.tabs.last_broadcast_size().unwrap(),
+            f.active_grid(),
             (640, 320),
             false,
             harbor_terminal::ClipboardDelivery::Discard,

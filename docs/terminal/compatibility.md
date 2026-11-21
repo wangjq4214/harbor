@@ -53,6 +53,17 @@ Do not infer tmux compatibility from XTGETTCAP alone: tmux itself does not emit 
 
 For bounded exact-byte queries, terminfo-key comparison and clean Vim movement checks, use the [capability negotiation probe and live ConPTY host](../../scripts/README.md#capability-negotiation-across-conpty-wsl-and-ssh). Its outer and tmux-inner results are separate; captured-but-unasserted replies and unexecuted SSH paths are not compatibility passes.
 
+## Pane splits across environments
+
+The [pane workspace](../app/panes.md) can use opt-in current context to request a
+new independent local/WSL/direct-SSH shell. Unknown context or failed inherited
+startup selects the accepted default shell; a fallback result does not prove remote
+entry. Bash integration reports a supplied target rather than discovering/verifying
+it. Local pwsh observations do not establish WSL/SSH, tmux or nested environments.
+Controlled remote targets, normal authentication and pre-existing deliberate
+integration remain prerequisites for runtime acceptance. No integration is installed
+or credential/history/environment snapshot replayed automatically.
+
 ## Troubleshooting by boundary
 
 | Symptom | First checks | Avoid |

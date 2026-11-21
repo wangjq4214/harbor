@@ -2,7 +2,7 @@
 
 [Developer guide](README.md) · [Roadmap](roadmap.md)
 
-The general inventory below retains the `e6d140c` documentation baseline. The command-palette entry is updated for integrated revision `2efb762`; its bounded Windows evidence does not revalidate unrelated runtime, performance or release claims.
+The general inventory retains the `e6d140c` documentation baseline. Pane entries now describe integrated revision `2af7639` and [T0005's bounded evidence](../../.grimoire/ticket/0002-pane-workspace/T0005-windows-acceptance-and-scope-evidence.md); they do not revalidate unrelated historical runtime, performance or release claims.
 
 ## Implemented scope
 
@@ -11,10 +11,10 @@ The general inventory below retains the `e6d140c` documentation baseline. The co
 | Terminal content | Incremental VT parsing, scrollback, primary/alternate buffers, content anchors, transactional resize/reflow | [Engine](../../crates/harbor-terminal/src/lib.rs); styled ConPTY live-tail clipping is intentional, not lossless archival. |
 | Text and rendering | Combining/VS/ZWJ source retention, DirectWrite fallback, bounded color-emoji presentation, procedural box drawing and modern decorations | [Text backend](../../crates/harbor-text/src/backend/dwrite.rs), [renderer](../../crates/harbor-terminal/src/render/); complex-script shaping and ligatures are not delivered. |
 | Terminal extensions | Modern underline/color, conceal/overline, OSC 4/104 palette, multiple mouse encodings, focus and synchronized output, title/CWD/link/shell-marker metadata, host-authorized OSC 52 writes | [VT reference](../terminal/vt.md); metadata parsing is not a shell-workflow UI. OSC 52 reads and Kitty keyboard/graphics are not implemented. |
-| Windows sessions and tabs | Bundled ConPTY, application-owned tab/session identity, selection/copy, paste confirmation, IME and session shutdown | [Tab manager](../../crates/harbor-app/src/tab_manager.rs), [session ownership](terminal-session.md); split panes and native Unix sessions are not delivered. |
+| Windows pane workspaces | Bundled ConPTY, explicit workspace/pane/session identity, mixed splits, focus/input, maximize/restore, pane/tab close and shell-exit cleanup | [Pane guide](../app/panes.md); model/mounted/WARP/ConPTY and bounded native-window observations exist. Manual native interaction, controlled WSL/SSH and integrated resource acceptance remain pending; native Unix is not delivered. |
 | Configuration | Startup recovery, manual and default-on watched reload, live colors/bindings/terminal fonts, new-session shell/environment/directory settings | [Configuration guide](../app/configuration.md), [watcher](../../src/configuration_watch.rs); reload is distinct from debug widget-library HMR. |
 | Search | Bounded read model and literal matcher, current-session highlights/navigation, query/session cancellation and stale-target gates | [Read model](../../crates/harbor-terminal/src/read_model.rs), [matcher](../../crates/harbor-terminal/src/literal_search.rs), [application integration](../../crates/harbor-app/src/search.rs). Literal, case-sensitive, at most 128 UTF-8 query bytes and 1024 matches; no regex or cross-session search. |
-| Command palette | Existing visible tab/reload/copy/paste/scroll/search commands through the shared registry and Host path | [User guide](../app/commands.md#command-palette); [outstanding native acceptance work](../../.grimoire/spec/0030-command-palette.md#delivery-and-outstanding-acceptance). Profiles/panes/appearance commands remain deferred under #156. |
+| Command palette | Tab/pane/reload/copy/paste/scroll/search commands, named-profile chooser and quick-save flows through the shared registry/Host | [User guide](../app/commands.md#command-palette); historical palette acceptance remains scoped. Pane delivery does not establish complete native/remote acceptance or add appearance commands. |
 | Widget toolkit | Declarative runtime, flex layout, focus/actions, scrolling, view macro, Portal/notifications and reusable single-line editing | [Widget guide](../widget/README.md); this is not a complete accessible desktop toolkit or rich-text framework. |
 | Appearance | Acrylic/fallback, rounded decoration, gradients, local backdrop blur and edge refraction used in the search panel | [Workspace](../../crates/harbor-app/src/workspace.rs), [backdrop filter](../../crates/harbor-widget/src/widgets/backdrop_filter.rs); full-product themes/glass and measured visual/performance acceptance remain separate. |
 | Windows distribution | MSI and portable ZIP, executable-adjacent portable settings, shared package/quality workflows and separate release publication | [Release guide](../app/releases.md), [packaging](../../scripts/packaging/), [workflow](../../.github/workflows/windows-quality-gates.yml); configured automation is not proof of a successful published/downloaded release. Packages are unsigned. |
@@ -40,6 +40,6 @@ The general inventory below retains the `e6d140c` documentation baseline. The co
 
 ## Not implemented or deferred
 
-Named profiles, split panes, complete shell-integration workflows, Kitty keyboard/graphics, cross-session/regex search, cross-window movement and session persistence remain future work. Native Unix PTY spawning is a [stub](../../crates/harbor-pty/src/unix.rs), distinct from WSL/SSH inside Windows.
+Complete shell-integration workflows, Kitty keyboard/graphics, cross-session/regex search, cross-window movement and session persistence remain future work. Pane splits reuse opt-in context with narrow default-shell fallback; that is not arbitrary nested-environment discovery. Native Unix PTY spawning is a [stub](../../crates/harbor-pty/src/unix.rs), distinct from WSL/SSH inside Windows.
 
 Update this page when delivered behavior or a known gap changes. Keep execution logs and test-result tables out of the progress summary; implementation and acceptance are separate states.

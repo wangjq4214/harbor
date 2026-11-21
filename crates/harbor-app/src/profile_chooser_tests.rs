@@ -180,7 +180,7 @@ fn accepted_catalog_updates_preserve_identity_and_removed_selection_cannot_retar
 #[test]
 fn back_retires_editor_clipboard_ime_and_old_close_without_resurrecting_search() {
     let (tabs, ui, mut runtime, bytes) = fixture();
-    ui.open_search(tabs.active_id().unwrap());
+    ui.open_search(tabs.active_session_id().unwrap());
     ui.publish_search_status("1 / 2");
     profiles(&ui, &mut runtime);
     assert!(ui.search_query().is_none());
@@ -230,7 +230,7 @@ fn back_retires_editor_clipboard_ime_and_old_close_without_resurrecting_search()
 
 #[test]
 fn profile_mouse_back_and_stale_press_do_not_run_replacement_rows() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     profiles(&ui, &mut runtime);
     let old_generation = generation(&ui);
     let rect = keyed_rect(&runtime, &format!("palette-row-{old_generation}-alpha"));
@@ -330,7 +330,7 @@ fn profile_adapter_ime_and_held_opening_enter_cannot_submit_the_next_level() {
 fn mouse_return_retires_preedit_before_late_native_commit() {
     use harbor_widget::winit::WinitAdapter;
     use winit::event::{Ime, WindowEvent};
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     profiles(&ui, &mut runtime);
     let old = generation(&ui);
     let mut adapter = WinitAdapter::new();
@@ -356,7 +356,7 @@ fn mouse_return_retires_preedit_before_late_native_commit() {
 
 #[test]
 fn profile_input_is_flanked_by_search_style_icons_with_shared_confirm_semantics() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     profiles(&ui, &mut runtime);
     let generation = generation(&ui);
     let back = keyed_rect(&runtime, "profile-back");
@@ -433,7 +433,7 @@ fn profile_input_is_flanked_by_search_style_icons_with_shared_confirm_semantics(
 
 #[test]
 fn profile_confirm_cannot_submit_empty_stale_or_composing_selection() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     profiles(&ui, &mut runtime);
     replace(&mut runtime, "no match");
     let confirm = keyed_rect(&runtime, "profile-confirm-");
@@ -473,7 +473,7 @@ fn profile_confirm_cannot_submit_empty_stale_or_composing_selection() {
 #[test]
 fn profile_input_controls_share_edges_across_text_metrics_without_a_header() {
     for line_height in [16.0, 20.0, 24.0, 31.5] {
-        let (_, ui, mut runtime, _) = fixture();
+        let (_tabs, ui, mut runtime, _) = fixture();
         let mut metrics = *runtime.text_metrics();
         metrics.line_height = line_height;
         metrics.ascent = line_height * 0.75;

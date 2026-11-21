@@ -6,13 +6,26 @@
 
 Shortcuts use exact simultaneous modifiers, not multi-stroke sequences. These are application command IDs, **not shell commands or CLI subcommands**.
 
+Pane-cycle defaults use logical `}` / `{` with Ctrl+Shift (the `]` / `[` keys on
+US layouts). For explicit TOML bindings use `key = "}"` / `key = "{"` with
+`modifiers = ["ctrl", "shift"]`. Punctuation is matched as reported by the
+keyboard layout, not converted to its unshifted symbol; plain text and explicitly
+configured `[` / `]` bindings retain their existing meaning. Rebind as needed on
+other layouts.
+
 | Command ID | Built-in shortcut | Meaning / context |
 | --- | --- | --- |
 | `app.command-palette` | Ctrl+Shift+P | Open/focus the command palette for existing application commands |
 | `app.reload-configuration` | Ctrl+Shift+R | Strict reload of the retained configuration path; independent of watcher |
 | `app.new-tab` | Ctrl+T | Create/activate an ordinary session using `[shell]` |
 | `app.open-profile` | None | Open the shared named-profile chooser |
-| `app.close-active-tab` | Ctrl+W | Close active session; final tab requests window closure |
+| `app.close-pane` | Ctrl+W | Close focused pane; last pane closes its tab |
+| `app.close-active-tab` | Ctrl+Shift+W | Close the entire active tab and all its sessions; final tab closes the window |
+| `app.split-horizontal` | Ctrl+Shift+D | Independent left/right split in the source context, or default-shell fallback |
+| `app.split-vertical` | Ctrl+Shift+E | Independent top/bottom split |
+| `app.next-pane` | Ctrl+Shift+] | Next pane in creation order, wrapping |
+| `app.previous-pane` | Ctrl+Shift+[ | Previous pane in creation order, wrapping |
+| `app.maximize-pane` | Ctrl+Shift+M | Maximize/restore the focused pane |
 | `app.next-tab` | Ctrl+Tab | Next tab, wrapping |
 | `app.previous-tab` | Ctrl+Shift+Tab | Previous tab, wrapping |
 | `app.select-tab-1` | Ctrl+1 | Select position 1 if present |
@@ -40,7 +53,7 @@ Search commands consume their shortcuts even if no search or match is available;
 
 ## Command palette
 
-Press **Ctrl+Shift+P** to open/focus the query. The integrated catalog includes configuration reload; tab creation, closing, navigation and numeric selection (1–9); terminal copy/paste and primary-buffer scrolling; and current-session search open/close/next/previous. `terminal.copy-or-interrupt` is deliberately hidden: palette Copy always copies, including empty text without a selection. The named-profile chooser is also available; quick saving, panes and application appearance switching are not delivered.
+Press **Ctrl+Shift+P** to open/focus the query. The integrated catalog includes configuration reload; tab and pane creation, closing and navigation; pane maximize/restore; numeric tab selection (1–9); terminal copy/paste and primary-buffer scrolling; and current-session search open/close/next/previous. `terminal.copy-or-interrupt` is deliberately hidden: palette Copy always copies, including empty text without a selection. Named-profile and quick-save flows are also available. Application appearance switching is not delivered. See [pane behavior and verification limits](panes.md).
 
 Type a **case-insensitive substring** of a display label or stable command ID (not fuzzy matching). An empty query exposes the catalog; no matches shows an empty state and cannot execute. Up/Down selects a row; Enter invokes it once. Rows show accepted **effective** shortcuts, including multiple alternatives and `Unbound`, rather than superseded defaults. Accepted configuration reload updates them; a rejected reload retains the prior bindings. The opener ID is `app.command-palette`, configurable with the grammar below.
 

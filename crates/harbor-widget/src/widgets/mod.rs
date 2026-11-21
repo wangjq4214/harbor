@@ -29,6 +29,7 @@ pub mod segmented_control;
 pub mod separator;
 pub mod shortcut_map;
 pub mod sized_box;
+pub mod split_pane;
 pub mod stack;
 pub mod text_field;
 pub mod text_label;
@@ -58,6 +59,7 @@ pub use scroll_view::{DEFAULT_SCROLL_LINE_STEP, ScrollController, ScrollMetrics,
 pub use segmented_control::SegmentedControl;
 pub use separator::Separator;
 pub use shortcut_map::{KeyChord, ShortcutMap};
+pub use split_pane::{SplitAxis, SplitController, SplitPane};
 pub use stack::Stack;
 pub use text_label::TextLabel;
 pub use theme::ThemeProvider;

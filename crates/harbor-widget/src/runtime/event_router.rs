@@ -24,6 +24,8 @@ struct ConsumedShortcut {
 /// Owns input state and routes UI events through capture → target → bubble.
 pub(crate) struct EventRouter {
     input: InputState,
+    // Keep logical focus for restoration without activating a widget in a blurred window.
+    window_focused: bool,
     pending_clipboard: Option<String>,
     pending_editor_clipboard: Option<crate::effects::EditorClipboardRequest>,
     clipboard_target: Option<(u64, FiberId)>,
@@ -46,6 +48,7 @@ impl EventRouter {
     pub(crate) fn new() -> Self {
         Self {
             input: InputState::new(),
+            window_focused: true,
             pending_clipboard: None,
             pending_editor_clipboard: None,
             clipboard_target: None,
@@ -139,9 +142,27 @@ impl EventRouter {
         std::mem::take(&mut self.pending_external_input)
     }
 
+    /// Snapshot the public identity before reconciliation can unmount its Fiber.
+    pub(crate) fn focused_handle(&self, arena: &FiberArena) -> Option<u64> {
+        let mut focused = self.input.focused;
+        while let Some(id) = focused {
+            let fiber = arena.get(id)?;
+            if let Some(handle) = fiber.view.as_ref()?.focus_metadata().and_then(|m| m.handle) {
+                return Some(handle);
+            }
+            focused = fiber.parent;
+        }
+        None
+    }
+
     /// Clears stale routing identities after reconciliation and resolves a pending
     /// public focus-handle request when its target has appeared.
-    pub(crate) fn clear_dead_targets(&mut self, arena: &FiberArena, root: Option<FiberId>) {
+    pub(crate) fn clear_dead_targets(
+        &mut self,
+        arena: &FiberArena,
+        root: Option<FiberId>,
+        previous_handle: Option<u64>,
+    ) {
         let focus_visible = self.input.focus_visible();
         let focused_became_invalid = self.input.clear_focus_if(|focused| {
             arena
@@ -166,10 +187,16 @@ impl EventRouter {
         });
         self.set_cursor(cursor);
         if focused_became_invalid && self.pending_focus_handle.is_none() {
-            let fallback = self
-                .last_focus_scope
-                .filter(|scope| arena.contains(*scope))
-                .and_then(|scope| Self::find_next_focusable(arena, scope, None, true));
+            // A remounted/reparented focus target keeps its public identity, not its
+            // stale FiberId. Explicit requests still win; vanished handles fall back.
+            let restored = previous_handle
+                .zip(root)
+                .and_then(|(handle, root)| Self::find_by_focus_handle(arena, root, handle));
+            let fallback = restored.or_else(|| {
+                self.last_focus_scope
+                    .filter(|scope| arena.contains(*scope))
+                    .and_then(|scope| Self::find_next_focusable(arena, scope, None, true))
+            });
             self.transition_focus_with_visibility(arena, fallback, focus_visible);
         }
         if let (Some(handle), Some(root)) = (self.pending_focus_handle, root)
@@ -218,8 +245,14 @@ impl EventRouter {
                     return true;
                 }
             }
-            UiEvent::Focus(FocusEvent::Lost) if self.ime_target.is_some() => {
-                self.ime_target = Some(None);
+            UiEvent::Focus(FocusEvent::Lost) => {
+                self.window_focused = false;
+                if self.ime_target.is_some() {
+                    self.ime_target = Some(None);
+                }
+            }
+            UiEvent::Focus(FocusEvent::Gained | FocusEvent::GainedVisible) => {
+                self.window_focused = true;
             }
             UiEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
                 if let Some(index) = self.consumed_shortcuts.iter().position(|shortcut| {
@@ -442,6 +475,7 @@ impl EventRouter {
         let mut target_visible = self.input.focus_visible;
         let mut needs_paint = false;
         let mut navigated_scopes = Vec::new();
+        let mut pointer_commands = Vec::new();
 
         let commands = ctx.take_commands();
         for cmd in commands {
@@ -464,11 +498,9 @@ impl EventRouter {
                         target_visible = true;
                     }
                 }
-                EventCommand::CapturePointer { pointer_id, captor } => {
-                    self.input.capture_pointer(pointer_id, captor);
-                }
-                EventCommand::ReleasePointer(pointer_id) => {
-                    self.input.release_pointer(pointer_id);
+                command @ (EventCommand::CapturePointer { .. }
+                | EventCommand::ReleasePointer(_)) => {
+                    pointer_commands.push(command);
                 }
                 EventCommand::InvalidatePaint => {
                     needs_paint = true;
@@ -478,6 +510,9 @@ impl EventRouter {
 
         let focus_needs_paint =
             self.transition_focus_with_visibility(arena, target_focus, target_visible);
+        // Retire the old focus's gesture before installing this event's new
+        // capture. Its FocusLost release must not revoke the new press.
+        self.input.apply(pointer_commands, arena);
         needs_paint || ctx.needs_paint() || focus_needs_paint
     }
 
@@ -498,7 +533,9 @@ impl EventRouter {
         }
         self.input.focused = next;
         self.input.focus_visible = next_visible;
-        if previous != next {
+        if previous.map(|id| Self::resolve_focused_event_target(arena, id))
+            != next.map(|id| Self::resolve_focused_event_target(arena, id))
+        {
             if self.ime_target.is_some() {
                 self.ime_target = Some(None);
             }
@@ -598,6 +635,9 @@ impl EventRouter {
     }
 
     fn notify_focus(&mut self, arena: &FiberArena, fiber: FiberId, event: FocusEvent) -> bool {
+        if !self.window_focused {
+            return false;
+        }
         let fiber = Self::resolve_focused_event_target(arena, fiber);
         let mut ctx = EventCtx::new();
         if let Some(entry) = arena.get(fiber)

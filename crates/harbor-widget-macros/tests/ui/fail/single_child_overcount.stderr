@@ -15,7 +15,6 @@ note: required by a bound in `with_static_children`
  --> $WORKSPACE/crates/harbor-widget/src/construction.rs
   |
   | pub fn with_static_children<const N: usize, C: WithChildren>(
-  |        -------------------- required by a bound in this function
 ...
   |     C::Capability: AcceptsChildCount<N>,
   |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
@@ -41,7 +40,6 @@ note: required by a bound in `with_static_children`
   --> $WORKSPACE/crates/harbor-widget/src/construction.rs
    |
    | pub fn with_static_children<const N: usize, C: WithChildren>(
-   |        -------------------- required by a bound in this function
 ...
    |     C::Capability: AcceptsChildCount<N>,
    |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
@@ -67,7 +65,6 @@ note: required by a bound in `with_static_children`
   --> $WORKSPACE/crates/harbor-widget/src/construction.rs
    |
    | pub fn with_static_children<const N: usize, C: WithChildren>(
-   |        -------------------- required by a bound in this function
 ...
    |     C::Capability: AcceptsChildCount<N>,
    |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`
@@ -93,7 +90,6 @@ note: required by a bound in `with_static_children`
   --> $WORKSPACE/crates/harbor-widget/src/construction.rs
    |
    | pub fn with_static_children<const N: usize, C: WithChildren>(
-   |        -------------------- required by a bound in this function
 ...
    |     C::Capability: AcceptsChildCount<N>,
    |                    ^^^^^^^^^^^^^^^^^^^^ required by this bound in `with_static_children`

@@ -4,13 +4,13 @@ use std::path::PathBuf;
 
 use harbor_config::ProfileId;
 
-use crate::tab_manager::TabId;
+use crate::tab_manager::SessionId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProfileLaunchIntent {
     pub profile: ProfileId,
     /// If supplied, must still be the active live source when the Host executes.
-    pub source: Option<TabId>,
+    pub source: Option<SessionId>,
     /// An explicit native absolute directory; invalid values fail, never fall back.
     pub directory: Option<PathBuf>,
 }

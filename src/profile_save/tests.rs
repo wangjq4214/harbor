@@ -157,7 +157,7 @@ fn real_flow_to_writer_to_accepted_catalog_retains_disk_only_failure_and_retries
     runtime.set_viewport(Viewport::new(1000, 700, 1.0));
     runtime.set_root(tab_workspace(ui.clone(), false).keyed("save-integration"));
     runtime.update(Instant::now());
-    let source = tabs.active_id().unwrap();
+    let source = tabs.active_session_id().unwrap();
     let provenance = harbor_pty::LaunchProvenance {
         program: "cmd.exe".into(),
         args: vec!["".into(), "source arg".into()],

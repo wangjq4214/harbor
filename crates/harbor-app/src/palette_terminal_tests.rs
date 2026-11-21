@@ -24,7 +24,7 @@ fn terminal_destination(controller: &WorkspaceUiController, runtime: &mut Runtim
 
 #[test]
 fn full_visible_registry_is_discoverable_with_effective_bindings_hidden_intents_absent() {
-    let (_, controller, mut runtime, bytes) = fixture();
+    let (_tabs, controller, mut runtime, bytes) = fixture();
     open(&controller, &mut runtime);
     let registry = command_registry();
     for entry in &registry {
@@ -299,7 +299,7 @@ fn palette_closed_search_and_changed_search_context_reject_without_leaking() {
     replace(&mut runtime, "terminal.search");
     tap(&mut runtime, Key::Enter);
     let request = take_one(&controller);
-    controller.open_search(tabs.active_id().unwrap());
+    controller.open_search(tabs.active_session_id().unwrap());
     assert_eq!(
         controller.take_palette_request(request, &tabs, false),
         Err("Palette is closed")
@@ -349,7 +349,7 @@ fn confirmation_gate_focus_loss_and_removed_target_expire_pending_palette_comman
 
 #[test]
 fn completion_feedback_notifies_only_failures_and_retires_stale_command_failure() {
-    let (_, controller, _, _) = fixture();
+    let (_tabs, controller, _, _) = fixture();
     let message = || controller.store.state().read().notices.message();
     for result in [
         Ok(CommandCompletion::Applied),

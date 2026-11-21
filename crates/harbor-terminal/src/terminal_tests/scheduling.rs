@@ -29,7 +29,7 @@ fn should_return_empty_frame_demand_when_headless() {
 
     // Assert
     assert!(!demand.redraw_now);
-    assert!(demand.deadline.is_some());
+    assert!(demand.deadline.is_none());
     assert!(demand.ordinary_present_eligible);
 }
 
@@ -49,7 +49,7 @@ fn should_keep_empty_demand_after_cursor_move_when_headless() {
     assert_eq!(after, (3, 2));
     assert_ne!(before, after);
     assert!(demand.redraw_now);
-    assert!(demand.deadline.is_some());
+    assert!(demand.deadline.is_none());
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn should_keep_empty_demand_after_non_moving_print_when_headless() {
     // Assert
     assert_eq!(before, after);
     assert!(!demand.redraw_now);
-    assert!(demand.deadline.is_some());
+    assert!(demand.deadline.is_none());
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn should_keep_empty_demand_after_input_write_when_headless() {
     // Assert
     assert_eq!(written.lock().unwrap().as_slice(), b"a");
     assert!(demand.redraw_now);
-    assert!(demand.deadline.is_some());
+    assert!(demand.deadline.is_none());
 }
 
 #[test]

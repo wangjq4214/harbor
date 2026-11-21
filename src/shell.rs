@@ -194,6 +194,8 @@ pub(crate) struct ActiveSession {
     pending_reload: Option<PendingReload>,
     quick_save_transaction: Option<crate::profile_save::SaveTransaction>,
     tabs: TabCoordinator,
+    pending_split: Option<pane_commands::PendingSplit>,
+    reload_after_split: bool,
     workspace_ui: WorkspaceUiController,
     configuration_path: Option<std::path::PathBuf>,
     configuration_watch: Option<crate::configuration_watch::ConfigurationWatch>,
@@ -323,6 +325,8 @@ fn apply_gpu_fatal_policy(
 }
 
 // ── ActiveSession (active window lifecycle) ───────────────────────────────
+#[path = "pane_commands.rs"]
+mod pane_commands;
 impl ActiveSession {
     fn exit_gpu_fault(
         &mut self,
@@ -349,9 +353,12 @@ impl ActiveSession {
 
     fn clipboard_eligible(
         &self,
-        source: harbor_app::tab_manager::TabId,
+        source: harbor_app::tab_manager::SessionId,
         continuation: bool,
     ) -> bool {
+        if self.pending_split.is_some() {
+            return false;
+        }
         if continuation
             && !crate::clipboard::foreground_monitor::uninterrupted(
                 self.foreground_monitor.available(),
@@ -374,6 +381,14 @@ impl ActiveSession {
     }
 
     fn reconcile_clipboard(&mut self) {
+        if let Some(source) = self.paste.source()
+            && (self.tabs.active_binding() != Some(source)
+                || !self.tabs.active_live(source.session))
+            && let Some(completion) = self.paste.retire_target()
+        {
+            self.workspace_ui
+                .report_palette_completion(AppCommand::Paste, completion);
+        }
         if let Some(source) = self.clipboard.source()
             && !self.clipboard_eligible(source, true)
         {
@@ -532,6 +547,10 @@ impl ActiveSession {
         }
     }
     fn reload_configuration(&mut self, automatic: bool) -> Option<bool> {
+        if self.pending_split.is_some() {
+            self.reload_after_split = true;
+            return None;
+        }
         // Publication for an explicit save retains its acquisitions and exact disk generation.
         if self
             .pending_reload
@@ -773,19 +792,92 @@ impl ActiveSession {
                     (request, clear_palette_focus, profile)
                 }
             };
+            if self.pending_split.is_some()
+                && !matches!(
+                    request.command,
+                    AppCommand::Tab(_) | AppCommand::CancelSplit(_)
+                )
+            {
+                if from_palette {
+                    self.workspace_ui.report_palette_result(
+                        request.command,
+                        Err("Rejected: split startup is pending"),
+                    );
+                }
+                continue;
+            }
             match request.command {
+                AppCommand::Pane(command) => {
+                    use harbor_app::command::PaneCommand;
+                    if matches!(
+                        command,
+                        PaneCommand::SplitHorizontal | PaneCommand::SplitVertical
+                    ) {
+                        let source = self.tabs.active_binding();
+                        if let Some(source) = source {
+                            merge_wait(
+                                &mut result.wait,
+                                self.process_terminal_output(event_loop, source.session),
+                            );
+                        }
+                        // Servicing queued metadata may also reduce exact shell exit.
+                        // Never turn that reduction into a split of the survivor.
+                        let completion = if source.is_some_and(|source| {
+                            self.tabs.active_binding() == Some(source)
+                                && self.tabs.active_live(source.session)
+                        }) {
+                            self.begin_pane_split(command, from_palette)
+                        } else {
+                            Err("Rejected: original split source retired")
+                        };
+                        if let Err(reason) = completion {
+                            self.workspace_ui
+                                .report_palette_result(request.command, Err(reason));
+                        }
+                        merge_wait(&mut result.wait, self.advance_pane_split());
+                    } else {
+                        let outcome = self.tabs.execute_pane_command(&mut self.main_host, command);
+                        merge_wait(&mut result.wait, outcome.wait);
+                        self.reconcile_clipboard();
+                        if from_palette {
+                            self.workspace_ui
+                                .report_palette_result(request.command, Ok(()));
+                        }
+                        if outcome.close_window {
+                            result.close_window = true;
+                            break;
+                        }
+                    }
+                }
+                AppCommand::CancelSplit(target) => {
+                    if let Some(pending) = self.pending_split.as_mut()
+                        && pending.operation.target().0 == target
+                    {
+                        pending.operation.cancel();
+                        merge_wait(&mut result.wait, self.advance_pane_split());
+                    }
+                }
                 AppCommand::OpenCommandPalette => {
                     let focus = self.workspace_ui.open_palette();
                     merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
                 }
                 AppCommand::SaveCurrentSession => {
-                    if let Some(source) = self.tabs.active_id() {
+                    let source = self.tabs.active_binding();
+                    if let Some(source) = source {
                         merge_wait(
                             &mut result.wait,
-                            self.process_terminal_output(event_loop, source),
+                            self.process_terminal_output(event_loop, source.session),
                         );
                     }
-                    match self.begin_quick_save() {
+                    let capture = if source.is_some_and(|source| {
+                        self.tabs.active_binding() == Some(source)
+                            && self.tabs.active_live(source.session)
+                    }) {
+                        self.begin_quick_save()
+                    } else {
+                        Err("Rejected: original capture source retired".into())
+                    };
+                    match capture {
                         Ok(focus) => {
                             merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait)
                         }
@@ -1017,6 +1109,7 @@ impl ActiveSession {
                             event_loop,
                             &mut self.main_host,
                             active_terminal.as_ref(),
+                            self.tabs.active_binding(),
                             from_palette,
                         )
                         .map(|(outcome, completion)| {
@@ -1032,6 +1125,10 @@ impl ActiveSession {
                         merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     }
                 }
+            }
+            if event_loop.exiting() {
+                result.close_window = true;
+                break;
             }
         }
         result
@@ -1068,7 +1165,10 @@ impl ActiveSession {
                 }
                 merge_wait(&mut wait, self.main_host.request_frame().wait);
             }
-            AppEvent::OpenHyperlink(uri) => {
+            AppEvent::OpenHyperlink(source, uri) => {
+                if !self.tabs.active_live(source) {
+                    return;
+                }
                 if let Err(error) = crate::hyperlink::open(&uri) {
                     tracing::warn!(
                         uri,
@@ -1094,7 +1194,7 @@ impl ActiveSession {
     fn process_terminal_output(
         &mut self,
         event_loop: &ActiveEventLoop,
-        tab_id: harbor_app::tab_manager::TabId,
+        tab_id: harbor_app::tab_manager::SessionId,
     ) -> Option<ControlFlowEffect> {
         let mut wait = None;
         let outcome = self.tabs.process_output(tab_id);
@@ -1125,6 +1225,23 @@ impl ActiveSession {
                 self.main_host.invalidate_external(invalidation).wait,
             );
         }
+        let closed = self.tabs.close_exited_session(tab_id);
+        if closed != Default::default() {
+            let outcome = self.tabs.apply_tab_outcome(
+                &mut self.main_host,
+                closed,
+                if closed.active_bridge_changed {
+                    harbor_app::tab_view::TabFocusPolicy::Terminal
+                } else {
+                    harbor_app::tab_view::TabFocusPolicy::PreserveRail
+                },
+            );
+            merge_wait(&mut wait, outcome.wait);
+            self.reconcile_clipboard();
+            if outcome.close_window {
+                event_loop.exit();
+            }
+        }
         wait
     }
 
@@ -1135,14 +1252,20 @@ impl ActiveSession {
         self.reconcile_clipboard();
         let now = Instant::now();
         let mut resize_wait = None;
-        for id in self.tabs.pending_resize_tabs() {
+        for id in self.tabs.pending_resize_sessions() {
             merge_wait(
                 &mut resize_wait,
                 self.process_terminal_output(event_loop, id),
             );
         }
+        if event_loop.exiting() {
+            return;
+        }
+        merge_wait(&mut resize_wait, self.advance_pane_split());
         let reload_pending = self.pending_reload.is_some();
-        let _ = self.advance_configuration_reload();
+        if self.pending_split.is_none() {
+            let _ = self.advance_configuration_reload();
+        }
         if reload_pending && self.pending_reload.is_none() {
             self.main_host.request_frame();
         }
@@ -1173,6 +1296,13 @@ impl ActiveSession {
             combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
         }
 
+        if let Some(deadline) = self
+            .pending_split
+            .as_ref()
+            .and_then(|pending| pending.operation.next_poll(now))
+        {
+            combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
+        }
         let (search_pending, search_changed) = self.tabs.advance_search();
         if search_pending {
             combined_flow = combined_flow.arbitrate(ControlFlowEffect::Poll);
@@ -1275,10 +1405,11 @@ impl ActiveSession {
             return;
         }
         if self.paste.window_id() == Some(window_id) {
-            match self
-                .paste
-                .handle_dialog_event(&event, self.tabs.active_terminal().as_ref())
-            {
+            match self.paste.handle_dialog_event(
+                &event,
+                self.tabs.active_terminal().as_ref(),
+                self.tabs.active_binding(),
+            ) {
                 PasteEventOutcome::Handled {
                     request_redraw,
                     wait,
@@ -1413,7 +1544,9 @@ impl ActiveSession {
             let _ = frame.next_steady_state_deadline();
         }
         if policy.show_window {
-            self.main_host.window().set_visible(true);
+            let window = self.main_host.window();
+            window.set_visible(true);
+            window.focus_window();
             self.show_pending = false;
             self.startup_retry_deadline = None;
         }
@@ -1602,6 +1735,8 @@ impl Shell {
             pending_reload: None,
             quick_save_transaction: None,
             tabs,
+            pending_split: None,
+            reload_after_split: false,
             workspace_ui,
             effective_clipboard: settings.clipboard.clone(),
             configuration_path,
@@ -1626,6 +1761,7 @@ impl Shell {
         }
 
         let mut wait = None;
+        // The HWND may already be active without a Focused(true) event.
         let focus = session.workspace_ui.terminal_focus();
         merge_wait(&mut wait, session.main_host.request_focus(&focus).wait);
         let allocation_wait = session.sync_terminal_allocation();

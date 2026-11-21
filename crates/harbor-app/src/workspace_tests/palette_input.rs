@@ -3,7 +3,7 @@ use super::*;
 
 #[test]
 fn palette_hover_is_lighter_transient_glass_and_preserves_keyboard_selection_and_focus() {
-    let (_, controller, mut runtime, bytes) = fixture();
+    let (_tabs, controller, mut runtime, bytes) = fixture();
     open(&controller, &mut runtime);
     let focus = runtime.input().focused();
     let (panel, selected) = palette_geometry(&runtime);
@@ -108,7 +108,7 @@ fn palette_single_click_runs_the_clicked_command_once_instead_of_the_keyboard_se
 
 #[test]
 fn palette_cancelled_click_and_disabled_row_leave_the_editor_usable_without_executing() {
-    let (_, controller, mut runtime, bytes) = fixture();
+    let (_tabs, controller, mut runtime, bytes) = fixture();
     open(&controller, &mut runtime);
     let focus = runtime.input().focused();
     let (panel, first) = palette_geometry(&runtime);
@@ -149,7 +149,7 @@ fn palette_cancelled_click_and_disabled_row_leave_the_editor_usable_without_exec
 
 #[test]
 fn palette_filtering_during_a_press_never_executes_a_replacement_row() {
-    let (_, controller, mut runtime, bytes) = fixture();
+    let (_tabs, controller, mut runtime, bytes) = fixture();
     open(&controller, &mut runtime);
     let (_, first) = palette_geometry(&runtime);
     let point = Point::new(
@@ -166,7 +166,7 @@ fn palette_filtering_during_a_press_never_executes_a_replacement_row() {
 
 #[test]
 fn palette_ime_preedit_confirmation_escape_and_clipboard_are_editor_owned() {
-    let (_, controller, mut runtime, bytes) = fixture();
+    let (_tabs, controller, mut runtime, bytes) = fixture();
     open(&controller, &mut runtime);
     replace(&mut runtime, "app.new-tab");
     let editor = input(&controller);
@@ -255,7 +255,7 @@ fn palette_ime_preedit_confirmation_escape_and_clipboard_are_editor_owned() {
 
 #[test]
 fn palette_close_focus_loss_and_root_replacement_reject_late_clipboard_and_ime() {
-    let (_, controller, mut runtime, bytes) = fixture();
+    let (_tabs, controller, mut runtime, bytes) = fixture();
     open(&controller, &mut runtime);
     replace(&mut runtime, "query");
     let old = input(&controller);
@@ -330,7 +330,7 @@ fn palette_native_ime_confirmation_and_close_gestures_do_not_replay_into_termina
         event::{ElementState, Ime, WindowEvent},
         keyboard::{Key as NativeKey, KeyLocation, NamedKey},
     };
-    let (_, controller, mut runtime, bytes) = fixture();
+    let (_tabs, controller, mut runtime, bytes) = fixture();
     open(&controller, &mut runtime);
     let mut adapter = WinitAdapter::new();
     adapter.handle_event(&mut runtime, &WindowEvent::Ime(Ime::Enabled));

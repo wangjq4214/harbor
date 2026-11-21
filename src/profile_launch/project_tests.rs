@@ -61,6 +61,72 @@ fn project_launch_uses_explicit_environment_and_literal_boundary_templates() {
     assert_eq!(pwsh_quote("a'b"), "'a''b'");
 }
 
+#[test]
+fn split_templates_preserve_argument_boundaries_without_saved_agent_or_native_remote_cwd() {
+    let remote_path = "/tmp/space ' \" $() ; & 世界";
+    for env in [
+        ProjectEnvironment::Wsl {
+            distribution: "Ubuntu-24.04".into(),
+        },
+        ProjectEnvironment::Ssh {
+            destination: "dev@fixture-alias".into(),
+        },
+    ] {
+        let recipe = ProjectRecipe {
+            environment: env.clone(),
+            directory: remote_path.into(),
+            agent: Some(AgentInvocation {
+                program: "codex".into(),
+                args: vec!["--resume".into()],
+            }),
+        };
+        let command = split_command(&recipe, "READY", "FAILED").unwrap();
+        assert_eq!(command.executable_policy, ExecutablePolicy::Strict);
+        assert!(command.directory.is_none() && command.environment.is_empty());
+        assert!(!command.args.join(" ").contains("codex"));
+        assert!(!command.args.join(" ").contains("--resume"));
+        match env {
+            ProjectEnvironment::Wsl { .. } => assert_eq!(
+                &command.args[..5],
+                &["--distribution", "Ubuntu-24.04", "--exec", "bash", "-lc"]
+            ),
+            ProjectEnvironment::Ssh { .. } => {
+                assert_eq!(&command.args[..3], &["-t", "--", "dev@fixture-alias"]);
+                assert!(command.args[3].starts_with("bash -lc 'exec bash --rcfile <("));
+            }
+            _ => unreachable!(),
+        }
+        assert!(command.args.last().unwrap().contains("builtin cd --"));
+        assert!(command.args.last().unwrap().contains("exit 1"));
+    }
+    let recipe = ProjectRecipe {
+        environment: ProjectEnvironment::LocalPwsh,
+        directory: "C:/space ' $() ; & 世界".into(),
+        agent: None,
+    };
+    let command = split_command(&recipe, "READY", "FAILED").unwrap();
+    assert_eq!(&command.args[..3], &["-NoLogo", "-NoExit", "-Command"]);
+    assert!(
+        command.args[3]
+            .contains("Set-Location -LiteralPath 'C:/space '' $() ; & 世界' -ErrorAction Stop")
+    );
+    assert!(command.args[3].contains("catch { [Console]::Write('FAILED'); exit 1 }"));
+    // Invalid declarations never become target options, shell fragments or connections.
+    for destination in [
+        "-oProxyCommand=x",
+        "host;echo injected",
+        "user@host command",
+        "host\\n",
+    ] {
+        let mut recipe = recipe.clone();
+        recipe.environment = ProjectEnvironment::Ssh {
+            destination: destination.into(),
+        };
+        recipe.directory = "/tmp".into();
+        assert!(split_command(&recipe, "READY", "FAILED").is_err());
+    }
+}
+
 #[cfg(windows)]
 mod pty {
     use super::*;

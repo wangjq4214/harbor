@@ -174,6 +174,11 @@ mod tests {
         blink: &CursorBlinkState,
         now: Instant,
     ) -> FrameDemand {
+        terminal
+            .handle_event(crate::TerminalEvent::Focus(
+                crate::TerminalFocusEvent::Gained,
+            ))
+            .unwrap();
         // Acknowledge setup output, then install a controlled blink clock.
         // Exercise the engine's real scheduling policy, not a test-side formula.
         let update = terminal.read_update(now);

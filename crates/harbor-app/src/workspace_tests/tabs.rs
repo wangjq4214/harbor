@@ -30,7 +30,14 @@ fn declarative_workspace_binds_all_tab_shortcuts() {
     let mut runtime = mount(controller.clone(), 1000, 320);
     let mut shortcuts = vec![
         (Key::Character('t'), ctrl(), TabCommand::New),
-        (Key::Character('w'), ctrl(), TabCommand::CloseActive),
+        (
+            Key::Character('w'),
+            Modifiers {
+                shift: true,
+                ..ctrl()
+            },
+            TabCommand::CloseActive,
+        ),
         (Key::Tab, ctrl(), TabCommand::Next),
         (
             Key::Tab,
@@ -308,7 +315,10 @@ fn compact_rail_has_no_close_control_or_close_focus_stop() {
     );
     runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
         key: Key::Character('w'),
-        modifiers: ctrl(),
+        modifiers: Modifiers {
+            shift: true,
+            ..ctrl()
+        },
     }));
     assert_eq!(
         controller.drain_actions(),
@@ -1069,7 +1079,7 @@ fn unchanged_global_publications_do_not_rebuild_the_workspace() {
     let bindings =
         crate::command::validate_keybindings(&harbor_config::RawKeybindings::default()).unwrap();
     controller.publish_keybindings(bindings.clone());
-    controller.open_search(TabId(1));
+    controller.open_search(SessionId(1));
     controller.publish_configuration_notice(
         ConfigurationNoticeSource::Reload,
         Some("invalid TOML".into()),

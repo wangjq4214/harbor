@@ -42,29 +42,73 @@ pub(super) fn resolve(
                 script,
             ];
         }
-        ProjectEnvironment::Wsl { distribution } => {
-            command.args = vec![
-                "--distribution".into(),
-                distribution.clone(),
-                "--exec".into(),
-                "bash".into(),
-                "-lc".into(),
-                bash_script(recipe),
-            ];
-        }
-        ProjectEnvironment::Ssh { destination } => {
-            // SSH joins command arguments into a remote shell string. Quote the entire bash
-            // script again at that distinct boundary, rather than relying on Windows argv quotes.
-            command.args = vec![
-                "-t".into(),
-                "--".into(),
-                destination.clone(),
-                format!("bash -lc {}", posix_quote(&bash_script(recipe))),
-            ];
+        // Remote project launches keep their established argv and fail-visible policy.
+        _ => {
+            command.args = environment_args(&recipe.environment, String::new(), bash_script(recipe))
         }
     }
     Ok(command)
 }
+/// Split-only startup handshake. No saved agent or source-specific launch overrides.
+pub(crate) fn split_command(
+    recipe: &ProjectRecipe,
+    ready: &str,
+    failed: &str,
+) -> anyhow::Result<ShellCommand> {
+    let recipe = ProjectRecipe {
+        agent: None,
+        ..recipe.clone()
+    };
+    recipe.validate().map_err(anyhow::Error::msg)?;
+    // Do not set the native cwd from the source: entry must run *inside* the
+    // selected environment, with a Host-observable failure even under -NoExit.
+    let local = format!(
+        "try {{ Set-Location -LiteralPath {} -ErrorAction Stop; if ((Get-Location).Provider.Name -ne 'FileSystem') {{ throw 'Not a filesystem directory' }}; [Console]::Write({}) }} catch {{ [Console]::Write({}); exit 1 }}",
+        pwsh_quote(&recipe.directory),
+        pwsh_quote(ready),
+        pwsh_quote(failed)
+    );
+    // Emit from the final interactive bash, after its normal rc file and cwd entry.
+    // A login wrapper/ssh process spawning (or exec failing) cannot report readiness.
+    let rc = format!(
+        "if [ -f ~/.bashrc ]; then . ~/.bashrc; fi; builtin cd -- {} || {{ builtin printf %s {}; exit 1; }}; builtin printf %s {}",
+        posix_quote(&recipe.directory),
+        posix_quote(failed),
+        posix_quote(ready)
+    );
+    let bash = format!("exec bash --rcfile <(printf %s {}) -i", posix_quote(&rc));
+    Ok(ShellCommand {
+        program: Some(recipe.environment.program().into()),
+        executable_policy: ExecutablePolicy::Strict,
+        args: environment_args(&recipe.environment, local, bash),
+        ..ShellCommand::default()
+    })
+}
+
+/// One quoting/argument boundary for project and split launches, including SSH's
+/// second remote-shell parse. Neither distribution nor destination is a script.
+fn environment_args(environment: &ProjectEnvironment, local: String, bash: String) -> Vec<String> {
+    match environment {
+        ProjectEnvironment::LocalPwsh => {
+            vec!["-NoLogo".into(), "-NoExit".into(), "-Command".into(), local]
+        }
+        ProjectEnvironment::Wsl { distribution } => vec![
+            "--distribution".into(),
+            distribution.clone(),
+            "--exec".into(),
+            "bash".into(),
+            "-lc".into(),
+            bash,
+        ],
+        ProjectEnvironment::Ssh { destination } => vec![
+            "-t".into(),
+            "--".into(),
+            destination.clone(),
+            format!("bash -lc {}", posix_quote(&bash)),
+        ],
+    }
+}
+
 fn bash_script(recipe: &ProjectRecipe) -> String {
     let mut script = format!("cd -- {} || exit; ", posix_quote(&recipe.directory));
     if let Some(agent) = &recipe.agent {

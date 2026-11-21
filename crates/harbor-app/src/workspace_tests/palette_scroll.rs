@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn palette_results_leave_a_stable_gutter_outside_row_surfaces() {
     for (width, height, scale) in [(1000, 500, 1.0), (1500, 750, 1.5), (320, 500, 1.0)] {
-        let (_, controller, mut runtime, bytes) = fixture();
+        let (_tabs, controller, mut runtime, bytes) = fixture();
         runtime.set_viewport(Viewport::new(width, height, scale));
         runtime.update(Instant::now());
         open(&controller, &mut runtime);
@@ -55,7 +55,7 @@ fn palette_results_leave_a_stable_gutter_outside_row_surfaces() {
 #[test]
 fn palette_real_results_scroll_drag_and_keyboard_reveal_keep_query_focus_and_pty_quiet() {
     for height in [500, 180] {
-        let (_, controller, mut runtime, bytes) = fixture();
+        let (_tabs, controller, mut runtime, bytes) = fixture();
         runtime.set_viewport(Viewport::new(1000, height, 1.0));
         runtime.update(Instant::now());
         open(&controller, &mut runtime);

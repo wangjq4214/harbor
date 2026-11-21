@@ -401,6 +401,7 @@ impl Runtime {
 
     /// Shared rebuild → reconcile → layout → paint sequence.
     fn rebuild_root(&mut self, root_id: FiberId, old_children: &[FiberId]) {
+        let focused_handle = self.events.focused_handle(&self.arena);
         self.events.set_layout_available(false);
         let _scope = RuntimeScope::enter(self.runtime_id);
         let hooks = std::mem::take(&mut self.arena.get_mut(root_id).unwrap().hooks);
@@ -455,7 +456,8 @@ impl Runtime {
 
         // Resolve stale input identities before painting so fallback focus and
         // cursor state are reflected in the same frame.
-        self.events.clear_dead_targets(&self.arena, self.root_id);
+        self.events
+            .clear_dead_targets(&self.arena, self.root_id, focused_handle);
 
         self.layout_and_paint(root_id);
     }

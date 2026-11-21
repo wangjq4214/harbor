@@ -105,6 +105,10 @@ fn hidden_update_replays_resize_palette_and_transient_overlay_together() {
 fn core_blink_and_preedit_work_without_gpu() {
     let mut engine = Terminal::new_headless(3, 8);
     let now = Instant::now();
+    engine
+        .handle_event(TerminalEvent::Focus(crate::TerminalFocusEvent::Gained))
+        .unwrap();
+    assert!(engine.acknowledge_update(&engine.read_update(now)));
     let demand = engine.frame_demand(now);
     assert!(!demand.redraw_now);
     assert!(demand.deadline.is_some());

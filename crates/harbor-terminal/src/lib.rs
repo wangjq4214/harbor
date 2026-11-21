@@ -116,9 +116,11 @@ pub struct Terminal {
     backdrop_available: bool,
     /// Terminal-owned transient IME composition presentation state.
     preedit: Option<Preedit>,
-    /// Set when ingest returns synchronized output to eligible; consumed by `frame_demand`.
+    /// Host keyboard focus, independent of the child application's DEC focus-reporting mode.
+    focused: bool,
     /// GPU-independent cursor blink and redraw timing.
     blink: Revisioned<CursorBlinkState>,
+    /// Set when ingest returns synchronized output to eligible; cleared on acknowledgement.
     pending_ordinary_present: bool,
     /// Redraw for transient preedit changes, retained until preparation or acknowledgement.
     pending_preedit_redraw: bool,
@@ -134,6 +136,14 @@ pub struct Terminal {
 }
 
 impl Terminal {
+    /// Release process/reader ownership once without requiring UI clones to drop.
+    /// Unlike unmount/hide this is irreversible; content identity is not recycled.
+    pub fn retire_session(&mut self) {
+        self.cancel_resize();
+        self.clear_preedit();
+        self.io.retire_session(&mut self.screen);
+    }
+
     /// Successful launch facts survive commands, metadata updates and config reloads.
     pub fn project_snapshot(&self) -> Option<harbor_config::ProjectRecipe> {
         self.project_recognition.snapshot()
@@ -222,6 +232,7 @@ impl Terminal {
             appearance,
             backdrop_available: false,
             preedit: None,
+            focused: false,
             blink: CursorBlinkState::new(Instant::now()).into(),
             pending_ordinary_present: false,
             pending_preedit_redraw: false,
@@ -278,6 +289,18 @@ impl Terminal {
         }
     }
 
+    /// Publish committed pane-local input geometry without drawing, draining, or resizing.
+    pub fn set_input_geometry(
+        &mut self,
+        target: RenderTarget,
+        metrics: &TextMetrics,
+    ) -> RenderViewport {
+        let viewport = RenderViewport::from_target(target, metrics);
+        self.pointer.set_viewport(viewport);
+        self.pointer.set_input_scale(target.scale_factor);
+        viewport
+    }
+
     /// Advances the GPU-independent engine for a live host draw. A failed PTY resize
     /// leaves the old grid intact so a subsequent draw can retry it.
     pub fn prepare_render_frame(
@@ -286,9 +309,7 @@ impl Terminal {
         metrics: &TextMetrics,
         now: Instant,
     ) -> (RenderViewport, bool) {
-        let viewport = RenderViewport::from_target(target, metrics);
-        self.pointer.set_viewport(viewport);
-        self.pointer.set_input_scale(target.scale_factor);
+        let viewport = self.set_input_geometry(target, metrics);
         // Managed terminals take geometry intent only from their allocation owner.
         let grid_changed =
             !self.host_driven_resize && self.resize_if_changed(viewport.compute_grid_size());
@@ -299,7 +320,7 @@ impl Terminal {
 
     /// Engine-owned cursor-blink phase for the current renderer projection.
     pub fn blink_visible_at(&self, now: Instant) -> bool {
-        self.blink.phase_visible(now)
+        !self.focused || self.blink.phase_visible(now)
     }
     /// Whether retained projection or logical pointer mapping needs a live frame.
     /// A scale-only DPI change keeps physical geometry but changes input coordinates.
@@ -339,7 +360,7 @@ impl Terminal {
                 && (self.blink.pending_redraw()
                     || self.pending_ordinary_present
                     || self.pending_preedit_redraw),
-            deadline: (self.screen.cursor_visible() && self.screen.cursor_blink())
+            deadline: (self.focused && self.screen.cursor_visible() && self.screen.cursor_blink())
                 .then(|| self.blink.next_deadline(now)),
             ordinary_present_eligible,
         };
@@ -441,10 +462,22 @@ impl Terminal {
         self.pending_resize.is_some() || self.io.configuration_barrier_active()
     }
 
+    /// Independently observe shell-process exit even if ConPTY keeps its output pipe open.
+    /// This does not retire the reader or impose a Host close/restart policy.
+    pub fn shell_process_exited(&self) -> bool {
+        self.io.shell_process_exited()
+    }
     /// Whether reader EOF/disconnection is observed or the reader has already finished.
     /// Checks reader completion even before UI output draining. Headless terminals remain open.
     pub fn is_session_closed(&self) -> bool {
         self.io.is_session_closed()
+    }
+
+    /// Monotonic byte offset of parsed output in this session's input stream.
+    /// Hosts can compare a raw-reader observation with parser progress before publication.
+    /// Direct `process_output`/`put_bytes` feeds also advance this offset; do not mix streams.
+    pub fn parsed_output_bytes(&self) -> u64 {
+        self.io.parsed_output_bytes()
     }
 
     /// Set bounded pending clipboard retention; authorization remains the host's responsibility.
@@ -528,10 +561,18 @@ impl Terminal {
                     return Ok(outcome);
                 }
             }
-            TerminalEvent::Focus(TerminalFocusEvent::Lost) => {
-                outcome = self.pointer.cancel();
-                outcome.redraw |= self.clear_preedit();
-                self.io.set_suppress_scroll_snap(false);
+            TerminalEvent::Focus(focus) => {
+                let focused = *focus == TerminalFocusEvent::Gained;
+                if !focused {
+                    outcome = self.pointer.cancel();
+                    outcome.redraw |= self.clear_preedit();
+                    self.io.set_suppress_scroll_snap(false);
+                }
+                if self.focused != focused {
+                    self.focused = focused;
+                    self.blink.reset(Instant::now());
+                    outcome.redraw = true;
+                }
             }
             _ => {}
         }

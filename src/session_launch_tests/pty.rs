@@ -245,7 +245,7 @@ fn package_manual_watched_generations_keep_live_resources_and_native_launches_co
             .prepare_new_terminal(
                 TerminalGpuAccess::new(&f.device, &f.queue, wgpu::TextureFormat::Rgba8Unorm),
                 load_system_fonts(&f.policy.font_settings).unwrap(),
-                f.tabs.last_broadcast_size().unwrap(),
+                f.active_grid(),
                 (640, 320),
                 false,
                 harbor_terminal::ClipboardDelivery::Discard,

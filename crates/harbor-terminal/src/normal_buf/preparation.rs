@@ -194,9 +194,8 @@ impl NormalBuf {
                 .map_or(0, |col| col + 1);
             detached.row_metadata[index] = metadata;
         }
-        for index in copy_rows..rows {
-            detached.row_metadata[index].logical_line_id =
-                LogicalLineId(self.next_logical_line_id + (index - copy_rows) as u64);
+        for (offset, metadata) in detached.row_metadata[copy_rows..].iter_mut().enumerate() {
+            metadata.logical_line_id = LogicalLineId(self.next_logical_line_id + offset as u64);
         }
         let mut previous: Option<(RowMetadata, usize)> = None;
         for index in 0..rows {

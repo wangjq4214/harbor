@@ -108,6 +108,8 @@ error[E0277]: expected an `Fn(_)` closure, found `TextLabel`
 note: required by a bound in `ActionHandler::<A>::new`
   --> $WORKSPACE/crates/harbor-widget/src/widgets/action_handler.rs
    |
+   | impl<A: Clone + 'static> ActionHandler<A> {
+   |     /// Creates an action provider with the required handler and no child.
    |     pub fn new(handler: impl Fn(A) -> ActionOutcome + 'static) -> Self {
    |                              ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `ActionHandler::<A>::new`
 
