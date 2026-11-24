@@ -43,7 +43,7 @@ impl ActiveSession {
     }
 
     pub(super) fn advance_pane_split(&mut self) -> Option<ControlFlowEffect> {
-        use crate::split_launch::{LaunchKind, SplitPoll};
+        use crate::split_launch::SplitPoll;
         let mut pending = self.pending_split.take()?;
         let (target, _) = pending.operation.target();
         let mut wait = None;
@@ -105,14 +105,10 @@ impl ActiveSession {
                     .tabs
                     .attach_split(*ready, pending.operation.id(), pending.axis)
                 {
-                    Ok((outcome, kind)) => {
+                    Ok((outcome, _kind)) => {
                         // This never activates another workspace. If the source workspace
                         // is still active, focus the actual reserved result, including maximize.
                         self.tabs.focus_split_result(target);
-                        if kind != LaunchKind::Inherited {
-                            self.workspace_ui.report_configuration_result(
-                            "Split used the default shell; source environment/directory was unavailable or startup failed.".into());
-                        }
                         let result = self.tabs.apply_tab_outcome(
                             &mut self.main_host,
                             outcome,
