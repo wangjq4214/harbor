@@ -59,11 +59,13 @@ fn shared_gpu_exit_cancels_pending_actions_before_exit() {
         let mut paste = PasteController::new(gate.clone());
         let mut clipboard =
             crate::clipboard::ClipboardPolicy::new(harbor_config::Osc52WritePolicy::Confirm);
-        clipboard.retain(harbor_app::tab_manager::SessionClipboardWrite {
-            source: harbor_app::tab_manager::SessionId(7),
-            contents: harbor_terminal::ClipboardWrite::new("never approve".into()).unwrap(),
-        });
-        let mut window = None;
+        clipboard.retain(
+            1,
+            harbor_app::tab_manager::SessionClipboardWrite {
+                source: harbor_app::tab_manager::SessionId(7),
+                contents: harbor_terminal::ClipboardWrite::new("never approve".into()).unwrap(),
+            },
+        );
         let mut exits = 0;
         apply_gpu_fatal_policy(
             &GpuFault {
@@ -72,7 +74,6 @@ fn shared_gpu_exit_cancels_pending_actions_before_exit() {
             },
             &mut paste,
             &mut clipboard,
-            &mut window,
             || {
                 assert!(!gate.load(std::sync::atomic::Ordering::Acquire));
                 exits += 1;
@@ -80,11 +81,286 @@ fn shared_gpu_exit_cancels_pending_actions_before_exit() {
         );
         assert_eq!(exits, 1);
         assert!(!paste.is_active());
+        assert!(!clipboard.is_active());
         assert!(
             clipboard.resolve(true, true).is_none(),
             "late approval cannot write clipboard"
         );
     }
+}
+
+#[allow(clippy::arc_with_non_send_sync)]
+fn test_workspace() -> (
+    TabManager,
+    WorkspaceUiController,
+    Arc<AtomicBool>,
+    tempfile::NamedTempFile,
+) {
+    use harbor_app::{tab_manager::TerminalTabResources, terminal_view::TerminalWidgetBridge};
+    let pty = tempfile::NamedTempFile::new().unwrap();
+    let gate = Arc::new(AtomicBool::new(false));
+    let mut tabs = TabManager::new();
+    tabs.create_tab(|_, draw| {
+        let terminal = Arc::new(std::sync::Mutex::new(Terminal::new_headless_with_io(
+            8,
+            40,
+            std::io::empty(),
+            pty.reopen().unwrap(),
+            || true,
+        )));
+        let bridge = TerminalWidgetBridge::new(draw, terminal.clone(), Arc::clone(&gate));
+        Ok(TerminalTabResources::new(terminal, bridge, "test"))
+    })
+    .unwrap();
+    let ui = WorkspaceUiController::new(tabs.snapshots(), tabs.active_bridge().unwrap(), 1000.0);
+    ui.publish_panes(&tabs);
+    (tabs, ui, gate, pty)
+}
+
+#[test]
+fn osc52_confirmation_opens_in_window_displaces_search_gates_pty_and_resolves_once() {
+    use crate::clipboard::Admission;
+    use harbor_app::confirmation::ConfirmationKind;
+    use std::sync::atomic::Ordering;
+
+    let (tabs, ui, gate, pty) = test_workspace();
+    let binding = tabs.active_binding().unwrap();
+    let terminal = tabs.active_terminal().unwrap();
+    let paste = PasteController::new(Arc::clone(&gate));
+    let mut clipboard =
+        crate::clipboard::ClipboardPolicy::new(harbor_config::Osc52WritePolicy::Confirm);
+    let mut clipboard_epoch = 0;
+
+    // Open search first so OSC 52 confirmation displacement is verified.
+    ui.open_search(binding.session);
+    assert!(ui.search_query().is_some());
+
+    let request = harbor_app::tab_manager::SessionClipboardWrite {
+        source: binding.session,
+        contents: harbor_terminal::ClipboardWrite::new("copied\tpayload\nline2".into()).unwrap(),
+    };
+    assert_eq!(clipboard.admission(true), Admission::Confirm);
+    let focus = open_clipboard_confirmation(
+        &ui,
+        &mut clipboard,
+        &paste,
+        &gate,
+        true,
+        42,
+        &mut clipboard_epoch,
+        request,
+    );
+    assert!(focus.is_some());
+    assert_eq!(clipboard_epoch, 42);
+    assert!(ui.search_query().is_none(), "confirmation displaces Search");
+    assert_eq!(
+        ui.confirmation_kind(),
+        Some(ConfirmationKind::ClipboardWrite)
+    );
+    let generation = clipboard.generation().expect("clipboard generation");
+    assert_eq!(ui.confirmation_generation(), Some(generation));
+    assert!(gate.load(Ordering::Acquire), "confirmation gates PTY input");
+
+    // Mount into Runtime and verify PTY keystrokes remain suppressed while open.
+    let mut runtime = harbor_widget::runtime::Runtime::new();
+    runtime.set_viewport(harbor_widget::renderer::Viewport::new(1000, 700, 1.0));
+    runtime.set_root(harbor_app::workspace::tab_workspace(ui.clone(), false));
+    runtime.update(Instant::now());
+    runtime.request_focus(&ui.terminal_focus());
+    runtime.dispatch(harbor_widget::input::event::UiEvent::Keyboard(
+        harbor_widget::input::event::KeyboardEvent::KeyDown {
+            key: harbor_widget::input::event::Key::Character('z'),
+            modifiers: Default::default(),
+        },
+    ));
+    assert!(std::fs::read(pty.path()).unwrap().is_empty());
+
+    // Confirming with the current generation resolves once without creating a permanent grant.
+    let stale = resolve_clipboard_confirmation_state(
+        generation + 1,
+        true,
+        true,
+        &ui,
+        &mut clipboard,
+        &paste,
+        &gate,
+    );
+    assert!(stale.is_none());
+    assert!(clipboard.is_active());
+
+    let approved = resolve_clipboard_confirmation_state(
+        generation,
+        true,
+        true,
+        &ui,
+        &mut clipboard,
+        &paste,
+        &gate,
+    )
+    .expect("matching generation resolves approved payload");
+    assert_eq!(approved.contents.as_str(), "copied\tpayload\nline2");
+    assert!(!clipboard.is_active());
+    assert!(!ui.confirmation_is_open());
+    assert!(!gate.load(Ordering::Acquire));
+    assert_eq!(clipboard.admission(true), Admission::Confirm);
+    drop(terminal);
+}
+
+#[test]
+fn osc52_confirmation_cancels_on_focus_loss_or_ineligibility_with_zero_writes() {
+    use std::sync::atomic::Ordering;
+
+    let (tabs, ui, gate, _pty) = test_workspace();
+    let binding = tabs.active_binding().unwrap();
+    let paste = PasteController::new(Arc::clone(&gate));
+    let mut clipboard =
+        crate::clipboard::ClipboardPolicy::new(harbor_config::Osc52WritePolicy::Confirm);
+    let mut clipboard_epoch = 0;
+
+    let request = harbor_app::tab_manager::SessionClipboardWrite {
+        source: binding.session,
+        contents: harbor_terminal::ClipboardWrite::new("secret".into()).unwrap(),
+    };
+    let _ = open_clipboard_confirmation(
+        &ui,
+        &mut clipboard,
+        &paste,
+        &gate,
+        true,
+        7,
+        &mut clipboard_epoch,
+        request,
+    )
+    .expect("opened confirmation");
+    let generation = clipboard.generation().unwrap();
+    assert!(cancel_clipboard_confirmation_state(
+        &ui,
+        &mut clipboard,
+        &paste,
+        &gate
+    ));
+    assert!(!clipboard.is_active());
+    assert!(!ui.confirmation_is_open());
+    assert!(!gate.load(Ordering::Acquire));
+    assert!(
+        resolve_clipboard_confirmation_state(
+            generation,
+            true,
+            true,
+            &ui,
+            &mut clipboard,
+            &paste,
+            &gate
+        )
+        .is_none(),
+        "stale resolution after focus-loss cancellation cannot execute"
+    );
+
+    // Denial or failed revalidation also yields zero payload writes.
+    let request = harbor_app::tab_manager::SessionClipboardWrite {
+        source: binding.session,
+        contents: harbor_terminal::ClipboardWrite::new("denied".into()).unwrap(),
+    };
+    let _ = open_clipboard_confirmation(
+        &ui,
+        &mut clipboard,
+        &paste,
+        &gate,
+        true,
+        8,
+        &mut clipboard_epoch,
+        request,
+    )
+    .expect("opened confirmation");
+    let generation = clipboard.generation().unwrap();
+    assert!(
+        resolve_clipboard_confirmation_state(
+            generation,
+            true,
+            false,
+            &ui,
+            &mut clipboard,
+            &paste,
+            &gate
+        )
+        .is_none()
+    );
+    assert!(!ui.confirmation_is_open());
+    assert!(!gate.load(Ordering::Acquire));
+}
+
+#[test]
+fn paste_and_osc52_confirmations_are_mutually_exclusive() {
+    use harbor_app::confirmation::ConfirmationKind;
+
+    let (tabs, ui, gate, _pty) = test_workspace();
+    let binding = tabs.active_binding().unwrap();
+    let terminal = tabs.active_terminal().unwrap();
+    let mut paste = PasteController::new(Arc::clone(&gate));
+    let mut clipboard =
+        crate::clipboard::ClipboardPolicy::new(harbor_config::Osc52WritePolicy::Confirm);
+    let mut clipboard_epoch = 0;
+
+    // 1. Active OSC 52 rejects incoming paste without changing the overlay.
+    let request = harbor_app::tab_manager::SessionClipboardWrite {
+        source: binding.session,
+        contents: harbor_terminal::ClipboardWrite::new("osc52".into()).unwrap(),
+    };
+    let _ = open_clipboard_confirmation(
+        &ui,
+        &mut clipboard,
+        &paste,
+        &gate,
+        true,
+        10,
+        &mut clipboard_epoch,
+        request,
+    )
+    .expect("osc52 confirmation opened");
+    let osc_gen = ui.confirmation_generation().unwrap();
+    let err = paste
+        .paste_text(
+            &ui,
+            Some(&terminal),
+            Some(binding),
+            "line1\nline2".into(),
+            false,
+            clipboard.is_active(),
+        )
+        .unwrap_err();
+    assert_eq!(err, "Rejected: paste confirmation is active");
+    assert_eq!(ui.confirmation_generation(), Some(osc_gen));
+    assert_eq!(
+        ui.confirmation_kind(),
+        Some(ConfirmationKind::ClipboardWrite)
+    );
+
+    assert!(cancel_clipboard_confirmation_state(
+        &ui,
+        &mut clipboard,
+        &paste,
+        &gate
+    ));
+
+    // 2. Active paste rejects incoming OSC 52 confirmation without changing the overlay.
+    paste
+        .paste_text(
+            &ui,
+            Some(&terminal),
+            Some(binding),
+            "line1\nline2".into(),
+            false,
+            clipboard.is_active(),
+        )
+        .expect("paste confirmation opens");
+    let paste_gen = ui.confirmation_generation().unwrap();
+    let eligible = !(paste.is_active() || clipboard.is_active());
+    assert_eq!(
+        clipboard.admission(eligible),
+        crate::clipboard::Admission::Denied
+    );
+    assert_eq!(ui.confirmation_generation(), Some(paste_gen));
+    assert_eq!(ui.confirmation_kind(), Some(ConfirmationKind::Paste));
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0003
 **Source:** [Spec 0057](../../spec/0057-in-window-confirmation-overlay.md) (`R1`, `R3`, `R4`, `R5`, `R6`, `R7`, `E3`, `E5`, `E6`), [Spec 0017](../../spec/0017-host-authorized-osc52-clipboard-writes.md), [ADR 0111](../../adr/0111-in-window-liquid-glass-confirmation-overlay.md).
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -28,11 +28,11 @@ Migrate OSC 52 clipboard-write confirmation into the shared `PopupSlot` in-windo
 
 ## Acceptance
 
-- [ ] Under OSC 52 `confirm` policy, eligible requests open the shared in-window `PopupSlot` overlay showing source tab, decoded byte size, and bounded preview (`[preview truncated]` / `[clear clipboard]`), displacing any open Search/Palette.
-- [ ] `Allow this request` (`y`/`Y` or button) revalidates source liveness and strict main-window foreground focus, executes the Host clipboard write once without creating a permanent grant, and restores terminal focus.
-- [ ] `Deny this request` (`Esc`/`n`/`N` or button), source session closure, active tab/pane change, window minimization, or main-window focus loss cancels the pending OSC 52 confirmation with zero clipboard writes and content-free diagnostics.
-- [ ] While either paste confirmation or OSC 52 confirmation is active, new paste and new OSC 52 requests are both rejected without altering the active preview.
-- [ ] `ConfirmationWindow` and secondary-window confirmation routing are removed from `src/`, and scoped `cargo test` and `cargo clippy --locked --all-targets --all-features -- -D warnings` pass.
+- [x] Under OSC 52 `confirm` policy, eligible requests open the shared in-window `PopupSlot` overlay showing source tab, decoded byte size, and bounded preview (`[preview truncated]` / `[clear clipboard]`), displacing any open Search/Palette.
+- [x] `Allow this request` (`y`/`Y` or button) revalidates source liveness and strict main-window foreground focus, executes the Host clipboard write once without creating a permanent grant, and restores terminal focus.
+- [x] `Deny this request` (`Esc`/`n`/`N` or button), source session closure, active tab/pane change, window minimization, or main-window focus loss cancels the pending OSC 52 confirmation with zero clipboard writes and content-free diagnostics.
+- [x] While either paste confirmation or OSC 52 confirmation is active, new paste and new OSC 52 requests are both rejected without altering the active preview.
+- [x] `ConfirmationWindow` and secondary-window confirmation routing are removed from `src/`, and scoped `cargo test` and `cargo clippy --locked --all-targets --all-features -- -D warnings` pass.
 
 ## Out of Scope
 

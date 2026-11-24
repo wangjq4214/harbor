@@ -413,7 +413,7 @@ fn in_window_paste_flow_gates_pty_displaces_search_revalidates_and_guards_gpu_fa
 #[cfg(windows)]
 mod pty {
     use super::*;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     #[ignore = "pty: Windows ConPTY with a dedicated local cmd child"]

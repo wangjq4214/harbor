@@ -16,18 +16,15 @@ pub(crate) fn delivery(policy: Osc52WritePolicy) -> ClipboardDelivery {
     }
 }
 
-/// Snapshot at admission/execution, including only this request's confirmation window.
+/// Snapshot at admission/execution under strict main-window foreground eligibility.
 pub(crate) struct Eligibility {
     pub(crate) active_live: bool,
     pub(crate) main_foreground: bool,
-    pub(crate) confirmation_foreground: bool,
     pub(crate) minimized: bool,
 }
 impl Eligibility {
-    pub(crate) fn permits(&self, continuation: bool) -> bool {
-        self.active_live
-            && !self.minimized
-            && (self.main_foreground || (continuation && self.confirmation_foreground))
+    pub(crate) fn permits(&self) -> bool {
+        self.active_live && !self.minimized && self.main_foreground
     }
 }
 
@@ -103,7 +100,7 @@ pub(crate) enum Admission {
 /// Payload retained only for the single immutable admitted confirmation.
 pub(crate) struct ClipboardPolicy {
     policy: Osc52WritePolicy,
-    pending: Option<SessionClipboardWrite>,
+    pending: Option<(u64, SessionClipboardWrite)>,
 }
 
 impl ClipboardPolicy {
@@ -115,7 +112,7 @@ impl ClipboardPolicy {
     }
     #[cfg(test)]
     pub(crate) fn pending(&self) -> Option<&SessionClipboardWrite> {
-        self.pending.as_ref()
+        self.pending.as_ref().map(|(_, request)| request)
     }
     pub(crate) fn admission(&self, eligible: bool) -> Admission {
         if !eligible || self.pending.is_some() {
@@ -127,9 +124,15 @@ impl ClipboardPolicy {
             Osc52WritePolicy::Confirm => Admission::Confirm,
         }
     }
-    pub(crate) fn retain(&mut self, request: SessionClipboardWrite) {
+    pub(crate) fn retain(&mut self, generation: u64, request: SessionClipboardWrite) {
         debug_assert!(self.pending.is_none());
-        self.pending = Some(request);
+        self.pending = Some((generation, request));
+    }
+    pub(crate) fn generation(&self) -> Option<u64> {
+        self.pending.as_ref().map(|(generation, _)| *generation)
+    }
+    pub(crate) fn is_active(&self) -> bool {
+        self.pending.is_some()
     }
     pub(crate) fn cancel(&mut self) {
         self.pending = None;
@@ -139,11 +142,11 @@ impl ClipboardPolicy {
         approved: bool,
         eligible: bool,
     ) -> Option<SessionClipboardWrite> {
-        let request = self.pending.take();
+        let request = self.pending.take().map(|(_, request)| request);
         if approved && eligible { request } else { None }
     }
     pub(crate) fn source(&self) -> Option<SessionId> {
-        self.pending.as_ref().map(|r| r.source)
+        self.pending.as_ref().map(|(_, request)| request.source)
     }
 }
 
@@ -180,7 +183,11 @@ mod tests {
                 Osc52WritePolicy::Confirm => Admission::Confirm,
             };
             assert_eq!(policy.admission(true), expected);
-            policy.retain(request(7));
+            assert!(!policy.is_active());
+            assert_eq!(policy.generation(), None);
+            policy.retain(12, request(7));
+            assert!(policy.is_active());
+            assert_eq!(policy.generation(), Some(12));
             for _ in 0..100 {
                 assert_eq!(policy.admission(true), Admission::Denied);
             }
@@ -192,19 +199,24 @@ mod tests {
     #[test]
     fn confirmation_is_single_use_source_preserving_and_not_a_grant() {
         let mut policy = ClipboardPolicy::new(Osc52WritePolicy::Confirm);
-        policy.retain(request(9));
+        policy.retain(1, request(9));
+        assert_eq!(policy.generation(), Some(1));
         let approved = policy.resolve(true, true).unwrap();
         assert_eq!(approved.source, SessionId(9));
         assert_eq!(approved.contents.as_str(), "first");
+        assert!(!policy.is_active());
+        assert_eq!(policy.generation(), None);
         assert!(policy.resolve(true, true).is_none());
         assert_eq!(policy.admission(true), Admission::Confirm);
         for (approval, eligibility) in [(false, true), (true, false), (false, false)] {
-            policy.retain(request(9));
+            policy.retain(2, request(9));
             assert!(policy.resolve(approval, eligibility).is_none());
             assert!(policy.resolve(true, true).is_none());
         }
-        policy.retain(request(9));
+        policy.retain(3, request(9));
         policy.cancel();
+        assert!(!policy.is_active());
+        assert_eq!(policy.generation(), None);
         assert!(policy.resolve(true, true).is_none());
     }
     #[test]
@@ -235,34 +247,27 @@ mod tests {
     }
 
     #[test]
-    fn permission_matrix_and_confirmation_focus_exception_are_narrow() {
+    fn permission_matrix_requires_active_live_unminimized_main_foreground() {
         for active_live in [false, true] {
             for minimized in [false, true] {
                 for main_foreground in [false, true] {
-                    for confirmation_foreground in [false, true] {
-                        let eligibility = Eligibility {
-                            active_live,
-                            minimized,
-                            main_foreground,
-                            confirmation_foreground,
-                        };
-                        let fresh = active_live && !minimized && main_foreground;
-                        let continuing = active_live
-                            && !minimized
-                            && (main_foreground || confirmation_foreground);
-                        assert_eq!(eligibility.permits(false), fresh);
-                        assert_eq!(eligibility.permits(true), continuing);
-                        for mode in [
-                            Osc52WritePolicy::Allow,
-                            Osc52WritePolicy::Deny,
-                            Osc52WritePolicy::Confirm,
-                        ] {
-                            let policy = ClipboardPolicy::new(mode);
-                            assert_eq!(
-                                policy.admission(eligibility.permits(false)) == Admission::Denied,
-                                !fresh || mode == Osc52WritePolicy::Deny
-                            );
-                        }
+                    let eligibility = Eligibility {
+                        active_live,
+                        minimized,
+                        main_foreground,
+                    };
+                    let permitted = active_live && !minimized && main_foreground;
+                    assert_eq!(eligibility.permits(), permitted);
+                    for mode in [
+                        Osc52WritePolicy::Allow,
+                        Osc52WritePolicy::Deny,
+                        Osc52WritePolicy::Confirm,
+                    ] {
+                        let policy = ClipboardPolicy::new(mode);
+                        assert_eq!(
+                            policy.admission(eligibility.permits()) == Admission::Denied,
+                            !permitted || mode == Osc52WritePolicy::Deny
+                        );
                     }
                 }
             }
