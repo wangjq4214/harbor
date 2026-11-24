@@ -123,6 +123,7 @@ pub(crate) enum ConfirmationResult {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum DialogOutcome {
     None,
     Cancelled,
@@ -145,151 +146,103 @@ pub(crate) fn write_confirmation_outcome<E>(
     Ok(true)
 }
 
-/// Outcome of a paste confirmation event dispatch.
+/// Outcome of resolving an in-window paste confirmation request.
 #[derive(Debug)]
-pub(crate) enum PasteEventOutcome {
-    Handled {
-        request_redraw: bool,
-        wait: Option<ControlFlowEffect>,
+pub(crate) enum PasteResolution {
+    Ignored,
+    Resolved {
         palette_completion: Option<Result<CommandCompletion, &'static str>>,
     },
     Fatal {
         error: FrameError,
-        wait: Option<ControlFlowEffect>,
     },
+}
+
+struct PendingPaste {
+    generation: u64,
+    raw_text: String,
+    target: PasteTarget,
+    palette_invocation: bool,
 }
 
 /// Controller encapsulating modal paste confirmation and clipboard interaction.
 pub(crate) struct PasteController {
-    window: Option<ConfirmationWindow>,
+    pending: Option<PendingPaste>,
     input_gate: Arc<AtomicBool>,
-    target: Option<PasteTarget>,
-    palette_invocation: bool,
 }
 
 impl PasteController {
     pub(crate) fn new(input_gate: Arc<AtomicBool>) -> Self {
         Self {
-            window: None,
-            target: None,
+            pending: None,
             input_gate,
-            palette_invocation: false,
         }
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.window.is_some()
+        self.pending.is_some()
     }
 
-    pub(crate) fn window_id(&self) -> Option<WindowId> {
-        self.window.as_ref().map(|w| w.window_id())
+    pub(crate) fn generation(&self) -> Option<u64> {
+        self.pending.as_ref().map(|pending| pending.generation)
     }
 
     pub(crate) fn source(&self) -> Option<PaneBinding> {
-        self.target.as_ref().map(|target| target.binding)
+        self.pending.as_ref().map(|pending| pending.target.binding)
     }
-    pub(crate) fn retire_target(&mut self) -> Option<Result<CommandCompletion, &'static str>> {
-        let report = self.palette_invocation;
-        self.cancel();
+
+    pub(crate) fn retire_target(
+        &mut self,
+        workspace_ui: &harbor_app::workspace::WorkspaceUiController,
+        other_confirmation_active: bool,
+    ) -> Option<Result<CommandCompletion, &'static str>> {
+        let report = self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.palette_invocation);
+        self.cancel(workspace_ui, other_confirmation_active);
         report.then_some(Err("Rejected: paste target retired"))
     }
 
-    pub(crate) fn cancel(&mut self) {
-        self.window = None;
-        self.target = None;
+    pub(crate) fn cancel(
+        &mut self,
+        workspace_ui: &harbor_app::workspace::WorkspaceUiController,
+        other_confirmation_active: bool,
+    ) -> bool {
+        let closed = if let Some(pending) = self.pending.take() {
+            workspace_ui.close_confirmation(pending.generation);
+            true
+        } else {
+            false
+        };
+        self.input_gate
+            .store(other_confirmation_active, Ordering::Release);
+        closed
+    }
+
+    pub(crate) fn cancel_for_shutdown(&mut self) {
+        self.pending = None;
         self.input_gate.store(false, Ordering::Release);
-        self.palette_invocation = false;
     }
 
-    pub(crate) fn about_to_wait(&mut self, now: Instant) -> HostIdleOutcome {
-        self.window
-            .as_mut()
-            .map(|window| window.about_to_wait(now))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn handle_dialog_event(
+    pub(crate) fn paste_text(
         &mut self,
-        event: &WindowEvent,
+        workspace_ui: &harbor_app::workspace::WorkspaceUiController,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
         active_binding: Option<PaneBinding>,
-    ) -> PasteEventOutcome {
-        let (result, wait) = self.handle_event(event);
-
-        match &result {
-            DialogOutcome::Cancelled | DialogOutcome::Confirmed(_) => {
-                let completion = complete_paste_confirmation(
-                    &result,
-                    self.target.take().as_ref(),
-                    active_binding.zip(active_terminal),
-                );
-                let palette_completion =
-                    std::mem::take(&mut self.palette_invocation).then_some(completion);
-                self.input_gate.store(false, Ordering::Release);
-                PasteEventOutcome::Handled {
-                    request_redraw: true,
-                    wait,
-                    palette_completion,
-                }
-            }
-            DialogOutcome::Fatal(error) => {
-                self.target = None;
-                self.input_gate.store(false, Ordering::Release);
-                self.palette_invocation = false;
-                PasteEventOutcome::Fatal {
-                    error: error.clone(),
-                    wait,
-                }
-            }
-            DialogOutcome::None => PasteEventOutcome::Handled {
-                request_redraw: false,
-                wait,
-                palette_completion: None,
-            },
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent) -> (DialogOutcome, Option<ControlFlowEffect>) {
-        let Some(mut confirmation) = self.window.take() else {
-            return (DialogOutcome::None, None);
-        };
-        let event_outcome = confirmation.handle_event(event);
-        let result = match guard_confirmation(event_outcome.result, confirmation.host.gpu_fault()) {
-            ConfirmationResult::Cancelled => DialogOutcome::Cancelled,
-            ConfirmationResult::Confirmed => {
-                DialogOutcome::Confirmed(confirmation.raw_text().to_owned())
-            }
-            ConfirmationResult::Fatal(error) => DialogOutcome::Fatal(error),
-            ConfirmationResult::None => {
-                self.window = Some(confirmation);
-                DialogOutcome::None
-            }
-        };
-        (result, event_outcome.wait)
-    }
-    pub(crate) fn paste_from_clipboard(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        main_host: &mut WinitWindowHost,
-        active_terminal: Option<&Arc<Mutex<Terminal>>>,
-        active_binding: Option<PaneBinding>,
+        raw_text: String,
         palette_invocation: bool,
-    ) -> Result<(HostIdleOutcome, CommandCompletion), &'static str> {
-        if self.is_active() {
+        other_confirmation_active: bool,
+    ) -> Result<(Option<harbor_widget::FocusHandle>, CommandCompletion), &'static str> {
+        if self.is_active() || other_confirmation_active {
             return Err("Rejected: paste confirmation is active");
         }
         let binding = active_binding.ok_or("Rejected: no live pane for paste")?;
         let terminal = active_terminal.ok_or("Rejected: no active terminal for paste")?;
         let target = PasteTarget::new(binding, terminal);
-        let raw_text = arboard::Clipboard::new()
-            .and_then(|mut clipboard| clipboard.get_text())
-            .map_err(|error| {
-                tracing::warn!(error = %error, "failed to read clipboard text");
-                "Failed: clipboard text unavailable"
-            })?;
         match prepare_paste(active_terminal, &raw_text)? {
             PasteDisposition::SendDirect => Ok((
-                HostIdleOutcome::default(),
+                None,
                 if raw_text.is_empty() {
                     CommandCompletion::Unchanged
                 } else {
@@ -297,20 +250,109 @@ impl PasteController {
                 },
             )),
             PasteDisposition::Confirm { raw_text } => {
-                let confirmation = ConfirmationWindow::new(raw_text, event_loop, main_host).map_err(|error| {
-                    tracing::warn!(error = %format_args!("{error:#}"), "failed to create confirmation window");
-                    "Failed: could not open paste confirmation"
-                })?;
-                self.window = Some(confirmation);
-                self.target = Some(target);
+                let line_count = raw_text.lines().count();
+                let (generation, focus) = workspace_ui.open_confirmation(
+                    harbor_app::confirmation::ConfirmationRequest::paste(
+                        line_count,
+                        raw_text.clone(),
+                    ),
+                );
+                self.pending = Some(PendingPaste {
+                    generation,
+                    raw_text,
+                    target,
+                    palette_invocation,
+                });
                 self.input_gate.store(true, Ordering::Release);
-                self.palette_invocation = palette_invocation;
-                Ok((
-                    main_host.cancel_active_input_ownership(),
-                    CommandCompletion::PendingConfirmation,
-                ))
+                Ok((Some(focus), CommandCompletion::PendingConfirmation))
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn resolve_confirmation(
+        &mut self,
+        generation: u64,
+        confirmed: bool,
+        workspace_ui: &harbor_app::workspace::WorkspaceUiController,
+        active_terminal: Option<&Arc<Mutex<Terminal>>>,
+        active_binding: Option<PaneBinding>,
+        gpu_fault: Option<harbor_widget::winit::GpuFault>,
+        other_confirmation_active: bool,
+    ) -> PasteResolution {
+        if self
+            .pending
+            .as_ref()
+            .is_none_or(|pending| pending.generation != generation)
+        {
+            return PasteResolution::Ignored;
+        }
+        if let Some(fault) = gpu_fault {
+            self.cancel(workspace_ui, other_confirmation_active);
+            return PasteResolution::Fatal {
+                error: FrameError::SharedGpu(fault),
+            };
+        }
+        let pending = self.pending.take().expect("matched pending paste");
+        workspace_ui.close_confirmation(generation);
+        self.input_gate
+            .store(other_confirmation_active, Ordering::Release);
+        let outcome = if confirmed {
+            DialogOutcome::Confirmed(pending.raw_text)
+        } else {
+            DialogOutcome::Cancelled
+        };
+        let completion = complete_paste_confirmation(
+            &outcome,
+            Some(&pending.target),
+            active_binding.zip(active_terminal),
+        );
+        PasteResolution::Resolved {
+            palette_completion: pending.palette_invocation.then_some(completion),
+        }
+    }
+
+    pub(crate) fn paste_from_clipboard(
+        &mut self,
+        workspace_ui: &harbor_app::workspace::WorkspaceUiController,
+        main_host: &mut WinitWindowHost,
+        active_terminal: Option<&Arc<Mutex<Terminal>>>,
+        active_binding: Option<PaneBinding>,
+        palette_invocation: bool,
+        other_confirmation_active: bool,
+    ) -> Result<(Option<ControlFlowEffect>, CommandCompletion), &'static str> {
+        if self.is_active() || other_confirmation_active {
+            return Err("Rejected: paste confirmation is active");
+        }
+        if active_binding.is_none() {
+            return Err("Rejected: no live pane for paste");
+        }
+        if active_terminal.is_none() {
+            return Err("Rejected: no active terminal for paste");
+        }
+        let raw_text = arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.get_text())
+            .map_err(|error| {
+                tracing::warn!(error = %error, "failed to read clipboard text");
+                "Failed: clipboard text unavailable"
+            })?;
+        let (focus, completion) = self.paste_text(
+            workspace_ui,
+            active_terminal,
+            active_binding,
+            raw_text,
+            palette_invocation,
+            other_confirmation_active,
+        )?;
+        let wait = if let Some(focus) = focus {
+            let mut wait = main_host.cancel_active_input_ownership().wait;
+            merge_wait(&mut wait, main_host.request_focus(&focus).wait);
+            merge_wait(&mut wait, main_host.request_frame().wait);
+            wait
+        } else {
+            None
+        };
+        Ok((wait, completion))
     }
 }
 
@@ -405,11 +447,13 @@ pub(crate) struct ConfirmationEventOutcome {
 /// lifecycle is delegated to `WinitWindowHost`.
 pub(crate) struct ConfirmationWindow {
     host: WinitWindowHost,
+    #[allow(dead_code)]
     raw_text: String,
     root_state: ConfirmationRootState,
 }
 
 impl ConfirmationWindow {
+    #[allow(dead_code)]
     pub(crate) fn new(
         raw_text: String,
         event_loop: &ActiveEventLoop,
@@ -528,6 +572,7 @@ impl ConfirmationWindow {
     }
 
     /// Returns the raw paste candidate text, unchanged from when the dialog opened.
+    #[allow(dead_code)]
     pub(crate) fn raw_text(&self) -> &str {
         &self.raw_text
     }

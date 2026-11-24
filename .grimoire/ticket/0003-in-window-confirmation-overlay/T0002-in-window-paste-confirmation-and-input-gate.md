@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec 0057](../../spec/0057-in-window-confirmation-overlay.md) (`R1`, `R4`, `R5`, `R6`, `E1`, `E4`, `E6`, `E7`), [ADR 0111](../../adr/0111-in-window-liquid-glass-confirmation-overlay.md).
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -28,11 +28,11 @@ Migrate multiline paste confirmation from `ConfirmationWindow` to the `PopupSlot
 
 ## Acceptance
 
-- [ ] Triggering multiline paste opens the in-window `PopupSlot` overlay with no secondary OS window created (`ConfirmationWindow` is no longer spawned for paste).
-- [ ] While paste confirmation is open, PTY keyboard input and new paste requests are rejected/blocked while overlay buttons, `Esc`/`n`/`y`/arrow/`PageUp`/`PageDown` shortcuts, and wheel scrolling work and terminal output keeps rendering.
-- [ ] Confirming writes the unchanged raw text once encoded with approval-time `InputModes`; cancelling writes zero bytes and restores terminal focus.
-- [ ] Opening paste confirmation while Search or Command Palette is open replaces and cleans up the displaced popup (clearing search query/highlights); palette-invoked paste returns `PendingConfirmation` then `Applied`/`Cancelled`/`Rejected`.
-- [ ] Active tab/pane switch, source session retirement, or shared-GPU fault cancels the pending paste without writing to the PTY and clears the input gate.
+- [x] Triggering multiline paste opens the in-window `PopupSlot` overlay with no secondary OS window created (`ConfirmationWindow` is no longer spawned for paste).
+- [x] While paste confirmation is open, PTY keyboard input and new paste requests are rejected/blocked while overlay buttons, `Esc`/`n`/`y`/arrow/`PageUp`/`PageDown` shortcuts, and wheel scrolling work and terminal output keeps rendering.
+- [x] Confirming writes the unchanged raw text once encoded with approval-time `InputModes`; cancelling writes zero bytes and restores terminal focus.
+- [x] Opening paste confirmation while Search or Command Palette is open replaces and cleans up the displaced popup (clearing search query/highlights); palette-invoked paste returns `PendingConfirmation` then `Applied`/`Cancelled`/`Rejected`.
+- [x] Active tab/pane switch, source session retirement, or shared-GPU fault cancels the pending paste without writing to the PTY and clears the input gate.
 
 ## Out of Scope
 
