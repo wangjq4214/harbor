@@ -919,6 +919,7 @@ impl ActiveSession {
                         merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     }
                 }
+                AppCommand::ConfirmConfirmation | AppCommand::CancelConfirmation => {}
                 AppCommand::OpenProfileChooser => {
                     let focus = self.workspace_ui.open_profile_chooser();
                     merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);

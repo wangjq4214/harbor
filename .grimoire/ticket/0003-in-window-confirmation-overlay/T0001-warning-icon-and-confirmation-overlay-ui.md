@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec 0057](../../spec/0057-in-window-confirmation-overlay.md) (`R1`, `R2`, `R3`, `R4`, `R5`, `R7`, `E2`, `E8`, `E9`), [ADR 0111](../../adr/0111-in-window-liquid-glass-confirmation-overlay.md), [Harbor Design System](../../../docs/app/design-system.md).
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -29,11 +29,11 @@ Deliver the bundled vector warning icon in `harbor-widget` and the redesigned in
 
 ## Acceptance
 
-- [ ] `harbor-widget` builds and passes icon tests for the new warning `LucideIcon` variant with zero references to Harbor paste, OSC 52, or `PopupSlot` types.
-- [ ] Mounted `harbor-app` tests verify both Paste (`Cancel` / `Paste`) and OSC 52 (`Deny this request` / `Allow this request`) overlays: default initial focus lands on Cancel/Deny; `Enter`/`Space` initially triggers Cancel/Deny rather than Paste/Allow; `y`/`Y` confirms; `Escape`/`n`/`N` cancels; `Tab` moves focus to Paste/Allow; stale-generation actions are ignored.
-- [ ] Preview unit and mounted tests verify escaping (`safe_preview_line`), inset border, alternating row tint primitives, `ScrollView` scrollability (`ArrowUp`/`ArrowDown`/`PageUp`/`PageDown` and wheel), and logical line numbers across wrapped long lines (continuation rows have blank gutter cells and do not increment logical line numbers).
-- [ ] Layout tests under constrained viewports (e.g., narrow/short sizes) confirm pinned header/footer visibility, wrapped non-overlapping buttons, and unclipped preview text.
-- [ ] `HARBOR_TEST_GPU=dx12-warp` offscreen GPU test renders both Paste and OSC 52 overlays across DPI scales `1.0` / `1.5` / `2.0` showing crisp warning icon, glass backdrop sampling, inset preview border, alternating row tint, scrollbar, and focus ring.
+- [x] `harbor-widget` builds and passes icon tests for the new warning `LucideIcon` variant with zero references to Harbor paste, OSC 52, or `PopupSlot` types.
+- [x] Mounted `harbor-app` tests verify both Paste (`Cancel` / `Paste`) and OSC 52 (`Deny this request` / `Allow this request`) overlays: default initial focus lands on Cancel/Deny; `Enter`/`Space` initially triggers Cancel/Deny rather than Paste/Allow; `y`/`Y` confirms; `Escape`/`n`/`N` cancels; `Tab` moves focus to Paste/Allow; stale-generation actions are ignored.
+- [x] Preview unit and mounted tests verify escaping (`safe_preview_line`), inset border, alternating row tint primitives, `ScrollView` scrollability (`ArrowUp`/`ArrowDown`/`PageUp`/`PageDown` and wheel), and logical line numbers across wrapped long lines (continuation rows have blank gutter cells and do not increment logical line numbers).
+- [x] Layout tests under constrained viewports (e.g., narrow/short sizes) confirm pinned header/footer visibility, wrapped non-overlapping buttons, and unclipped preview text.
+- [x] `HARBOR_TEST_GPU=dx12-warp` offscreen GPU test renders both Paste and OSC 52 overlays across DPI scales `1.0` / `1.5` / `2.0` showing crisp warning icon, glass backdrop sampling, inset preview border, alternating row tint, scrollbar, and focus ring.
 
 ## Out of Scope
 

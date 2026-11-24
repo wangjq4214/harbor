@@ -23,6 +23,8 @@ pub enum AppCommand {
     CommitQuickSave,
     EditQuickSave,
     CancelQuickSave,
+    ConfirmConfirmation,
+    CancelConfirmation,
     /// Internal selection data lives in the generation-scoped palette, not a list index.
     LaunchProfile,
     BackToCommands(u64),

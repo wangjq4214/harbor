@@ -9,6 +9,7 @@ harbor-config = { workspace = true }
 harbor-terminal = { workspace = true }
 harbor-widget = { workspace = true, features = ["winit"] }
 tracing = { workspace = true }
+unicode-width = { workspace = true }
 wgpu = { workspace = true }
 
 [dev-dependencies]
