@@ -228,7 +228,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - communicates with Harbor Widget Runtime
 
 ### Application UI Composition
-- **Definition:** Application-owned workspace/root, tab, notification, confirmation/shared PreviewPane and product-appearance composition. Notification state/keybinding publication are application-level, not tab-owned; `harbor-app-ui` stays a thin HMR root. These are responsibility groups, not mandated modules/types/stores; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
+- **Definition:** Application-owned workspace/root, tab, notification, in-window confirmation/shared PreviewPane and product-appearance composition. Notification state/keybinding publication are application-level, not tab-owned; `harbor-app-ui` stays a thin HMR root. These are responsibility groups, not mandated modules/types/stores; see [ADR 0064](./adr/0064-widget-and-application-component-ownership.md).
 - **Relationships:**
   - communicates with Application Business Host
   - depends on Reusable Widget Component
@@ -367,14 +367,17 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - references Widget Icon
   - references Event Routing
 
-### Paste Confirmation Window
-- **Definition:** An OS-level secondary winit window that displays the paste confirmation UI independently of Harbor's main window.
+### In-Window Confirmation Overlay
+- **Definition:** A main-window native liquid-glass overlay participating in the single-slot exclusive popup lifecycle that presents multiline paste and OSC 52 clipboard-write confirmation UIs without spawning a secondary OS window. See [ADR 0111](./adr/0111-in-window-liquid-glass-confirmation-overlay.md), superseding [ADR 0007](./adr/0007-retain-separate-paste-confirmation-window.md).
+- **Synonyms:** Paste Confirmation Window, Confirmation Overlay
 - **Relationships:**
+  - depends on Confirmation Input Gate
+  - depends on Portal
   - communicates with Harbor Widget Runtime
-  - depends on Cross-Window Input Gate
 
-### Cross-Window Input Gate
-- **Definition:** An App-owned policy that blocks terminal keyboard input and new paste requests while a Paste Confirmation Window exists.
+### Confirmation Input Gate
+- **Definition:** An App-owned policy that blocks terminal PTY keyboard input and new paste or confirmation requests while an In-Window Confirmation Overlay is active. See [ADR 0111](./adr/0111-in-window-liquid-glass-confirmation-overlay.md), superseding [ADR 0009](./adr/0009-app-cross-window-input-gate.md).
+- **Synonyms:** Cross-Window Input Gate
 
 ## Terminal Domain
 

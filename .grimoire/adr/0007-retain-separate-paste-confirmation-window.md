@@ -1,7 +1,8 @@
 # Retain a Separate Paste Confirmation Window
 
-**Status:** Completed
+**Status:** Superseded
 **Date:** 2026-07-24
+**Superseded by:** [ADR 0111](./0111-in-window-liquid-glass-confirmation-overlay.md)
 
 ## Context
 

@@ -3,6 +3,7 @@
 **Status:** Implementing
 **Date:** 2026-09-30
 **Supersedes:** [ADR 0047](./0047-foreground-only-host-authorized-osc52-writes.md)
+**Superseded by:** [ADR 0111](./0111-in-window-liquid-glass-confirmation-overlay.md) for the independent confirmation window and its secondary-window focus continuation exception; default allow, configurable allow/deny/confirm, host-owned effects, bounded preview, per-request authorization, and cancellation rules remain in force.
 
 ## Context
 
