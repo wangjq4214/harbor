@@ -456,7 +456,7 @@ mod pty {
                 &ui,
                 Some(&terminal),
                 Some(binding(1)),
-                "must not be delivered\n".into(),
+                "must not be delivered\nline two".into(),
                 true,
                 false,
             )
@@ -466,7 +466,7 @@ mod pty {
         assert!(gate.load(Ordering::Acquire));
 
         let target = PasteTarget::new(binding(1), &terminal);
-        let outcome = DialogOutcome::Confirmed("must not be delivered\n".into());
+        let outcome = DialogOutcome::Confirmed("must not be delivered\nline two".into());
         terminal.lock().unwrap().write_pty(b"exit\r").unwrap();
         exit.recv_timeout(Duration::from_secs(15)).unwrap();
         assert!(terminal.lock().unwrap().shell_process_exited());
