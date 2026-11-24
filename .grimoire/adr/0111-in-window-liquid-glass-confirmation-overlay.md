@@ -1,6 +1,6 @@
 # In-Window Liquid-Glass Confirmation Overlay
 
-**Status:** Proposed
+**Status:** Testing
 **Date:** 2026-11-24
 **Sources:** GitHub issue #63 refinement discussion (2026-11-24): owner approved migrating both multiline paste confirmation and OSC 52 clipboard-write confirmation into the main application window as native liquid-glass overlays participating in `PopupSlot`, preserving existing confirmation shortcuts, safe default focus, and per-request security invariants.
 **Supersedes:** [ADR 0007](./0007-retain-separate-paste-confirmation-window.md), [ADR 0009](./0009-app-cross-window-input-gate.md); partially supersedes [ADR 0049](./0049-osc52-confirmation-window-and-foreground-policy.md) (independent confirmation window and secondary-window focus continuation exception) and [ADR 0077](./0077-extensible-exclusive-application-popups.md) (exclusion of paste/OSC 52 confirmation from the exclusive popup slot).
@@ -31,4 +31,4 @@ Alternatives considered and rejected during issue #63 refinement:
 - Cross-window input gating (`ADR 0009`) is replaced by an in-window confirmation input gate coordinated with `PopupSlot` and `FocusScope::modal(true)`.
 - OSC 52 foreground authorization becomes strictly main-window-only across both admission and confirmation without requiring cross-window focus continuity tracking.
 - Opening a confirmation overlay cleanly closes any active Search or Command Palette without changing palette-initiated paste completion reporting.
-- Note: This ADR records the settled architectural decision from refinement; implementation and runtime acceptance remain to be executed.
+- Note: Automated workspace, offscreen `dx12-warp` GPU, and ConPTY acceptance tests are implemented and verified; interactive Windows native desktop visual and real-clipboard acceptance remains pending sign-off (`Spec 0057` Verification Evidence).

@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0004
 **Source:** [Spec 0057](../../spec/0057-in-window-confirmation-overlay.md) (`R1`–`R7`, `E1`–`E9`, Test Plan), [ADR 0111](../../adr/0111-in-window-liquid-glass-confirmation-overlay.md).
-**Status:** Todo
+**Status:** In Progress
 
 ## Goal
 
@@ -27,9 +27,9 @@ Execute the interactive Windows native visual and runtime acceptance suite for b
 
 ## Acceptance
 
-- [ ] Windows native runtime evidence covers multiline paste confirmation, OSC 52 `confirm` mode, scrollbar drag/wheel/keyboard scroll, logical line-number wrapping, safe default Cancel/Deny focus, live glass legibility over busy terminal output, constrained viewport behavior, multi-DPI rendering, and effects-disabled fallback.
-- [ ] All automated workspace checks (`test_cargo.ps1`, `dx12-warp` offscreen GPU checks, `clippy`, `fmt`, `python scripts/docs/check_docs.py`, `git diff --check`) pass on the final revision.
-- [ ] [Spec 0057](../../spec/0057-in-window-confirmation-overlay.md) and [ADR 0111](../../adr/0111-in-window-liquid-glass-confirmation-overlay.md) reflect truthful implementation/acceptance status with valid links and zero policy contradictions.
+- [ ] **NOT RUN (requires interactive Windows desktop/real-clipboard run):** Windows native runtime evidence covers multiline paste confirmation, OSC 52 `confirm` mode, scrollbar drag/wheel/keyboard scroll, logical line-number wrapping, safe default Cancel/Deny focus, live glass legibility over busy terminal output, constrained viewport behavior, multi-DPI rendering, and effects-disabled fallback.
+- [x] All automated workspace checks (`test_cargo.ps1`, `dx12-warp` offscreen GPU checks, `test_pty.ps1`, `clippy`, `fmt`, `python scripts/docs/check_docs.py`, `git diff --check`) pass on the final code revision (with pre-existing `harbor-widget-macros` `trybuild` `view_macro_ui` snapshot mismatch noted in Spec 0057).
+- [x] [Spec 0057](../../spec/0057-in-window-confirmation-overlay.md) and [ADR 0111](../../adr/0111-in-window-liquid-glass-confirmation-overlay.md) reflect truthful implementation/acceptance status with valid links and zero policy contradictions.
 
 ## Out of Scope
 

@@ -1,7 +1,7 @@
 # In-Window Liquid-Glass Confirmation Overlay
 
 **Spec ID:** 0057
-**Status:** Draft
+**Status:** In Progress
 **Date:** 2026-11-24
 **Issue:** [#63](https://github.com/wangjq4214/harbor/issues/63)
 **Sources:**
@@ -150,3 +150,33 @@ Preview lines are prepared with explicit logical-line metadata (`(Option<usize>,
 - Non-modal inline warning bars (Windows Terminal style) or permanent OSC 52 allow grants.
 - New TOML configuration knobs for dialog colors/opacity/layout or coupling dialog styling to terminal color themes.
 - Redesigning Search, Command Palette, Quick Save, or NotificationCard behavior/geometry.
+
+## Verification Evidence
+
+- **Branch & commits:** `feat/in-window-confirmation-overlay` (`a2b0638` production implementation across `T0001`–`T0003`, `3cd3a72` ConPTY fixture update; non-test production code unchanged between `a2b0638` and `3cd3a72`)
+- **Environment:** Windows `10.0.26300.0`, `rustc 1.99.1 (58cf8f9c3 2026-10-13)`
+
+### Automated Verification (`PASS`)
+
+- Binary build (`a2b0638`): `pwsh -NoLogo -NoProfile -File scripts/dev/run_harbor.ps1 -BuildOnly` -> `PASS` (`D:\Code\harbor\target\debug\harbor.exe`)
+- Workspace tests excluding `harbor-widget-macros` (`a2b0638`): `pwsh -NoLogo -NoProfile -File scripts/dev/test_cargo.ps1 --locked --workspace --exclude harbor-widget-macros` -> `PASS` (`harbor` 118 passed / 0 failed, `harbor-app` 253 passed / 0 failed, `harbor-terminal` 1194 passed + integration suites / 0 failed, `harbor-config` 25+3+4+3+3 passed / 0 failed, `harbor-parser` 8+17 passed / 0 failed, `harbor-pty` 19 passed / 0 failed, `harbor-widget` and `harbor-text` all passed / 0 failed)
+- Offscreen `dx12-warp` workspace GPU suite (`a2b0638`): `pwsh -NoLogo -NoProfile -File scripts/dev/test_cargo.ps1 --locked --workspace gpu:: -- --ignored --test-threads=1` (`HARBOR_TEST_GPU=dx12-warp`) -> `PASS` (`harbor` 12 passed + `composable_button_rendering` 1 passed, `harbor-app` 9 passed, `harbor-terminal` 54 passed, `harbor-widget` unit 20 passed + `quad_renderer` 65 passed + `text_renderer` 4 passed; 0 failed)
+- Confirmation-focused `dx12-warp` GPU tests (`3cd3a72`):
+  - `pwsh -NoLogo -NoProfile -File scripts/dev/test_cargo.ps1 --locked -p harbor-widget --test quad_renderer gpu::icons -- --ignored --test-threads=1` -> `PASS` (4 passed, 0 failed)
+  - `pwsh -NoLogo -NoProfile -File scripts/dev/test_cargo.ps1 --locked -p harbor-app confirmation_overlay_pixels -- --ignored --test-threads=1` -> `PASS` (1 passed, 0 failed)
+- ConPTY suite (`3cd3a72`): `pwsh -NoLogo -NoProfile -File scripts/dev/test_pty.ps1` -> `PASS` (`harbor` 19 passed / 0 failed, `harbor-pty` 3 passed / 0 failed, `harbor-terminal` 3+16 passed / 0 failed)
+- `harbor` unit & architecture suite (`3cd3a72`): `pwsh -NoLogo -NoProfile -File scripts/dev/test_cargo.ps1 --locked -p harbor` -> `PASS` (118 passed / 0 failed)
+- `no-default-features` check (`3cd3a72`): `pwsh -NoLogo -NoProfile -File scripts/dev/test_cargo.ps1 --locked -p harbor-terminal --no-default-features` -> `PASS` (877 unit + integration suites + doctests / 0 failed)
+- Workspace lint, formatting, docs, and whitespace (`3cd3a72`):
+  - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` -> `PASS` (exit 0; pre-existing `harbor-pty` unused `parking_lot` manifest warning only)
+  - `cargo fmt --all -- --check` -> `PASS`
+  - `python scripts/docs/check_docs.py` -> `PASS` (233 files)
+  - `git diff --check` -> `PASS`
+- Pre-existing baseline failure outside scope (`a2b0638`, untouched): `harbor-widget-macros` `view_macro_ui` (`trybuild` `.stderr` snapshot mismatch: 8/51 failed on `rustc 1.99.1`, 20/51 failed on `+1.100.0`; `harbor-widget-macros` unit (10) and `renamed_dependency` (1) passed)
+
+### Interactive Windows Native Runtime & Real-Clipboard Sign-Off (`NOT RUN`)
+
+- Interactive desktop visual inspection over quiet and busy live terminal backdrops (`NOT RUN`)
+- Multi-DPI and constrained viewport resizing with live native window chrome and effects-disabled fallback (`NOT RUN`)
+- Real OS clipboard multiline paste approve/cancel, bracketed mode encoding, `Tab` focus traversal from default Cancel/Deny, scrollbar drag/wheel/keyboard scroll, Search/Palette displacement, and PTY gating (`NOT RUN`)
+- Real OSC 52 `confirm` mode allow/deny, `[preview truncated]` / `[clear clipboard]`, and external-application focus-loss cancellation on desktop without modifying real OS clipboard contents outside explicit user action (`NOT RUN`)
