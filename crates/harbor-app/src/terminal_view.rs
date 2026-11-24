@@ -77,7 +77,9 @@ pub fn terminal_size_from_allocation(
     if target.allocation_size.0 == 0 || target.allocation_size.1 == 0 {
         return None;
     }
-    Some(RenderViewport::from_target(target, metrics).compute_grid_size())
+    let size = RenderViewport::from_target(target, metrics).compute_grid_size();
+    // Reject unsupported PTY extents before acquiring a barrier or allocating a model.
+    (size.rows <= i16::MAX as usize && size.cols <= i16::MAX as usize).then_some(size)
 }
 
 /// Invokes `draw` only when the Runtime-supplied id matches the bridge-owned id.
@@ -234,7 +236,11 @@ fn is_terminal_wheel(event: &UiEvent) -> bool {
 
 /// Returns true when the Host gate should suppress delivery of this event.
 pub(crate) fn gate_suppresses_event(gate_active: bool, event: &UiEvent) -> bool {
-    gate_active && !is_terminal_wheel(event)
+    gate_active
+        && !is_terminal_wheel(event)
+        && !matches!(event, UiEvent::Focus(FocusEvent::Lost))
+        && !matches!(event, UiEvent::Pointer(pointer) if pointer.phase == PointerPhase::Cancel)
+        && !matches!(event, UiEvent::ImePreedit(preedit) if preedit.text.is_empty())
 }
 
 fn wakes_redraw_for_routed_input(event: &UiEvent) -> bool {
@@ -293,9 +299,12 @@ impl DecorationProjection {
 /// Component that owns the widget draw id and embeds a shared [`Terminal`] via [`ExternalSurface`].
 #[derive(Clone)]
 pub struct TerminalWidgetBridge {
+    retired: Arc<AtomicBool>,
     decorations: Arc<Mutex<DecorationProjection>>,
     #[cfg(test)]
     alt_screen_queries: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    activity: Arc<[std::sync::atomic::AtomicUsize; 2]>,
     draw_id: ExternalDrawId,
     terminal: Arc<Mutex<Terminal>>,
     handler: Arc<ExternalDrawFn<'static>>,
@@ -354,6 +363,14 @@ impl TerminalWidgetBridge {
         gate_active: Arc<AtomicBool>,
         activate_hyperlink: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Self {
+        let retired = Arc::new(AtomicBool::new(false));
+        #[cfg(test)]
+        let activity: Arc<[std::sync::atomic::AtomicUsize; 2]> = Arc::default();
+        #[cfg(test)]
+        let draw_activity = activity.clone();
+        #[cfg(test)]
+        let schedule_activity = activity.clone();
+        let draw_retired = Arc::clone(&retired);
         let decorations = Arc::new(Mutex::new(DecorationProjection::default()));
         let draw_decorations = Arc::clone(&decorations);
         let draw_terminal = Arc::clone(&terminal);
@@ -362,6 +379,11 @@ impl TerminalWidgetBridge {
         #[allow(clippy::arc_with_non_send_sync)]
         let handler: Arc<ExternalDrawFn<'static>> = Arc::new(
             move |id, context, external_gpu, pass, mode| {
+                if draw_retired.load(Ordering::Acquire) {
+                    return;
+                }
+                #[cfg(test)]
+                draw_activity[0].fetch_add(1, Ordering::Relaxed);
                 dispatch_matched_draw(draw_id, id, context, |target| {
                     let Some(renderer) = &draw_renderer else {
                         // Headless bridges used by tests and the HMR host have no GPU projection.
@@ -428,17 +450,24 @@ impl TerminalWidgetBridge {
             },
         );
 
+        let schedule_retired = Arc::clone(&retired);
         let schedule_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]
         let schedule: Arc<ExternalScheduleFn> = Arc::new(move |id, now| {
+            if schedule_retired.load(Ordering::Acquire) {
+                return ExternalScheduleDemand::empty();
+            }
+            #[cfg(test)]
+            schedule_activity[1].fetch_add(1, Ordering::Relaxed);
             schedule_demand_for_terminal(draw_id, id, &schedule_terminal, now)
         });
 
+        let ime_retired = Arc::clone(&retired);
         let ime_terminal = Arc::clone(&terminal);
         let ime_renderer = renderer.clone();
         #[allow(clippy::arc_with_non_send_sync)]
         let ime: Arc<ExternalImeFn> = Arc::new(move |id, context| {
-            if id != draw_id {
+            if ime_retired.load(Ordering::Acquire) || id != draw_id {
                 return None;
             }
             let target = render_target_from_context(context);
@@ -455,10 +484,13 @@ impl TerminalWidgetBridge {
             Some(effect)
         });
 
+        let input_retired = Arc::clone(&retired);
         let input_terminal = Arc::clone(&terminal);
         #[allow(clippy::arc_with_non_send_sync)]
         let on_input: Arc<ExternalInputFn> = Arc::new(move |event, ctx| {
-            if gate_suppresses_event(gate_active.load(Ordering::Acquire), event) {
+            if input_retired.load(Ordering::Acquire)
+                || gate_suppresses_event(gate_active.load(Ordering::Acquire), event)
+            {
                 return EventHandled::Handled;
             }
 
@@ -507,14 +539,18 @@ impl TerminalWidgetBridge {
         let on_unmount: Arc<harbor_widget::widgets::external_surface::ExternalUnmountFn> =
             Arc::new(move || {
                 if let Ok(mut term) = unmount_terminal.lock() {
-                    term.clear_preedit();
+                    let _ = term
+                        .handle_event_with_outcome(TerminalEvent::Focus(TerminalFocusEvent::Lost));
                 }
             });
 
         Self {
+            retired,
             decorations,
             #[cfg(test)]
             alt_screen_queries: Arc::default(),
+            #[cfg(test)]
+            activity,
             draw_id,
             renderer,
             terminal,
@@ -535,6 +571,13 @@ impl TerminalWidgetBridge {
     pub(crate) fn alt_screen_queries(&self) -> usize {
         self.alt_screen_queries.load(Ordering::Relaxed)
     }
+    #[cfg(test)]
+    pub(crate) fn activity(&self) -> (usize, usize) {
+        (
+            self.activity[0].load(Ordering::Relaxed),
+            self.activity[1].load(Ordering::Relaxed),
+        )
+    }
     /// Application-published proven ranges, never physical coordinates or query policy.
     pub fn set_decorations(&self, ranges: Vec<harbor_terminal::read_model::ContentRange>) {
         self.decorations
@@ -543,6 +586,39 @@ impl TerminalWidgetBridge {
             .set_ranges(ranges);
     }
 
+    pub(crate) fn shares_registration(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.retired, &other.retired)
+    }
+    pub(crate) fn is_bound_to(&self, terminal: &Arc<Mutex<Terminal>>) -> bool {
+        Arc::ptr_eq(&self.terminal, terminal)
+    }
+
+    /// Revokes all retained callbacks; unmount alone deliberately does not do this.
+    pub(crate) fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+        self.set_decorations(Vec::new());
+    }
+
+    /// Advance one Host-admitted resize for an unpublished allocation.
+    pub(crate) fn advance_allocation_resize(
+        &self,
+        allocation: Option<Rect>,
+        scale: f32,
+        surface: (u32, u32),
+        metrics: &TextMetrics,
+    ) -> anyhow::Result<bool> {
+        let mut terminal = self
+            .terminal
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal lock unavailable"))?;
+        terminal.use_host_resize_scheduling();
+        if let Some(size) =
+            allocation.and_then(|rect| terminal_size_from_allocation(rect, scale, surface, metrics))
+        {
+            let _ = terminal.request_resize(size)?;
+        }
+        Ok(terminal.advance_resize()?.committed())
+    }
     /// Widget-facing external draw identifier owned by this bridge.
     pub fn draw_id(&self) -> ExternalDrawId {
         self.draw_id
@@ -550,20 +626,23 @@ impl TerminalWidgetBridge {
 
     /// Reports whether the active selection would produce non-empty copied text.
     pub fn has_non_empty_selection(&self) -> bool {
-        self.terminal
-            .lock()
-            .is_ok_and(|terminal| terminal.has_non_empty_selection())
+        !self.retired.load(Ordering::Acquire)
+            && self
+                .terminal
+                .lock()
+                .is_ok_and(|terminal| terminal.has_non_empty_selection())
     }
 
     /// Reports whether terminal input currently targets the alternate screen.
     pub fn is_alt_screen(&self) -> bool {
         #[cfg(test)]
         self.alt_screen_queries.fetch_add(1, Ordering::Relaxed);
-        self.terminal.lock().is_ok_and(|mut terminal| {
-            // Preserve fresh mode ingestion without copying the visible grid.
-            terminal.drain_pty();
-            terminal.is_alt_screen()
-        })
+        !self.retired.load(Ordering::Acquire)
+            && self.terminal.lock().is_ok_and(|mut terminal| {
+                // Preserve fresh mode ingestion without copying the visible grid.
+                terminal.drain_pty();
+                terminal.is_alt_screen()
+            })
     }
 }
 
@@ -575,6 +654,38 @@ pub(crate) fn terminal_widget(bridge: TerminalWidgetBridge) -> ExternalSurface {
         .ime_with(Arc::clone(&bridge.ime))
         .on_input(Arc::clone(&bridge.on_input))
         .on_unmount(Arc::clone(&bridge.on_unmount))
+}
+
+/// Attach product focus intent without making the generic surface interpret pane IDs.
+pub(crate) fn terminal_widget_with_focus(
+    bridge: TerminalWidgetBridge,
+    focused: impl Fn() + 'static,
+    geometry: impl Fn() -> Option<(RenderTarget, TextMetrics)> + 'static,
+) -> ExternalSurface {
+    let input = bridge.on_input.clone();
+    let retired = bridge.retired.clone();
+    let terminal = bridge.terminal.clone();
+    #[allow(clippy::arc_with_non_send_sync)]
+    let handler: Arc<ExternalInputFn> = Arc::new(move |event, ctx| {
+        if !retired.load(Ordering::Acquire)
+            && matches!(
+                event,
+                UiEvent::Focus(FocusEvent::Gained | FocusEvent::GainedVisible)
+            )
+        {
+            focused();
+        }
+        // Runtime commits layout before dispatch. Refresh from that exact pane
+        // observation so the first click after a split/drag need not wait for draw.
+        if !retired.load(Ordering::Acquire)
+            && let Some((target, metrics)) = geometry()
+            && let Ok(mut terminal) = terminal.lock()
+        {
+            terminal.set_input_geometry(target, &metrics);
+        }
+        input(event, ctx)
+    });
+    terminal_widget(bridge).on_input(handler)
 }
 
 /// Maps terminal Frame Demand into the widget schedule contract for a matched id.

@@ -4,7 +4,7 @@ use crate::command::{
     CommandCompletion, CommandContext, CommandDescriptor, CommandSource, command_availability,
     command_registry, palette_command_supported,
 };
-use crate::tab_manager::{TabId, TabManager, TabSnapshot};
+use crate::tab_manager::{SessionId, TabManager, TabSnapshot};
 use harbor_config::{ProfileId, SessionProfile};
 use harbor_widget::{
     Column, ConstrainedBox, ControlColors, CrossAxisAlignment, DecoratedBox, InteractiveRegion,
@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 #[derive(Clone)]
 pub(super) struct PaletteState {
     pub generation: u64,
-    pub target: Option<TabId>,
+    pub target: Option<SessionId>,
     pub input: TextEditingController,
     pub selected: usize,
     level: PaletteLevel,
@@ -116,11 +116,16 @@ fn candidates(query: &str) -> Vec<CommandDescriptor> {
 
 fn availability(
     command: AppCommand,
-    target: Option<TabId>,
+    target: Option<SessionId>,
     snapshots: &[TabSnapshot],
     context: CommandContext,
 ) -> Result<(), &'static str> {
-    if snapshots.iter().find(|tab| tab.active).map(|tab| tab.id) != target {
+    if snapshots
+        .iter()
+        .find(|tab| tab.active)
+        .map(|tab| tab.binding.session)
+        != target
+    {
         return Err("Active terminal changed; reopen the palette");
     }
     if command == AppCommand::LaunchProfile {
@@ -254,7 +259,7 @@ impl WorkspaceUiController {
                         .snapshots
                         .iter()
                         .find(|tab| tab.active)
-                        .map(|tab| tab.id)
+                        .map(|tab| tab.binding.session)
             }),
         }
     }
@@ -301,7 +306,7 @@ impl WorkspaceUiController {
                 .snapshots
                 .iter()
                 .find(|tab| tab.active)
-                .map(|tab| tab.id),
+                .map(|tab| tab.binding.session),
             input: TextEditingController::new(""),
             selected: 0,
             level,

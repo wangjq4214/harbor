@@ -36,7 +36,7 @@ fn palette_build_queries_context_once_for_visible_rows_and_never_for_no_matches(
 #[test]
 fn palette_disabled_titles_and_shortcuts_are_muted_without_reason_text() {
     for binding_count in 0..=2 {
-        let (_, controller, mut runtime, bytes) = fixture();
+        let (_tabs, controller, mut runtime, bytes) = fixture();
         let mut raw = harbor_config::RawKeybindings::default();
         raw.entries.insert(
             "app.next-tab".into(),
@@ -203,7 +203,7 @@ fn palette_empty_results_disabled_rows_and_filter_changes_cannot_execute_phantom
 
 #[test]
 fn palette_binding_overrides_multiple_unbinding_and_rejected_reload_display() {
-    let (_, controller, mut runtime, _) = fixture();
+    let (_tabs, controller, mut runtime, _) = fixture();
     open(&controller, &mut runtime);
     replace(&mut runtime, "app.new-tab");
     assert!(painted(&runtime).contains("Ctrl\nT"));

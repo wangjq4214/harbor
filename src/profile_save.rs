@@ -10,11 +10,11 @@ use std::{
 };
 
 pub(crate) fn capture(tabs: &TabManager) -> Result<QuickSaveDraft, &'static str> {
-    let source = tabs.active_id().ok_or("No current session")?;
+    let source = tabs.active_session_id().ok_or("No current session")?;
     if !tabs.active_live(source) {
         return Err("The current session is not live");
     }
-    let terminal = tabs.active_terminal().ok_or("No current session")?;
+    let terminal = tabs.session_terminal(source).ok_or("No current session")?;
     let terminal = terminal.lock().map_err(|_| "Source launch unavailable")?;
     let provenance = terminal
         .launch_provenance()
@@ -23,7 +23,7 @@ pub(crate) fn capture(tabs: &TabManager) -> Result<QuickSaveDraft, &'static str>
 }
 
 fn capture_recipe(
-    source: harbor_app::tab_manager::TabId,
+    source: harbor_app::tab_manager::SessionId,
     provenance: &harbor_pty::LaunchProvenance,
     project: Option<harbor_config::ProjectRecipe>,
 ) -> Result<QuickSaveDraft, &'static str> {

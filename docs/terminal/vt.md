@@ -75,6 +75,7 @@ Replies are byte output, **not** `TerminalOutputEvent` values. On the queued liv
 | OSC `8` | Bounded cell-linked hyperlinks. Parsing/rendering never opens or fetches a URI. |
 | OSC `52` | Bounded UTF-8 system-clipboard **write request** subset only; no reads, non-system selections or terminal-owned OS clipboard access. |
 | OSC `133` | Prompt/command markers A/B/C/D and optional command-finished exit code; metadata, not a command executor. |
+| OSC `777;harbor;1` | Bounded opt-in environment/current-directory/agent metadata; see the [wire protocol](../../scripts/shell/README.md#protocol-and-verification-boundary). Parsing is inert; only an explicit application split/save/launch action can use it. A declared WSL/SSH target is not verified remote identity. |
 | Other DCS/APC/PM/SOS | Framing/discard paths do not implement graphics, file transfer or arbitrary passthrough. |
 
 ## Safe examples

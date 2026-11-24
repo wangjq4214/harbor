@@ -88,7 +88,7 @@ fn real_inbox_preserves_fifo_source_and_tab_focus_disposition() {
     let (mut tabs, ui, mut runtime, bytes) = fixture();
     shortcut(&mut runtime, 't', false);
     shortcut(&mut runtime, 'r', true);
-    shortcut(&mut runtime, 'w', false);
+    shortcut(&mut runtime, 'w', true);
     let mut actions = ui.drain_actions().into_iter();
     let mut seen = Vec::new();
     while let Some(admission) = next_app_action(&mut actions, &ui, &tabs, false) {
@@ -238,14 +238,14 @@ fn retired_search_editor_intents_are_dropped_and_stale_palette_cannot_refocus_ov
     );
     ui.open_palette();
     assert!(next_app_action(&mut requests.clone().into_iter(), &ui, &tabs, false).is_none());
-    ui.open_search(tabs.active_id().unwrap());
+    ui.open_search(tabs.active_session_id().unwrap());
     assert!(next_app_action(&mut requests.into_iter(), &ui, &tabs, false).is_none());
     assert_eq!(ui.search_query().unwrap().1, "");
 
     submit(&ui, &mut runtime, "terminal.search");
     let pending = ui.drain_actions();
     assert_eq!(pending.len(), 1);
-    ui.open_search(tabs.active_id().unwrap());
+    ui.open_search(tabs.active_session_id().unwrap());
     match next_app_action(&mut pending.into_iter(), &ui, &tabs, false).unwrap() {
         AppActionAdmission::Rejected {
             restore_terminal_focus,
@@ -291,7 +291,7 @@ fn profile_fifo_admits_one_real_transaction_and_targets_the_new_terminal_or_pres
     for fail in [false, true] {
         let (mut tabs, ui, mut runtime, bytes) = fixture();
         *tabs.active_terminal().unwrap().lock().unwrap() = Terminal::new_headless(8, 40);
-        let old = tabs.active_id();
+        let old = tabs.active_session_id();
         let request = submit_profile(&ui, &mut runtime);
         let mut queue = [request, request].into_iter();
         let Some(AppActionAdmission::Execute {
@@ -326,11 +326,11 @@ fn profile_fifo_admits_one_real_transaction_and_targets_the_new_terminal_or_pres
         ));
         assert!(next_app_action(&mut queue, &ui, &tabs, false).is_none());
         if fail {
-            assert_eq!(tabs.active_id(), old);
+            assert_eq!(tabs.active_session_id(), old);
             assert_eq!(tabs.snapshots().len(), 1);
             ui.report_configuration_result("New session failed: synthetic creation failure".into());
         } else {
-            assert_ne!(tabs.active_id(), old);
+            assert_ne!(tabs.active_session_id(), old);
             assert_eq!(tabs.snapshots().len(), 2);
         }
         ui.tabs()
@@ -371,7 +371,7 @@ fn profile_fifo_revalidates_edits_removal_source_gate_and_replacement() {
                 tabs.create_tab(|_, draw| Ok(resources(draw, &bytes)))
                     .unwrap();
             }
-            "replacement" => ui.open_search(tabs.active_id().unwrap()),
+            "replacement" => ui.open_search(tabs.active_session_id().unwrap()),
             _ => {}
         }
         let admission = next_app_action(&mut [request].into_iter(), &ui, &tabs, scenario == "gate");

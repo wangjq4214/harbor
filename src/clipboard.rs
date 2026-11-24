@@ -1,7 +1,7 @@
 //! Host-owned OSC 52 authorization. No terminal request is an authenticity claim.
 pub(crate) mod foreground_monitor;
 
-use harbor_app::tab_manager::{SessionClipboardWrite, TabId};
+use harbor_app::tab_manager::{SessionClipboardWrite, SessionId};
 use harbor_config::Osc52WritePolicy;
 use harbor_terminal::ClipboardDelivery;
 use winit::window::Window;
@@ -142,7 +142,7 @@ impl ClipboardPolicy {
         let request = self.pending.take();
         if approved && eligible { request } else { None }
     }
-    pub(crate) fn source(&self) -> Option<TabId> {
+    pub(crate) fn source(&self) -> Option<SessionId> {
         self.pending.as_ref().map(|r| r.source)
     }
 }
@@ -160,7 +160,7 @@ mod tests {
             panic!("fixture request")
         };
         SessionClipboardWrite {
-            source: TabId(id),
+            source: SessionId(id),
             contents,
         }
     }
@@ -184,7 +184,7 @@ mod tests {
             for _ in 0..100 {
                 assert_eq!(policy.admission(true), Admission::Denied);
             }
-            assert_eq!(policy.source(), Some(TabId(7)));
+            assert_eq!(policy.source(), Some(SessionId(7)));
             assert_eq!(policy.pending().unwrap().contents.as_str(), "first");
         }
     }
@@ -194,7 +194,7 @@ mod tests {
         let mut policy = ClipboardPolicy::new(Osc52WritePolicy::Confirm);
         policy.retain(request(9));
         let approved = policy.resolve(true, true).unwrap();
-        assert_eq!(approved.source, TabId(9));
+        assert_eq!(approved.source, SessionId(9));
         assert_eq!(approved.contents.as_str(), "first");
         assert!(policy.resolve(true, true).is_none());
         assert_eq!(policy.admission(true), Admission::Confirm);
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn confirmation_presentation_shows_stable_source_and_decoded_bytes_not_encoded_size() {
         let request = SessionClipboardWrite {
-            source: TabId(41),
+            source: SessionId(41),
             contents: harbor_terminal::ClipboardWrite::new("界\n\t".into()).unwrap(),
         };
         let (header, shown) = confirmation_presentation(&request);
@@ -218,7 +218,7 @@ mod tests {
         assert!(header.contains("(5 bytes)"));
         assert_eq!(shown, "界\n\t");
         let clear = SessionClipboardWrite {
-            source: TabId(41),
+            source: SessionId(41),
             contents: harbor_terminal::ClipboardWrite::new(String::new()).unwrap(),
         };
         assert!(confirmation_presentation(&clear).0.contains("(0 bytes)"));

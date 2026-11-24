@@ -1,0 +1,315 @@
+{
+  "schema": 1,
+  "candidate": "2af76393c4d5737d2dec022963d24d0496bea630",
+  "production_changes": false,
+  "scope": "T0005 tests/probe/docs only; unrelated untracked .omnidiff.toml excluded",
+  "environment": {
+    "application": "harbor 0.1.0 debug/default features",
+    "windows_api": "10.0.26300.0",
+    "windows_build": "10.0.26300.9974",
+    "conpty": "1.24.2607.10001 x64 bundled",
+    "pwsh": "7.6.9",
+    "cmd_file": "10.0.26100.9949",
+    "bash_local_surrogate": "5.2.37(1)-release",
+    "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "1.102.0 (d69fa5ba0 2026-11-16) huacnlee/cargo 0.103.0-1",
+    "python": "3.12.10",
+    "wsl_client": "3.0.5.0 version-only; no controlled distribution supplied",
+    "ssh_client": "OpenSSH_10.2p1, OpenSSL 3.5.5 27 Jan 2026 version-only; no connection",
+    "remote_shells": "unknown/not run",
+    "native_gpu": "AMD Radeon RX 7900 XT / Dx12",
+    "offscreen_gpu": "DX12 WARP"
+  },
+  "quality": {
+    "workspace": {
+      "harnesses": 78,
+      "passed": 2950,
+      "failed": 0,
+      "ignored": 230
+    },
+    "core": {
+      "passed": 876,
+      "ignored": 6
+    },
+    "mounted": {
+      "passed": 14,
+      "ignored": 1
+    },
+    "app_warp": {
+      "passed": 7
+    },
+    "host_resources": {
+      "passed": 24
+    },
+    "lifecycle": {
+      "passed": 4
+    },
+    "split_native": {
+      "passed": 4,
+      "repeated_runs": 3
+    },
+    "paste_native": {
+      "passed": 1
+    },
+    "pty": {
+      "passed": 3
+    },
+    "bash_local_surrogate": {
+      "passed": 1,
+      "remote_evidence": false
+    },
+    "python": {
+      "passed": 122
+    },
+    "shell_integration": {
+      "passed": 2
+    }
+  },
+  "resource_characterization": {
+    "boundary": "windowless TabManager/real ConPTY, no GPU/native desktop",
+    "cycles": 12,
+    "hidden_rows_per_cycle": 200,
+    "baseline_handles": 152,
+    "after_cycle_handles": [
+      152,
+      152,
+      152,
+      152,
+      152,
+      152,
+      152,
+      152,
+      152,
+      152,
+      152,
+      152
+    ],
+    "final_handles": 142,
+    "elapsed_ms": 3043,
+    "assertions": [
+      "all cleanup receipts complete",
+      "retired weak engines no longer upgrade",
+      "pending resize retired",
+      "late exit/output ignored",
+      "source identity/liveness preserved"
+    ],
+    "limit": "No numeric performance/leak threshold; no OS-wide process or GPU-memory accounting"
+  },
+  "work_characterization": {
+    "boundary": "mounted offscreen WARP; explicit updates and forced output encodes, not native event-loop timing",
+    "quiet_updates": 120,
+    "quiet_draws": 0,
+    "output_ticks": 60,
+    "visible_draws": 60,
+    "hidden_draws": 0,
+    "hidden_schedule_calls": 0,
+    "limit": "visible schedule providers may be consulted on explicit updates; quiet cursor disabled; not idle power or latency"
+  },
+  "native_runs": [
+    {
+      "raw_path": "target/t0005/native-final3/observation.json",
+      "events": [
+        {
+          "utc": "2026-11-16T09:49:50.2878048Z",
+          "data": {
+            "current": "D:\\Code\\harbor\\target\\t0005\\native-final3\\current",
+            "pid": 32192,
+            "initial": "D:\\Code\\harbor\\target\\t0005\\native-final3\\initial",
+            "hwnd": 1117544
+          },
+          "phase": "native-window"
+        },
+        {
+          "utc": "2026-11-16T09:49:56.2677674Z",
+          "data": {
+            "default_startups": 1,
+            "child_reports": 2
+          },
+          "phase": "horizontal-inherited"
+        },
+        {
+          "utc": "2026-11-16T09:49:56.9086653Z",
+          "data": {
+            "default_startups": 2,
+            "child_reports": 3
+          },
+          "phase": "unknown-context-default"
+        },
+        {
+          "utc": "2026-11-16T09:50:01.9034193Z",
+          "data": [
+            {
+              "pid": 14064,
+              "pwsh": "7.6.9",
+              "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final3\\current"
+            },
+            {
+              "pwsh": "7.6.9",
+              "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final3\\current",
+              "pid": 24636
+            },
+            {
+              "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final3\\current",
+              "pid": 27124,
+              "pwsh": "7.6.9"
+            },
+            {
+              "pwsh": "7.6.9",
+              "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final3\\current",
+              "pid": 4784
+            }
+          ],
+          "phase": "four-child-reports"
+        },
+        {
+          "utc": "2026-11-16T09:50:02.8404467Z",
+          "data": {
+            "pid": 14064,
+            "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final3\\current"
+          },
+          "phase": "original-still-responsive"
+        },
+        {
+          "utc": "2026-11-16T09:50:11.0518807Z",
+          "data": {
+            "private_after": 563249152,
+            "handles_before": 822,
+            "cpu_ms": 31.25,
+            "handles_after": 822,
+            "private_before": 563249152
+          },
+          "phase": "quiet-five-seconds"
+        },
+        {
+          "utc": "2026-11-16T09:50:13.3889214Z",
+          "data": {
+            "live_reported_children": 3
+          },
+          "phase": "natural-exit"
+        },
+        {
+          "utc": "2026-11-16T09:50:15.4750707Z",
+          "data": {
+            "live_reported_children": 2
+          },
+          "phase": "explicit-pane-close"
+        },
+        {
+          "utc": "2026-11-16T09:50:16.7084745Z",
+          "data": {
+            "exit_code": 0,
+            "producer_rows": 2000,
+            "window_messages_only": true
+          },
+          "phase": "completed"
+        }
+      ]
+    },
+    {
+      "raw_path": "target/t0005/native-final4/observation.json",
+      "events": [
+        {
+          "data": {
+            "pid": 36836,
+            "hwnd": 4197710,
+            "initial": "D:\\Code\\harbor\\target\\t0005\\native-final4\\initial",
+            "current": "D:\\Code\\harbor\\target\\t0005\\native-final4\\current"
+          },
+          "phase": "native-window",
+          "utc": "2026-11-16T09:53:56.6719971Z"
+        },
+        {
+          "data": {
+            "child_reports": 2,
+            "default_startups": 1
+          },
+          "phase": "horizontal-inherited",
+          "utc": "2026-11-16T09:54:02.7241799Z"
+        },
+        {
+          "data": {
+            "child_reports": 3,
+            "default_startups": 2
+          },
+          "phase": "unknown-context-default",
+          "utc": "2026-11-16T09:54:03.3470510Z"
+        },
+        {
+          "data": [
+            {
+              "pid": 31840,
+              "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final4\\current",
+              "pwsh": "7.6.9"
+            },
+            {
+              "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final4\\current",
+              "pid": 34524,
+              "pwsh": "7.6.9"
+            },
+            {
+              "pid": 5268,
+              "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final4\\current",
+              "pwsh": "7.6.9"
+            },
+            {
+              "pid": 8180,
+              "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final4\\current",
+              "pwsh": "7.6.9"
+            }
+          ],
+          "phase": "four-child-reports",
+          "utc": "2026-11-16T09:54:08.3362372Z"
+        },
+        {
+          "data": {
+            "pid": 8180,
+            "cwd": "D:\\Code\\harbor\\target\\t0005\\native-final4\\current"
+          },
+          "phase": "original-still-responsive",
+          "utc": "2026-11-16T09:54:09.2451719Z"
+        },
+        {
+          "data": {
+            "handles_after": 822,
+            "handles_before": 822,
+            "cpu_ms": 46.875,
+            "private_after": 564908032,
+            "private_before": 564908032
+          },
+          "phase": "quiet-five-seconds",
+          "utc": "2026-11-16T09:54:17.4173568Z"
+        },
+        {
+          "data": {
+            "live_reported_children": 3
+          },
+          "phase": "natural-exit",
+          "utc": "2026-11-16T09:54:19.7737828Z"
+        },
+        {
+          "data": {
+            "live_reported_children": 2
+          },
+          "phase": "explicit-pane-close",
+          "utc": "2026-11-16T09:54:21.8480320Z"
+        },
+        {
+          "data": {
+            "window_messages_only": true,
+            "producer_rows": 2000,
+            "exit_code": 0
+          },
+          "phase": "completed",
+          "utc": "2026-11-16T09:54:23.1471324Z"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "native probe uses custom bindings and HWND messages, not physical keyboard/IME/clipboard/rail interaction",
+    "producer-complete is not output-to-present latency or a screenshot",
+    "same-monitor MoveWindow is not cross-monitor DPI evidence",
+    "no controlled WSL/direct-SSH target or integration supplied; no connection attempted",
+    "bounded observations do not establish full E1-E12 runtime acceptance"
+  ]
+}

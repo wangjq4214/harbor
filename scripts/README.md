@@ -83,6 +83,7 @@ A fixture completing does not establish visual or end-to-end acceptance.
 | OSC palette | `terminal/verify_osc_palette_windows.ps1` |
 | OSC 52 clipboard | `terminal/test_osc52_manual.ps1` (manual-assisted), `terminal/verify_osc52_windows.ps1` (GUI automation); both require clipboard-replacement consent for runtime checks |
 | Terminal search | `terminal/verify_terminal_search_windows.ps1` |
+| Pane workspace | `terminal/observe_panes_windows.ps1 -Executable <staged-harbor.exe> -OutputDirectory <new-directory>`; isolated native-window/local-pwsh probe with HWND-targeted messages and custom bindings, no global keys/clipboard/remote access; [limits](../docs/developer/testing.md#pane-acceptance-probes) |
 
 ## Capability Negotiation Across ConPTY, WSL and SSH
 

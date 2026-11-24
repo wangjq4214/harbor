@@ -12,7 +12,7 @@ fn draft() -> QuickSaveDraft {
             directory: "C:/synthetic-project".into(),
             agent: None,
         }),
-        source: TabId(1),
+        source: SessionId(1),
         launch: ShellSettings {
             program: Some("synthetic-source.exe".into()),
             args: vec!["".into(), "source arg".into()],
@@ -141,7 +141,7 @@ fn assert_borderless(runtime: &Runtime, key: &str) {
 #[test]
 fn quick_save_naming_matches_palette_input_geometry_across_widths_and_dpi() {
     for (width, scale) in [(1000, 1.0), (400, 1.0), (280, 1.5), (1000, 2.0)] {
-        let (_, ui, mut runtime, bytes) = fixture();
+        let (_tabs, ui, mut runtime, bytes) = fixture();
         runtime.set_viewport(harbor_widget::renderer::Viewport::new(
             (width as f32 * scale) as u32,
             (600.0 * scale) as u32,
@@ -198,7 +198,7 @@ fn quick_save_naming_matches_palette_input_geometry_across_widths_and_dpi() {
 
 #[test]
 fn quick_save_environment_segments_have_spaced_neutral_glass_hover_and_no_extra_press() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Segment states");
     advance(&ui, &mut runtime);
@@ -308,7 +308,7 @@ fn quick_save_environment_segments_have_spaced_neutral_glass_hover_and_no_extra_
 
 #[test]
 fn quick_save_naming_and_review_are_compact_borderless_and_readable() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     let mut source = draft();
     source.launch.args.clear();
     source.launch.directory = Some(std::path::PathBuf::from(r"D:\Code\harbor"));
@@ -384,7 +384,7 @@ fn quick_save_naming_and_review_are_compact_borderless_and_readable() {
 
 #[test]
 fn quick_save_review_uses_palette_glass_and_translucent_inputs_without_a_scrim() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Transparent review");
     advance(&ui, &mut runtime);
@@ -421,7 +421,7 @@ fn quick_save_review_uses_palette_glass_and_translucent_inputs_without_a_scrim()
 
 #[test]
 fn quick_save_final_actions_align_right_and_wrap_at_narrow_widths() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     let mut source = draft();
     source.launch.environment.clear();
     start(&ui, &mut runtime, source);
@@ -501,7 +501,7 @@ fn quick_save_entry_and_palette_reach_input_only_naming_and_equivalent_advance()
 
 #[test]
 fn quick_save_invalid_names_ime_and_repeated_enter_never_commit_or_leak() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     ui.publish_profiles(
         [(
             ProfileId::new("old").unwrap(),
@@ -563,7 +563,7 @@ fn quick_save_invalid_names_ime_and_repeated_enter_never_commit_or_leak() {
 
 #[test]
 fn quick_save_return_retains_capture_and_name_stale_delivery_cannot_replace_it() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Retained");
     let old = popup(&ui, AppCommand::AdvanceQuickSave);
@@ -605,7 +605,7 @@ fn quick_save_return_retains_capture_and_name_stale_delivery_cannot_replace_it()
 
 #[test]
 fn quick_save_only_selected_environment_is_admitted_after_acknowledgment_once() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "No env");
     advance(&ui, &mut runtime);
@@ -643,7 +643,7 @@ fn quick_save_only_selected_environment_is_admitted_after_acknowledgment_once() 
 
 #[test]
 fn quick_save_unmounted_approval_and_focus_loss_cannot_commit_a_replacement() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Old draft");
     advance(&ui, &mut runtime);
@@ -667,7 +667,7 @@ fn quick_save_unmounted_approval_and_focus_loss_cannot_commit_a_replacement() {
 
 #[test]
 fn quick_save_unknown_context_requires_explicit_correction_and_retains_it() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     let mut source = draft();
     source.project = None;
     start(&ui, &mut runtime, source);
@@ -698,7 +698,7 @@ fn quick_save_unknown_context_requires_explicit_correction_and_retains_it() {
 
 #[test]
 fn quick_save_suspected_credentials_block_save_until_visible_omission() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     let mut source = draft();
     source.project.as_mut().unwrap().agent = Some(harbor_config::AgentInvocation {
         program: "pi".into(),
@@ -727,7 +727,7 @@ fn quick_save_suspected_credentials_block_save_until_visible_omission() {
 
 #[test]
 fn quick_save_original_agent_arguments_survive_review_and_require_independent_ack() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     let mut source = draft();
     let invocation = harbor_config::AgentInvocation {
         program: "codex".into(),
@@ -752,7 +752,7 @@ fn quick_save_original_agent_arguments_survive_review_and_require_independent_ac
 
 #[test]
 fn quick_save_environment_choices_have_persistent_environment_specific_fields_and_explicit_apply() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Environment review");
     advance(&ui, &mut runtime);
@@ -810,7 +810,7 @@ fn quick_save_environment_choices_have_persistent_environment_specific_fields_an
 
 #[test]
 fn quick_save_agent_and_override_checkboxes_have_independent_acknowledgements_and_pending_state() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     let mut source = draft();
     source.project.as_mut().unwrap().agent = Some(harbor_config::AgentInvocation {
         program: "pi".into(),
@@ -854,7 +854,7 @@ fn quick_save_agent_and_override_checkboxes_have_independent_acknowledgements_an
 
 #[test]
 fn quick_save_long_values_remain_selectable_and_copyable_across_resize_and_disclosure() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     let mut source = draft();
     let argument = format!(
         "{}项目 e\u{0301} 👩\u{200d}💻",
@@ -890,7 +890,7 @@ fn quick_save_long_values_remain_selectable_and_copyable_across_resize_and_discl
 
 #[test]
 fn quick_save_summary_has_ordered_content_and_fixed_chrome_while_body_scrolls() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     let mut source = draft();
     source.project.as_mut().unwrap().agent = Some(harbor_config::AgentInvocation {
         program: "pi".into(),
@@ -968,7 +968,7 @@ fn quick_save_summary_has_ordered_content_and_fixed_chrome_while_body_scrolls() 
 
 #[test]
 fn quick_save_grouped_feedback_stays_with_context_agent_overrides_and_actions() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     let mut source = draft();
     source.launch.args = vec!["--token".into(), "synthetic-secret".into()];
     source.project.as_mut().unwrap().agent = Some(harbor_config::AgentInvocation {
@@ -1036,7 +1036,7 @@ fn quick_save_grouped_feedback_stays_with_context_agent_overrides_and_actions() 
 
 #[test]
 fn quick_save_design_roles_separate_checks_actions_and_field_groups() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Design roles");
     advance(&ui, &mut runtime);
@@ -1149,7 +1149,7 @@ fn quick_save_design_roles_separate_checks_actions_and_field_groups() {
 
 #[test]
 fn quick_save_pending_context_has_one_gate_explanation() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "One correction warning");
     advance(&ui, &mut runtime);
@@ -1168,7 +1168,7 @@ fn quick_save_pending_context_has_one_gate_explanation() {
 
 #[test]
 fn quick_save_directory_editor_identity_survives_conditional_target_fields() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Stable field groups");
     advance(&ui, &mut runtime);
@@ -1202,7 +1202,7 @@ fn quick_save_directory_editor_identity_survives_conditional_target_fields() {
 
 #[test]
 fn quick_save_naming_is_stable_and_uses_shared_notifications_and_search_icon_feedback() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     start(&ui, &mut runtime, draft());
     let naming = panel_rect(&runtime);
     let editor_focus = runtime.input().focused();
@@ -1318,7 +1318,7 @@ fn quick_save_naming_is_stable_and_uses_shared_notifications_and_search_icon_fee
 
 #[test]
 fn quick_save_summary_correction_and_local_name_edit_preserve_the_draft() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Summary");
     advance(&ui, &mut runtime);
@@ -1368,7 +1368,7 @@ fn quick_save_summary_correction_and_local_name_edit_preserve_the_draft() {
 
 #[test]
 fn quick_save_unusable_recognition_opens_correction_without_hiding_agent_safety() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     let mut source = draft();
     source.project.as_mut().unwrap().directory = "relative".into();
     start(&ui, &mut runtime, source);
@@ -1385,7 +1385,7 @@ fn quick_save_unusable_recognition_opens_correction_without_hiding_agent_safety(
 
 #[test]
 fn quick_save_small_window_write_error_does_not_starve_the_body() {
-    let (_, ui, mut runtime, _) = fixture();
+    let (_tabs, ui, mut runtime, _) = fixture();
     start(&ui, &mut runtime, draft());
     replace(&mut runtime, "Retry");
     advance(&ui, &mut runtime);
@@ -1419,7 +1419,7 @@ fn quick_save_small_window_write_error_does_not_starve_the_body() {
 
 #[test]
 fn quick_save_correction_retires_clipboard_and_keeps_agent_approval_independent() {
-    let (_, ui, mut runtime, bytes) = fixture();
+    let (_tabs, ui, mut runtime, bytes) = fixture();
     let mut source = draft();
     source.project.as_mut().unwrap().agent = Some(harbor_config::AgentInvocation {
         program: "pi".into(),

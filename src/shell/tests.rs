@@ -4,6 +4,49 @@ mod architecture;
 use super::*;
 
 #[test]
+#[allow(clippy::arc_with_non_send_sync)]
+fn startup_terminal_focus_routes_the_first_key_without_a_native_focus_event() {
+    use harbor_app::{tab_manager::TerminalTabResources, terminal_view::TerminalWidgetBridge};
+    use harbor_widget::{
+        input::event::{Key, KeyboardEvent, UiEvent},
+        renderer::Viewport,
+        runtime::Runtime,
+    };
+    use std::sync::Mutex;
+
+    let pty = tempfile::NamedTempFile::new().unwrap();
+    let mut tabs = TabManager::new();
+    tabs.create_tab(|_, draw| {
+        let terminal = Arc::new(Mutex::new(Terminal::new_headless_with_io(
+            8,
+            40,
+            std::io::empty(),
+            pty.reopen().unwrap(),
+            || true,
+        )));
+        let bridge =
+            TerminalWidgetBridge::new(draw, terminal.clone(), Arc::new(AtomicBool::new(false)));
+        Ok(TerminalTabResources::new(terminal, bridge, "startup"))
+    })
+    .unwrap();
+    let ui = WorkspaceUiController::new(tabs.snapshots(), tabs.active_bridge().unwrap(), 1000.0);
+    ui.publish_panes(&tabs);
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(1000, 500, 1.0));
+    runtime.set_root(harbor_app::workspace::tab_workspace(ui.clone(), false));
+    runtime.update(Instant::now());
+
+    // On Windows the main HWND may already have focus without a Focused(true)
+    // event. Route the first key using the same logical target as Shell startup.
+    runtime.request_focus(&ui.terminal_focus());
+    runtime.dispatch(UiEvent::Keyboard(KeyboardEvent::KeyDown {
+        key: Key::Character('x'),
+        modifiers: Default::default(),
+    }));
+    assert_eq!(std::fs::read(pty.path()).unwrap(), b"x");
+}
+
+#[test]
 fn shared_gpu_exit_cancels_pending_actions_before_exit() {
     use harbor_widget::winit::{GpuFault, GpuFaultKind};
     for kind in [
@@ -17,7 +60,7 @@ fn shared_gpu_exit_cancels_pending_actions_before_exit() {
         let mut clipboard =
             crate::clipboard::ClipboardPolicy::new(harbor_config::Osc52WritePolicy::Confirm);
         clipboard.retain(harbor_app::tab_manager::SessionClipboardWrite {
-            source: harbor_app::tab_manager::TabId(7),
+            source: harbor_app::tab_manager::SessionId(7),
             contents: harbor_terminal::ClipboardWrite::new("never approve".into()).unwrap(),
         });
         let mut window = None;

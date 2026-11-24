@@ -9,18 +9,18 @@ The priority is a correct, stable daily-use Windows terminal. Native Unix PTY su
 ## Current Capabilities
 
 - 🧠 Incremental, bounded VT parsing; screen editing, colors, margins, alternate screen and scrollback.
-- 🪟 Windows ConPTY sessions, multiple terminal tabs, selection/copy and scrollback controls.
+- 🪟 Windows ConPTY sessions, tabbed independent [pane workspaces](docs/app/panes.md), selection/copy and scrollback controls.
 - ⌨️ Traditional keyboard modes, bracketed paste/confirmation, multi-encoding mouse reporting, focus reporting and IME integration.
 - 🔗 Terminal replies and capability queries; OSC titles, working-directory metadata, hyperlinks, default colors and shell markers.
 - 🎨 Damage-aware wgpu rendering, DirectWrite font fallback, synchronized-output scheduling and cursor/decorations.
 - ⚙️ TOML settings with manual/default-on watched reload and configurable application keybindings.
 - ✨ Acrylic/backdrop fallback, reusable text fields, Portal overlays, gradients and local blur/edge refraction.
 - 🔎 Bounded current-session literal search with highlights and previous/next navigation.
-- 🎛️ Command palette for existing tab, configuration reload, clipboard, scrollback and search commands.
+- 🎛️ Command palette for tab/pane, configuration reload, clipboard, scrollback and search commands, with named-profile launch and quick-save flows.
 
 Protocol support is scoped, not complete. See the [VT reference](docs/terminal/vt.md) and [compatibility guide](docs/terminal/compatibility.md) for supported behavior and limitations.
 
-Split panes, named profiles and Kitty protocols are not implemented. Unicode width, configuration reload and application compatibility have limitations; consult the relevant guides before depending on them.
+Panes and named-profile flows are implemented with scoped verification, not full native/remote acceptance. [Pane limitations](docs/app/panes.md#verification-boundary), Unicode width, configuration reload and application compatibility still require care. Kitty protocols and native Unix PTY spawning are not implemented.
 
 ## Build and Run
 

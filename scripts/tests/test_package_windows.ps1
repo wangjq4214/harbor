@@ -55,6 +55,86 @@ try {
     }
     Write-Output 'PASS: mismatched/prerelease tags and MSI numeric bounds are rejected.'
 
+    # Offline build-path regression: Cargo supplies only the executable, never
+    # staging ConPTY as a build-script side effect (also models a cache hit).
+    $stagingFixture = Join-Path $temporary 'staging fixture'
+    foreach ($directory in @('scripts/packaging', 'scripts/dev', 'scripts/setup', 'third_party/conpty/x64',
+        'third_party/conpty/arm64', 'third_party/conpty/x86')) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $stagingFixture $directory) | Out-Null
+    }
+    foreach ($name in @('package_windows.ps1', 'windows_package_version.ps1')) {
+        Copy-Item -LiteralPath (Join-Path $repoRoot "scripts/packaging/$name") -Destination (Join-Path $stagingFixture "scripts/packaging/$name")
+    }
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts/dev/conpty_staging.ps1') -Destination (Join-Path $stagingFixture 'scripts/dev/conpty_staging.ps1')
+    [IO.File]::WriteAllText((Join-Path $stagingFixture 'scripts/setup/fetch_conpty.ps1'), '# Offline pinned-runtime fixture; never download.')
+    foreach ($relative in @('LICENSE', 'config.example.toml', 'third_party/conpty/LICENSE', 'third_party/conpty/VERSION')) {
+        [IO.File]::WriteAllText((Join-Path $stagingFixture $relative), $relative)
+    }
+    # Compile a versioned x64 PE fixture, but never execute it. It imports no VC CRT.
+    $stagingBinary = Join-Path $temporary 'fixture.exe'
+    $stagingSource = Join-Path $temporary 'fixture.cs'
+    [IO.File]::WriteAllText($stagingSource, '[assembly: System.Reflection.AssemblyInformationalVersion("0.1.0")] class Fixture { static void Main() {} }')
+    $csc = Join-Path ([Environment]::GetFolderPath('Windows')) 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+    & $csc /nologo /target:exe /platform:x64 "/out:$stagingBinary" $stagingSource
+    if ($LASTEXITCODE -ne 0) { throw 'Could not compile packaging PE fixture.' }
+    $stagingRuntime = Join-Path $stagingFixture 'third_party/conpty'
+    $stagingHashes = foreach ($arch in @('x64', 'arm64', 'x86')) {
+        foreach ($name in @('conpty.dll', 'OpenConsole.exe')) {
+            $file = Join-Path $stagingRuntime "$arch/$name"
+            Copy-Item -LiteralPath $stagingBinary -Destination $file
+            "$( (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash )  $arch/$name"
+        }
+    }
+    [IO.File]::WriteAllLines((Join-Path $stagingRuntime 'SHA256SUMS'), [string[]]$stagingHashes)
+    $stagingTarget = Join-Path $temporary 'separate target directory'
+    $stagingRelease = Join-Path $stagingTarget 'x86_64-pc-windows-msvc/release'
+    $stagingPackager = Join-Path $stagingFixture 'scripts/packaging/package_windows.ps1'
+    $stagingBuildExit = 0
+    & {
+        # Function scope is isolated: subsequent real Cargo checks are unaffected.
+        function cargo {
+            if ($args[0] -eq 'metadata') {
+                @{ packages = @(@{ name = 'harbor'; version = '0.1.0'; manifest_path = (Join-Path $stagingFixture 'Cargo.toml') }); target_directory = $stagingTarget } | ConvertTo-Json -Depth 5
+            } elseif ($args[0] -eq 'build') {
+                if ($stagingBuildExit -ne 0) { $global:LASTEXITCODE = $stagingBuildExit; return }
+                New-Item -ItemType Directory -Force -Path $stagingRelease | Out-Null
+                Copy-Item -LiteralPath $stagingBinary -Destination (Join-Path $stagingRelease 'harbor.exe') -Force
+            } else { throw "Unexpected Cargo command: $args" }
+            $global:LASTEXITCODE = 0
+        }
+        foreach ($attempt in 1..2) {
+            $stagingOutput = Join-Path $temporary "staging-output-$attempt"
+            $zip = & $stagingPackager -Format Zip -OutputDirectory $stagingOutput
+            $archive = [IO.Compression.ZipFile]::OpenRead($zip)
+            try {
+                foreach ($relative in @('conpty.dll', 'x64/OpenConsole.exe', 'arm64/OpenConsole.exe', 'x86/OpenConsole.exe', 'LICENSE', 'VERSION')) {
+                    $entry = $archive.GetEntry("conpty/$relative")
+                    if (-not $entry) { throw "Build without runtime side effects omitted conpty/$relative" }
+                    $pinned = if ($relative -eq 'conpty.dll') { 'x64/conpty.dll' } else { $relative }
+                    $stream = $entry.Open()
+                    $sha = [Security.Cryptography.SHA256]::Create()
+                    try { $actual = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+                    finally { $sha.Dispose(); $stream.Dispose() }
+                    if ($actual -ne (Get-FileHash -LiteralPath (Join-Path $stagingRuntime $pinned) -Algorithm SHA256).Hash) {
+                        throw "Staged ZIP content differs from pinned source: $relative"
+                    }
+                }
+            } finally { $archive.Dispose() }
+            Remove-Item -LiteralPath (Join-Path $stagingRelease 'conpty') -Recurse -Force
+        }
+        # -SkipBuild remains validation-only: missing payloads must not be repaired.
+        $stagingRejectedOutput = Join-Path $temporary 'staging-rejected-output'
+        Assert-Rejected { & $stagingPackager -Format Zip -SkipBuild -ReleaseDirectory $stagingRelease -OutputDirectory $stagingRejectedOutput } 'Missing required release payload'
+        if ((Test-Path -LiteralPath $stagingRejectedOutput) -or (Test-Path -LiteralPath (Join-Path $stagingRelease 'conpty'))) {
+            throw '-SkipBuild unexpectedly staged runtime files or created outputs.'
+        }
+        $stagingBuildExit = 17
+        Assert-Rejected { & $stagingPackager -Format Zip -OutputDirectory $stagingRejectedOutput } 'release build failed'
+        if ((Test-Path -LiteralPath $stagingRejectedOutput) -or (Test-Path -LiteralPath (Join-Path $stagingRelease 'conpty'))) {
+            throw 'Failed build unexpectedly staged runtime files or created outputs.'
+        }
+    }
+    Write-Output 'PASS: packaging stages the complete pinned runtime after builds/cache hits; -SkipBuild still rejects missing payloads.'
     if ($ReleaseDirectory) {
         $release = (Resolve-Path -LiteralPath $ReleaseDirectory).Path
         $payload = Join-Path $temporary 'release'

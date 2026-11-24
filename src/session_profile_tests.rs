@@ -50,7 +50,7 @@ mod pty {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
-    fn intent(source: Option<TabId>, directory: Option<PathBuf>) -> ProfileLaunchIntent {
+    fn intent(source: Option<SessionId>, directory: Option<PathBuf>) -> ProfileLaunchIntent {
         ProfileLaunchIntent {
             profile: ProfileId::new("work").unwrap(),
             source,
@@ -168,7 +168,7 @@ mod pty {
         );
         assert!(f.reload(startup, None).unwrap().contains("named profiles"));
         let old = launch(&mut f, &intent(None, Some(w.0.join("explicit")))).unwrap();
-        let old_id = f.tabs.active_id().unwrap();
+        let old_id = f.tabs.active_session_id().unwrap();
         let old_facts = old.lock().unwrap().launch_provenance().unwrap().clone();
         let first = report(&mut f, &w.report(0));
         assert_directory(&first, &w.0.join("explicit"));
@@ -233,7 +233,7 @@ mod pty {
         assert_eq!(f.tabs.snapshots(), before);
 
         // Accepted edit/removal of env override restores inheritance, not deletion.
-        let source = f.tabs.active_id().unwrap();
+        let source = f.tabs.active_session_id().unwrap();
         f.tabs
             .active_terminal()
             .unwrap()
@@ -249,7 +249,7 @@ mod pty {
         let third = report(&mut f, &w.report(2));
         assert_directory(&third, &w.0.join("osc space 世界%20"));
         assert!(third.contains("inherited:Some(\"synthetic-inherited\")"));
-        let remote_source = f.tabs.active_id().unwrap();
+        let remote_source = f.tabs.active_session_id().unwrap();
         f.tabs
             .active_terminal()
             .unwrap()
@@ -260,7 +260,7 @@ mod pty {
         f.reload(w.settings(None, None, 3), None).unwrap();
         launch(&mut f, &intent(Some(remote_source), None)).unwrap();
         assert_directory(&report(&mut f, &w.report(3)), &parent_cwd);
-        let reset_source = f.tabs.active_id().unwrap();
+        let reset_source = f.tabs.active_session_id().unwrap();
         f.tabs
             .active_terminal()
             .unwrap()

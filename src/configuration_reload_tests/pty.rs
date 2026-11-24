@@ -3,6 +3,32 @@ use super::*;
 #[cfg(windows)]
 #[test]
 #[ignore = "pty: run the matching explicit test recipe"]
+fn retained_presentation_does_not_keep_retired_native_session_alive() {
+    let mut f = Fixture::new();
+    f.attach_native_children();
+    let binding = f.tabs.active_binding().unwrap();
+    let terminal = f.tabs.session_terminal(binding.session).unwrap();
+    let bridge = f.tabs.active_bridge().unwrap();
+    let survivor = f.tabs.configuration_targets()[0].1.clone();
+    let version = survivor.lock().unwrap().content_version();
+    f.tabs.close(binding.workspace);
+    assert!(terminal.lock().unwrap().is_session_closed());
+    assert_eq!(
+        f.tabs.process_output(binding.session),
+        harbor_app::tab_manager::TabOutputOutcome::default()
+    );
+    assert_eq!(
+        f.tabs.close(binding.workspace),
+        harbor_app::tab_manager::TabActionOutcome::default()
+    );
+    assert!(!survivor.lock().unwrap().is_session_closed());
+    assert_eq!(survivor.lock().unwrap().content_version(), version);
+    drop(bridge); // Still retained across close; never owns process retirement.
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "pty: run the matching explicit test recipe"]
 fn native_multi_tab_resize_yields_for_runtime_input_and_quiet_background_completion() {
     let mut f = Fixture::new();
     f.attach_native_children(); // actual cmd and PowerShell PTYs, already at READY
@@ -27,7 +53,8 @@ fn native_multi_tab_resize_yields_for_runtime_input_and_quiet_background_complet
     }
     // The Runtime still mounts this original bridge, with a real reload shortcut.
     let active = native[1].0;
-    f.tabs.activate(active);
+    let active_workspace = f.tabs.binding_for_session(active).unwrap().workspace;
+    f.tabs.activate(active_workspace);
     let target = TerminalSize { rows: 12, cols: 50 };
     f.tabs.resize_all_if_changed(target);
     let all = f.tabs.configuration_targets();
@@ -190,7 +217,8 @@ fn asynchronous_group_membership_change_rejects_and_releases_surviving_reader() 
     let accepted = f.accepted.clone();
     let acquisition = ConfigurationAcquisition::begin(&f.tabs).unwrap();
     let removed = acquisition.members[1].0;
-    f.tabs.close(removed);
+    let removed_workspace = f.tabs.binding_for_session(removed).unwrap().workspace;
+    f.tabs.close(removed_workspace);
     let error = acquisition.poll(&f.tabs).unwrap_err();
     assert!(error.to_string().contains("membership changed"));
     drop(acquisition); // Cancellation owns no Terminal lock and resumes surviving readers.

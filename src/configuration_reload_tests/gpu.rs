@@ -41,14 +41,27 @@ fn later_session_preflight_failure_preserves_application_generation_and_retry() 
     assert_eq!(f.accepted, candidate);
     assert_eq!(f.policy.font_settings, candidate.font);
     assert_ne!(f.policy.metrics, metrics);
-    for (_, terminal, bridge) in targets {
+    let expected_visible = terminal_size_from_allocation(
+        f.ui.latest_terminal_allocation().unwrap(),
+        1.0,
+        (640, 320),
+        &f.policy.metrics,
+    )
+    .unwrap();
+    for (id, terminal, bridge) in targets {
         assert_eq!(
             *bridge.renderer().unwrap().lock().unwrap().metrics(),
             f.policy.metrics
         );
+        let terminal = terminal.lock().unwrap();
+        let expected = if Some(id) == f.tabs.active_session_id() {
+            expected_visible
+        } else {
+            TerminalSize { rows: 10, cols: 40 }
+        };
         assert_eq!(
-            terminal.lock().unwrap().snapshot().cols,
-            f.tabs.last_broadcast_size().unwrap().cols
+            (terminal.screen().rows(), terminal.screen().cols()),
+            (expected.rows, expected.cols)
         );
     }
 }
@@ -103,7 +116,7 @@ fn acceptance_updates_inactive_renderers_osc_baselines_and_new_session_policy() 
         .prepare_new_terminal(
             TerminalGpuAccess::new(&f.device, &f.queue, wgpu::TextureFormat::Rgba8Unorm),
             load_system_fonts(&f.policy.font_settings).unwrap(),
-            f.tabs.last_broadcast_size().unwrap(),
+            f.active_grid(),
             (640, 320),
             false,
             harbor_terminal::ClipboardDelivery::Discard,
@@ -240,7 +253,7 @@ fn color_only_prepares_all_palettes_atomically_without_renderer_or_resize_work()
 fn background_opacity_reload_updates_existing_sessions_and_future_policy() {
     let mut f = Fixture::new();
     let targets = f.tabs.configuration_targets();
-    assert_ne!(f.tabs.active_id(), Some(targets[0].0));
+    assert_ne!(f.tabs.active_session_id(), Some(targets[0].0));
     let size = f.tabs.last_broadcast_size();
     let metrics = f.policy.metrics;
     // Keep a background OSC override in an inactive alternate screen.
@@ -342,7 +355,7 @@ fn same_grid_font_transition_replaces_metrics_without_pty_effect_or_ui_font_chan
     let mut baseline = f.accepted.clone();
     baseline.font.size += 2.0;
     f.reload(baseline, None).unwrap();
-    let size = f.tabs.last_broadcast_size().unwrap();
+    let size = f.active_grid();
     let metrics = f.policy.metrics;
     let ui_metrics = *f._runtime.text_metrics();
     let before: Vec<_> = f
@@ -393,13 +406,13 @@ fn same_grid_font_transition_replaces_metrics_without_pty_effect_or_ui_font_chan
 #[test]
 #[ignore = "gpu: run the matching explicit test recipe"]
 fn font_reload_accepts_bounded_eviction_and_resizes_active_and_parked_alternate() {
-    let mut f = Fixture::new();
+    let mut f = Fixture::panes();
     let mut baseline = f.accepted.clone();
     baseline.font.size += 2.0;
     baseline.history.max_rows = 1000; // Explicit fixture, independent of shipping default.
     f.reload(baseline, None).unwrap();
     let targets = f.tabs.configuration_targets();
-    let old_size = f.tabs.last_broadcast_size().unwrap();
+    let old_size = f.active_grid();
     for (index, (_, terminal, _)) in targets.iter().enumerate() {
         let mut terminal = terminal.lock().unwrap();
         terminal.put_str("\x1b[2J\x1b[H");
@@ -422,7 +435,7 @@ fn font_reload_accepts_bounded_eviction_and_resizes_active_and_parked_alternate(
     let mut candidate = f.accepted.clone();
     candidate.font.size *= 2.0;
     f.reload(candidate.clone(), None).unwrap();
-    let new_size = f.tabs.last_broadcast_size().unwrap();
+    let new_size = f.active_grid();
     assert!(new_size.cols < old_size.cols);
     assert_eq!(f.accepted, candidate);
     for (index, (_, terminal, bridge)) in targets.iter().enumerate() {
@@ -486,7 +499,7 @@ fn unavailable_family_accepts_with_warning_and_effective_fallback_metrics() {
     assert_eq!(f.accepted, candidate);
     assert_eq!(f.policy.metrics, metrics);
     assert_eq!(*f._runtime.text_metrics(), ui_metrics);
-    let size = f.tabs.last_broadcast_size().unwrap();
+    let size = f.active_grid();
     assert_eq!(
         terminal_size_from_allocation(
             f.ui.latest_terminal_allocation().unwrap(),
@@ -496,11 +509,15 @@ fn unavailable_family_accepts_with_warning_and_effective_fallback_metrics() {
         ),
         Some(size)
     );
-    for (_, terminal, bridge) in f.tabs.configuration_targets() {
+    for (id, terminal, bridge) in f.tabs.configuration_targets() {
         let terminal = terminal.lock().unwrap();
         assert_eq!(
             (terminal.snapshot().rows, terminal.snapshot().cols),
-            (size.rows, size.cols)
+            if Some(id) == f.tabs.active_session_id() {
+                (size.rows, size.cols)
+            } else {
+                (10, 40)
+            }
         );
         let update = terminal.read_update(Instant::now());
         let renderer = bridge.renderer().unwrap();
@@ -582,7 +599,7 @@ fn history_manual_reload_is_atomic_across_hidden_saved_primary_and_future_sessio
         .prepare_new_terminal(
             TerminalGpuAccess::new(&f.device, &f.queue, wgpu::TextureFormat::Rgba8Unorm),
             load_system_fonts(&f.policy.font_settings).unwrap(),
-            f.tabs.last_broadcast_size().unwrap(),
+            f.active_grid(),
             (640, 320),
             false,
             harbor_terminal::ClipboardDelivery::Discard,

@@ -616,6 +616,7 @@ pub(crate) struct TerminalIo {
     parser: TerminalParser,
     session: TerminalSession,
     suppress_scroll_snap: bool,
+    parsed_output_bytes: u64,
 }
 
 impl TerminalIo {
@@ -679,6 +680,7 @@ impl TerminalIo {
             parser: TerminalParser::default(),
             session,
             suppress_scroll_snap: false,
+            parsed_output_bytes: 0,
         }
     }
 
@@ -691,6 +693,7 @@ impl TerminalIo {
         pointer: &mut PointerInteraction,
         bytes: &[u8],
     ) {
+        self.parsed_output_bytes = self.parsed_output_bytes.saturating_add(bytes.len() as u64);
         let mut remaining = bytes;
         while !remaining.is_empty() {
             screen.set_external_anchor_interest(pointer.has_selection_state());
@@ -736,8 +739,19 @@ impl TerminalIo {
         }
         self.feed_pty_output(screen, pointer, output);
     }
+    pub(crate) fn parsed_output_bytes(&self) -> u64 {
+        self.parsed_output_bytes
+    }
+
     pub(crate) fn drain_output_events(&mut self) -> Vec<crate::TerminalOutputEvent> {
         self.parser.drain_output_events()
+    }
+    pub(crate) fn shell_process_exited(&self) -> bool {
+        self.session
+            .pty
+            .as_ref()
+            .and_then(|pty| pty.control.as_ref())
+            .is_some_and(PtyControl::process_exited)
     }
     pub(crate) fn is_session_closed(&self) -> bool {
         self.session.closed_observed
@@ -875,6 +889,13 @@ impl TerminalIo {
             self.parser.close_session();
             screen.clear_synchronized_output();
         }
+    }
+
+    /// Explicit Host retirement, independent of retained engine/UI references.
+    pub(crate) fn retire_session(&mut self, screen: &mut Screen) {
+        self.observe_reader_disconnect(screen);
+        self.session.barrier = None;
+        self.session.pty = None;
     }
 
     /// Writes bytes synchronously through the session's input endpoint.

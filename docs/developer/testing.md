@@ -9,7 +9,7 @@ On Windows, the `just` test recipes use PowerShell 7 and require the locally
 restored ConPTY source (`./scripts/setup/fetch_conpty.ps1`). For direct use:
 
 ```powershell
-./scripts/dev/test_cargo.ps1 --locked -p harbor-pty filter -- --ignored --test-threads=1
+pwsh -NoProfile -File scripts/dev/test_cargo.ps1 --locked -p harbor-pty filter -- --ignored --test-threads=1
 ```
 
 The wrapper runs `cargo test --no-run` with the same Cargo selections, features,
@@ -21,8 +21,10 @@ are not reported as Cargo artifacts, and those modes cannot use this contract.
 Ordinary `cargo test` may also run doctests; their transient executables are not
 staged by this wrapper and must not rely on an adjacent ConPTY bundle. The two
 Cargo invocations assume artifacts are not concurrently relocated or replaced
-between staging and execution. CI's direct upstream Cargo commands and
-non-Windows recipes are unchanged.
+between staging and execution. Windows CI uses this wrapper for the default
+workspace and offscreen GPU suites, and `scripts/dev/test_pty.ps1` to build the
+launch probe and run the ConPTY suite. The renderer-free terminal checks still
+run directly through Cargo.
 
 The Windows wrapper deliberately sets `CARGO_SHARE_WORKSPACE_UNITS=0` for both
 Cargo invocations and their children (including trybuild): the huacnlee/cargo
@@ -156,3 +158,25 @@ To select a case, keep its resource namespace, for example `just test-native nat
 [Terminal scripts](../../scripts/README.md#terminal-fixtures), including `scripts/terminal/manual_rendering.{sh,ps1,cmd}`, are **manual fixtures**, not Cargo tests or automatic E2E passes. Run them only inside a disposable Harbor tab. They can reset screen/mode state; clipboard probes require their own explicit consent.
 
 See [widget testing](../widget/testing.md) for component-level boundaries and [history calibration](history-calibration.md) for measurement limitations. Generated evidence belongs under `target/` or an explicitly selected output path.
+
+## Pane acceptance probes
+
+Use [T0005's E1–E12 matrix](../../.grimoire/ticket/0002-pane-workspace/T0005-windows-acceptance-and-scope-evidence.md)
+for exact revision, commands and unresolved native/remote observations. Focused
+filters are `pane_` in harbor-app, `pane_lifecycle_tests`,
+`split_launch::tests::pty`, `paste_command_tests::pty` and
+`configuration_reload_tests` in the Host. Select their documented resources and
+run ConPTY/WARP serially. The bounded repeated lifecycle test prints handle samples
+with `--nocapture`; the pane GPU case prints quiet/visible/hidden callback work.
+Neither establishes native desktop latency or a universal leak threshold.
+
+`pwsh -NoProfile -File scripts/terminal/observe_panes_windows.ps1 -Executable <staged-harbor.exe> -OutputDirectory <new-directory>`
+creates an isolated portable copy and dedicated local pwsh sessions. It posts only
+to that verified PID/HWND, uses custom single-key bindings, samples five seconds
+of quiet process CPU/handles/private bytes and closes its own app. It does not
+inject global keys, access the clipboard, inspect unrelated windows, install tools
+or connect to hosts. Reports/configuration/synthetic child receipts remain in the
+new output directory. A successful probe is bounded native-window evidence, not
+manual IME/candidate/clipboard, default Ctrl-chord, cross-monitor DPI or remote
+acceptance. Do not replace missing mandatory observations with model/offscreen
+results or unrelated hosted performance numbers.

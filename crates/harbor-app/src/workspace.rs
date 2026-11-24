@@ -22,11 +22,13 @@ use harbor_widget::{
 mod palette;
 #[path = "quick_save.rs"]
 pub(crate) mod quick_save;
+#[path = "split_authentication.rs"]
+mod split_authentication;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 struct SearchUiState {
-    source: crate::tab_manager::TabId,
+    source: crate::tab_manager::SessionId,
     input: TextEditingController,
     status: String,
     focus: FocusHandle,
@@ -216,9 +218,13 @@ pub struct WorkspaceUiController {
     store: Store<WorkspaceUiState, AppCommandRequest>,
     tabs: TabUiController,
     terminal_focus: FocusHandle,
+    pane_focus: std::rc::Rc<
+        std::cell::RefCell<std::collections::HashMap<crate::tab_manager::SessionId, FocusHandle>>,
+    >,
     search_focus: FocusHandle,
     palette_focus: FocusHandle,
     allocation: TerminalAllocationMailbox,
+    pub(crate) pane_allocations: crate::pane_layout::PaneAllocations,
 }
 
 impl WorkspaceUiController {
@@ -231,13 +237,15 @@ impl WorkspaceUiController {
             store: Store::new(WorkspaceUiState::default()),
             tabs: TabUiController::new(snapshots, active_bridge, logical_width),
             terminal_focus: FocusHandle::new(),
+            pane_focus: Default::default(),
             search_focus: FocusHandle::new(),
             palette_focus: FocusHandle::new(),
             allocation: TerminalAllocationMailbox::new(),
+            pane_allocations: Default::default(),
         }
     }
 
-    pub fn open_search(&self, source: crate::tab_manager::TabId) {
+    pub fn open_search(&self, source: crate::tab_manager::SessionId) {
         let mut state = self.store.state().read().clone();
         if state
             .popups
@@ -271,7 +279,7 @@ impl WorkspaceUiController {
         self.search_focus
     }
 
-    pub fn search_query(&self) -> Option<(crate::tab_manager::TabId, String)> {
+    pub fn search_query(&self) -> Option<(crate::tab_manager::SessionId, String)> {
         let state = self.store.state().read();
         let search = state.popups.get::<SearchUiState>()?;
         Some((search.source, search.input.text()))
@@ -283,7 +291,7 @@ impl WorkspaceUiController {
         }
     }
 
-    pub fn sync_search_source(&self, active: Option<crate::tab_manager::TabId>) {
+    pub fn sync_search_source(&self, active: Option<crate::tab_manager::SessionId>) {
         if self
             .search_query()
             .is_some_and(|(source, _)| Some(source) != active)
@@ -328,7 +336,58 @@ impl WorkspaceUiController {
         self.store.drain_actions()
     }
     pub fn terminal_focus(&self) -> FocusHandle {
-        self.terminal_focus
+        self.tabs
+            .state
+            .read()
+            .snapshots
+            .iter()
+            .find(|tab| tab.active)
+            .map_or(self.terminal_focus, |tab| self.pane_focus(tab.binding))
+    }
+    pub fn pane_focus(&self, binding: crate::tab_manager::PaneBinding) -> FocusHandle {
+        *self
+            .pane_focus
+            .borrow_mut()
+            .entry(binding.session)
+            .or_default()
+    }
+    pub(crate) fn pane_focused(&self, binding: crate::tab_manager::PaneBinding) {
+        if self.tabs.state.read().snapshots.iter().any(|tab| {
+            tab.active && tab.binding.workspace == binding.workspace && tab.binding != binding
+        }) {
+            self.store
+                .dispatcher()
+                .dispatch(AppCommandRequest::shortcut(AppCommand::Pane(
+                    crate::command::PaneCommand::Focus(binding),
+                )));
+        }
+    }
+    /// Publish model visibility and registration identity before mounting its projection.
+    pub fn sync_panes(&self, tabs: &crate::tab_manager::TabManager, logical_width: f64) {
+        self.publish_panes(tabs);
+        self.tabs
+            .sync(tabs.snapshots(), tabs.active_bridge(), logical_width);
+        self.tabs.publish_layout(tabs.active_layout());
+    }
+    pub fn publish_panes(&self, tabs: &crate::tab_manager::TabManager) {
+        self.pane_focus
+            .borrow_mut()
+            .retain(|session, _| tabs.binding_for_session(*session).is_some());
+        let layout = tabs.active_layout();
+        self.pane_allocations.publish(layout.as_ref());
+        self.tabs.publish_layout(layout);
+    }
+    pub fn publish_pane_input_metrics(
+        &self,
+        scale: f32,
+        surface: (u32, u32),
+        metrics: harbor_terminal::TextMetrics,
+    ) {
+        self.pane_allocations
+            .set_input_metrics(scale, surface, metrics);
+    }
+    pub fn pane_allocations(&self) -> Vec<crate::pane_layout::PaneAllocation> {
+        self.pane_allocations.latest()
     }
     pub fn latest_terminal_allocation(&self) -> Option<Rect> {
         self.allocation.latest()
@@ -499,7 +558,7 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
                     shortcuts => {
                         Row::new() => {
                             tab_rail(cx, &tab_state, &props.controller.tabs, dispatcher);
-                            terminal_panel(cx, &props.controller, active_bridge, bindings);
+                            terminal_panel(cx, &props.controller, active_bridge, tab_state.layout.as_ref(), bindings);
                         }
                     }
                 }
@@ -515,6 +574,7 @@ fn terminal_panel(
     cx: &mut BuildCx,
     controller: &WorkspaceUiController,
     active_bridge: TerminalWidgetBridge,
+    layout: Option<&crate::pane_layout::PaneLayout>,
     bindings: &ResolvedKeybindings,
 ) -> View {
     let popup_state = controller.store.state().read().clone();
@@ -522,9 +582,11 @@ fn terminal_panel(
         harbor_widget::Column::new() => {
             Expanded::new().keyed("terminal-surface") => {
                 controller.allocation.observer() => {
-                    TerminalDecorationPreset::container() => {
-                        Focus::new().focus_handle(controller.terminal_focus) => {
-                            terminal_widget(active_bridge);
+                    if let Some(layout) = layout {
+                        layout.build(cx, controller);
+                    } else {
+                        TerminalDecorationPreset::container() => {
+                            Focus::new().focus_handle(controller.terminal_focus()) => { terminal_widget(active_bridge); }
                         }
                     }
                 }

@@ -120,6 +120,10 @@ try {
             $env:CARGO_ENCODED_RUSTFLAGS = $previousEncodedFlags
         }
         $ReleaseDirectory = Join-Path $metadata.target_directory 'x86_64-pc-windows-msvc/release'
+        # OUT_DIR is an internal Cargo layout (changed in Cargo 1.100). Stage
+        # explicitly after every successful build, including dependency cache hits.
+        . (Join-Path $repoRoot 'scripts/dev/conpty_staging.ps1')
+        Stage-Conpty (Join-Path $ReleaseDirectory 'harbor.exe') $repoRoot
     }
     $ReleaseDirectory = (Resolve-Path -LiteralPath $ReleaseDirectory).Path
     $binary = Join-Path $ReleaseDirectory 'harbor.exe'

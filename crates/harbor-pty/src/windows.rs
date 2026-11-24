@@ -15,7 +15,7 @@ use ::windows::{
     Win32::{
         Foundation::{
             CloseHandle, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE, WAIT_FAILED,
-            WAIT_TIMEOUT,
+            WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         Storage::FileSystem::{ReadFile, WriteFile},
         System::{
@@ -58,6 +58,7 @@ pub struct Pty {
     _job: Option<OwnedHandle>,
     /// Whether an explicit job termination request has already been issued.
     terminated: bool,
+    shutdown_receipt: crate::ShutdownReceipt,
 }
 
 /// Read side of the ConPTY output pipe consumed by the background pump.
@@ -72,6 +73,46 @@ pub struct PtyWriter {
 }
 
 impl Pty {
+    /// Wait on the exact shell process, independently of ConPTY output/EOF.
+    /// The waiter owns only a duplicated process handle, never the PTY or reader.
+    pub(crate) fn observe_exit(
+        &self,
+        notify: impl FnOnce() + Send + 'static,
+    ) -> anyhow::Result<()> {
+        use std::os::windows::io::BorrowedHandle;
+        let process = self
+            ._process
+            .as_ref()
+            .context("shell process unavailable")?;
+        // SAFETY: the borrowed handle remains owned by self throughout duplication.
+        let process = unsafe { BorrowedHandle::borrow_raw(process.handle().0) }
+            .try_clone_to_owned()
+            .context("duplicate shell wait handle")?;
+        std::thread::Builder::new()
+            .name("harbor-shell-exit".into())
+            .spawn(move || {
+                // The process owner terminates its job on explicit close. Even when
+                // ConPTY keeps stdout open, process termination releases this wait.
+                let result =
+                    unsafe { WaitForSingleObject(HANDLE(process.as_raw_handle()), u32::MAX) };
+                if result == WAIT_OBJECT_0 {
+                    notify();
+                } else {
+                    tracing::error!(?result, "shell exit wait failed");
+                }
+            })
+            .context("spawn shell exit observer")?;
+        Ok(())
+    }
+
+    pub(crate) fn process_exited(&self) -> bool {
+        self._process.as_ref().is_some_and(|process| unsafe {
+            WaitForSingleObject(process.handle(), 0) == WAIT_OBJECT_0
+        })
+    }
+    pub(crate) fn shutdown_receipt(&self) -> crate::ShutdownReceipt {
+        self.shutdown_receipt.clone()
+    }
     pub(crate) fn launch_provenance(&self) -> &crate::LaunchProvenance {
         &self.launch_provenance
     }
@@ -150,6 +191,7 @@ impl Pty {
                 _thread: Some(OwnedHandle::new(process_info.hThread)),
                 _job: Some(job),
                 terminated: false,
+                shutdown_receipt: crate::ShutdownReceipt::pending(),
             },
             PtyReader { output_read },
             shell_name,
@@ -374,6 +416,7 @@ impl Drop for Pty {
         if self._pseudo_console.is_some() {
             drop(self._pseudo_console.take());
         }
+        self.shutdown_receipt.complete();
     }
 }
 

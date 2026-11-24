@@ -9,7 +9,7 @@ fn palette_selection_pixels_have_visible_rounded_cutouts_and_optical_edges_at_mu
             wgpu::TextureFormat::Bgra8Unorm,
             wgpu::TextureFormat::Bgra8UnormSrgb,
         ] {
-            let (_, controller, mut runtime, _) = fixture();
+            let (_tabs, controller, mut runtime, _) = fixture();
             let viewport = Viewport::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale);
             runtime.set_viewport(viewport.clone());
             runtime.init_renderer(&device, format);
@@ -103,11 +103,11 @@ fn search_button_hover_pixels_are_visible_local_and_revert_at_multiple_dpi() {
             wgpu::TextureFormat::Bgra8Unorm,
             wgpu::TextureFormat::Bgra8UnormSrgb,
         ] {
-            let (_, controller, mut runtime, _) = fixture();
+            let (_tabs, controller, mut runtime, _) = fixture();
             let viewport = Viewport::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale);
             runtime.set_viewport(viewport.clone());
             runtime.init_renderer(&device, format);
-            controller.open_search(TabId(1));
+            controller.open_search(SessionId(1));
             let root = controller.clone();
             runtime.set_root(move |cx: &mut BuildCx| {
                 let state = root.store.watch(cx).clone();
@@ -303,7 +303,7 @@ fn quick_save_review_pixels_match_palette_glass_without_dimming_the_window() {
             wgpu::TextureFormat::Bgra8Unorm,
             wgpu::TextureFormat::Bgra8UnormSrgb,
         ] {
-            let (_, controller, mut runtime, _) = fixture();
+            let (_tabs, controller, mut runtime, _) = fixture();
             let viewport = Viewport::new((1000.0 * scale) as u32, (600.0 * scale) as u32, scale);
             runtime.set_viewport(viewport.clone());
             runtime.init_renderer(&device, format);
@@ -313,7 +313,7 @@ fn quick_save_review_pixels_match_palette_glass_without_dimming_the_window() {
             let baseline = render(&device, &queue, &mut runtime, viewport.clone(), format);
 
             let focus = controller.open_quick_save(crate::QuickSaveDraft {
-                source: TabId(1),
+                source: SessionId(1),
                 launch: harbor_config::ShellSettings::default(),
                 project: Some(harbor_config::ProjectRecipe {
                     environment: harbor_config::ProjectEnvironment::LocalPwsh,

@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 /// Stable Host-captured source. ShellSettings deliberately redacts environment Debug output.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QuickSaveDraft {
-    pub source: crate::tab_manager::TabId,
+    pub source: crate::tab_manager::SessionId,
     pub launch: ShellSettings,
     pub project: Option<harbor_config::ProjectRecipe>,
 }
@@ -258,7 +258,7 @@ impl WorkspaceUiController {
         let focus = match result {
             Ok(()) => {
                 state.popups.close(generation);
-                self.terminal_focus
+                self.terminal_focus()
             }
             Err(error) => {
                 state.popups.update::<QuickSaveState>(|save| {

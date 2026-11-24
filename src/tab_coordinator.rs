@@ -19,7 +19,7 @@ use winit::{event_loop::EventLoopProxy, window::Window};
 use crate::effects::merge_wait;
 use crate::event::AppEvent;
 use harbor_app::{
-    tab_manager::{TabActionOutcome, TabId, TabManager, TerminalTabResources},
+    tab_manager::{SessionId, TabActionOutcome, TabManager, TerminalTabResources},
     tab_view::{TabCommand, TabFocusPolicy},
     terminal_view::{TerminalWidgetBridge, terminal_size_from_allocation},
     workspace::WorkspaceUiController,
@@ -228,16 +228,39 @@ impl TerminalConfiguration {
                 fonts.push(font);
             }
         }
-        let size = if font_changed {
-            let rect = workspace_ui
-                .latest_terminal_allocation()
-                .context("terminal allocation is unavailable for font reload")?;
-            terminal_size_from_allocation(rect, scale, surface, &metrics)
-                .context("terminal allocation/metrics are not drawable for font reload")?
-        } else {
-            tabs.last_broadcast_size()
-                .context("terminal geometry is unavailable")?
-        };
+        let visible = tabs.visible_bindings();
+        let allocations = workspace_ui.pane_allocations();
+        let sizes = targets
+            .iter()
+            .map(|(id, terminal, bridge)| {
+                let visible_binding = visible.iter().find(|binding| binding.session == *id);
+                let size = if let Some(binding) = visible_binding.filter(|_| font_changed) {
+                    let rect = allocations
+                        .iter()
+                        .find(|allocation| {
+                            allocation.binding == *binding && allocation.draw_id == bridge.draw_id()
+                        })
+                        .map(|allocation| allocation.rect)
+                        .context("visible pane allocation is unavailable for font reload")?;
+                    terminal_size_from_allocation(rect, scale, surface, &metrics)
+                        .context("pane allocation/metrics are not drawable for font reload")?
+                } else {
+                    let terminal = terminal
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("session {id}: terminal lock unavailable"))?;
+                    let current = TerminalSize {
+                        rows: terminal.screen().rows(),
+                        cols: terminal.screen().cols(),
+                    };
+                    if self.geometry_recovery_pending {
+                        tabs.configuration_size(*id).unwrap_or(current)
+                    } else {
+                        current
+                    }
+                };
+                Ok((*id, size))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let mut terminals = targets
             .iter()
             .map(|(id, terminal, _)| {
@@ -274,7 +297,7 @@ impl TerminalConfiguration {
                     )
                 })?;
                 terminal
-                    .prepare_configuration_with_history(size, settings.history)
+                    .prepare_configuration_with_history(sizes[index].1, settings.history)
                     .with_context(|| {
                         format!(
                             "session {}: reader barrier/model preparation",
@@ -333,7 +356,7 @@ impl TerminalConfiguration {
         self.profiles = settings.profiles.clone();
         workspace_ui.publish_profiles(self.profiles.clone());
         // Effective clipboard delivery remains the startup policy, including for new tabs.
-        tabs.accept_configuration_size(size);
+        tabs.accept_configuration_sizes(&sizes);
         self.geometry_recovery_pending = false;
         Ok(warnings)
     }
@@ -428,13 +451,13 @@ impl TerminalTabFactory {
 
     pub(crate) fn create_resources(
         &self,
-        tab_id: TabId,
+        session_id: SessionId,
         draw_id: ExternalDrawId,
         size: TerminalSize,
         surface_size: (u32, u32),
     ) -> anyhow::Result<TerminalTabResources> {
         self.create_resources_with_command(
-            tab_id,
+            session_id,
             draw_id,
             size,
             surface_size,
@@ -442,23 +465,81 @@ impl TerminalTabFactory {
         )
     }
 
+    /// T0002 factory seam: preserve cleanup proof across every post-spawn error.
+    #[allow(dead_code)]
+    pub(crate) fn create_split_attempt(
+        &self,
+        session_id: SessionId,
+        draw_id: ExternalDrawId,
+        size: TerminalSize,
+        surface_size: (u32, u32),
+        command: &ShellCommand,
+        probe: Option<&crate::split_launch::StartupProbe>,
+    ) -> crate::split_launch::AttemptLaunch {
+        let mut cleanup = None;
+        let resources = self.create_resources_observed(
+            session_id,
+            draw_id,
+            size,
+            surface_size,
+            command,
+            probe,
+            &mut cleanup,
+        );
+        crate::split_launch::AttemptLaunch { resources, cleanup }
+    }
+
     fn create_resources_with_command(
         &self,
-        tab_id: TabId,
+        session_id: SessionId,
         draw_id: ExternalDrawId,
         size: TerminalSize,
         surface_size: (u32, u32),
         command: &ShellCommand,
     ) -> anyhow::Result<TerminalTabResources> {
+        self.create_resources_observed(
+            session_id,
+            draw_id,
+            size,
+            surface_size,
+            command,
+            None,
+            &mut None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_resources_observed(
+        &self,
+        session_id: SessionId,
+        draw_id: ExternalDrawId,
+        size: TerminalSize,
+        surface_size: (u32, u32),
+        command: &ShellCommand,
+        probe: Option<&crate::split_launch::StartupProbe>,
+        cleanup: &mut Option<crate::split_launch::Cleanup>,
+    ) -> anyhow::Result<TerminalTabResources> {
         let fonts = load_system_fonts(&self.configuration.font_settings)?;
-        let endpoints = PtyEndpoints::spawn_shell(
+        let mut endpoints = PtyEndpoints::spawn_shell(
             harbor_pty::TerminalSize {
                 rows: size.rows,
                 cols: size.cols,
             },
             command,
         )?;
+        *cleanup = Some(crate::split_launch::Cleanup::Native(
+            endpoints.shutdown_receipt(),
+        ));
+        if let Some(probe) = probe {
+            endpoints.observe_output(probe.observer());
+        }
         let shell_name = endpoints.shell_name().to_owned();
+        let exit_event_proxy = self.event_proxy.clone();
+        endpoints.observe_exit(move || {
+            // Reuse the source-qualified Host wake. The reducer checks the actual
+            // shell handle; an OSC 133 foreground-completion marker is not exit.
+            let _ = exit_event_proxy.send_event(AppEvent::TerminalOutputReady(session_id));
+        })?;
         let output_event_proxy = self.event_proxy.clone();
         let hyperlink_event_proxy = self.event_proxy.clone();
         let gpu = TerminalGpuAccess::new(self.gpu.device(), self.gpu.queue(), self.format);
@@ -473,7 +554,7 @@ impl TerminalTabFactory {
         // Only the session takes endpoint ownership and starts the reader.
         let terminal = terminal.start_session_from_endpoints(endpoints, move || {
             output_event_proxy
-                .send_event(AppEvent::TerminalOutputReady(tab_id))
+                .send_event(AppEvent::TerminalOutputReady(session_id))
                 .is_ok()
         })?;
         #[allow(clippy::arc_with_non_send_sync)]
@@ -484,7 +565,7 @@ impl TerminalTabFactory {
             renderer,
             Arc::clone(&self.input_gate),
             Arc::new(move |uri| {
-                let _ = hyperlink_event_proxy.send_event(AppEvent::OpenHyperlink(uri));
+                let _ = hyperlink_event_proxy.send_event(AppEvent::OpenHyperlink(session_id, uri));
             }),
         );
         Ok(TerminalTabResources::new(terminal, bridge, shell_name))
@@ -494,7 +575,7 @@ impl TerminalTabFactory {
 /// Owns cancellation, never Terminal mutex guards, across event-loop turns.
 pub(crate) struct ConfigurationAcquisition {
     members: Vec<(
-        TabId,
+        SessionId,
         Arc<Mutex<Terminal>>,
         harbor_terminal::ConfigurationBarrier,
     )>,
@@ -543,8 +624,116 @@ pub(crate) struct TabCoordinator {
 }
 
 impl TabCoordinator {
-    pub(crate) fn active_id(&self) -> Option<TabId> {
-        self.tabs.active_id()
+    /// One extra bounded admission for the sole unpublished session, never a draw sweep.
+    pub(crate) fn advance_split_authentication(
+        &self,
+        target: harbor_app::tab_manager::PaneBinding,
+        scale: f32,
+        surface: (u32, u32),
+    ) -> bool {
+        self.workspace_ui.advance_split_authentication(
+            target,
+            scale,
+            surface,
+            &self.factory.metrics(),
+        )
+    }
+    /// Capture only on an explicit production split action, never on metadata.
+    pub(crate) fn begin_split(&mut self) -> anyhow::Result<crate::split_launch::SplitOperation> {
+        crate::split_launch::SplitOperation::begin(
+            &mut self.tabs,
+            self.factory.configuration.shell_command.clone(),
+        )
+    }
+
+    /// Poll from the Host turn/deadline, not draw or metadata callbacks.
+    pub(crate) fn poll_split(
+        &self,
+        operation: &mut crate::split_launch::SplitOperation,
+        size: TerminalSize,
+        surface: (u32, u32),
+        now: std::time::Instant,
+    ) -> crate::split_launch::SplitPoll {
+        let (target, draw) = operation.target();
+        operation.poll(&self.tabs, now, |command, probe| {
+            self.factory
+                .create_split_attempt(target.session, draw, size, surface, command, probe)
+        })
+    }
+
+    /// Claim immediately before layout attachment in this Host turn.
+    #[allow(dead_code)]
+    pub(crate) fn claim_split(
+        &self,
+        ready: crate::split_launch::SplitReady,
+        operation: crate::split_launch::OperationId,
+    ) -> anyhow::Result<crate::split_launch::PreparedSplit> {
+        ready.claim(&self.tabs, operation)
+    }
+
+    /// Claim and attach atomically in this Host turn; caller owns UI admission/focus policy.
+    pub(crate) fn attach_split(
+        &mut self,
+        ready: crate::split_launch::SplitReady,
+        operation: crate::split_launch::OperationId,
+        axis: harbor_widget::SplitAxis,
+    ) -> anyhow::Result<(TabActionOutcome, crate::split_launch::LaunchKind)> {
+        let prepared = ready.claim(&self.tabs, operation)?;
+        tracing::debug!(operation = ?prepared.operation, "attaching ready split operation");
+        let outcome = self.tabs.attach_split(
+            prepared.source,
+            prepared.target,
+            prepared.draw,
+            prepared.resources,
+            axis,
+        )?;
+        self.tabs
+            .seed_split_metadata(prepared.target, prepared.metadata);
+        self.workspace_ui.publish_panes(&self.tabs);
+        Ok((outcome, prepared.kind))
+    }
+    pub(crate) fn split_source_size(&self) -> Option<TerminalSize> {
+        let terminal = self.tabs.active_terminal()?;
+        let terminal = terminal.lock().ok()?;
+        Some(TerminalSize {
+            rows: terminal.screen().rows(),
+            cols: terminal.screen().cols(),
+        })
+    }
+    pub(crate) fn cancel_split_reservation(
+        &mut self,
+        target: harbor_app::tab_manager::PaneBinding,
+    ) {
+        self.tabs.cancel_split_reservation(target);
+    }
+    pub(crate) fn focus_split_result(&mut self, target: harbor_app::tab_manager::PaneBinding) {
+        self.tabs.focus_pane(target);
+    }
+    pub(crate) fn execute_pane_command(
+        &mut self,
+        host: &mut WinitWindowHost,
+        command: harbor_app::command::PaneCommand,
+    ) -> TabDrainOutcome {
+        let mut outcome = self.tabs.execute_pane_command(command);
+        // A mounted surface already performed the focus transition and captured its
+        // press. Do not cancel that new gesture or reset its focus visibility.
+        let pointer_focus = matches!(command, harbor_app::command::PaneCommand::Focus(_));
+        if pointer_focus {
+            outcome.active_bridge_changed = false;
+        }
+        self.apply_tab_outcome(
+            host,
+            outcome,
+            if pointer_focus {
+                TabFocusPolicy::PreserveRail
+            } else {
+                TabFocusPolicy::Terminal
+            },
+        )
+    }
+
+    pub(crate) fn active_binding(&self) -> Option<harbor_app::tab_manager::PaneBinding> {
+        self.tabs.active_binding()
     }
     pub(crate) fn capture_quick_save(&self) -> Result<harbor_app::QuickSaveDraft, &'static str> {
         crate::profile_save::capture(&self.tabs)
@@ -571,7 +760,7 @@ impl TabCoordinator {
 
     /// Return work to the existing output-event path so OSC events, unread flags,
     /// clipboard authorization and presentation notifications are not bypassed.
-    pub(crate) fn pending_resize_tabs(&self) -> Vec<TabId> {
+    pub(crate) fn pending_resize_sessions(&self) -> Vec<SessionId> {
         self.tabs
             .configuration_targets()
             .into_iter()
@@ -612,7 +801,7 @@ impl TabCoordinator {
             self.factory.gpu.queue(),
             self.factory.format,
         );
-        self.factory.configuration.apply(
+        let result = self.factory.configuration.apply(
             &mut self.tabs,
             &self.workspace_ui,
             gpu,
@@ -620,7 +809,10 @@ impl TabCoordinator {
             scale,
             surface,
             |_, _| Ok(()),
-        )
+        );
+        self.workspace_ui
+            .publish_pane_input_metrics(scale, surface, self.factory.metrics());
+        result
     }
     pub(crate) fn new(
         tabs: TabManager,
@@ -628,6 +820,7 @@ impl TabCoordinator {
         factory: TerminalTabFactory,
     ) -> Self {
         workspace_ui.publish_profiles(factory.configuration.profiles.clone());
+        workspace_ui.publish_panes(&tabs);
         Self {
             tabs,
             workspace_ui,
@@ -668,12 +861,13 @@ impl TabCoordinator {
         self.tabs.active_terminal()
     }
 
-    pub(crate) fn active_live(&self, source: TabId) -> bool {
+    pub(crate) fn active_live(&self, source: SessionId) -> bool {
         self.tabs.active_live(source)
     }
 
     pub(crate) fn sync_ui(&self, window: &Window) {
-        self.workspace_ui.sync_search_source(self.tabs.active_id());
+        self.workspace_ui
+            .sync_search_source(self.tabs.active_session_id());
         if let Some(title) = self.tabs.active_title() {
             window.set_title(&format_window_title(title));
         }
@@ -681,11 +875,8 @@ impl TabCoordinator {
     }
 
     pub(crate) fn sync_tab_ui(&self, window: &Window) {
-        self.workspace_ui.tabs().sync(
-            self.tabs.snapshots(),
-            self.tabs.active_bridge(),
-            logical_window_width(window),
-        );
+        self.workspace_ui
+            .sync_panes(&self.tabs, logical_window_width(window));
     }
 
     pub(crate) fn update_presentation(&self, window: &Window) -> bool {
@@ -694,11 +885,15 @@ impl TabCoordinator {
             .update_presentation(logical_window_width(window))
     }
 
+    pub(crate) fn close_exited_session(&mut self, source: SessionId) -> TabActionOutcome {
+        self.tabs.close_exited_session(source)
+    }
+
     pub(crate) fn process_output(
         &mut self,
-        tab_id: TabId,
+        session_id: SessionId,
     ) -> harbor_app::tab_manager::TabOutputOutcome {
-        self.tabs.process_output(tab_id)
+        self.tabs.process_output(session_id)
     }
 
     pub(crate) fn apply_pending_allocation(
@@ -706,18 +901,18 @@ impl TabCoordinator {
         scale_factor: f32,
         physical_size: (u32, u32),
     ) -> bool {
-        let Some(rect) = self.workspace_ui.latest_terminal_allocation() else {
-            return false;
-        };
-        let Some(size) = terminal_size_from_allocation(
-            rect,
+        self.workspace_ui.publish_pane_input_metrics(
+            scale_factor,
+            physical_size,
+            self.factory.metrics(),
+        );
+        self.tabs.observe_pane_allocations(
+            &self.workspace_ui.pane_allocations(),
             scale_factor,
             physical_size,
             &self.factory.metrics(),
-        ) else {
-            return false;
-        };
-        self.tabs.resize_all_if_changed(size)
+        );
+        false
     }
 
     pub(crate) fn apply_tab_outcome(
@@ -823,9 +1018,9 @@ impl TabCoordinator {
             .tabs
             .last_broadcast_size()
             .unwrap_or_else(|| self.factory.default_terminal_size(surface_size));
-        let outcome = match self.tabs.execute_command(command, |tab_id, draw_id| {
+        let outcome = match self.tabs.execute_command(command, |session_id, draw_id| {
             self.factory
-                .create_resources(tab_id, draw_id, size, surface_size)
+                .create_resources(session_id, draw_id, size, surface_size)
         }) {
             Ok(outcome) => {
                 if command == TabCommand::New {
@@ -870,6 +1065,9 @@ mod action_batch_tests;
 #[cfg(test)]
 #[path = "configuration_reload_tests.rs"]
 mod configuration_reload_tests;
+#[cfg(all(test, windows))]
+#[path = "pane_lifecycle_tests.rs"]
+mod pane_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

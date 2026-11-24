@@ -1,7 +1,7 @@
 //! Application-owned current-session search lifecycle. Cooperative work runs on
 //! host turns, never in paint/hover. One job, one completion and one result batch.
 use crate::{
-    tab_manager::{TabId, TabManager},
+    tab_manager::{SessionId, TabManager},
     terminal_view::TerminalWidgetBridge,
 };
 use harbor_terminal::{
@@ -31,7 +31,7 @@ impl SearchCancellation {
 
 #[derive(Default)]
 pub(crate) struct SessionSearch {
-    source: Option<TabId>,
+    source: Option<SessionId>,
     cancellation: Option<SearchCancellation>,
     bridge: Option<TerminalWidgetBridge>,
     query: String,
@@ -232,7 +232,7 @@ impl TabManager {
         use crate::command::{AppCommand, CommandCompletion};
         let (focus, completion) = match command {
             AppCommand::SearchOpen => {
-                let Some(source) = self.active_id() else {
+                let Some(source) = self.active_session_id() else {
                     return SearchCommandOutcome {
                         focus: None,
                         completion: Err("No active terminal"),
@@ -256,7 +256,7 @@ impl TabManager {
             }
             AppCommand::SearchChanged => {
                 if let Some((source, query)) = ui.search_query()
-                    && self.active_id() == Some(source)
+                    && self.active_session_id() == Some(source)
                 {
                     self.set_search_query(&query);
                     if let Some(cancellation) = &self.search.cancellation {
@@ -305,7 +305,7 @@ impl TabManager {
             return;
         }
         let (Some(id), Some(terminal), Some(bridge)) = (
-            self.active_id(),
+            self.active_session_id(),
             self.active_terminal(),
             self.active_bridge(),
         ) else {
@@ -362,7 +362,7 @@ impl TabManager {
         let Some(source) = self.search.source else {
             return idle;
         };
-        if self.active_id() != Some(source) {
+        if self.active_session_id() != Some(source) {
             self.cancel_search();
             return SearchTick {
                 pending: false,
@@ -428,7 +428,7 @@ impl TabManager {
             self.cancel_search();
             return false;
         }
-        if self.search.source != self.active_id() || self.search.source.is_none() {
+        if self.search.source != self.active_session_id() || self.search.source.is_none() {
             return false;
         }
         let Some(terminal) = self.active_terminal() else {

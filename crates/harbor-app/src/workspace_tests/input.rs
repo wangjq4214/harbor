@@ -157,6 +157,42 @@ fn canceled_paste_press_cannot_replay_after_gate_focus_loss_or_surface_suspend()
 
 #[test]
 #[allow(clippy::arc_with_non_send_sync)]
+fn restoring_terminal_after_palette_blur_waits_for_window_focus_to_blink() {
+    use harbor_widget::winit::WinitAdapter;
+    use winit::event::WindowEvent;
+
+    let terminal = Arc::new(Mutex::new(Terminal::new_headless(4, 20)));
+    let controller = WorkspaceUiController::new(
+        vec![snapshot(1, true, false)],
+        TerminalWidgetBridge::new(1, Arc::clone(&terminal), Arc::new(AtomicBool::new(false))),
+        1000.0,
+    );
+    let mut runtime = mount(controller.clone(), 1000, 320);
+    let mut adapter = WinitAdapter::new();
+    let blinking = || {
+        terminal
+            .lock()
+            .unwrap()
+            .frame_demand(Instant::now())
+            .deadline
+            .is_some()
+    };
+    runtime.request_focus(&controller.terminal_focus());
+    assert!(blinking());
+    runtime.request_focus(&controller.open_palette());
+    runtime.update(Instant::now());
+    assert!(!blinking());
+    adapter.handle_event(&mut runtime, &WindowEvent::Focused(false));
+    assert!(controller.cancel_palette());
+    runtime.request_focus(&controller.terminal_focus());
+    runtime.update(Instant::now());
+    assert!(!blinking());
+    adapter.handle_event(&mut runtime, &WindowEvent::Focused(true));
+    assert!(blinking());
+}
+
+#[test]
+#[allow(clippy::arc_with_non_send_sync)]
 fn programmatic_terminal_focus_reaches_ime_provider_and_preedit_input() {
     let terminal = Arc::new(Mutex::new(Terminal::new_headless(4, 20)));
     let controller = WorkspaceUiController::new(
