@@ -25,7 +25,7 @@ See [ADR 0020](../adr/0020-host-neutral-terminal-frame-scheduling.md), [ADR 0011
 
 ### Make Runtime the widget-hosted scheduling authority
 
-See [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
+See [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md), [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md) (superseding retired ADR 0015).
 
 ### Keep direct winit support outside the Terminal core
 
@@ -33,7 +33,7 @@ Historical direct-mode contract: a feature-gated companion host satisfies ADR 00
 
 ### Suspend timer wakes for non-drawable surfaces
 
-See [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md), [ADR 0015](../adr/0015-runtime-owned-frame-presentation.md).
+See [ADR 0021](../adr/0021-external-draw-scheduling-and-standalone-terminal-host.md), [ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md) (superseding retired ADR 0015).
 
 ## Test Plan
 

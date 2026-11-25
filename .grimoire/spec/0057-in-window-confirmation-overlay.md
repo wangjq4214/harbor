@@ -6,7 +6,7 @@
 **Issue:** [#63](https://github.com/wangjq4214/harbor/issues/63)
 **Sources:**
 - GitHub issue [#63](https://github.com/wangjq4214/harbor/issues/63) and refinement decisions (2026-11-24)
-- [ADR 0111](../adr/0111-in-window-liquid-glass-confirmation-overlay.md) (superseding [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md) and [ADR 0009](../adr/0009-app-cross-window-input-gate.md), partially superseding [ADR 0049](../adr/0049-osc52-confirmation-window-and-foreground-policy.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md))
+- [ADR 0111](../adr/0111-in-window-liquid-glass-confirmation-overlay.md) (superseding retired ADRs 0007 and 0009, partially superseding [ADR 0049](../adr/0049-osc52-confirmation-window-and-foreground-policy.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md))
 - [Harbor Design System](../../docs/app/design-system.md) and [Spec 0054](./0054-harbor-design-system-and-quick-save.md)
 - [Spec 0017](./0017-host-authorized-osc52-clipboard-writes.md) and [Spec 0033](./0033-exclusive-extensible-application-popups.md)
 

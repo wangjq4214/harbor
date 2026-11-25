@@ -43,7 +43,7 @@ This is the consequence of R1/R3 and the existing availability contract, not a n
 
 Notifications do not occupy or replace the exclusive popup slot. A notification may coexist with the current popup, must not take focus, and retains existing visibility, dismissal and three-second expiry policy from [ADR 0071](../adr/0071-three-second-notifications-including-errors.md).
 
-Independent native paste-confirmation windows are not converted into participating main-window popups. Preserve existing separate-window lifecycle, authorization and cross-window input gating from [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md) and spec 0030. Exclusion from this manager is not permission to bypass those gates.
+Independent native paste-confirmation windows are not converted into participating main-window popups. Preserve existing confirmation lifecycle, authorization and input gating from ADR 0007 (retired; superseded by [ADR 0111](../adr/0111-in-window-liquid-glass-confirmation-overlay.md)) and spec 0030. Exclusion from this manager is not permission to bypass those gates.
 
 Application popup membership, panel state, query/result meaning and command effects remain application-owned. Reusable widget mechanisms must not depend on Harbor popup kinds, command or session types; preserve [ADR 0064](../adr/0064-widget-and-application-component-ownership.md). No relocation into a new crate or universal business controller is selected. Search and palette geometry, material and terminal allocation retain their existing contracts; managing exclusivity is not a visual redesign.
 

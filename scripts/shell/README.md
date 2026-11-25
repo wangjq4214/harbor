@@ -126,6 +126,6 @@ four synthetic executable names. Pane delivery additionally has real local pwsh
 ConPTY and bounded native-window inheritance/fallback observations. Actual controlled
 WSL/direct-SSH target/cwd/authentication/failure observations and manual native
 IME/clipboard interaction remain pending in
-[T0005](../../.grimoire/ticket/0002-pane-workspace/T0005-windows-acceptance-and-scope-evidence.md).
+[Spec 0056](../../.grimoire/spec/0056-pane-workspace.md#delivery-and-outstanding-acceptance).
 Local Bash surrogates, target declarations and client versions are not remote passes;
 saved-project/agent acceptance remains separate from pane acceptance.

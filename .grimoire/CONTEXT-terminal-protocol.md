@@ -217,7 +217,7 @@ Protocol concepts belonging to Terminal. Linked ADRs define detailed validation/
   - depends on Terminal Widget Bridge
 
 ### VT Mouse Reporting
-- **Definition:** Independent tracking (`?1003 > ?1002 > ?1000`) and encoding (`?1016 > ?1006 > ?1015 > ?1005 > legacy`) flags: disable reveals lower priority, queries report each flag, and encoding alone enables no tracking. Legacy CSI M is not press-only ?9 (unsupported); coordinates above its 223 limit are suppressed. SGR pixels are 1-based content-relative physical coordinates preserving sub-cell precision; WheelPixel instead describes delta units. Tracked input outranks local selection/scrollback even without emitted bytes; RIS clears flags. The multi-encoding/horizontal-wheel contract is [ADR 0055](./adr/0055-multi-encoding-mouse-reporting.md); [ADR 0038](./adr/0038-prioritized-sgr-only-mouse-reporting.md) records the earlier SGR-only boundary.
+- **Definition:** Independent tracking (`?1003 > ?1002 > ?1000`) and encoding (`?1016 > ?1006 > ?1015 > ?1005 > legacy`) flags: disable reveals lower priority, queries report each flag, and encoding alone enables no tracking. Legacy CSI M is not press-only ?9 (unsupported); coordinates above its 223 limit are suppressed. SGR pixels are 1-based content-relative physical coordinates preserving sub-cell precision; WheelPixel instead describes delta units. Tracked input outranks local selection/scrollback even without emitted bytes; RIS clears flags. The multi-encoding/horizontal-wheel contract is [ADR 0055](./adr/0055-multi-encoding-mouse-reporting.md); ADR 0038 (retired) recorded the earlier SGR-only boundary.
 - **Synonyms:** SGR Mouse Reporting, SGR mouse tracking, DECSET mouse reporting
 - **Relationships:**
   - communicates with Runtime Host

@@ -368,7 +368,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - references Event Routing
 
 ### In-Window Confirmation Overlay
-- **Definition:** A main-window native liquid-glass overlay participating in the single-slot exclusive popup lifecycle that presents multiline paste and OSC 52 clipboard-write confirmation UIs without spawning a secondary OS window. See [ADR 0111](./adr/0111-in-window-liquid-glass-confirmation-overlay.md), superseding [ADR 0007](./adr/0007-retain-separate-paste-confirmation-window.md).
+- **Definition:** A main-window native liquid-glass overlay participating in the single-slot exclusive popup lifecycle that presents multiline paste and OSC 52 clipboard-write confirmation UIs without spawning a secondary OS window. See [ADR 0111](./adr/0111-in-window-liquid-glass-confirmation-overlay.md), superseding ADR 0007 (retired).
 - **Synonyms:** Paste Confirmation Window, Confirmation Overlay
 - **Relationships:**
   - depends on Confirmation Input Gate
@@ -376,7 +376,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
   - communicates with Harbor Widget Runtime
 
 ### Confirmation Input Gate
-- **Definition:** An App-owned policy that blocks terminal PTY keyboard input and new paste or confirmation requests while an In-Window Confirmation Overlay is active. See [ADR 0111](./adr/0111-in-window-liquid-glass-confirmation-overlay.md), superseding [ADR 0009](./adr/0009-app-cross-window-input-gate.md).
+- **Definition:** An App-owned policy that blocks terminal PTY keyboard input and new paste or confirmation requests while an In-Window Confirmation Overlay is active. See [ADR 0111](./adr/0111-in-window-liquid-glass-confirmation-overlay.md), superseding ADR 0009 (retired).
 - **Synonyms:** Cross-Window Input Gate
 
 ## Terminal Domain

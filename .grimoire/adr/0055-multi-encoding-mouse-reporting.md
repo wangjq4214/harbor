@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-10-11
-**Supersedes:** [ADR 0038 — Prioritized SGR-Only Mouse Reporting](./0038-prioritized-sgr-only-mouse-reporting.md)
+**Supersedes:** ADR 0038 — Prioritized SGR-Only Mouse Reporting (retired)
 
 ## Context
 

@@ -161,8 +161,8 @@ See [widget testing](../widget/testing.md) for component-level boundaries and [h
 
 ## Pane acceptance probes
 
-Use [T0005's E1–E12 matrix](../../.grimoire/ticket/0002-pane-workspace/T0005-windows-acceptance-and-scope-evidence.md)
-for exact revision, commands and unresolved native/remote observations. Focused
+Use [Spec 0056's E1–E12 matrix](../../.grimoire/spec/0056-pane-workspace.md#delivery-and-outstanding-acceptance)
+for the acceptance dispositions and unresolved native/remote observations. Focused
 filters are `pane_` in harbor-app, `pane_lifecycle_tests`,
 `split_launch::tests::pty`, `paste_command_tests::pty` and
 `configuration_reload_tests` in the Host. Select their documented resources and

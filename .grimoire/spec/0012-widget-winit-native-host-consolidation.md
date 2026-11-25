@@ -41,7 +41,7 @@ First static startup creates main Window, shared GPU, Surface, Runtime and root 
 
 ## Decisions
 
-[ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md) owns the native-host consolidation and supersedes ADRs 0015/0030. Preserve the [separate confirmation window](../adr/0007-retain-separate-paste-confirmation-window.md), [application input gate](../adr/0009-app-cross-window-input-gate.md), and [Store boundary](../adr/0029-widget-store-state-action-boundary.md).
+[ADR 0031](../adr/0031-widget-winit-adapter-owns-native-host-infrastructure.md) owns the native-host consolidation and supersedes retired ADRs 0015/0030. Preserve confirmation safety and application input gating (originally retired ADRs 0007/0009, now [ADR 0111](../adr/0111-in-window-liquid-glass-confirmation-overlay.md)), and [Store boundary](../adr/0029-widget-store-state-action-boundary.md).
 
 ## Test Plan
 

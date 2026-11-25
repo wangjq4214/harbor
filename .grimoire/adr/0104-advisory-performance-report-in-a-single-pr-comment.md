@@ -2,7 +2,7 @@
 
 **Status:** Testing
 **Date:** 2026-11-01
-**Supersedes:** [ADR 0103](./0103-hosted-core-performance-gate-and-separate-native-assessment.md)
+**Supersedes:** ADR 0103 (retired)
 **Sources:** Owner refinement: downloadable reports are not required; publish results in a PR comment and update that same comment on subsequent runs. Performance degradation should be reported, not block merging.
 
 ## Context
