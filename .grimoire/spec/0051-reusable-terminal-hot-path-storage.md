@@ -235,7 +235,7 @@ An initially empty GPU test selection was corrected and is not counted as eviden
 
 ### Reproduction and local evidence
 
-Durable entry points: [benchmark example](../../crates/harbor-terminal/examples/hot_path_timing.rs), [Reader builder](../../scripts/terminal/build_hot_path_reader_timing.py), [alternating runner](../../scripts/terminal/run_hot_path_timings.py), [summarizer](../../scripts/terminal/summarize_hot_path_timings.py), [engine allocation tests](../../crates/harbor-terminal/src/hot_path_tests.rs), [Reader tests](../../crates/harbor-terminal/src/io/allocation_tests.rs) and [Sequence allocation tests](../../crates/harbor-terminal/src/render/sequence/allocation_tests.rs).
+Durable entry points: [benchmark example](../../crates/harbor-terminal/examples/hot_path_timing.rs), [Reader builder](../../scripts/terminal/build_hot_path_reader_timing.py), [alternating runner](../../scripts/terminal/run_hot_path_timings.py), [summarizer](../../scripts/terminal/summarize_hot_path_timings.py), [engine allocation tests](../../crates/harbor-terminal/src/update/hot_path_tests.rs), [Reader tests](../../crates/harbor-terminal/src/io/allocation_tests.rs) and [Sequence allocation tests](../../crates/harbor-terminal/src/render/sequence/allocation_tests.rs).
 
 From the repository root, representative regression commands are:
 

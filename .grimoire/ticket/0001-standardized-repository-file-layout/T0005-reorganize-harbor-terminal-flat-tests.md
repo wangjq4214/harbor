@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0005
 **Source:** [Spec 0058](../../spec/0058-standardized-repository-file-layout.md), [ADR 0112](../../adr/0112-standardized-repository-file-layout.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -38,10 +38,10 @@ Remove all flat `*_tests.rs` files from `crates/harbor-terminal/src/` by relocat
 
 ## Acceptance
 
-- [ ] Zero `*_tests.rs` files remain directly under `crates/harbor-terminal/src/`.
-- [ ] `cargo test --locked -p harbor-terminal` passes.
-- [ ] `cargo test --locked -p harbor-terminal --no-default-features` passes.
-- [ ] `cargo clippy --locked -p harbor-terminal --all-targets --all-features -- -D warnings` passes.
+- [x] Zero `*_tests.rs` files remain directly under `crates/harbor-terminal/src/`.
+- [x] `cargo test --locked -p harbor-terminal` passes.
+- [x] `cargo test --locked -p harbor-terminal --no-default-features` passes.
+- [x] `cargo clippy --locked -p harbor-terminal --all-targets --all-features -- -D warnings` passes.
 
 ## Out of Scope
 

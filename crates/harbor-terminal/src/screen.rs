@@ -12,9 +12,13 @@ mod focus_reporting;
 #[cfg(test)]
 mod history_tests;
 mod hyperlink;
+#[cfg(test)]
+mod palette_tests;
 mod synchronized_output;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_admission_tests;
 
 use self::default_colors::DefaultColors;
 use crate::content_anchor::{

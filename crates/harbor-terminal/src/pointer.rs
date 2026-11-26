@@ -1166,3 +1166,6 @@ mod tests {
         assert_eq!(pointer.cancel().release_pointer, Some(22));
     }
 }
+
+#[cfg(test)]
+mod mouse_tests;

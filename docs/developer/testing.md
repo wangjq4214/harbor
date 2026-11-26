@@ -144,7 +144,7 @@ To select a case, keep its resource namespace, for example `just test-native nat
 
 ## Navigation and fixtures
 
-- [Terminal facade suites](../../crates/harbor-terminal/src/terminal_tests.rs): text, resize, SGR, metadata, alternate screen, input, selection, scheduling and session I/O.
+- [Terminal facade suites](../../crates/harbor-terminal/src/terminal/tests.rs): text, resize, SGR, metadata, alternate screen, input, selection, scheduling and session I/O.
 - [Screen suites](../../crates/harbor-terminal/src/screen/tests.rs): editing, wide cells, margins, wrapping, damage and buffer/state contracts.
 - [Workspace suites](../../crates/harbor-app/src/workspace/tests.rs): tabs, search, notifications, palette and popup siblings. Palette fixtures are shared explicitly, not borrowed from another test case.
 - [Quad renderer suites](../../crates/harbor-widget/tests/quad_renderer.rs): helpers plus GPU topics for gradients, shadows, clips, icons, external surfaces and backdrop materials.
