@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0006
 **Source:** [Spec 0058](../../spec/0058-standardized-repository-file-layout.md), [ADR 0112](../../adr/0112-standardized-repository-file-layout.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -35,10 +35,10 @@ Enforce Harbor's standardized repository layout automatically via `scripts/ci/ch
 
 ## Acceptance
 
-- [ ] `python scripts/ci/check_layout.py` exits `0` on the repository.
-- [ ] `python -B -m unittest discover -s scripts/tests -v` passes all tests including `test_check_layout.py`.
-- [ ] `just layout-check` runs `scripts/ci/check_layout.py` and succeeds.
-- [ ] `.github/workflows/windows-quality-gates.yml` runs `python scripts/ci/check_layout.py` in the `quick` job.
+- [x] `python scripts/ci/check_layout.py` exits `0` on the repository.
+- [x] `python -B -m unittest discover -s scripts/tests -v` passes all tests including `test_check_layout.py`.
+- [x] `just layout-check` runs `scripts/ci/check_layout.py` and succeeds.
+- [x] `.github/workflows/windows-quality-gates.yml` runs `python scripts/ci/check_layout.py` in the `quick` job.
 
 ## Out of Scope
 

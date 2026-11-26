@@ -10,7 +10,7 @@ from the repository root unless noted otherwise. Automated script tests live in
 | [`dev/`](dev/) | Build, run and test locally with upstream or shared-cache Cargo | `run_harbor.ps1` and `test_cargo.ps1` stage ConPTY beside reported executables |
 | [`packaging/`](packaging/) | Build Windows release assets | `package_windows.ps1`; `build_windows_msi.ps1` consumes an existing payload; `windows_package_version.ps1` is a shared helper |
 | [`docs/`](docs/) | Check Markdown language/links/fragments and compile/run public-guide Rust examples | `check_docs.py`, `check_examples.py` |
-| [`ci/`](ci/) | Required quality aggregation and advisory performance reporting | `check_quality_gate.py` aggregates required jobs; `performance_report.py` / `performance_probe.rs` measure A/B changes; `publish_performance_comment.py` maintains one PR comment |
+| [`ci/`](ci/) | Required quality aggregation, layout enforcement, and advisory performance reporting | `check_layout.py` enforces repository layout; `check_quality_gate.py` aggregates required jobs; `performance_report.py` / `performance_probe.rs` measure A/B changes; `publish_performance_comment.py` maintains one PR comment |
 | [`profiling/`](profiling/) | Analyze DHAT allocation reports | `dhat_analyze.py`, `dhat_drill.py` |
 | [`shell/`](shell/) | Opt-in shell integration hooks for pane splitting and project preset capture | `harbor-project.ps1`, `harbor-project.bash`, `test_project_integration.py` |
 | [`terminal/`](terminal/) | Interactive terminal probes and synthetic workloads | See the fixture list below |
