@@ -87,7 +87,7 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Synonyms:** Reconciler
 
 ### BoxConstraints
-- **Definition:** Parent-imposed child size intervals used by bounded parent-directed measurement and atomic geometry commit. Infinity means an unbounded maximum, never a measured extent. Legacy constrain is min-wins; ConstrainedBox enforces local bounds inside the authoritative parent interval. See [flex layout](../docs/flex-layout.md).
+- **Definition:** Parent-imposed child size intervals used by bounded parent-directed measurement and atomic geometry commit. Infinity means an unbounded maximum, never a measured extent. Legacy constrain is min-wins; ConstrainedBox enforces local bounds inside the authoritative parent interval. See [flex layout](../docs/widget/flex-layout.md).
 
 ### Generation Arena
 - **Definition:** A slotmap-based array where each slot has a generation counter; stale references (FiberId) are detected by generation mismatch on access.

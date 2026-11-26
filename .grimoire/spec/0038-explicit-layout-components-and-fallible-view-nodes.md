@@ -27,7 +27,7 @@ Sources: F5.1–F5.4; ADR 0084 D1/D4/D6; [ADR 0032](../adr/0032-view-macro-rust-
 - A requested width of 440 yields 300 under a parent maximum of 300, 500 under a tight parent width of 500, and 440 when loose parent bounds permit it. Width-only construction must not fix the child's height to zero or infinity.
 - Constraints or content changing after mount must produce correct new geometry through the existing layout path, including layout-only changes without rebuilding components.
 
-Sources: F5.4 B, F5.8; ADR 0084 D2; [parent-directed layout contract](../../docs/flex-layout.md).
+Sources: F5.4 B, F5.8; ADR 0084 D2; [parent-directed layout contract](../../docs/widget/flex-layout.md).
 
 ### R3 — Share named Insets and two-dimensional alignment
 
@@ -49,7 +49,7 @@ Sources: F5.4 C; F8's Insets/Alignment2D recommendations; ADR 0084 D3; current P
 - Keep axis in component construction and children in the shared slot protocol. Options do not contain padding, margin, key, event callbacks, business themes or a general-purpose style bag.
 - Preserve existing main-axis distribution, positive flex factor/fit behavior, cross-axis Stretch, unbounded-main fallback, overflow diagnostics and measurement budgets. Expanded/Flexible metadata remains immediate-parent data and does not tunnel through Padding, SizedBox or other ordinary wrappers.
 
-Sources: F5.4 D/E; ADR 0084 D4/D6; current Flex defaults and [parent-directed layout contract](../../docs/flex-layout.md).
+Sources: F5.4 D/E; ADR 0084 D4/D6; current Flex defaults and [parent-directed layout contract](../../docs/widget/flex-layout.md).
 
 ### R5 — Validate raw configuration at the component boundary
 

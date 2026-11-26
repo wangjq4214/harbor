@@ -56,7 +56,7 @@ Generic acceptance/callbacks may support policy, but widgets import no MAX_QUERY
 | E10 | Terminal selection then field copy/cut/paste/focus traversal/return, switch/close and late clipboard/IME, supported root reload → local routing/no PTY leakage, restored terminal commands, no revived old session, HMR safety/state retention. |
 
 ## Evidence and Remaining Acceptance
-[Input guide](../../docs/widget-input.md) owns delivered API/index/history policies; original append-only limitations are superseded.
+[Input guide](../../docs/widget/widget-input.md) owns delivered API/index/history policies; original append-only limitations are superseded.
 Retain deterministic Unicode/history/atomic-rejection tests, focus/capture/clipboard eligibility/IME integration, rendered-advance geometry/clipping tests and the real application command path. Preserve separate terminal paste/OSC authorization and old-root teardown/Host state retention.
 
 ## Out of Scope

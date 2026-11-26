@@ -37,4 +37,4 @@ Host: window, clipboard, IME, surface, scheduling, presentation
 
 Use the [crate README](../../crates/harbor-widget/README.md) for path dependencies and feature flags. Core has no default features; native hosting uses `winit`.
 
-Related guides: [APP](../app/README.md), [TERMINAL](../terminal/README.md), [flex layout](../flex-layout.md), and [single-line input](../widget-input.md).
+Related guides: [APP](../app/README.md), [TERMINAL](../terminal/README.md), [flex layout](flex-layout.md), and [single-line input](widget-input.md).

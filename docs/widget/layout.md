@@ -1,6 +1,6 @@
 # Explicit layout and fallible nodes
 
-[WIDGET home](README.md) · [Catalog](catalog.md) · [Parent-directed flex contract](../flex-layout.md)
+[WIDGET home](README.md) · [Catalog](catalog.md) · [Parent-directed flex contract](flex-layout.md)
 
 Layout is an ordinary component tree, not a style bag or a set of general `ComponentExt` wrapping methods. Keep `.keyed(...)`, Button callbacks and TextField editing configuration local to their component. External `Padding` is distinct from TextField's internal field padding.
 

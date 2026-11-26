@@ -8,7 +8,7 @@ Browse by the job you need to do. The tables describe available public APIs and 
 
 | Need | Available building blocks | Constraints |
 | --- | --- | --- |
-| Horizontal or vertical composition | `Row`, `Column`, `Flex`, `FlexOptions`, `MainAxisAlignment`, `CrossAxisAlignment` | Shared constrained flex engine; fallible options/gaps; [layout contract](../flex-layout.md) |
+| Horizontal or vertical composition | `Row`, `Column`, `Flex`, `FlexOptions`, `MainAxisAlignment`, `CrossAxisAlignment` | Shared constrained flex engine; fallible options/gaps; [layout contract](flex-layout.md) |
 | Allocate flexible space | `Expanded`, `Flexible`, `FlexFit`, `Spacer` | Flex-parent relationships and bounded/unbounded constraints matter |
 | Impose size, insets or alignment | `SizedBox`, `ConstrainedBox`, `Padding`, `Align` | Logical pixels; `Align` can position overlay content without making its empty area hit-testable |
 | Layer ordinary children | `Stack` | Shared parent allocation, not a generic positioned/anchored popover engine |
@@ -136,7 +136,7 @@ Use `TextField::new(controller.clone())`, not a parallel application string edit
 
 Current behavior includes grapheme-safe navigation/replacement/deletion, selection drag, local Windows editing chords, undo/redo and tagged clipboard completion. Public positions are **UTF-8 byte offsets normalized to extended grapheme boundaries**, not character counts. `on_change` reports user committed-text changes only; programmatic replacement, selection movement and preedit do not fire it. `on_submit` receives Enter modifiers; `on_escape` leaves cancellation policy to the consumer.
 
-This is single-line plain text, not multiline, password or rich-text editing. See the [input contract](../widget-input.md).
+This is single-line plain text, not multiline, password or rich-text editing. See the [input contract](widget-input.md).
 
 ## Route focus and commands
 

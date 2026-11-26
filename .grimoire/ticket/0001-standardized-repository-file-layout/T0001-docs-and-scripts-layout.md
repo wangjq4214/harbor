@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0001
 **Source:** [Spec 0058](../../spec/0058-standardized-repository-file-layout.md), [ADR 0112](../../adr/0112-standardized-repository-file-layout.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -29,10 +29,10 @@ Ensure `docs/` and `scripts/` contain only `README.md` plus domain/purpose subdi
 
 ## Acceptance
 
-- [ ] `docs/` contains only `README.md` and `app/`, `developer/`, `terminal/`, `widget/` at its root.
-- [ ] `scripts/README.md` documents `scripts/shell/`.
-- [ ] `docs/developer/architecture.md` records the standardized repository layout conventions.
-- [ ] `python scripts/docs/check_docs.py` exits `0` with zero broken links or language warnings.
+- [x] `docs/` contains only `README.md` and `app/`, `developer/`, `terminal/`, `widget/` at its root.
+- [x] `scripts/README.md` documents `scripts/shell/`.
+- [x] `docs/developer/architecture.md` records the standardized repository layout conventions.
+- [x] `python scripts/docs/check_docs.py` exits `0` with zero broken links or language warnings.
 
 ## Out of Scope
 
