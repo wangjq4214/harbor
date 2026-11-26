@@ -1,13 +1,10 @@
 //! Real application transaction tests without a native Window/EventLoopProxy.
 //! Only pre-effect rejection is mocked; native PTY effects, barriers and GPU preparation are real.
-#[path = "configuration_reload_tests/gpu.rs"]
 mod gpu;
-#[path = "configuration_reload_tests/panes.rs"]
 mod panes;
-#[path = "configuration_reload_tests/pty.rs"]
 mod pty;
 
-use super::*;
+use super::super::*;
 use harbor_config::{Osc52WritePolicy, RawKeybinding, Rgba, Settings};
 use harbor_widget::{renderer::Viewport, runtime::Runtime};
 use std::{sync::atomic::AtomicBool, time::Instant};
@@ -497,13 +494,10 @@ fn native_group_rejection_and_retry(compensation_fails: bool) {
 }
 
 #[cfg(windows)]
-#[path = "session_launch_tests.rs"]
 mod session_launch_tests;
 
 #[cfg(windows)]
-#[path = "session_profile_tests.rs"]
 mod session_profile_tests;
 
 #[cfg(windows)]
-#[path = "configuration_watch_tests.rs"]
 mod configuration_watch_tests;

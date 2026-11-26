@@ -1,5 +1,4 @@
 //! Actual Windows children through startup conversion and the real reload transaction.
-#[path = "session_launch_tests/pty.rs"]
 mod pty;
 
 use super::*;

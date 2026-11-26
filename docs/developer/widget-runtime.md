@@ -35,11 +35,11 @@ Descriptions, component state, geometry and GPU resources are not interchangeabl
 
 ## Geometry and event routing
 
-Layout uses logical pixels, parent-directed child measurement, bounded corrective passes and an atomic final-geometry commit. Painting and subsequent input routing observe committed geometry; physical scaling belongs at the rendering/native boundary. Layout observer callbacks run after settlement; writes from those callbacks queue another turn. The application, not layout, owns PTY resize policy. See the full [flex layout contract](../flex-layout.md).
+Layout uses logical pixels, parent-directed child measurement, bounded corrective passes and an atomic final-geometry commit. Painting and subsequent input routing observe committed geometry; physical scaling belongs at the rendering/native boundary. Layout observer callbacks run after settlement; writes from those callbacks queue another turn. The application, not layout, owns PTY resize policy. See the full [flex layout contract](../widget/flex-layout.md).
 
 Pointer routing is hit test -> root-to-target capture -> target -> target-to-root bubble. Handlers issue `EventCtx` commands; ownership mutations are applied after routing. Focus, hover, pointer capture, modal routing and IME are per-runtime. Native normalization belongs to `WinitAdapter`, including scale, modifiers, focus-loss pointer quarantine and IME commit deduplication.
 
-Text editing belongs to the reusable controller/editing core/field layers. Search meaning and query limits remain application policy. Terminal preedit is a separate transient overlay through the bridge. See [text input](../widget-input.md) and [`event_router.rs`](../../crates/harbor-widget/src/runtime/event_router.rs).
+Text editing belongs to the reusable controller/editing core/field layers. Search meaning and query limits remain application policy. Terminal preedit is a separate transient overlay through the bridge. See [text input](../widget/widget-input.md) and [`event_router.rs`](../../crates/harbor-widget/src/runtime/event_router.rs).
 
 `Portal` moves declared content into a root overlay outside ancestor layout/clipping without reserving terminal space. It does not itself supply modal barriers, anchored placement or focus trapping. Product notification eligibility, placement and dismissal history remain application-owned.
 

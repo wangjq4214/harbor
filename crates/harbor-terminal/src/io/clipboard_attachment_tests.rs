@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 use std::sync::mpsc;
 
 struct LiveReader(mpsc::Receiver<()>);

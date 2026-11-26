@@ -102,3 +102,8 @@ impl SnapshotCache {
         snapshot
     }
 }
+
+#[cfg(test)]
+mod hot_path_tests;
+#[cfg(test)]
+mod tests;

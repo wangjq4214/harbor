@@ -35,8 +35,9 @@ const BARRIER_INTERRUPT_RETRY: Duration = Duration::from_millis(10);
 #[cfg(test)]
 mod allocation_tests;
 #[cfg(test)]
-#[path = "async_resize_tests.rs"]
 mod async_resize_tests;
+#[cfg(test)]
+mod clipboard_attachment_tests;
 
 type ReaderInterrupt = Arc<dyn Fn(&JoinHandle<()>) -> anyhow::Result<()> + Send + Sync + 'static>;
 type Wake = Arc<Mutex<dyn Fn() -> bool + Send>>;

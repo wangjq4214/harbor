@@ -1,5 +1,5 @@
 //! Spec 0019: GPU-independent indexed palette, framing, and coherent update contracts.
-use super::*;
+use super::super::*;
 use harbor_config::{Color, Palette, Rgba};
 use std::time::Instant;
 

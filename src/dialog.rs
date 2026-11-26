@@ -316,8 +316,4 @@ fn complete_paste_confirmation(
 }
 
 #[cfg(test)]
-#[path = "paste_command_tests.rs"]
-mod paste_command_tests;
-
-#[cfg(test)]
 mod tests;

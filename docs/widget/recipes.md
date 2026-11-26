@@ -156,7 +156,7 @@ In a native application, call `host.request_focus(&focus)` and apply its wait re
 - Public positions use UTF-8 bytes, normalized to grapheme boundaries. Use controller operations rather than byte slicing to implement user editing.
 - Tagged `ClipboardEffect::Editor` results go back to `Runtime::complete_clipboard`. `WinitWindowHost` implements that path; a custom host must return text on successful reads, an empty string on successful writes, and content-free errors. Do not feed completion through generic `dispatch`, log payloads, or reuse terminal paste authorization.
 
-See the full [input contract](../widget-input.md).
+See the full [input contract](widget-input.md).
 
 ## 3. Compose a non-modal Portal with local glass
 

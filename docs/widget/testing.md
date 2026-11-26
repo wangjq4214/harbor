@@ -59,4 +59,4 @@ For native components, also check real typing, IME composition/cancellation, cli
 - **Headless geometry passes, native caret is wrong:** inspect actual text resources, DPI and host IME positioning; synthetic fallback metrics are not native typography proof.
 - **Glass looks like transparency only:** verify real changing backdrop content, correct paint order and the full frame encoding path; a uniform background is a poor blur diagnostic.
 
-See the [input](../widget-input.md) and [flex layout](../flex-layout.md) contracts.
+See the [input](widget-input.md) and [flex layout](flex-layout.md) contracts.

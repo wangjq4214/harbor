@@ -1,5 +1,6 @@
 #[path = "tests/architecture.rs"]
 mod architecture;
+mod paste_command_tests;
 
 use super::*;
 

@@ -36,7 +36,7 @@ Child attachment is component-owned: leaves have no child block; single-child co
 
 Static over-counts on single-child containers and all leaf blocks fail compilation. Runtime-dependent lists validate during construction: handwritten `.with_children(Children)` returns `ChildConstructionError`; ordinary `view!` panics with the receiver, allowed count, and incoming count. External components implement public `WithChildren` with `type Capability = SingleChild` or `MultiChild` and the same replacement/clearing rules; `Children::into_single` validates and replaces an `Option<View>` without building components.
 
-**Try:** add another label. Use `Row` instead of `Column`. Then read [flex layout](../flex-layout.md) before adding `Expanded` or scroll constraints: layout is parent-constrained, not CSS.
+**Try:** add another label. Use `Row` instead of `Column`. Then read [flex layout](flex-layout.md) before adding `Expanded` or scroll constraints: layout is parent-constrained, not CSS.
 
 ## 2. Keep editing state across builds
 

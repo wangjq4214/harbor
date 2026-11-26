@@ -1,5 +1,5 @@
 //! Allocation measurements use the real connected paths, with setup outside probes.
-use super::*;
+use super::super::*;
 use crate::primary_reflow::allocation_probe::measure;
 use std::hint::black_box;
 

@@ -1,18 +1,33 @@
 //! Integration-style tests for the Terminal facade.
+#[path = "tests/alternate.rs"]
 mod alternate;
+#[path = "tests/appearance.rs"]
 mod appearance;
+#[path = "tests/editing.rs"]
 mod editing;
+#[path = "tests/input.rs"]
 mod input;
+#[path = "tests/io.rs"]
 mod io;
+#[path = "tests/lifecycle.rs"]
 mod lifecycle;
+#[path = "tests/metadata.rs"]
 mod metadata;
+#[path = "tests/native.rs"]
 mod native;
+#[path = "tests/paste.rs"]
 mod paste;
+#[path = "tests/pty.rs"]
 mod pty;
+#[path = "tests/resize.rs"]
 mod resize;
+#[path = "tests/scheduling.rs"]
 mod scheduling;
+#[path = "tests/selection.rs"]
 mod selection;
+#[path = "tests/sgr.rs"]
 mod sgr;
+#[path = "tests/text.rs"]
 mod text;
 
 use crate::io::PTY_QUEUE_CAPACITY;

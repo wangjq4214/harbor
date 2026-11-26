@@ -10,7 +10,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[path = "tab_view_ui.rs"]
 pub(crate) mod ui;
 
 pub(crate) const EXPANDED_BREAKPOINT_DP: f32 = 900.0;

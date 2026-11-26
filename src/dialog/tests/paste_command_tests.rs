@@ -1,5 +1,5 @@
 //! Production clipboard-paste decision/write seam, without a native clipboard or dialog.
-use super::*;
+use super::super::*;
 use std::sync::atomic::AtomicUsize;
 
 use harbor_app::tab_manager::{PaneId, SessionId, TabId};

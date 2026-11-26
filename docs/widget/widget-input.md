@@ -80,4 +80,4 @@ string, errors are content-free). Passing a result to ordinary `dispatch` is
 not a substitute for targeted completion. Legacy application clipboard effects
 and terminal paste/OSC authorization remain separate.
 
-See the [testing guide](widget/testing.md) for component tests and troubleshooting.
+See the [testing guide](testing.md) for component tests and troubleshooting.

@@ -18,9 +18,7 @@ use harbor_widget::{
     view::{BuildCx, Component, View},
     widgets::{layout_observer::LayoutChangedCallback, padding::Padding, stack::Stack},
 };
-#[path = "palette.rs"]
 mod palette;
-#[path = "quick_save.rs"]
 pub(crate) mod quick_save;
 #[path = "split_authentication.rs"]
 mod split_authentication;
@@ -534,7 +532,6 @@ impl WorkspaceUiController {
 }
 
 #[cfg(test)]
-#[path = "workspace_tests.rs"]
 mod tests;
 /// Stable application-owned inputs used to construct the main-window root.
 #[derive(Clone)]

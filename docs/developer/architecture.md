@@ -43,7 +43,7 @@ native WindowEvent -> adapter normalization -> runtime capture/target/bubble
 
 The binary selects the destination window and applies cross-window gates. The runtime owns focus, hit testing and capture within that window. A consumed application shortcut must not also reach the terminal. A focused text field owns local editing and IME; preedit is not committed search text or PTY input.
 
-After routing, the application drains typed intents and applies business mutations. A Store dispatcher is FIFO transport, not an automatic reducer, effect executor or wakeup mechanism. Reuse the command path for menus and shortcuts rather than creating parallel buses. See [commands](../app/commands.md) and [text input](../widget-input.md).
+After routing, the application drains typed intents and applies business mutations. A Store dispatcher is FIFO transport, not an automatic reducer, effect executor or wakeup mechanism. Reuse the command path for menus and shortcuts rather than creating parallel buses. See [commands](../app/commands.md) and [text input](../widget/widget-input.md).
 
 ## Output and presentation flow
 
@@ -67,3 +67,12 @@ Reading a terminal render update does not clear damage. The bridge acknowledges 
 Quiet hosts wait for dirty work or deadlines. Synchronized output defers a terminal projection, not ingestion or neighboring widgets. Surface recovery is host-owned; EOF does not delete retained content. Terminal metadata grants no filesystem or command authority; see [security](../terminal/security.md).
 
 Source entry points: [`shell.rs`](../../src/shell.rs), [`tab_coordinator.rs`](../../src/tab_coordinator.rs), [`harbor-app`](../../crates/harbor-app/src/), [`terminal_view.rs`](../../crates/harbor-app/src/terminal_view.rs). Follow [widget runtime](widget-runtime.md), [terminal session](terminal-session.md) and [profiling](profiling.md) for deeper ownership and measurement procedures.
+
+## Repository layout
+
+Harbor enforces a standardized layout across crates, tests, documentation, and scripts:
+
+- **Top-level tracked directories:** `.github/`, `.grimoire/`, `assets/`, `crates/`, `docs/`, `fuzz/`, `installer/`, `scripts/`, `src/`, `tests/`, and `third_party/`. Root `src/` and `tests/` remain the `harbor` binary package; workspace library crates live under `crates/*`.
+- **Rust module style:** Every multi-file Rust module uses Rust 2018+ `<module>.rs` paired with `<module>/`. No `mod.rs` files are permitted in `src/` or `crates/*/src/`.
+- **Test placement:** Flat `*_tests.rs` files are disallowed directly at `src/` or `crates/*/src/` roots. Module-scoped unit tests live inline or under `<module>/tests.rs` (and `<module>/tests/*.rs` when split); cross-module, public-API, and host/GPU integration suites live under `<crate>/tests/` or root `tests/` with shared harnesses in `tests/support/`.
+- **Documentation and scripts:** Both `docs/` and `scripts/` keep only `README.md` at their immediate root, organizing topical documents (`app/`, `developer/`, `terminal/`, `widget/`) and purpose-scoped scripts (`ci/`, `dev/`, `docs/`, `packaging/`, `profiling/`, `setup/`, `shell/`, `terminal/`, `tests/`) in subdirectories.

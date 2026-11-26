@@ -1,14 +1,14 @@
-use crate::construction::{Children, ComponentExt, WithChildren};
-use crate::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
-use crate::layout::{Point, Rect, Size};
-use crate::runtime::Runtime;
-use crate::scene::primitive::{Color, Primitive};
-use crate::signal::Signal;
-use crate::view::{BuildCx, Component, View};
-use crate::widgets::button::Button;
-use crate::widgets::column::Column;
-use crate::widgets::padding::Padding;
-use crate::widgets::sized_box::SizedBox;
+use harbor_widget::construction::{Children, ComponentExt, WithChildren};
+use harbor_widget::input::event::{PointerButton, PointerEvent, PointerPhase, UiEvent};
+use harbor_widget::layout::{Point, Rect, Size};
+use harbor_widget::runtime::Runtime;
+use harbor_widget::scene::primitive::{Color, Primitive};
+use harbor_widget::signal::Signal;
+use harbor_widget::view::{BuildCx, Component, View};
+use harbor_widget::widgets::button::Button;
+use harbor_widget::widgets::column::Column;
+use harbor_widget::widgets::padding::Padding;
+use harbor_widget::widgets::sized_box::SizedBox;
 use std::any::TypeId;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,7 +24,7 @@ struct MacroTree {
 
 impl Component for MacroTree {
     fn build(&self, _cx: &mut BuildCx) -> View {
-        crate::view! { Column::new() => {
+        harbor_widget::view! { Column::new() => {
             SizedBox::new(Size::new(10.0, 10.0)).unwrap().background(Color::RED).expect("valid color");
             SizedBox::new(Size::new(20.0, 10.0)).unwrap().background(Color::GREEN).expect("valid color");
             for (index, size) in self.values.iter().copied().enumerate() {
@@ -119,7 +119,7 @@ impl Component for KeyedMacroList {
         *self.items.borrow_mut() = Some(state.clone());
         let current_items = state.read();
 
-        crate::view! { Column::new() => {
+        harbor_widget::view! { Column::new() => {
             for item in current_items.iter() {
                 SizedBox::new(Size::new(10.0, 10.0)).unwrap().keyed(*item);
             }
@@ -135,7 +135,7 @@ struct MacroButtonTree {
 impl Component for MacroButtonTree {
     fn build(&self, _cx: &mut BuildCx) -> View {
         let clicked = self.clicked.clone();
-        crate::view! { Column::new() => {
+        harbor_widget::view! { Column::new() => {
             Button::text("Click").on_click(move |_| clicked.store(true, Ordering::SeqCst));
         } }
     }
@@ -163,7 +163,7 @@ struct FiberSignature {
     children: Vec<FiberSignature>,
 }
 
-fn fiber_signature(runtime: &Runtime, id: crate::fiber::FiberId) -> FiberSignature {
+fn fiber_signature(runtime: &Runtime, id: harbor_widget::fiber::FiberId) -> FiberSignature {
     let fiber = runtime.arena().get(id).unwrap();
     FiberSignature {
         widget_type: fiber.widget_type(),
@@ -260,7 +260,7 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
 
     impl Component for MacroLeaf {
         fn build(&self, _cx: &mut BuildCx) -> View {
-            crate::view! { SizedBox::new(Size::new(10.0, 10.0)); }
+            harbor_widget::view! { SizedBox::new(Size::new(10.0, 10.0)); }
         }
     }
 
@@ -278,7 +278,7 @@ fn declarative_static_leaf_and_single_child_trees_match_handwritten_fibers() {
 
     impl Component for MacroSingle {
         fn build(&self, _cx: &mut BuildCx) -> View {
-            crate::view! { Padding::all(2.0) => {
+            harbor_widget::view! { Padding::all(2.0) => {
                 SizedBox::new(Size::new(10.0, 10.0));
             } }
         }
@@ -413,7 +413,7 @@ fn macro_preserves_expression_evaluation_order_and_reachability() {
     }
 
     let log = RefCell::new(Vec::new());
-    let _ = crate::view! {
+    let _ = harbor_widget::view! {
         logged_column(&log, "root") => {
             logged_leaf(&log, "first");
             logged_column(&log, "parent") => {
@@ -477,7 +477,7 @@ fn leaf_root_defers_build_until_reconciliation() {
     }
 
     let log = Rc::new(RefCell::new(Vec::new()));
-    let description = crate::view! { root(&log); };
+    let description = harbor_widget::view! { root(&log); };
     drop(description);
 
     // The macro evaluates the root expression once and converts it through
@@ -533,13 +533,13 @@ fn block_replacement_matches_builders_including_keys_scene_and_routing() {
                 .unwrap()
                 .child(Button::text("old").keyed("a"));
             let description = if use_macro {
-                crate::view! { parent => { incoming; } }
+                harbor_widget::view! { parent => { incoming; } }
             } else {
-                crate::construction::IntoChildView::into_child_view(parent.child(incoming))
+                harbor_widget::construction::IntoChildView::into_child_view(parent.child(incoming))
             };
             let mut runtime = Runtime::new();
             if nested {
-                runtime.set_root(crate::view! { Column::new() => { description; } });
+                runtime.set_root(harbor_widget::view! { Column::new() => { description; } });
             } else {
                 runtime.set_root(description);
             }
@@ -557,7 +557,7 @@ fn block_replacement_matches_builders_including_keys_scene_and_routing() {
             assert_eq!(children.len(), 1);
             assert_eq!(
                 runtime.arena().get(children[0]).unwrap().key(),
-                Some(&crate::view::Key::new("b"))
+                Some(&harbor_widget::view::Key::new("b"))
             );
             click(&mut runtime, Point::new(10.0, 16.0));
             assert!(clicked.load(Ordering::SeqCst));
@@ -578,9 +578,9 @@ fn empty_block_clears_but_value_expression_preserves_staged_content() {
             .unwrap()
             .child(SizedBox::new(Size::new(3.0, 4.0)).unwrap());
         let tree = if clear {
-            crate::view! { staged => {} }
+            harbor_widget::view! { staged => {} }
         } else {
-            crate::view! { staged; }
+            harbor_widget::view! { staged; }
         };
         let mut runtime = Runtime::new();
         runtime.set_root(tree);
@@ -603,7 +603,7 @@ fn dynamic_macro_validates_zero_one_many_at_construction_and_not_layout() {
         for count in 0..=2 {
             let evaluated = RefCell::new(Vec::new());
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::view! {
+                harbor_widget::view! {
                     {
                         evaluated.borrow_mut().push("parent");
                         let parent = Padding::all(1.0).unwrap();
@@ -659,7 +659,7 @@ fn bounded_alternatives_are_lazy_single_assignments_and_builds_stay_deferred() {
                 SizedBox::new(Size::new(2.0, 3.0)).unwrap().build(cx)
             }
         };
-        let tree = crate::view! {
+        let tree = harbor_widget::view! {
             { log.borrow_mut().push("parent"); Padding::all(0.0).unwrap().child(SizedBox::new(Size::ZERO).unwrap()) } => {
                 if { log.borrow_mut().push("condition"); choice == 0 } {
                     child("if-child");
@@ -699,7 +699,7 @@ fn bounded_alternatives_are_lazy_single_assignments_and_builds_stay_deferred() {
 #[test]
 fn overwritten_staged_expression_still_runs_once_after_block_children() {
     let log = RefCell::new(Vec::new());
-    let tree = crate::view! {
+    let tree = harbor_widget::view! {
         {
             log.borrow_mut().push("parent");
             Padding::all(1.0).unwrap().child({

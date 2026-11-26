@@ -2,22 +2,18 @@
 #[path = "../../../tests/support/gpu.rs"]
 mod test_gpu;
 
-#[cfg(test)]
-mod clipboard_attachment_tests;
 mod configuration;
 mod content_anchor;
 #[cfg(all(test, not(feature = "renderer")))]
+#[path = "terminal/core_tests.rs"]
 mod core_tests;
 #[path = "render/cursor_blink.rs"]
 pub mod cursor_blink;
 mod damage;
 #[cfg(test)]
+#[path = "terminal/engine_tests.rs"]
 mod engine_tests;
-#[cfg(test)]
-mod hot_path_tests;
 mod input;
-#[cfg(test)]
-mod text_admission_tests;
 pub use configuration::{
     ConfigurationResize, ResizeGroupError, resize_configuration_group,
     resize_configuration_group_with_check,
@@ -28,11 +24,7 @@ pub mod layout;
 pub mod literal_search;
 mod logical_content;
 mod model;
-#[cfg(test)]
-mod mouse_tests;
 mod normal_buf;
-#[cfg(test)]
-mod palette_tests;
 mod parser;
 mod pointer;
 mod primary_reflow;
@@ -43,6 +35,7 @@ mod screen;
 mod scrollbar_geometry;
 pub mod selection_model;
 #[cfg(all(test, feature = "renderer"))]
+#[path = "terminal/tests.rs"]
 mod terminal_tests;
 mod types;
 mod update;
@@ -90,8 +83,6 @@ mod resize;
 pub use resize::{ResizeOutcome, ResizeStatus};
 mod revision;
 mod snapshot;
-#[cfg(test)]
-mod update_tests;
 use revision::Revisioned;
 pub use snapshot::SnapshotCells;
 use std::sync::Arc;

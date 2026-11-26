@@ -40,6 +40,9 @@ jobs:
       - name: Check documentation
         run: python scripts/docs/check_docs.py
 
+      - name: Check repository layout
+        run: python scripts/ci/check_layout.py
+
       - name: Test documentation and helper scripts
         run: python -B -m unittest discover -s scripts/tests -v
 

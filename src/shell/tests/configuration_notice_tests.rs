@@ -1,5 +1,5 @@
 //! Startup/manual/watched file-I/O and application acceptance policy, without a native window.
-use super::*;
+use super::super::*;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -282,7 +282,7 @@ fn actual_watcher_reload_handles_missing_invalid_recovery_and_success_without_su
 
 #[test]
 fn application_configuration_consumers_do_not_reresolve_the_source() {
-    let source = include_str!("shell.rs");
+    let source = include_str!("../../shell.rs");
     assert!(!source.contains("harbor_config::default_config_path("));
     assert!(!source.contains("harbor_config::load()"));
     assert_eq!(source.matches("harbor_config::load_with_path()").count(), 1);
@@ -308,12 +308,15 @@ fn portable_startup_manual_and_watched_reload_keep_one_source() {
             .unwrap();
         // A child has its own executable location without touching the real home
         // configuration or putting a marker beside other concurrently running tests.
+        let test_name = concat!(
+            module_path!(),
+            "::portable_startup_manual_and_watched_reload_keep_one_source"
+        )
+        .split_once("::")
+        .unwrap()
+        .1;
         let output = std::process::Command::new(&executable)
-            .args([
-                "--exact",
-                "shell::configuration_notice_tests::portable_startup_manual_and_watched_reload_keep_one_source",
-                "--nocapture",
-            ])
+            .args(["--exact", test_name, "--nocapture"])
             .env(CHILD, "1")
             .current_dir(std::env::temp_dir())
             .output();

@@ -101,6 +101,10 @@ doc:
 docs-check:
     python scripts/docs/check_docs.py
 
+# Check repository file and module layout conventions.
+layout-check:
+    python scripts/ci/check_layout.py
+
 # Validate the root version for Windows packaging without building artifacts.
 [windows]
 package-check:

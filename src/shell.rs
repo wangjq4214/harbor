@@ -1850,7 +1850,4 @@ impl Shell {
 }
 
 #[cfg(test)]
-#[path = "configuration_notice_tests.rs"]
-mod configuration_notice_tests;
-#[cfg(test)]
 mod tests;

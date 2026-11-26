@@ -1,5 +1,5 @@
 //! Windowless Host/model + real ConPTY lifecycle; not native-desktop acceptance.
-use super::*;
+use super::super::*;
 use harbor_app::tab_manager::PaneBinding;
 use std::{
     sync::mpsc,

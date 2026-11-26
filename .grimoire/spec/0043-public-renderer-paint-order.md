@@ -71,8 +71,8 @@ Continue the existing retained renderer architecture. Expose an explicitly order
 At commit `41a5016`, source inspection found:
 
 - [QuadRenderer](../../crates/harbor-widget/src/renderer/quad.rs) exposes update, encode, encode_range and slot_of; encode draws a storage range.
-- [FrameEncoder](../../crates/harbor-widget/src/runtime/frame_encoder.rs) already coordinates ordered scene encoding and internal slot-based batches. [Runtime](../../crates/harbor-widget/src/runtime/mod.rs) exposes ordinary and full-frame encoding.
-- [SceneGraph](../../crates/harbor-widget/src/scene/mod.rs) exposes retained items in paint order, separately from SceneDelta updates.
+- [FrameEncoder](../../crates/harbor-widget/src/runtime/frame_encoder.rs) already coordinates ordered scene encoding and internal slot-based batches. [Runtime](../../crates/harbor-widget/src/runtime.rs) exposes ordinary and full-frame encoding.
+- [SceneGraph](../../crates/harbor-widget/src/scene.rs) exposes retained items in paint order, separately from SceneDelta updates.
 - [Renderer integration tests](../../crates/harbor-widget/tests/quad_renderer.rs) contain GPU adapter creation and texture readback, but their helpers currently call encode directly or reconstruct ordering with slot_of/encode_range. Those helpers must migrate rather than preserve public storage APIs.
 
 These observations locate affected contracts; they are not tests executed for U6.
