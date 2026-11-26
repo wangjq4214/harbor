@@ -83,6 +83,18 @@ impl PopupSlot {
         true
     }
 
+    pub fn close_if<T: Popup>(&mut self, generation: u64) -> bool {
+        self.get::<T>().is_some() && self.close(generation)
+    }
+
+    pub fn close_active_if<T: Popup>(&mut self) -> bool {
+        if self.get::<T>().is_none() {
+            return false;
+        }
+        let generation = self.generation().expect("active popup generation");
+        self.close(generation)
+    }
+
     /// Publish a content edit without replacing or retiring its lifetime.
     pub fn update<T: Popup + Clone>(&mut self, edit: impl FnOnce(&mut T)) {
         let Some(mut content) = self.get::<T>().cloned() else {

@@ -79,26 +79,28 @@ fn name_error(
 
 impl WorkspaceUiController {
     pub fn open_quick_save(&self, draft: QuickSaveDraft) -> FocusHandle {
-        let mut state = self.store.state().read().clone();
-        state
-            .notices
-            .publish(ConfigurationNoticeSource::QuickSave, None);
-        let focus = state.popups.open(|_| QuickSaveState {
-            project: ProjectReview::new(draft.project.clone()),
-            approved_project: None,
-            draft,
-            input: TextEditingController::new(""),
-            review_name: None,
-            details_open: false,
-            selected: BTreeSet::new(),
-            acknowledged: false,
-            issued: false,
-            error: None,
-            review_scroll: harbor_widget::ScrollController::new(),
-            focus: FocusHandle::new(),
+        let mut focus = None;
+        self.update_state(|state| {
+            state
+                .notices
+                .publish(ConfigurationNoticeSource::QuickSave, None);
+            focus = Some(state.popups.open(|_| QuickSaveState {
+                project: ProjectReview::new(draft.project.clone()),
+                approved_project: None,
+                draft,
+                input: TextEditingController::new(""),
+                review_name: None,
+                details_open: false,
+                selected: BTreeSet::new(),
+                acknowledged: false,
+                issued: false,
+                error: None,
+                review_scroll: harbor_widget::ScrollController::new(),
+                focus: FocusHandle::new(),
+            }));
+            true
         });
-        self.store.set_state(state);
-        focus
+        focus.expect("quick save opened")
     }
     pub fn quick_save_is_open(&self) -> bool {
         self.store
@@ -113,59 +115,62 @@ impl WorkspaceUiController {
         let crate::command::CommandSource::Popup { generation } = request.source else {
             return None;
         };
-        let mut state = self.store.state().read().clone();
-        if !state.popups.is_current(generation) {
-            return None;
-        }
-        let mut save = state.popups.get::<QuickSaveState>()?.clone();
-        if save.pending() {
-            return None;
-        }
-        match request.command {
-            AppCommand::AdvanceQuickSave if save.review_name.is_none() => {
-                if save.input.value().composition.is_some() {
-                    return None;
-                }
-                if let Some(error) = name_error(&save.input.text(), &state.profiles) {
-                    state
-                        .notices
-                        .publish(ConfigurationNoticeSource::QuickSave, Some(error.into()));
-                    self.store.set_state(state);
-                    return None;
-                }
-                save.review_name = Some(save.input.text().trim().into());
-                // A sink receives initial review focus, never the final Save button.
-                save.focus = FocusHandle::new();
+        let mut focus = None;
+        self.update_state(|state| {
+            if !state.popups.is_current(generation) {
+                return false;
             }
-            AppCommand::EditQuickSave if save.review_name.is_some() => {
-                save.input = TextEditingController::new(save.review_name.take().unwrap());
-                save.focus = FocusHandle::new();
+            let Some(mut save) = state.popups.get::<QuickSaveState>().cloned() else {
+                return false;
+            };
+            if save.pending() {
+                return false;
             }
-            _ => return None,
-        }
-        state
-            .notices
-            .publish(ConfigurationNoticeSource::QuickSave, None);
-        save.error = None;
-        save.review_scroll.jump_to(0.0);
-        save.project.retire_editors();
-        let focus = state.popups.open(|_| save);
-        self.store.set_state(state);
-        Some(focus)
+            match request.command {
+                AppCommand::AdvanceQuickSave if save.review_name.is_none() => {
+                    if save.input.value().composition.is_some() {
+                        return false;
+                    }
+                    if let Some(error) = name_error(&save.input.text(), &state.profiles) {
+                        state
+                            .notices
+                            .publish(ConfigurationNoticeSource::QuickSave, Some(error.into()));
+                        return true;
+                    }
+                    save.review_name = Some(save.input.text().trim().into());
+                    // A sink receives initial review focus, never the final Save button.
+                    save.focus = FocusHandle::new();
+                }
+                AppCommand::EditQuickSave if save.review_name.is_some() => {
+                    save.input = TextEditingController::new(save.review_name.take().unwrap());
+                    save.focus = FocusHandle::new();
+                }
+                _ => return false,
+            }
+            state
+                .notices
+                .publish(ConfigurationNoticeSource::QuickSave, None);
+            save.error = None;
+            save.review_scroll.jump_to(0.0);
+            save.project.retire_editors();
+            focus = Some(state.popups.open(|_| save));
+            true
+        });
+        focus
     }
     pub fn cancel_quick_save(&self, request: AppCommandRequest) -> bool {
         let crate::command::CommandSource::Popup { generation } = request.source else {
             return false;
         };
-        let mut state = self.store.state().read().clone();
-        if state.popups.get::<QuickSaveState>().is_none() || !state.popups.close(generation) {
-            return false;
-        }
-        state
-            .notices
-            .publish(ConfigurationNoticeSource::QuickSave, None);
-        self.store.set_state(state);
-        true
+        self.update_state(|state| {
+            if !state.popups.close_if::<QuickSaveState>(generation) {
+                return false;
+            }
+            state
+                .notices
+                .publish(ConfigurationNoticeSource::QuickSave, None);
+            true
+        })
     }
     pub fn cancel_quick_save_on_focus_loss(&self) -> bool {
         let Some(generation) = self.store.state().read().popups.generation() else {
@@ -177,16 +182,19 @@ impl WorkspaceUiController {
         ))
     }
     fn update_quick_save(&self, generation: u64, update: impl FnOnce(&mut QuickSaveState)) {
-        let mut state = self.store.state().read().clone();
-        if !state.popups.is_current(generation) {
-            return;
-        }
-        state.popups.update::<QuickSaveState>(|save| {
-            if !save.pending() {
-                update(save);
+        self.update_state(|state| {
+            if !state.popups.is_current(generation) {
+                return false;
             }
+            let mut updated = false;
+            state.popups.update::<QuickSaveState>(|save| {
+                if !save.pending() {
+                    update(save);
+                    updated = true;
+                }
+            });
+            updated
         });
-        self.store.set_state(state);
     }
     fn queue_quick_save(&self, generation: u64) {
         let mut queued = false;
@@ -214,64 +222,78 @@ impl WorkspaceUiController {
         let crate::command::CommandSource::Popup { generation } = request.source else {
             return None;
         };
-        let mut state = self.store.state().read().clone();
-        if request.command != AppCommand::CommitQuickSave || !state.popups.is_current(generation) {
+        if request.command != AppCommand::CommitQuickSave {
             return None;
         }
-        let save = state.popups.get::<QuickSaveState>()?;
-        if save.issued || !save.overrides_approved() {
-            return None;
-        }
-        let name = save.review_name.clone()?;
-        let project = save.approved_project.clone()?;
-        let mut launch = save.draft.launch.clone();
-        launch.program = Some(project.environment.program().into());
-        launch.args.clear();
-        launch.directory = None;
-        launch
-            .environment
-            .retain(|key, _| save.selected.contains(key));
-        let submission = QuickSaveSubmission {
-            generation,
-            profile: SessionProfile {
-                name,
-                launch,
-                project: Some(project),
-            },
-        };
-        // Keep the layer blocked until Host completion. Duplicate delivery is denied.
-        state
-            .popups
-            .update::<QuickSaveState>(|save| save.issued = true);
-        self.store.set_state(state);
-        Some(submission)
+        let mut submission = None;
+        self.update_state(|state| {
+            if !state.popups.is_current(generation) {
+                return false;
+            }
+            let Some(save) = state.popups.get::<QuickSaveState>() else {
+                return false;
+            };
+            if save.issued || !save.overrides_approved() {
+                return false;
+            }
+            let (Some(name), Some(project)) =
+                (save.review_name.clone(), save.approved_project.clone())
+            else {
+                return false;
+            };
+            let mut launch = save.draft.launch.clone();
+            launch.program = Some(project.environment.program().into());
+            launch.args.clear();
+            launch.directory = None;
+            launch
+                .environment
+                .retain(|key, _| save.selected.contains(key));
+            submission = Some(QuickSaveSubmission {
+                generation,
+                profile: SessionProfile {
+                    name,
+                    launch,
+                    project: Some(project),
+                },
+            });
+            // Keep the layer blocked until Host completion. Duplicate delivery is denied.
+            state
+                .popups
+                .update::<QuickSaveState>(|save| save.issued = true);
+            true
+        });
+        submission
     }
     pub fn finish_quick_save(
         &self,
         generation: u64,
         result: Result<(), String>,
     ) -> Option<FocusHandle> {
-        let mut state = self.store.state().read().clone();
-        if !state.popups.is_current(generation) || state.popups.get::<QuickSaveState>().is_none() {
-            return None;
-        }
-        let focus = match result {
-            Ok(()) => {
-                state.popups.close(generation);
-                self.terminal_focus()
+        let mut focus = None;
+        self.update_state(|state| {
+            if !state.popups.is_current(generation)
+                || state.popups.get::<QuickSaveState>().is_none()
+            {
+                return false;
             }
-            Err(error) => {
-                state.popups.update::<QuickSaveState>(|save| {
-                    save.approved_project = None;
-                    save.issued = false;
-                    save.error = Some(error);
-                    save.review_scroll.jump_to(f32::INFINITY);
-                });
-                state.popups.get::<QuickSaveState>().unwrap().focus
-            }
-        };
-        self.store.set_state(state);
-        Some(focus)
+            focus = Some(match result {
+                Ok(()) => {
+                    state.popups.close(generation);
+                    self.terminal_focus()
+                }
+                Err(error) => {
+                    state.popups.update::<QuickSaveState>(|save| {
+                        save.approved_project = None;
+                        save.issued = false;
+                        save.error = Some(error);
+                        save.review_scroll.jump_to(f32::INFINITY);
+                    });
+                    state.popups.get::<QuickSaveState>().unwrap().focus
+                }
+            });
+            true
+        });
+        focus
     }
 }
 /// Keep control characters inert without exposing Rust's Debug formatting.
@@ -403,6 +425,340 @@ impl QuickSaveState {
         self.selected.is_empty() || self.acknowledged
     }
 
+    fn review_header(
+        &self,
+        cx: &mut BuildCx,
+        name: &str,
+        generation: u64,
+        dispatch: &harbor_widget::Dispatcher<AppCommandRequest>,
+    ) -> View {
+        let back = dispatch.clone();
+        Column::new()
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .gap(design::LABEL_GAP)
+            .unwrap()
+            .push_child(
+                Focus::new()
+                    .focus_handle(self.focus)
+                    .child(design::text("Save preset", TextRole::Title))
+                    .build(cx),
+            )
+            .push_child(
+                Row::new()
+                    .cross_axis_alignment(CrossAxisAlignment::Center)
+                    .gap(design::LABEL_GAP)
+                    .unwrap()
+                    .push_child(
+                        Expanded::new().child(review_line(display_value(name), "review-name")),
+                    )
+                    .push_child(
+                        Button::text("Edit name")
+                            .style(design::control(cx, ControlRole::Quiet))
+                            .unwrap()
+                            .disabled(self.pending())
+                            .on_click(move |_| {
+                                back.dispatch(AppCommandRequest::popup(
+                                    AppCommand::EditQuickSave,
+                                    generation,
+                                ))
+                            })
+                            .keyed("quick-save-back"),
+                    )
+                    .build(cx),
+            )
+            .keyed("review-header")
+            .build(cx)
+    }
+
+    fn environment_overrides_section(
+        &self,
+        cx: &mut BuildCx,
+        ui: &WorkspaceUiController,
+        generation: u64,
+    ) -> View {
+        // Opt-in choices and their independent acknowledgement never live in disclosure.
+        let mut overrides = if self.draft.launch.environment.is_empty() {
+            Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch)
+        } else {
+            review_block(cx, "Environment variables", "overrides-heading")
+        };
+        overrides = overrides.push_child(review_message(
+            if self.draft.launch.environment.is_empty() {
+                "No environment overrides will be saved.".into()
+            } else {
+                format!(
+                    "{} of {} overrides selected. Values stay hidden; unselected entries are excluded.",
+                    self.selected.len(),
+                    self.draft.launch.environment.len()
+                )
+            },
+            "review-overrides",
+            false,
+        ));
+        for (index, key) in self.draft.launch.environment.keys().enumerate() {
+            let selected = self.selected.contains(key);
+            let key = key.clone();
+            let change = ui.clone();
+            overrides = overrides.push_child(View::deferred(
+                Checkbox::new(display_value(&key), selected)
+                    .style(design::control(cx, ControlRole::Checkbox))
+                    .unwrap()
+                    .disabled(self.pending())
+                    .on_change(move |checked| {
+                        change.update_quick_save(generation, |save| {
+                            if checked {
+                                save.selected.insert(key.clone());
+                            } else {
+                                save.selected.remove(&key);
+                            }
+                            save.acknowledged = false;
+                        });
+                    })
+                    .keyed(format!("environment-{index}")),
+            ));
+        }
+        if !self.selected.is_empty() {
+            let change = ui.clone();
+            overrides = overrides.push_child(View::deferred(
+                Checkbox::new(
+                    "Selected variables contain no passwords or tokens",
+                    self.acknowledged,
+                )
+                .style(design::control(cx, ControlRole::Checkbox))
+                .unwrap()
+                .disabled(self.pending())
+                .on_change(move |checked| {
+                    change.update_quick_save(generation, |save| save.acknowledged = checked)
+                })
+                .keyed("quick-save-ack"),
+            ));
+            if !self.acknowledged {
+                overrides = overrides.push_child(review_message(
+                    "Check the selected variables and confirm above before saving.",
+                    "override-error",
+                    true,
+                ));
+            }
+        }
+        overrides.build(cx)
+    }
+
+    fn source_details_section(
+        &self,
+        cx: &mut BuildCx,
+        ui: &WorkspaceUiController,
+        generation: u64,
+    ) -> View {
+        let mut details = Column::new()
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .gap(design::FIELD_GAP)
+            .unwrap();
+        let suspicious_source =
+            harbor_config::project::suspected_credentials(&self.draft.launch.args);
+        if suspicious_source {
+            details = details.push_child(review_message(
+                "Source startup arguments are hidden because they may contain credentials. They are not saved or replayed.",
+                "source-secret-warning",
+                true,
+            ));
+        }
+        let change = ui.clone();
+        details = details.push_child(
+            Row::new()
+                .push_child(View::deferred(
+                    Button::icon(
+                        if self.details_open {
+                            LucideIcon::ChevronUp
+                        } else {
+                            LucideIcon::ChevronDown
+                        },
+                        "Source details",
+                    )
+                    .style(design::control(cx, ControlRole::Quiet))
+                    .unwrap()
+                    .disabled(self.pending())
+                    .on_click(move |_| {
+                        change.update_quick_save(generation, |save| {
+                            save.details_open = !save.details_open
+                        })
+                    })
+                    .keyed("quick-save-details"),
+                ))
+                .build(cx),
+        );
+        if self.details_open {
+            let arguments = if suspicious_source {
+                "[hidden: suspected credentials]".into()
+            } else if self.draft.launch.args.is_empty() {
+                "None".into()
+            } else {
+                self.draft
+                    .launch
+                    .args
+                    .iter()
+                    .map(|arg| {
+                        if arg.is_empty() || arg.chars().any(|ch| ch.is_whitespace() || ch == '"') {
+                            format!("{arg:?}")
+                        } else {
+                            display_value(arg)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            let directory = self
+                .draft
+                .launch
+                .directory
+                .as_ref()
+                .map(|path| display_value(&path.to_string_lossy()))
+                .unwrap_or_else(|| "Unknown".into());
+            details = details
+                .push_child(review_line(
+                    format!(
+                        "Source program (provenance): {}",
+                        display_value(
+                            self.draft.launch.program.as_deref().unwrap_or("Default shell")
+                        )
+                    ),
+                    "review-program",
+                ))
+                .push_child(review_line(
+                    format!("Source arguments (not replayed): {arguments}"),
+                    "review-args",
+                ))
+                .push_child(review_line(
+                    format!("Initial directory (not current-directory evidence): {directory}"),
+                    "review-directory",
+                ))
+                .push_child(review_message(
+                    "The preset uses its selected environment, project directory and included agent, not the source shell's startup arguments. History, nested environments and virtual-environment activation are not restored.",
+                    "project-limitations",
+                    false,
+                ));
+        }
+        details.build(cx)
+    }
+
+    fn review_footer(
+        &self,
+        cx: &mut BuildCx,
+        ui: &WorkspaceUiController,
+        generation: u64,
+        recipe_blocked: bool,
+        dispatch: &harbor_widget::Dispatcher<AppCommandRequest>,
+    ) -> View {
+        let cancel = dispatch.clone();
+        let commit = ui.clone();
+        Column::new()
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .gap(8.0)
+            .unwrap()
+            .push_child(review_divider("actions-divider"))
+            .push_child(
+                Row::new()
+                    .wrap(true)
+                    .main_axis_alignment(harbor_widget::MainAxisAlignment::End)
+                    .gap(8.0)
+                    .unwrap()
+                    .push_child(View::deferred(
+                        Button::text("Cancel")
+                            .style(design::control(cx, ControlRole::Quiet))
+                            .unwrap()
+                            .disabled(self.pending())
+                            .on_click(move |_| {
+                                cancel.dispatch(AppCommandRequest::popup(
+                                    AppCommand::CancelQuickSave,
+                                    generation,
+                                ))
+                            })
+                            .keyed("quick-save-cancel"),
+                    ))
+                    .push_child(View::deferred(
+                        Button::text(if self.pending() { "Saving…" } else { "Save" })
+                            .style(design::control(cx, ControlRole::Primary))
+                            .unwrap()
+                            .disabled(
+                                self.pending() || recipe_blocked || !self.overrides_approved(),
+                            )
+                            .on_click(move |_| commit.queue_quick_save(generation))
+                            .keyed("quick-save-final"),
+                    ))
+                    .build(cx),
+            )
+            .keyed("review-footer")
+            .build(cx)
+    }
+
+    fn naming_step(
+        &self,
+        cx: &mut BuildCx,
+        ui: &WorkspaceUiController,
+        generation: u64,
+        appearance: &GlassAppearance,
+        dispatch: &harbor_widget::Dispatcher<AppCommandRequest>,
+    ) -> View {
+        let changed = ui.clone();
+        let submit = dispatch.clone();
+        let cancel = dispatch.clone();
+        let input = TextField::new(self.input.clone())
+            .decoration(appearance.input())
+            .foreground(design::FOREGROUND)
+            .unwrap()
+            .padding(6.0)
+            .unwrap()
+            .placeholder("Preset name…")
+            .focus_handle(self.focus)
+            .on_change(move |_| {
+                if changed.store.state().read().popups.is_current(generation) {
+                    changed
+                        .publish_configuration_notice(ConfigurationNoticeSource::QuickSave, None);
+                }
+            })
+            .on_submit(move |_| {
+                submit.dispatch(AppCommandRequest::popup(
+                    AppCommand::AdvanceQuickSave,
+                    generation,
+                ))
+            })
+            .on_escape(move || {
+                cancel.dispatch(AppCommandRequest::popup(
+                    AppCommand::CancelQuickSave,
+                    generation,
+                ))
+            });
+        let advance = dispatch.clone();
+        let button = popup_icon_button(
+            LucideIcon::Check,
+            crate::appearance::glass_icon_button_style(cx),
+        )
+        .disabled(self.pending())
+        .on_activate(move |_| {
+            advance.dispatch(AppCommandRequest::popup(
+                AppCommand::AdvanceQuickSave,
+                generation,
+            ))
+        });
+        ConstrainedBox::new()
+            .max_height_with(|metrics| metrics.line_height + 12.0)
+            .child(
+                Row::new()
+                    .cross_axis_alignment(CrossAxisAlignment::Stretch)
+                    .gap(4.0)
+                    .unwrap()
+                    .push_child(
+                        Expanded::new()
+                            .child(View::deferred(
+                                input.keyed(format!("save-editor-{generation}")),
+                            ))
+                            .build(cx),
+                    )
+                    .push_child(View::deferred(button.keyed("save-advance")))
+                    .build(cx),
+            )
+            .build(cx)
+    }
+
     fn panel(&self, cx: &mut BuildCx, ui: &WorkspaceUiController, generation: u64) -> View {
         cx.use_state(|| {
             std::rc::Rc::new(QuickSaveLifetime {
@@ -417,7 +773,6 @@ impl QuickSaveState {
             GlassAppearance::default()
         };
         let dispatch = ui.store.dispatcher();
-        let send = move |command| dispatch.dispatch(AppCommandRequest::popup(command, generation));
         let mut content = Column::new()
             .cross_axis_alignment(CrossAxisAlignment::Stretch)
             .gap(if reviewing {
@@ -429,273 +784,29 @@ impl QuickSaveState {
         let mut review_header = None;
         let mut review_footer = None;
         if let Some(name) = &self.review_name {
-            let back = send.clone();
-            let header = Column::new()
-                .cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .gap(design::LABEL_GAP)
-                .unwrap()
+            let recipe_error = self.project.recipe().err();
+            review_header = Some(self.review_header(cx, name, generation, &dispatch));
+            content = content
                 .push_child(
-                    Focus::new()
-                        .focus_handle(self.focus)
-                        .child(design::text("Save preset", TextRole::Title))
-                        .build(cx),
+                    self.project
+                        .panel(cx, ui, generation, self.pending(), recipe_error),
                 )
-                .push_child(
-                    Row::new()
-                        .cross_axis_alignment(CrossAxisAlignment::Center)
-                        .gap(design::LABEL_GAP)
-                        .unwrap()
-                        .push_child(
-                            Expanded::new().child(review_line(display_value(name), "review-name")),
-                        )
-                        .push_child(
-                            Button::text("Edit name")
-                                .style(design::control(cx, ControlRole::Quiet))
-                                .unwrap()
-                                .disabled(self.pending())
-                                .on_click(move |_| back(AppCommand::EditQuickSave))
-                                .keyed("quick-save-back"),
-                        )
-                        .build(cx),
-                )
-                .keyed("review-header")
-                .build(cx);
-            review_header = Some(header);
-            content = content.push_child(self.project.panel(cx, ui, generation, self.pending()));
-
-            // Opt-in choices and their independent acknowledgement never live in disclosure.
-            let mut overrides = if self.draft.launch.environment.is_empty() {
-                Column::new().cross_axis_alignment(CrossAxisAlignment::Stretch)
-            } else {
-                review_block(cx, "Environment variables", "overrides-heading")
-            };
-            overrides = overrides.push_child(review_message(
-                if self.draft.launch.environment.is_empty() {
-                    "No environment overrides will be saved.".into()
-                } else {
-                    format!("{} of {} overrides selected. Values stay hidden; unselected entries are excluded.",
-                        self.selected.len(), self.draft.launch.environment.len())
-                },
-                "review-overrides", false,
-            ));
-            for (index, key) in self.draft.launch.environment.keys().enumerate() {
-                let selected = self.selected.contains(key);
-                let key = key.clone();
-                let change = ui.clone();
-                overrides = overrides.push_child(View::deferred(
-                    Checkbox::new(display_value(&key), selected)
-                        .style(design::control(cx, ControlRole::Checkbox))
-                        .unwrap()
-                        .disabled(self.pending())
-                        .on_change(move |checked| {
-                            change.update_quick_save(generation, |save| {
-                                if checked {
-                                    save.selected.insert(key.clone());
-                                } else {
-                                    save.selected.remove(&key);
-                                }
-                                save.acknowledged = false;
-                            });
-                        })
-                        .keyed(format!("environment-{index}")),
-                ));
-            }
-            if !self.selected.is_empty() {
-                let change = ui.clone();
-                overrides = overrides.push_child(View::deferred(
-                    Checkbox::new(
-                        "Selected variables contain no passwords or tokens",
-                        self.acknowledged,
-                    )
-                    .style(design::control(cx, ControlRole::Checkbox))
-                    .unwrap()
-                    .disabled(self.pending())
-                    .on_change(move |checked| {
-                        change.update_quick_save(generation, |save| save.acknowledged = checked)
-                    })
-                    .keyed("quick-save-ack"),
-                ));
-                if !self.acknowledged {
-                    overrides = overrides.push_child(review_message(
-                        "Check the selected variables and confirm above before saving.",
-                        "override-error",
-                        true,
-                    ));
-                }
-            }
-
-            content = content.push_child(overrides.build(cx));
-            let mut details = Column::new()
-                .cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .gap(design::FIELD_GAP)
-                .unwrap();
-            let suspicious_source =
-                harbor_config::project::suspected_credentials(&self.draft.launch.args);
-            if suspicious_source {
-                details = details.push_child(review_message(
-                    "Source startup arguments are hidden because they may contain credentials. They are not saved or replayed.",
-                    "source-secret-warning", true,
-                ));
-            }
-            let change = ui.clone();
-            details = details.push_child(
-                Row::new()
-                    .push_child(View::deferred(
-                        Button::icon(
-                            if self.details_open {
-                                LucideIcon::ChevronUp
-                            } else {
-                                LucideIcon::ChevronDown
-                            },
-                            "Source details",
-                        )
-                        .style(design::control(cx, ControlRole::Quiet))
-                        .unwrap()
-                        .disabled(self.pending())
-                        .on_click(move |_| {
-                            change.update_quick_save(generation, |save| {
-                                save.details_open = !save.details_open
-                            })
-                        })
-                        .keyed("quick-save-details"),
-                    ))
-                    .build(cx),
-            );
-            if self.details_open {
-                let arguments = if suspicious_source {
-                    "[hidden: suspected credentials]".into()
-                } else if self.draft.launch.args.is_empty() {
-                    "None".into()
-                } else {
-                    self.draft
-                        .launch
-                        .args
-                        .iter()
-                        .map(|arg| {
-                            if arg.is_empty()
-                                || arg.chars().any(|ch| ch.is_whitespace() || ch == '"')
-                            {
-                                format!("{arg:?}")
-                            } else {
-                                display_value(arg)
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                };
-                let directory = self
-                    .draft
-                    .launch
-                    .directory
-                    .as_ref()
-                    .map(|path| display_value(&path.to_string_lossy()))
-                    .unwrap_or_else(|| "Unknown".into());
-                details = details
-                    .push_child(review_line(format!("Source program (provenance): {}",
-                        display_value(self.draft.launch.program.as_deref().unwrap_or("Default shell"))), "review-program"))
-                    .push_child(review_line(format!("Source arguments (not replayed): {arguments}"), "review-args"))
-                    .push_child(review_line(format!("Initial directory (not current-directory evidence): {directory}"), "review-directory"))
-                    .push_child(review_message(
-                        "The preset uses its selected environment, project directory and included agent, not the source shell's startup arguments. History, nested environments and virtual-environment activation are not restored.",
-                        "project-limitations", false,
-                    ));
-            }
-
-            content = content.push_child(details.build(cx));
-            let mut actions = Column::new()
-                .cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .gap(8.0)
-                .unwrap()
-                .push_child(review_divider("actions-divider"));
+                .push_child(self.environment_overrides_section(cx, ui, generation))
+                .push_child(self.source_details_section(cx, ui, generation));
             if let Some(error) = &self.error {
                 // Keep complete errors next to the footer, but in the scrolling body:
                 // a long filesystem error must not consume the fixed controls' budget.
                 content = content.push_child(review_message(error.clone(), "save-error", true));
             }
-            let cancel = send.clone();
-            let commit = ui.clone();
-            actions = actions.push_child(
-                Row::new()
-                    .wrap(true)
-                    .main_axis_alignment(harbor_widget::MainAxisAlignment::End)
-                    .gap(8.0)
-                    .unwrap()
-                    .push_child(View::deferred(
-                        Button::text("Cancel")
-                            .style(design::control(cx, ControlRole::Quiet))
-                            .unwrap()
-                            .disabled(self.pending())
-                            .on_click(move |_| cancel(AppCommand::CancelQuickSave))
-                            .keyed("quick-save-cancel"),
-                    ))
-                    .push_child(View::deferred(
-                        Button::text(if self.pending() { "Saving…" } else { "Save" })
-                            .style(design::control(cx, ControlRole::Primary))
-                            .unwrap()
-                            .disabled(
-                                self.pending()
-                                    || self.project.recipe().is_err()
-                                    || !self.overrides_approved(),
-                            )
-                            .on_click(move |_| commit.queue_quick_save(generation))
-                            .keyed("quick-save-final"),
-                    ))
-                    .build(cx),
-            );
-            review_footer = Some(actions.keyed("review-footer").build(cx));
+            review_footer =
+                Some(self.review_footer(cx, ui, generation, recipe_error.is_some(), &dispatch));
         } else {
-            let changed = ui.clone();
-            let submit = send.clone();
-            let cancel = send.clone();
-            let input = TextField::new(self.input.clone())
-                .decoration(appearance.input())
-                .foreground(design::FOREGROUND)
-                .unwrap()
-                .padding(6.0)
-                .unwrap()
-                .placeholder("Preset name…")
-                .focus_handle(self.focus)
-                .on_change(move |_| {
-                    if changed.store.state().read().popups.is_current(generation) {
-                        changed.publish_configuration_notice(
-                            ConfigurationNoticeSource::QuickSave,
-                            None,
-                        );
-                    }
-                })
-                .on_submit(move |_| submit(AppCommand::AdvanceQuickSave))
-                .on_escape(move || cancel(AppCommand::CancelQuickSave));
-            let advance = send.clone();
-            let button = popup_icon_button(
-                LucideIcon::Check,
-                crate::appearance::glass_icon_button_style(cx),
-            )
-            .disabled(self.pending())
-            .on_activate(move |_| advance(AppCommand::AdvanceQuickSave));
-            content = content.push_child(
-                ConstrainedBox::new()
-                    .max_height_with(|metrics| metrics.line_height + 12.0)
-                    .child(
-                        Row::new()
-                            .cross_axis_alignment(CrossAxisAlignment::Stretch)
-                            .gap(4.0)
-                            .unwrap()
-                            .push_child(
-                                Expanded::new()
-                                    .child(View::deferred(
-                                        input.keyed(format!("save-editor-{generation}")),
-                                    ))
-                                    .build(cx),
-                            )
-                            .push_child(View::deferred(button.keyed("save-advance")))
-                            .build(cx),
-                    )
-                    .build(cx),
-            );
+            content =
+                content.push_child(self.naming_step(cx, ui, generation, &appearance, &dispatch));
         }
-        let cancel = send.clone();
+        let cancel = dispatch;
         let actions = ActionHandler::new(move |command| {
-            cancel(command);
+            cancel.dispatch(AppCommandRequest::popup(command, generation));
             ActionOutcome::Consumed
         });
         let content = if let (Some(header), Some(footer)) = (review_header, review_footer) {

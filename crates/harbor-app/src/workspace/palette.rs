@@ -2,7 +2,7 @@
 use super::*;
 use crate::command::{
     CommandCompletion, CommandContext, CommandDescriptor, CommandSource, command_availability,
-    command_registry, palette_command_supported,
+    command_registry_slice, palette_command_supported,
 };
 use crate::tab_manager::{SessionId, TabManager, TabSnapshot};
 use harbor_config::{ProfileId, SessionProfile};
@@ -102,10 +102,10 @@ impl Drop for PaletteEditorLifetime {
     }
 }
 
-fn candidates(query: &str) -> Vec<CommandDescriptor> {
+fn candidates(query: &str) -> Vec<&'static CommandDescriptor> {
     let query = query.to_lowercase();
-    command_registry()
-        .into_iter()
+    command_registry_slice()
+        .iter()
         .filter(|entry| {
             entry.palette_visible
                 && (entry.id.to_lowercase().contains(&query)
@@ -244,24 +244,30 @@ fn shortcut_badges(
     shortcuts.build(cx)
 }
 
+fn command_context(
+    state: &WorkspaceUiState,
+    active_bridge: Option<&TerminalWidgetBridge>,
+    target: Option<SessionId>,
+) -> CommandContext {
+    CommandContext {
+        alternate_screen: active_bridge.is_some_and(TerminalWidgetBridge::is_alt_screen),
+        search_open: state
+            .popups
+            .get::<SearchUiState>()
+            .is_some_and(|search| Some(search.source) == target),
+    }
+}
+
 impl WorkspaceUiController {
     fn palette_context(&self) -> CommandContext {
         let tabs = self.tabs.state.read();
         let state = self.store.state().read();
-        CommandContext {
-            alternate_screen: tabs
-                .active_bridge
-                .as_ref()
-                .is_some_and(|bridge| bridge.is_alt_screen()),
-            search_open: state.popups.get::<SearchUiState>().is_some_and(|search| {
-                Some(search.source)
-                    == tabs
-                        .snapshots
-                        .iter()
-                        .find(|tab| tab.active)
-                        .map(|tab| tab.binding.session)
-            }),
-        }
+        let target = tabs
+            .snapshots
+            .iter()
+            .find(|tab| tab.active)
+            .map(|tab| tab.binding.session);
+        command_context(&state, tabs.active_bridge.as_ref(), target)
     }
 
     /// A focus loss invalidates queued selections as well as the editor's transient input.
@@ -296,27 +302,30 @@ impl WorkspaceUiController {
     }
 
     fn open_palette_level(&self, level: PaletteLevel) -> FocusHandle {
-        let mut state = self.store.state().read().clone();
-        let focus = state.popups.open(|generation| PaletteState {
-            generation,
-            target: self
-                .tabs
-                .state
-                .read()
-                .snapshots
-                .iter()
-                .find(|tab| tab.active)
-                .map(|tab| tab.binding.session),
-            input: TextEditingController::new(""),
-            selected: 0,
-            level,
-            invocation: None,
-            focus: self.palette_focus,
-            scroll: ScrollController::new(),
-            row_height: Default::default(),
+        let target = self
+            .tabs
+            .state
+            .read()
+            .snapshots
+            .iter()
+            .find(|tab| tab.active)
+            .map(|tab| tab.binding.session);
+        let mut focus = None;
+        self.update_state(|state| {
+            focus = Some(state.popups.open(|generation| PaletteState {
+                generation,
+                target,
+                input: TextEditingController::new(""),
+                selected: 0,
+                level,
+                invocation: None,
+                focus: self.palette_focus,
+                scroll: ScrollController::new(),
+                row_height: Default::default(),
+            }));
+            true
         });
-        self.store.set_state(state);
-        focus
+        focus.expect("palette opened")
     }
 
     /// Navigation retires the child editor; this is not restoration of a suspended popup.
@@ -335,35 +344,36 @@ impl WorkspaceUiController {
 
     /// Called only after complete configuration acceptance (including live resource effects).
     pub fn publish_profiles(&self, profiles: BTreeMap<ProfileId, SessionProfile>) {
-        let mut state = self.store.state().read().clone();
-        if state.profiles == profiles {
-            return;
-        }
-        let selected = state.popups.get::<PaletteState>().and_then(|palette| {
-            entries(palette, &state.profiles)
-                .get(palette.selected)
-                .cloned()
-        });
-        state.profiles = profiles;
-        state.profiles_revision = state
-            .profiles_revision
-            .checked_add(1)
-            .expect("profile catalog revision exhausted");
-        let current = state.profiles.clone();
-        state.popups.update::<PaletteState>(|palette| {
-            if palette.level == PaletteLevel::Profiles && palette.invocation.is_none() {
-                // Preserve identity, never reinterpret an old index as a different profile.
-                palette.selected = selected
-                    .as_ref()
-                    .and_then(|old| {
-                        entries(palette, &current)
-                            .iter()
-                            .position(|new| new.id == old.id)
-                    })
-                    .unwrap_or(usize::MAX);
+        self.update_state(|state| {
+            if state.profiles == profiles {
+                return false;
             }
+            let selected = state.popups.get::<PaletteState>().and_then(|palette| {
+                entries(palette, &state.profiles)
+                    .get(palette.selected)
+                    .cloned()
+            });
+            state.profiles = profiles;
+            state.profiles_revision = state
+                .profiles_revision
+                .checked_add(1)
+                .expect("profile catalog revision exhausted");
+            let current = &state.profiles;
+            state.popups.update::<PaletteState>(|palette| {
+                if palette.level == PaletteLevel::Profiles && palette.invocation.is_none() {
+                    // Preserve identity, never reinterpret an old index as a different profile.
+                    palette.selected = selected
+                        .as_ref()
+                        .and_then(|old| {
+                            entries(palette, current)
+                                .iter()
+                                .position(|new| new.id == old.id)
+                        })
+                        .unwrap_or(usize::MAX);
+                }
+            });
+            true
         });
-        self.store.set_state(state);
     }
 
     /// Capture before one-shot admission closes the owning popup; never accepts direct requests.
@@ -390,12 +400,7 @@ impl WorkspaceUiController {
         })
     }
     pub fn close_palette(&self, generation: u64) -> bool {
-        let mut state = self.store.state().read().clone();
-        if state.popups.get::<PaletteState>().is_none() || !state.popups.close(generation) {
-            return false;
-        }
-        self.store.set_state(state);
-        true
+        self.update_state(|state| state.popups.close_if::<PaletteState>(generation))
     }
 
     /// Host rechecks against its authoritative snapshots, not a rendered row.
@@ -444,15 +449,7 @@ impl WorkspaceUiController {
             request.command,
             target,
             &tabs.snapshots(),
-            CommandContext {
-                alternate_screen: tabs
-                    .active_bridge()
-                    .is_some_and(|bridge| bridge.is_alt_screen()),
-                search_open: state
-                    .popups
-                    .get::<SearchUiState>()
-                    .is_some_and(|search| Some(search.source) == target),
-            },
+            command_context(&state, tabs.active_bridge().as_ref(), target),
         )
     }
 
@@ -491,8 +488,8 @@ impl WorkspaceUiController {
             self.publish_configuration_notice(ConfigurationNoticeSource::Command, None);
             return;
         };
-        let label = command_registry()
-            .into_iter()
+        let label = command_registry_slice()
+            .iter()
             .find(|entry| entry.command == command)
             .map(|entry| entry.label)
             .unwrap_or(if command == AppCommand::LaunchProfile {
@@ -507,30 +504,32 @@ impl WorkspaceUiController {
     }
 
     fn palette_changed(&self, generation: u64) {
-        let mut state = self.store.state().read().clone();
-        if state
-            .popups
-            .get::<PaletteState>()
-            .is_some_and(|palette| palette.generation == generation && palette.invocation.is_none())
-        {
+        self.update_state(|state| {
+            if !state.popups.get::<PaletteState>().is_some_and(|palette| {
+                palette.generation == generation && palette.invocation.is_none()
+            }) {
+                return false;
+            }
             state.popups.update::<PaletteState>(|palette| {
                 palette.selected = 0;
                 palette.scroll.jump_to(0.0);
             });
-            self.store.set_state(state);
-        }
+            true
+        });
     }
 
     fn palette_navigate(&self, generation: u64, direction: harbor_widget::VerticalDirection) {
-        let mut state = self.store.state().read().clone();
-        let state_profiles = state.profiles.clone();
-        if state
-            .popups
-            .get::<PaletteState>()
-            .is_some_and(|palette| palette.generation == generation && palette.invocation.is_none())
-        {
+        self.update_state(|state| {
+            if !state.popups.get::<PaletteState>().is_some_and(|palette| {
+                palette.generation == generation && palette.invocation.is_none()
+            }) {
+                return false;
+            }
+            let count = state
+                .popups
+                .get::<PaletteState>()
+                .map_or(0, |palette| entries(palette, &state.profiles).len());
             state.popups.update::<PaletteState>(|palette| {
-                let count = entries(palette, &state_profiles).len();
                 palette.selected = if count == 0 {
                     0
                 } else if palette.selected == usize::MAX {
@@ -548,12 +547,12 @@ impl WorkspaceUiController {
                 let start = palette.selected as f32 * (height + 4.0);
                 palette.scroll.reveal_range(start, start + height);
             });
-            self.store.set_state(state);
-        }
+            true
+        });
     }
 
     fn palette_submit(&self, generation: u64) {
-        let state = self.store.state().read().clone();
+        let state = self.store.state().read();
         let Some(palette) = state.popups.get::<PaletteState>() else {
             return;
         };
@@ -566,11 +565,12 @@ impl WorkspaceUiController {
         else {
             return;
         };
+        drop(state);
         self.palette_submit_entry(generation, entry);
     }
 
     fn palette_submit_entry(&self, generation: u64, entry: PaletteEntry) {
-        let mut state = self.store.state().read().clone();
+        let state = self.store.state().read();
         let Some(palette) = state.popups.get::<PaletteState>() else {
             return;
         };
@@ -583,35 +583,41 @@ impl WorkspaceUiController {
                 && current.profile == entry.profile
                 && current.command == entry.command
         }) {
+            drop(state);
             self.report_palette_result(
                 entry.command,
                 Err("Rejected: profile changed or was removed"),
             );
             return;
         }
+        let target = palette.target;
+        drop(state);
         let snapshots = self.tabs.state.read().snapshots.clone();
-        if let Err(reason) = availability(
-            entry.command,
-            palette.target,
-            &snapshots,
-            self.palette_context(),
-        ) {
+        if let Err(reason) = availability(entry.command, target, &snapshots, self.palette_context())
+        {
             self.report_palette_result(entry.command, Err(&format!("Rejected: {reason}")));
             return;
         }
-        let request = AppCommandRequest {
-            command: entry.command,
-            focus: TabFocusPolicy::Terminal,
-            source: CommandSource::Palette {
-                generation,
-                target: palette.target,
-            },
-        };
-        state.popups.update::<PaletteState>(|palette| {
-            palette.invocation = Some(entry);
+        let mut dispatched = None;
+        self.update_state(|state| {
+            if !state.popups.get::<PaletteState>().is_some_and(|palette| {
+                palette.generation == generation && palette.invocation.is_none()
+            }) {
+                return false;
+            }
+            state.popups.update::<PaletteState>(|palette| {
+                palette.invocation = Some(entry.clone());
+            });
+            dispatched = Some(AppCommandRequest {
+                command: entry.command,
+                focus: TabFocusPolicy::Terminal,
+                source: CommandSource::Palette { generation, target },
+            });
+            true
         });
-        self.store.set_state(state);
-        self.store.dispatcher().dispatch(request);
+        if let Some(request) = dispatched {
+            self.store.dispatcher().dispatch(request);
+        }
     }
 }
 
@@ -679,8 +685,25 @@ fn palette_panel(
         });
         input.build(cx)
     };
-    let entries = entries(palette, &controller.store.state().read().profiles);
-    let snapshots = controller.tabs.state.read().snapshots.clone();
+    let (entries, profiles_revision, snapshots, context) = {
+        let tabs = controller.tabs.state.read();
+        let state = controller.store.state().read();
+        let entries = entries(palette, &state.profiles);
+        let context = (!entries.is_empty()).then(|| {
+            let target = tabs
+                .snapshots
+                .iter()
+                .find(|tab| tab.active)
+                .map(|tab| tab.binding.session);
+            command_context(&state, tabs.active_bridge.as_ref(), target)
+        });
+        (
+            entries,
+            state.profiles_revision,
+            tabs.snapshots.clone(),
+            context,
+        )
+    };
     let foreground = cx.theme().button.normal.foreground;
     let shortcut_rows = candidates("")
         .iter()
@@ -704,63 +727,15 @@ fn palette_panel(
         .gap(4.0)
         .unwrap();
     if profiles_level {
-        let back = controller.store.dispatcher();
-        let confirm = controller.clone();
-        let style = glass_icon_button_style(cx);
-        let pending = palette.invocation.is_some();
-        let confirm_disabled = pending
-            || entries.get(palette.selected).is_none_or(|entry| {
-                availability(
-                    entry.command,
-                    palette.target,
-                    &snapshots,
-                    controller.palette_context(),
-                )
-                .is_err()
-            });
-        let revision = controller.store.state().read().profiles_revision;
-        let selection = entries
-            .get(palette.selected)
-            .map(|entry| entry.id.clone())
-            .unwrap_or_default();
-        // A separate component owns button hooks; command/profile levels cannot
-        // shift the parent palette's retained ScrollView hook sequence.
-        let input_row = move |cx: &mut BuildCx| {
-            let back = back.clone();
-            let confirm = confirm.clone();
-            let back = popup_icon_button(LucideIcon::ArrowLeft, style.clone())
-                .focusable(false)
-                .disabled(pending)
-                .on_activate(move |_| {
-                    back.dispatch(AppCommandRequest::popup(
-                        AppCommand::BackToCommands(generation),
-                        generation,
-                    ))
-                });
-            let confirm = popup_icon_button(LucideIcon::Check, style.clone())
-                .focusable(false)
-                .disabled(confirm_disabled)
-                .on_activate(move |_| confirm.palette_submit(generation));
-            let row = Row::new()
-                .cross_axis_alignment(CrossAxisAlignment::Stretch)
-                .gap(4.0)
-                .unwrap()
-                .push_child(View::deferred(back.keyed("profile-back")))
-                .push_child(Expanded::new().child(input.clone()).build(cx))
-                // Retire a press if reload/navigation changes the selected recipe.
-                .push_child(View::deferred(
-                    confirm.keyed(format!("profile-confirm-{revision}-{selection}")),
-                ))
-                .build(cx);
-            // Bound the stretch row to one editor line, not the whole results panel.
-            // Runtime text metrics can differ from the headless fixture's 20dp line.
-            ConstrainedBox::new()
-                .max_height_with(|metrics| metrics.line_height + 12.0)
-                .child(row)
-                .build(cx)
-        };
-        content = content.push_child(View::deferred(
-            input_row.keyed(format!("profile-input-row-{generation}")),
+        content = content.push_child(profile_input_row(
+            cx,
+            controller,
+            palette,
+            &entries,
+            &snapshots,
+            context,
+            profiles_revision,
+            input,
         ));
     } else {
         content = content.push_child(input);
@@ -777,93 +752,21 @@ fn palette_panel(
             .build(cx),
         );
     } else {
-        let context = controller.palette_context();
+        let context = context.expect("non-empty entries computed command context");
         for (index, entry) in entries.iter().enumerate() {
-            let disabled = palette.invocation.is_some()
-                || availability(entry.command, palette.target, &snapshots, context).is_err();
-            let foreground = if disabled {
-                cx.theme().button.disabled.foreground
-            } else {
-                foreground
-            };
-            let label = TextLabel::new(entry.label.clone())
-                .foreground(foreground)
-                .expect("valid color")
-                .ellipsis()
-                .build(cx);
-            let shortcuts = if profiles_level {
-                TextLabel::new(entry.id.clone())
-                    .foreground(foreground)
-                    .expect("valid color")
-                    .build(cx)
-            } else {
-                shortcut_badges(cx, bindings, entry.command, foreground)
-            };
-            let row = Row::new()
-                .cross_axis_alignment(CrossAxisAlignment::Center)
-                .push_child(View::leaf(PaletteRowHeight { shortcut_rows }))
-                .push_child(Expanded::new().child(label).build(cx))
-                .push_child(
-                    Padding::new(harbor_widget::Insets {
-                        top: 0.0,
-                        right: 0.0,
-                        bottom: 0.0,
-                        left: 12.0,
-                    })
-                    .unwrap()
-                    .child(shortcuts)
-                    .build(cx),
-                )
-                .build(cx);
-            let activate = controller.clone();
-            let selected_entry = entry.clone();
-            let mut style = cx.theme().button.clone();
-            let transparent = ControlColors {
-                background: Color::TRANSPARENT,
-                border: Color::TRANSPARENT,
+            rows = rows.push_child(palette_entry_row(
+                cx,
+                controller,
+                bindings,
+                palette,
+                index,
+                entry,
+                shortcut_rows,
+                profiles_revision,
+                &snapshots,
+                context,
                 foreground,
-            };
-            style.min_height = 0.0;
-            style.horizontal_padding = 0.0;
-            style.border_width = 0.0;
-            style.normal = transparent;
-            style.hovered = transparent;
-            style.pressed = transparent;
-            style.selected = transparent;
-            style.disabled = transparent;
-            let region = InteractiveRegion::new()
-                .style(style)
-                .expect("valid control style")
-                .focusable(false)
-                .selected(index == palette.selected)
-                .disabled(disabled)
-                .on_activate(move |_| {
-                    activate.palette_submit_entry(generation, selected_entry.clone())
-                })
-                .child_with(move |cx, state| {
-                    let content = Padding::new(harbor_widget::Insets {
-                        top: 6.0,
-                        right: 8.0,
-                        bottom: 6.0,
-                        left: 8.0,
-                    })
-                    .unwrap()
-                    .child(row.clone())
-                    .build(cx);
-                    match GlassAppearance::command_palette_row(foreground, state) {
-                        Some(glass) => glass.panel(cx, content),
-                        None => content,
-                    }
-                });
-            rows = rows.push_child(View::deferred(region.keyed(if profiles_level {
-                format!(
-                    "palette-row-{generation}-{}-{}",
-                    entry.id,
-                    controller.store.state().read().profiles_revision
-                )
-            } else {
-                format!("palette-row-{generation}-{}", entry.id)
-            })));
+            ));
         }
         let row_height = palette.row_height.clone();
         // Uniform rows let committed content geometry determine the exact row height.
@@ -893,21 +796,13 @@ fn palette_panel(
                 )
                 .build(cx),
         );
-        content = content.push_child(
-            TextLabel::new(format!(
-                "{} / {} · ↑↓ select · Enter / click run · Esc {}",
-                if palette.selected < entries.len() {
-                    palette.selected + 1
-                } else {
-                    0
-                },
-                entries.len(),
-                if profiles_level { "back" } else { "close" }
-            ))
-            .foreground(foreground)
-            .expect("valid color")
-            .build(cx),
-        );
+        content = content.push_child(palette_footer(
+            cx,
+            palette.selected,
+            entries.len(),
+            profiles_level,
+            foreground,
+        ));
     }
     if entries.is_empty() {
         content = content.push_child(
@@ -962,4 +857,192 @@ fn palette_panel(
         )
         .keyed("command-palette")
         .build(cx)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn profile_input_row(
+    cx: &BuildCx,
+    controller: &WorkspaceUiController,
+    palette: &PaletteState,
+    entries: &[PaletteEntry],
+    snapshots: &[TabSnapshot],
+    context: Option<CommandContext>,
+    revision: u64,
+    input: View,
+) -> View {
+    let generation = palette.generation;
+    let back = controller.store.dispatcher();
+    let confirm = controller.clone();
+    let style = glass_icon_button_style(cx);
+    let pending = palette.invocation.is_some();
+    let confirm_disabled = pending
+        || entries.get(palette.selected).is_none_or(|entry| {
+            availability(
+                entry.command,
+                palette.target,
+                snapshots,
+                context.expect("non-empty entries computed command context"),
+            )
+            .is_err()
+        });
+    let selection = entries
+        .get(palette.selected)
+        .map(|entry| entry.id.clone())
+        .unwrap_or_default();
+    // A separate component owns button hooks; command/profile levels cannot
+    // shift the parent palette's retained ScrollView hook sequence.
+    let input_row = move |cx: &mut BuildCx| {
+        let back = back.clone();
+        let confirm = confirm.clone();
+        let back = popup_icon_button(LucideIcon::ArrowLeft, style.clone())
+            .focusable(false)
+            .disabled(pending)
+            .on_activate(move |_| {
+                back.dispatch(AppCommandRequest::popup(
+                    AppCommand::BackToCommands(generation),
+                    generation,
+                ))
+            });
+        let confirm = popup_icon_button(LucideIcon::Check, style.clone())
+            .focusable(false)
+            .disabled(confirm_disabled)
+            .on_activate(move |_| confirm.palette_submit(generation));
+        let row = Row::new()
+            .cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .gap(4.0)
+            .unwrap()
+            .push_child(View::deferred(back.keyed("profile-back")))
+            .push_child(Expanded::new().child(input.clone()).build(cx))
+            // Retire a press if reload/navigation changes the selected recipe.
+            .push_child(View::deferred(
+                confirm.keyed(format!("profile-confirm-{revision}-{selection}")),
+            ))
+            .build(cx);
+        // Bound the stretch row to one editor line, not the whole results panel.
+        // Runtime text metrics can differ from the headless fixture's 20dp line.
+        ConstrainedBox::new()
+            .max_height_with(|metrics| metrics.line_height + 12.0)
+            .child(row)
+            .build(cx)
+    };
+    View::deferred(input_row.keyed(format!("profile-input-row-{generation}")))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn palette_entry_row(
+    cx: &mut BuildCx,
+    controller: &WorkspaceUiController,
+    bindings: &ResolvedKeybindings,
+    palette: &PaletteState,
+    index: usize,
+    entry: &PaletteEntry,
+    shortcut_rows: usize,
+    profiles_revision: u64,
+    snapshots: &[TabSnapshot],
+    context: CommandContext,
+    foreground: Color,
+) -> View {
+    let generation = palette.generation;
+    let profiles_level = palette.level == PaletteLevel::Profiles;
+    let disabled = palette.invocation.is_some()
+        || availability(entry.command, palette.target, snapshots, context).is_err();
+    let foreground = if disabled {
+        cx.theme().button.disabled.foreground
+    } else {
+        foreground
+    };
+    let label = TextLabel::new(entry.label.clone())
+        .foreground(foreground)
+        .expect("valid color")
+        .ellipsis()
+        .build(cx);
+    let shortcuts = if profiles_level {
+        TextLabel::new(entry.id.clone())
+            .foreground(foreground)
+            .expect("valid color")
+            .build(cx)
+    } else {
+        shortcut_badges(cx, bindings, entry.command, foreground)
+    };
+    let row = Row::new()
+        .cross_axis_alignment(CrossAxisAlignment::Center)
+        .push_child(View::leaf(PaletteRowHeight { shortcut_rows }))
+        .push_child(Expanded::new().child(label).build(cx))
+        .push_child(
+            Padding::new(harbor_widget::Insets {
+                top: 0.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 12.0,
+            })
+            .unwrap()
+            .child(shortcuts)
+            .build(cx),
+        )
+        .build(cx);
+    let activate = controller.clone();
+    let selected_entry = entry.clone();
+    let mut style = cx.theme().button.clone();
+    let transparent = ControlColors {
+        background: Color::TRANSPARENT,
+        border: Color::TRANSPARENT,
+        foreground,
+    };
+    style.min_height = 0.0;
+    style.horizontal_padding = 0.0;
+    style.border_width = 0.0;
+    style.normal = transparent;
+    style.hovered = transparent;
+    style.pressed = transparent;
+    style.selected = transparent;
+    style.disabled = transparent;
+    let region = InteractiveRegion::new()
+        .style(style)
+        .expect("valid control style")
+        .focusable(false)
+        .selected(index == palette.selected)
+        .disabled(disabled)
+        .on_activate(move |_| activate.palette_submit_entry(generation, selected_entry.clone()))
+        .child_with(move |cx, state| {
+            let content = Padding::new(harbor_widget::Insets {
+                top: 6.0,
+                right: 8.0,
+                bottom: 6.0,
+                left: 8.0,
+            })
+            .unwrap()
+            .child(row.clone())
+            .build(cx);
+            match GlassAppearance::command_palette_row(foreground, state) {
+                Some(glass) => glass.panel(cx, content),
+                None => content,
+            }
+        });
+    View::deferred(region.keyed(if profiles_level {
+        format!("palette-row-{generation}-{}-{profiles_revision}", entry.id)
+    } else {
+        format!("palette-row-{generation}-{}", entry.id)
+    }))
+}
+
+fn palette_footer(
+    cx: &mut BuildCx,
+    selected: usize,
+    entry_count: usize,
+    profiles_level: bool,
+    foreground: Color,
+) -> View {
+    TextLabel::new(format!(
+        "{} / {} · ↑↓ select · Enter / click run · Esc {}",
+        if selected < entry_count {
+            selected + 1
+        } else {
+            0
+        },
+        entry_count,
+        if profiles_level { "back" } else { "close" }
+    ))
+    .foreground(foreground)
+    .expect("valid color")
+    .build(cx)
 }

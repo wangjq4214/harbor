@@ -867,7 +867,6 @@ dependencies = [
  "harbor-widget",
  "pollster",
  "tracing",
- "unicode-width",
  "wgpu",
  "winit",
 ]
@@ -903,7 +902,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "libloading",
- "parking_lot",
  "tracing",
  "windows",
 ]

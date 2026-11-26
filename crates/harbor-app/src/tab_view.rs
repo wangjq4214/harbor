@@ -101,6 +101,16 @@ impl TabUiController {
         active_bridge: Option<TerminalWidgetBridge>,
         logical_width: f64,
     ) {
+        self.sync_with_layout(snapshots, active_bridge, None, logical_width);
+    }
+
+    pub(crate) fn sync_with_layout(
+        &self,
+        snapshots: Vec<TabSnapshot>,
+        active_bridge: Option<TerminalWidgetBridge>,
+        layout: Option<crate::pane_layout::PaneLayout>,
+        logical_width: f64,
+    ) {
         if let Ok(mut handles) = self.tab_focus.lock() {
             handles.retain(|id, _| snapshots.iter().any(|snapshot| snapshot.id == *id));
             for snapshot in &snapshots {
@@ -108,7 +118,7 @@ impl TabUiController {
             }
         }
         self.state.set(TabUiState {
-            layout: None,
+            layout,
             snapshots,
             active_bridge,
             presentation: RailPresentation::for_logical_width(logical_width),

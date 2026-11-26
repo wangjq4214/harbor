@@ -8,11 +8,10 @@ use crate::command::{AppCommand, AppCommandRequest, ResolvedKeybindings};
 use crate::workspace::WorkspaceUiController;
 use harbor_terminal::safe_preview_line;
 use harbor_widget::{
-    ActionHandler, ActionOutcome, Align, Alignment2D, Border, BorderRadius, BoxDecoration, Button,
-    ClipBehavior, Column, ComponentExt as _, ConstrainedBox, CrossAxisAlignment, DecoratedBox,
-    Expanded, Flexible, FocusHandle, FocusScope, Icon, Insets, KeyChord, LucideIcon,
-    MainAxisAlignment, Padding, Portal, Row, ScrollController, ScrollView, Separator, ShortcutMap,
-    Stack, ThemeProvider,
+    ActionHandler, ActionOutcome, Align, Alignment2D, Button, ClipBehavior, Column,
+    ComponentExt as _, ConstrainedBox, CrossAxisAlignment, DecoratedBox, Expanded, Flexible,
+    FocusHandle, FocusScope, Icon, Insets, KeyChord, LucideIcon, MainAxisAlignment, Padding,
+    Portal, Row, ScrollController, ScrollView, Separator, ShortcutMap, Stack, ThemeProvider,
     input::event::{Key, Modifiers, UiEvent},
     input::event_ctx::{EventCtx, EventHandled},
     layout::{BoxConstraints, Rect, Size},
@@ -159,39 +158,21 @@ impl ConfirmationOverlayState {
 
         // Keep `ClipBehavior::None` on the outer border box so the glass panel
         // (clip 0) and `ScrollView` (clip 1) stay within the 2-clip exact GPU budget.
-        let preview_frame = DecoratedBox::new(
-            BoxDecoration::new()
-                .try_color(Color {
-                    a: 0.24,
-                    ..Color::BLACK
+        let preview_frame = DecoratedBox::new(GlassAppearance::command_palette().input())
+            .clip_behavior(ClipBehavior::None)
+            .child(
+                Padding::new(Insets {
+                    top: 4.0,
+                    right: 1.0,
+                    bottom: 4.0,
+                    left: 1.0,
                 })
                 .unwrap()
-                .border(
-                    Border::all(
-                        Color {
-                            a: 0.18,
-                            ..Color::WHITE
-                        },
-                        1.0,
-                    )
-                    .unwrap(),
-                )
-                .border_radius(BorderRadius::all(7.0).unwrap()),
-        )
-        .clip_behavior(ClipBehavior::None)
-        .child(
-            Padding::new(Insets {
-                top: 4.0,
-                right: 1.0,
-                bottom: 4.0,
-                left: 1.0,
-            })
-            .unwrap()
-            .child(preview_scroll)
-            .build(cx),
-        )
-        .keyed("confirmation-preview-frame")
-        .build(cx);
+                .child(preview_scroll)
+                .build(cx),
+            )
+            .keyed("confirmation-preview-frame")
+            .build(cx);
 
         let footer = Column::new()
             .cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -434,8 +415,6 @@ impl crate::popups::Popup for ConfirmationOverlayState {
         true
     }
 }
-
-// ── Legacy secondary-window helpers (retired in T0003) ──────────────────────
 
 #[cfg(test)]
 mod tests {

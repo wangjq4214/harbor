@@ -9,10 +9,9 @@ use crate::{
     terminal_view::{TerminalDecorationPreset, TerminalWidgetBridge, terminal_widget},
 };
 use harbor_widget::{
-    ActionHandler, ActionOutcome, Align, Alignment2D, BorderRadius, ComponentExt as _,
-    CrossAxisAlignment, Expanded, FlexOptions, Focus, FocusHandle, FocusScope, Icon, Insets,
-    InteractionState, InteractiveRegion, LayoutObserver, LucideIcon, Portal, Row, ShortcutMap,
-    SizedBox, Store, TextEditingController, TextField,
+    ActionHandler, ActionOutcome, Align, Alignment2D, ComponentExt as _, CrossAxisAlignment,
+    Expanded, Focus, FocusHandle, FocusScope, Insets, LayoutObserver, LucideIcon, Portal, Row,
+    ShortcutMap, SizedBox, Store, TextEditingController, TextField,
     layout::Rect,
     scene::primitive::Color,
     view::{BuildCx, Component, View},
@@ -20,186 +19,12 @@ use harbor_widget::{
 };
 mod palette;
 pub(crate) mod quick_save;
-#[path = "split_authentication.rs"]
+mod search_bar;
 mod split_authentication;
+#[cfg(test)]
+use search_bar::{SEARCH_PANEL_HEIGHT, SEARCH_PANEL_INSET, search_bar};
+use search_bar::{SearchUiState, popup_icon_button};
 use std::sync::{Arc, Mutex};
-
-#[derive(Clone)]
-struct SearchUiState {
-    source: crate::tab_manager::SessionId,
-    input: TextEditingController,
-    status: String,
-    focus: FocusHandle,
-    cancellation: std::rc::Rc<std::cell::RefCell<Option<crate::search::SearchCancellation>>>,
-}
-
-impl crate::popups::Popup for SearchUiState {
-    fn build(
-        &self,
-        cx: &mut BuildCx,
-        ui: &WorkspaceUiController,
-        _: &ResolvedKeybindings,
-        generation: u64,
-    ) -> View {
-        search_bar(cx, ui, self, generation)
-    }
-    fn focus(&self) -> FocusHandle {
-        self.focus
-    }
-    fn close(&self) {
-        self.input.set_text("");
-        if let Some(cancellation) = self.cancellation.borrow_mut().take() {
-            cancellation.cancel();
-        }
-    }
-    fn notification_inset(&self) -> f32 {
-        SEARCH_PANEL_HEIGHT + SEARCH_PANEL_INSET
-    }
-}
-
-fn search_bar(
-    cx: &mut BuildCx,
-    controller: &WorkspaceUiController,
-    search: &SearchUiState,
-    generation: u64,
-) -> View {
-    let appearance = GlassAppearance::default();
-    let input = search.input.clone();
-    let changed_ui = controller.clone();
-    let submit = controller.store.dispatcher();
-    let close = controller.store.dispatcher();
-    let entry = TextField::new(input)
-        .decoration(appearance.input())
-        .padding(6.0)
-        .expect("valid field padding")
-        .placeholder("Find…")
-        .focus_handle(controller.search_focus)
-        .on_change(move |_| {
-            if !changed_ui
-                .store
-                .state()
-                .read()
-                .popups
-                .is_current(generation)
-            {
-                return;
-            }
-            changed_ui.publish_search_status("No Result");
-            changed_ui
-                .store
-                .dispatcher()
-                .dispatch(AppCommandRequest::popup(
-                    AppCommand::SearchChanged,
-                    generation,
-                ));
-        })
-        .on_submit(move |modifiers| {
-            submit.dispatch(AppCommandRequest::popup(
-                if modifiers.shift {
-                    AppCommand::SearchPrevious
-                } else {
-                    AppCommand::SearchNext
-                },
-                generation,
-            ))
-        })
-        .on_escape(move || {
-            close.dispatch(AppCommandRequest::popup(
-                AppCommand::SearchClose,
-                generation,
-            ))
-        });
-    let style = glass_icon_button_style(cx);
-    let button = |icon, command| {
-        let dispatcher = controller.store.dispatcher();
-        popup_icon_button(icon, style.clone()).on_activate(move |_| {
-            dispatcher.dispatch(AppCommandRequest::popup(command, generation))
-        })
-    };
-    let status = search.status.clone();
-    let content = harbor_widget::view! {
-        Padding::all(8.0) => {
-            Row::with_options(FlexOptions { gap: 4.0, cross_axis_alignment: CrossAxisAlignment::Center, ..Default::default() }) => {
-                Expanded::new() => { entry; }
-                // Status text changes frequently; reserve its slot instead of resizing the editor.
-                SizedBox::width(120.0) => {
-                    harbor_widget::widgets::text_label::TextLabel::new(status)
-                        .foreground(cx.theme().button.normal.foreground).expect("valid color").ellipsis();
-                }
-                button(LucideIcon::ChevronUp, AppCommand::SearchPrevious);
-                button(LucideIcon::ChevronDown, AppCommand::SearchNext);
-                button(LucideIcon::X, AppCommand::SearchClose);
-            }
-        }
-    };
-    let card = appearance.panel(cx, content);
-    Portal::new()
-        .child(harbor_widget::view! {
-            Align::new(Alignment2D::TOP_RIGHT).insets(Insets::all(SEARCH_PANEL_INSET)) => {
-                SizedBox::new(harbor_widget::layout::Size::new(440.0, SEARCH_PANEL_HEIGHT)) => {
-                    card;
-                }
-            }
-        })
-        .keyed(format!("session-search-{generation}"))
-        .build(cx)
-}
-
-// Keep the IconButton hit box and focus behavior, but include its padding inside
-// the material so hover feedback covers the entire control, not just the glyph.
-fn popup_icon_button(
-    icon: LucideIcon,
-    mut style: harbor_widget::theme::ControlStyle,
-) -> InteractiveRegion {
-    let width = style.icon_size + style.horizontal_padding * 2.0;
-    style.horizontal_padding = 0.0;
-    style.radius = 12.0; // Match the search panel's outer corners.
-    InteractiveRegion::new()
-        .style(style.clone())
-        .expect("valid control style")
-        .child_with(move |cx, state| {
-            let content = Icon::new(icon)
-                .size(style.icon_size)
-                .expect("valid icon size")
-                .foreground(style.resolve_state(&state).foreground)
-                .expect("valid color")
-                .build(cx);
-            // Center Icon's fixed-size artwork in the actual control allocation.
-            // A shorter parent (e.g. a palette field) must not squeeze the glyph
-            // with padding computed from the search button's 32dp minimum.
-            let content = SizedBox::width(width)
-                .unwrap()
-                .child(
-                    harbor_widget::ConstrainedBox::new()
-                        .min_height(style.min_height)
-                        .child(content)
-                        .build(cx),
-                )
-                .build(cx);
-            if state.disabled || !(state.hovered || state.pressed) {
-                return content;
-            }
-            // Use the palette's selected-row treatment rather than its faint
-            // hover-only tint. This is a visual state, not a selected command.
-            let glass = GlassAppearance::command_palette_row(
-                style.normal.foreground,
-                InteractionState {
-                    selected: true,
-                    ..state
-                },
-            )
-            .unwrap();
-            GlassAppearance {
-                radius: BorderRadius::all(style.radius).unwrap(),
-                ..glass
-            }
-            .panel(cx, content)
-        })
-}
-
-// Fixed chrome height also reserves space for configuration notices below search.
-const SEARCH_PANEL_HEIGHT: f32 = 48.0;
-const SEARCH_PANEL_INSET: f32 = 12.0;
 
 #[derive(Clone, Default)]
 struct WorkspaceUiState {
@@ -244,33 +69,29 @@ impl WorkspaceUiController {
     }
 
     pub fn open_search(&self, source: crate::tab_manager::SessionId) {
-        let mut state = self.store.state().read().clone();
-        if state
-            .popups
-            .get::<SearchUiState>()
-            .is_some_and(|search| search.source == source)
-        {
-            return;
-        }
-        state.popups.open(|_| SearchUiState {
-            source,
-            input: TextEditingController::with_acceptance("", |text| {
-                text.len() <= harbor_terminal::literal_search::MAX_QUERY_BYTES
-            }),
-            status: "No Result".into(),
-            focus: self.search_focus,
-            cancellation: Default::default(),
+        self.update_state(|state| {
+            if state
+                .popups
+                .get::<SearchUiState>()
+                .is_some_and(|search| search.source == source)
+            {
+                return false;
+            }
+            state.popups.open(|_| SearchUiState {
+                source,
+                input: TextEditingController::with_acceptance("", |text| {
+                    text.len() <= harbor_terminal::literal_search::MAX_QUERY_BYTES
+                }),
+                status: "No Result".into(),
+                focus: self.search_focus,
+                cancellation: Default::default(),
+            });
+            true
         });
-        self.store.set_state(state);
     }
 
     pub fn close_search(&self) {
-        let mut state = self.store.state().read().clone();
-        if state.popups.get::<SearchUiState>().is_some() {
-            let generation = state.popups.generation().unwrap();
-            state.popups.close(generation);
-            self.store.set_state(state);
-        }
+        self.update_state(|state| state.popups.close_active_if::<SearchUiState>());
     }
 
     pub fn search_focus(&self) -> FocusHandle {
@@ -299,18 +120,19 @@ impl WorkspaceUiController {
     }
 
     pub fn publish_search_status(&self, status: &str) {
-        let mut state = self.store.state().read().clone();
-        if state
-            .popups
-            .get::<SearchUiState>()
-            .is_none_or(|search| search.status == status)
-        {
-            return;
-        }
-        state
-            .popups
-            .update::<SearchUiState>(|search| search.status = status.into());
-        self.store.set_state(state);
+        self.update_state(|state| {
+            if state
+                .popups
+                .get::<SearchUiState>()
+                .is_none_or(|search| search.status == status)
+            {
+                return false;
+            }
+            state
+                .popups
+                .update::<SearchUiState>(|search| search.status = status.into());
+            true
+        });
     }
 
     /// Scoped editor/button intents may only act on the still-live popup lifetime.
@@ -335,13 +157,16 @@ impl WorkspaceUiController {
         &self,
         request: crate::confirmation::ConfirmationRequest,
     ) -> (u64, FocusHandle) {
-        let mut state = self.store.state().read().clone();
-        let focus = state
-            .popups
-            .open(|_| crate::confirmation::ConfirmationOverlayState::new(request));
-        let generation = state.popups.generation().expect("opened confirmation");
-        self.store.set_state(state);
-        (generation, focus)
+        let mut opened = None;
+        self.update_state(|state| {
+            let focus = state
+                .popups
+                .open(|_| crate::confirmation::ConfirmationOverlayState::new(request));
+            let generation = state.popups.generation().expect("opened confirmation");
+            opened = Some((generation, focus));
+            true
+        });
+        opened.expect("confirmation opened")
     }
 
     pub fn confirmation_is_open(&self) -> bool {
@@ -380,17 +205,11 @@ impl WorkspaceUiController {
     }
 
     pub fn close_confirmation(&self, generation: u64) -> bool {
-        let mut state = self.store.state().read().clone();
-        if state
-            .popups
-            .get::<crate::confirmation::ConfirmationOverlayState>()
-            .is_none()
-            || !state.popups.close(generation)
-        {
-            return false;
-        }
-        self.store.set_state(state);
-        true
+        self.update_state(|state| {
+            state
+                .popups
+                .close_if::<crate::confirmation::ConfirmationOverlayState>(generation)
+        })
     }
 
     pub fn close_active_confirmation(&self) -> bool {
@@ -447,10 +266,17 @@ impl WorkspaceUiController {
     }
     /// Publish model visibility and registration identity before mounting its projection.
     pub fn sync_panes(&self, tabs: &crate::tab_manager::TabManager, logical_width: f64) {
-        self.publish_panes(tabs);
-        self.tabs
-            .sync(tabs.snapshots(), tabs.active_bridge(), logical_width);
-        self.tabs.publish_layout(tabs.active_layout());
+        self.pane_focus
+            .borrow_mut()
+            .retain(|session, _| tabs.binding_for_session(*session).is_some());
+        let layout = tabs.active_layout();
+        self.pane_allocations.publish(layout.as_ref());
+        self.tabs.sync_with_layout(
+            tabs.snapshots(),
+            tabs.active_bridge(),
+            layout,
+            logical_width,
+        );
     }
     pub fn publish_panes(&self, tabs: &crate::tab_manager::TabManager) {
         self.pane_focus
@@ -476,14 +302,13 @@ impl WorkspaceUiController {
         self.allocation.latest()
     }
     pub fn publish_keybindings(&self, keybindings: crate::command::ResolvedKeybindings) {
-        let current = self.store.state().read();
-        if current.keybindings.as_ref() == Some(&keybindings) {
-            return;
-        }
-        let mut state = current.clone();
-        drop(current);
-        state.keybindings = Some(keybindings);
-        self.store.set_state(state);
+        self.update_state(|state| {
+            if state.keybindings.as_ref() == Some(&keybindings) {
+                return false;
+            }
+            state.keybindings = Some(keybindings);
+            true
+        });
     }
 
     pub fn report_configuration_result(&self, message: String) {
@@ -516,18 +341,20 @@ impl WorkspaceUiController {
         self.update_notices(|notices| notices.dismiss(revision));
     }
 
-    /// Keep unrelated workspace state and subscribers untouched for notice no-ops.
-    fn update_notices(&self, update: impl FnOnce(&mut ConfigurationNotices) -> bool) -> bool {
+    /// Keep unrelated workspace state and subscribers untouched for no-op updates.
+    fn update_state(&self, update: impl FnOnce(&mut WorkspaceUiState) -> bool) -> bool {
         let current = self.store.state().read();
-        let mut notices = current.notices.clone();
-        if !update(&mut notices) {
-            return false;
-        }
         let mut state = current.clone();
         drop(current);
-        state.notices = notices;
+        if !update(&mut state) {
+            return false;
+        }
         self.store.set_state(state);
         true
+    }
+
+    fn update_notices(&self, update: impl FnOnce(&mut ConfigurationNotices) -> bool) -> bool {
+        self.update_state(|state| update(&mut state.notices))
     }
 }
 
@@ -558,7 +385,6 @@ impl MainWindowRootInputs {
     }
 }
 
-#[allow(dead_code)]
 pub fn tab_workspace(
     controller: WorkspaceUiController,
     backdrop_available: bool,
@@ -640,7 +466,14 @@ fn render_tab_workspace(cx: &mut BuildCx, props: &MainWindowRootInputs) -> View 
                     shortcuts => {
                         Row::new() => {
                             tab_rail(cx, &tab_state, &props.controller.tabs, dispatcher);
-                            terminal_panel(cx, &props.controller, active_bridge, tab_state.layout.as_ref(), bindings);
+                            terminal_panel(
+                                cx,
+                                &props.controller,
+                                active_bridge,
+                                tab_state.layout.as_ref(),
+                                &state.popups,
+                                bindings,
+                            );
                         }
                     }
                 }
@@ -657,9 +490,9 @@ fn terminal_panel(
     controller: &WorkspaceUiController,
     active_bridge: TerminalWidgetBridge,
     layout: Option<&crate::pane_layout::PaneLayout>,
+    popups: &crate::popups::PopupSlot,
     bindings: &ResolvedKeybindings,
 ) -> View {
-    let popup_state = controller.store.state().read().clone();
     harbor_widget::view! { Expanded::new() => {
         harbor_widget::Column::new() => {
             Expanded::new().keyed("terminal-surface") => {
@@ -673,8 +506,8 @@ fn terminal_panel(
                     }
                 }
             }
-            if let Some(popup) = popup_state.popups.active() {
-                popup.build(cx, controller, bindings, popup_state.popups.generation().unwrap());
+            if let Some(popup) = popups.active() {
+                popup.build(cx, controller, bindings, popups.generation().unwrap());
             }
         }
     } }

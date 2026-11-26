@@ -49,15 +49,17 @@ impl WorkspaceUiController {
         target: PaneBinding,
         bridge: TerminalWidgetBridge,
     ) -> FocusHandle {
-        let mut state = self.store.state().read().clone();
-        let focus = state.popups.open(|_| SplitAuthentication {
-            target,
-            bridge,
-            focus: FocusHandle::new(),
-            allocation: Arc::default(),
+        let mut focus = None;
+        self.update_state(|state| {
+            focus = Some(state.popups.open(|_| SplitAuthentication {
+                target,
+                bridge,
+                focus: FocusHandle::new(),
+                allocation: Arc::default(),
+            }));
+            true
         });
-        self.store.set_state(state);
-        focus
+        focus.expect("split authentication opened")
     }
 
     /// Host-turn-only admission for the one unpublished authentication terminal.
@@ -92,15 +94,12 @@ impl WorkspaceUiController {
         }
     }
     pub fn close_split_authentication(&self, target: PaneBinding) {
-        let mut state = self.store.state().read().clone();
-        if state
-            .popups
-            .get::<SplitAuthentication>()
-            .is_some_and(|auth| auth.target == target)
-        {
-            let generation = state.popups.generation().unwrap();
-            state.popups.close(generation);
-            self.store.set_state(state);
-        }
+        self.update_state(|state| {
+            state
+                .popups
+                .get::<SplitAuthentication>()
+                .is_some_and(|auth| auth.target == target)
+                && state.popups.close_active_if::<SplitAuthentication>()
+        });
     }
 }

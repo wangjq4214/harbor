@@ -38,16 +38,16 @@ pub(crate) fn render_target_from_context(context: &ExternalDrawContext) -> Rende
     )
 }
 
-/// Converts a final logical terminal-panel allocation into its PTY grid.
+/// Converts a final logical terminal-panel allocation into its render target and PTY grid.
 ///
 /// Invalid or non-drawable geometry is rejected before `RenderViewport` applies its minimum
 /// grid clamp, so minimizing a window cannot emit a synthetic resize.
-pub fn terminal_size_from_allocation(
+pub(crate) fn terminal_target_and_size(
     logical_rect: Rect,
     scale_factor: f32,
     surface_size: (u32, u32),
     metrics: &TextMetrics,
-) -> Option<TerminalSize> {
+) -> Option<(RenderTarget, TerminalSize)> {
     let coordinates = [
         logical_rect.min.x,
         logical_rect.min.y,
@@ -79,7 +79,21 @@ pub fn terminal_size_from_allocation(
     }
     let size = RenderViewport::from_target(target, metrics).compute_grid_size();
     // Reject unsupported PTY extents before acquiring a barrier or allocating a model.
-    (size.rows <= i16::MAX as usize && size.cols <= i16::MAX as usize).then_some(size)
+    (size.rows <= i16::MAX as usize && size.cols <= i16::MAX as usize).then_some((target, size))
+}
+
+/// Converts a final logical terminal-panel allocation into its PTY grid.
+///
+/// Invalid or non-drawable geometry is rejected before `RenderViewport` applies its minimum
+/// grid clamp, so minimizing a window cannot emit a synthetic resize.
+pub fn terminal_size_from_allocation(
+    logical_rect: Rect,
+    scale_factor: f32,
+    surface_size: (u32, u32),
+    metrics: &TextMetrics,
+) -> Option<TerminalSize> {
+    terminal_target_and_size(logical_rect, scale_factor, surface_size, metrics)
+        .map(|(_, size)| size)
 }
 
 /// Invokes `draw` only when the Runtime-supplied id matches the bridge-owned id.
@@ -316,8 +330,6 @@ pub struct TerminalWidgetBridge {
 }
 
 impl TerminalWidgetBridge {
-    #[allow(dead_code)]
-    /// Creates a headless bridge for input/scheduling without a GPU projection.
     /// Host transaction access; the renderer remains shared with this bridge's draw/IME providers.
     pub fn renderer(&self) -> Option<Arc<Mutex<TerminalRenderPipeline>>> {
         self.renderer.clone()
@@ -421,8 +433,13 @@ impl TerminalWidgetBridge {
                                 rows: term.screen().rows(),
                                 cols: term.screen().cols(),
                             });
-                        if needs_live_projection(mode, &term, renderer.viewport(), target, &metrics)
-                            || projection_grid_changed
+                        let live_update = if needs_live_projection(
+                            mode,
+                            &term,
+                            renderer.viewport(),
+                            target,
+                            &metrics,
+                        ) || projection_grid_changed
                         {
                             let now = std::time::Instant::now();
                             let (viewport, grid_changed) =
@@ -436,14 +453,15 @@ impl TerminalWidgetBridge {
                                 );
                                 return;
                             }
-                            let mut decorations = draw_decorations.lock().expect("decoration lock");
-                            renderer.prepare_highlights(gpu, decorations.project(&term));
-                            renderer.draw(pass);
-                            term.acknowledge_update(&update);
+                            Some(update)
                         } else {
-                            let mut decorations = draw_decorations.lock().expect("decoration lock");
-                            renderer.prepare_highlights(gpu, decorations.project(&term));
-                            renderer.draw(pass);
+                            None
+                        };
+                        let mut decorations = draw_decorations.lock().expect("decoration lock");
+                        renderer.prepare_highlights(gpu, decorations.project(&term));
+                        renderer.draw(pass);
+                        if let Some(update) = live_update {
+                            term.acknowledge_update(&update);
                         }
                     }
                 });

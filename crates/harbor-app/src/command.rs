@@ -163,8 +163,18 @@ fn chord(key: Key, ctrl: bool, shift: bool) -> KeyChord {
     KeyChord::new(key, modifiers(ctrl, shift))
 }
 
+/// Returns a cached slice of the fixed initial registry in stable presentation order.
+pub(crate) fn command_registry_slice() -> &'static [CommandDescriptor] {
+    static REGISTRY: std::sync::OnceLock<Vec<CommandDescriptor>> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(build_command_registry)
+}
+
 /// Returns the fixed initial registry in stable presentation order.
 pub fn command_registry() -> Vec<CommandDescriptor> {
+    command_registry_slice().to_vec()
+}
+
+fn build_command_registry() -> Vec<CommandDescriptor> {
     let mut entries = vec![
         descriptor(
             "app.command-palette",
@@ -414,8 +424,8 @@ pub fn validate_keybindings(raw: &RawKeybindings) -> Result<ResolvedKeybindings,
 }
 /// Resolves all overrides atomically. Any semantic error restores all defaults.
 pub fn resolve_keybindings(raw: &RawKeybindings) -> KeybindingResolution {
-    let registry = command_registry();
-    let defaults = default_bindings(&registry);
+    let registry = command_registry_slice();
+    let defaults = default_bindings(registry);
     let mut diagnostics = Vec::new();
     if !raw.valid {
         diagnostics.push("keybindings: invalid value shape; using all defaults".to_owned());
@@ -435,7 +445,7 @@ pub fn resolve_keybindings(raw: &RawKeybindings) -> KeybindingResolution {
 
     let mut bindings = Vec::new();
     let mut owners: HashMap<KeyChord, &str> = HashMap::new();
-    for entry in &registry {
+    for entry in registry {
         let configured = raw.entries.get(entry.id);
         let mut local = HashSet::new();
         if let Some(raw_bindings) = configured {
@@ -546,7 +556,7 @@ fn parse_key(token: &str) -> Result<Key, &'static str> {
 
 /// Whether a command is discoverable; internal and hidden intents are never admitted.
 pub fn palette_command_supported(command: AppCommand) -> bool {
-    command_registry()
+    command_registry_slice()
         .iter()
         .any(|entry| entry.palette_visible && entry.command == command)
 }
