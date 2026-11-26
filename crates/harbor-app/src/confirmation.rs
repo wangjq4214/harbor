@@ -207,7 +207,7 @@ impl ConfirmationOverlayState {
                 Row::new()
                     .wrap(true)
                     .main_axis_alignment(MainAxisAlignment::End)
-                    .gap(8.0)
+                    .gap(10.0)
                     .unwrap()
                     .push_child(View::deferred(
                         Button::text(self.cancel_label)

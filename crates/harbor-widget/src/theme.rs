@@ -123,6 +123,9 @@ pub struct ControlStyle {
     pub hovered: ControlColors,
     pub pressed: ControlColors,
     pub selected: ControlColors,
+    /// Optional native glass behind an enabled, unselected idle/pressed surface
+    /// (and hovered when `hovered_backdrop` is `None`). `None` preserves flat controls.
+    pub normal_backdrop: Option<ControlBackdrop>,
     /// Painted behind selected content, including hovered/pressed/disabled selection.
     /// None preserves ordinary flat controls. Supply translucent selected colors
     /// (and usually no border) to expose the material rather than cover its rim.
@@ -315,6 +318,7 @@ impl Default for Theme {
             border_width: 1.0,
             radius: 4.0,
             normal,
+            normal_backdrop: None,
             selected_backdrop: None,
             hovered_backdrop: None,
             pressed_feedback: true,

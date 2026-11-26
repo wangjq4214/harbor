@@ -11,6 +11,9 @@ pub(crate) const LABEL_GAP: f32 = 6.0;
 pub(crate) const PANEL_PADDING: f32 = 24.0;
 pub(crate) const INPUT_PADDING: f32 = 8.0;
 pub(crate) const CONTROL_HEIGHT: f32 = 36.0;
+pub(crate) const BUTTON_HEIGHT: f32 = 32.0;
+pub(crate) const BUTTON_PILL_RADIUS: f32 = BUTTON_HEIGHT / 2.0;
+pub(crate) const BUTTON_HORIZONTAL_PADDING: f32 = 16.0;
 pub(crate) const DIVIDER: Color = neutral(0.12);
 pub(crate) const FOREGROUND: Color = neutral(0.96);
 pub(crate) const SECONDARY: Color = neutral(0.72);
@@ -42,33 +45,6 @@ pub(crate) fn theme(inherited: &Theme) -> Theme {
         b: 1.0,
         a: 1.0,
     };
-    let ice = Color {
-        r: 0.48,
-        g: 0.84,
-        b: 1.0,
-        a: 1.0,
-    };
-    // A strong primary action, with translucent selection on the existing glass panel.
-    theme.button.normal = colors(blue, Color::WHITE, Color { a: 0.55, ..ice });
-    theme.button.hovered = colors(
-        Color {
-            r: 0.16,
-            g: 0.64,
-            ..blue
-        },
-        Color::WHITE,
-        Color { a: 0.75, ..ice },
-    );
-    theme.button.pressed = colors(
-        Color {
-            r: 0.04,
-            g: 0.42,
-            b: 0.90,
-            a: 1.0,
-        },
-        Color::WHITE,
-        Color { a: 0.45, ..ice },
-    );
     // Reuse the native row-sized liquid-glass recipe, not an alpha-only imitation.
     let selection = super::GlassAppearance::command_palette_row(
         blue,
@@ -81,17 +57,40 @@ pub(crate) fn theme(inherited: &Theme) -> Theme {
     let harbor_widget::Paint::Solid(tint) = selection.panel_fill else {
         unreachable!("row glass uses a solid tint over its material");
     };
-    theme.button.selected = colors(tint, Color::WHITE, Color::TRANSPARENT);
-    theme.button.selected_backdrop = Some(
-        harbor_widget::ControlBackdrop::new(
-            selection.blur_sigma,
-            selection.refraction,
-            selection.material.expect("native liquid-glass material"),
-        )
-        .expect("valid shared glass recipe"),
+    let glass_backdrop = harbor_widget::ControlBackdrop::new(
+        selection.blur_sigma,
+        selection.refraction,
+        selection.material.expect("native liquid-glass material"),
+    )
+    .expect("valid shared glass recipe");
+    // Tinted glacier-blue liquid glass for primary action buttons; the shader's
+    // BackdropRim supplies the specular glass edge instead of a flat 1px border.
+    theme.button.normal = colors(Color { a: 0.52, ..blue }, Color::WHITE, Color::TRANSPARENT);
+    theme.button.hovered = colors(
+        Color {
+            r: 0.16,
+            g: 0.64,
+            b: 1.0,
+            a: 0.66,
+        },
+        Color::WHITE,
+        Color::TRANSPARENT,
     );
-    theme.button.disabled = colors(neutral(0.025), neutral(0.50), neutral(0.06));
-    theme.button.focus_ring = ice;
+    theme.button.pressed = colors(
+        Color {
+            r: 0.04,
+            g: 0.42,
+            b: 0.90,
+            a: 0.44,
+        },
+        Color::WHITE,
+        Color::TRANSPARENT,
+    );
+    theme.button.normal_backdrop = Some(glass_backdrop);
+    theme.button.selected = colors(tint, Color::WHITE, Color::TRANSPARENT);
+    theme.button.selected_backdrop = Some(glass_backdrop);
+    theme.button.disabled = colors(neutral(0.04), neutral(0.50), Color::TRANSPARENT);
+    theme.button.focus_ring = neutral(0.42);
     theme
 }
 
@@ -137,11 +136,18 @@ pub(crate) fn control(cx: &BuildCx, role: ControlRole) -> ControlStyle {
     style.icon_size = 16.0;
     style.radius = 7.0;
     style.border_width = 1.0;
+    if !matches!(role, ControlRole::Primary | ControlRole::Secondary) {
+        style.normal_backdrop = None;
+    }
     if !matches!(role, ControlRole::Selection) {
         style.selected_backdrop = None;
         style.hovered_backdrop = None;
     }
     if matches!(role, ControlRole::Primary) {
+        style.min_height = BUTTON_HEIGHT;
+        style.horizontal_padding = BUTTON_HORIZONTAL_PADDING;
+        style.radius = BUTTON_PILL_RADIUS;
+        style.border_width = 0.0;
         return style;
     }
     style.normal = colors(neutral(0.045), FOREGROUND, neutral(0.12));
@@ -149,7 +155,17 @@ pub(crate) fn control(cx: &BuildCx, role: ControlRole) -> ControlStyle {
     style.pressed = colors(neutral(0.16), FOREGROUND, neutral(0.24));
     // Accent selection, focus and disabled colors are inherited, not repainted locally.
     match role {
-        ControlRole::Primary | ControlRole::Secondary => {}
+        ControlRole::Primary => unreachable!(),
+        ControlRole::Secondary => {
+            // Clear neutral liquid-glass pill in idle, hover, and pressed states.
+            style.min_height = BUTTON_HEIGHT;
+            style.horizontal_padding = BUTTON_HORIZONTAL_PADDING;
+            style.radius = BUTTON_PILL_RADIUS;
+            style.border_width = 0.0;
+            style.normal = colors(neutral(0.08), FOREGROUND, Color::TRANSPARENT);
+            style.hovered = colors(neutral(0.15), Color::WHITE, Color::TRANSPARENT);
+            style.pressed = colors(neutral(0.05), FOREGROUND, Color::TRANSPARENT);
+        }
         ControlRole::Selection => {
             style.normal.background = Color::TRANSPARENT;
             style.normal.border = Color::TRANSPARENT;
@@ -244,14 +260,22 @@ mod tests {
     }
 
     #[test]
-    fn glacier_theme_preserves_other_roles_and_keeps_selection_translucent() {
+    fn glacier_theme_preserves_other_roles_and_uses_liquid_glass_pill_buttons() {
         let inherited = Theme::default();
         let themed = theme(&inherited);
         themed.validate().unwrap();
         assert_eq!(inherited, Theme::default());
         assert_eq!(themed.icon_button, inherited.icon_button);
         assert_eq!(themed.spacing, inherited.spacing);
-        assert_eq!(themed.button.normal.background.a, 1.0);
+        // Primary button uses translucent glacier-blue tinted glass over a native backdrop.
+        assert!((0.0..1.0).contains(&themed.button.normal.background.a));
+        assert!(themed.button.normal.background.a > 0.0);
+        assert_eq!(themed.button.normal.border, Color::TRANSPARENT);
+        assert!(themed.button.normal_backdrop.is_some());
+        // Focus ring is a softened neutral glass rim (no blue tint on neutral buttons).
+        assert_eq!(themed.button.focus_ring.r, themed.button.focus_ring.g);
+        assert_eq!(themed.button.focus_ring.g, themed.button.focus_ring.b);
+        assert!(themed.button.focus_ring.a > 0.0 && themed.button.focus_ring.a < 1.0);
         let selection = themed.button.selected;
         assert!(selection.background.b > selection.background.g);
         assert!(selection.background.g > selection.background.r);
@@ -260,5 +284,43 @@ mod tests {
         assert_eq!(selection.border, Color::TRANSPARENT);
         assert!(themed.button.selected_backdrop.is_some());
         assert_eq!(selection.foreground, Color::WHITE);
+
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let capture = observed.clone();
+        let mut runtime = Runtime::new();
+        runtime.set_root(
+            ThemeProvider::new(themed)
+                .unwrap()
+                .child(move |cx: &mut BuildCx| {
+                    let styles: Vec<_> = [
+                        ControlRole::Primary,
+                        ControlRole::Secondary,
+                        ControlRole::Selection,
+                        ControlRole::Quiet,
+                        ControlRole::Checkbox,
+                    ]
+                    .into_iter()
+                    .map(|role| control(cx, role))
+                    .collect();
+                    capture.replace(styles);
+                    Button::text("Probe").build(cx)
+                }),
+        );
+        runtime.update(Instant::now());
+        let styles = observed.borrow();
+        // Primary and Secondary are borderless liquid-glass pill buttons.
+        for style in [&styles[0], &styles[1]] {
+            assert_eq!(style.min_height, BUTTON_HEIGHT);
+            assert_eq!(style.radius, BUTTON_PILL_RADIUS);
+            assert_eq!(style.horizontal_padding, BUTTON_HORIZONTAL_PADDING);
+            assert_eq!(style.border_width, 0.0);
+            assert!(style.normal_backdrop.is_some());
+            assert!(style.selected_backdrop.is_none());
+            assert!(style.hovered_backdrop.is_none());
+        }
+        // Selection, Quiet, and Checkbox do not acquire idle normal_backdrop.
+        for style in [&styles[2], &styles[3], &styles[4]] {
+            assert!(style.normal_backdrop.is_none());
+        }
     }
 }

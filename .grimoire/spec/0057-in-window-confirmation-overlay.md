@@ -6,6 +6,7 @@
 **Issue:** [#63](https://github.com/wangjq4214/harbor/issues/63)
 **Sources:**
 - GitHub issue [#63](https://github.com/wangjq4214/harbor/issues/63) and refinement decisions (2026-11-24)
+- Liquid-glass pill button refinement (2026-11-26): owner selected native liquid-glass pill buttons (`A + A1 + pill`) across shared `design_system` `Primary` and `Secondary` roles (confirmation overlays + Quick Save), spec-only update.
 - [ADR 0111](../adr/0111-in-window-liquid-glass-confirmation-overlay.md) (superseding retired ADRs 0007 and 0009, partially superseding [ADR 0049](../adr/0049-osc52-confirmation-window-and-foreground-policy.md) and [ADR 0077](../adr/0077-extensible-exclusive-application-popups.md))
 - [Harbor Design System](../../docs/app/design-system.md) and [Spec 0054](./0054-harbor-design-system-and-quick-save.md)
 - [Spec 0017](./0017-host-authorized-osc52-clipboard-writes.md) and [Spec 0033](./0033-exclusive-extensible-application-popups.md)
@@ -23,8 +24,8 @@ Both multiline paste confirmation and OSC 52 clipboard-write confirmation render
 ### R2 — Visual Hierarchy, Warning Icon, and Action Footer
 
 - The fixed header pairs a built-in vector warning icon rendered via Harbor's bundled SDF vector-icon pipeline ([ADR 0057](../adr/0057-widget-vector-icons-without-font-glyphs.md)) and tinted with the application warning role (`design_system::WARNING`) with the confirmation title (paste line count for paste confirmation; source tab and byte size for OSC 52 confirmation).
-- The fixed footer right-aligns the two actions when space permits and wraps cleanly in narrow viewports without overlap: the deny/cancel action (`Cancel` for paste, `Deny this request` for OSC 52) on the left with subordinate styling (`Quiet` or `Secondary`), and the confirm/allow action (`Paste` for paste, `Allow this request` for OSC 52) on the right as the sole solid primary emphasis button (`Primary`).
-- All interactive controls expose distinct normal, hover, pressed, disabled, and keyboard-focus-ring states independent of pointer hover.
+- The fixed footer right-aligns the two actions when space permits and wraps cleanly in narrow viewports without overlap: the deny/cancel action (`Cancel` for paste, `Deny this request` for OSC 52) on the left using `Secondary` clear neutral liquid-glass pill styling (native `BackdropMaterial` with light neutral frost and specular `BackdropRim` in idle, hover, and pressed states, capsule/pill corners, no flat 1px border), and the confirm/allow action (`Paste` for paste, `Allow this request` for OSC 52) on the right as the sole primary emphasis button using `Primary` tinted glacier-blue liquid-glass pill styling (native `BackdropMaterial` with translucent glacier-blue tint and specular `BackdropRim`, capsule/pill corners, no flat 1px border).
+- All interactive controls expose distinct normal, hover, pressed, disabled, and softened keyboard-focus-ring states independent of pointer hover; the softened focus ring harmonizes with the pill glass rim while remaining clearly distinguishable without hover.
 - Initial keyboard focus lands safely on the cancel/deny control so accidental `Enter` or `Space` keypresses never approve a paste or clipboard write.
 
 ### R3 — Inset Scrollable Preview with Alternating Row Tint and Logical Line Numbers
@@ -61,7 +62,7 @@ Both multiline paste confirmation and OSC 52 clipboard-write confirmation render
 
 ## Solution
 
-The confirmation UI in `crates/harbor-app/src/confirmation.rs` and `crates/harbor-app/src/confirmation/preview.rs` is rebuilt as an application component wrapped in `ThemeProvider` (`design_system::theme`) and `GlassAppearance::command_palette().panel(...)` mounted through a `Popup`-implementing confirmation state inside `PopupSlot`. A bundled Lucide warning icon is added to `crates/harbor-widget/src/icon.rs` and the widget quad SDF shader ([ADR 0057](../adr/0057-widget-vector-icons-without-font-glyphs.md)) for the header.
+The confirmation UI in `crates/harbor-app/src/confirmation.rs` and `crates/harbor-app/src/confirmation/preview.rs` is rebuilt as an application component wrapped in `ThemeProvider` (`design_system::theme`) and `GlassAppearance::command_palette().panel(...)` mounted through a `Popup`-implementing confirmation state inside `PopupSlot`. A bundled Lucide warning icon is added to `crates/harbor-widget/src/icon.rs` and the widget quad SDF shader ([ADR 0057](../adr/0057-widget-vector-icons-without-font-glyphs.md)) for the header. To support true liquid-glass action buttons without coupling `harbor-widget` to application palettes, `ControlStyle` in `harbor-widget` exposes an opt-in normal/default native backdrop capability (`normal_backdrop` or equivalent per-state backdrop configuration; generic widget defaults remain flat) consumed by `design_system::control` for `Primary` (tinted glacier-blue liquid-glass pill) and `Secondary` (clear neutral liquid-glass pill) buttons across both confirmation overlays and Quick Save.
 
 Preview lines are prepared with explicit logical-line metadata (`(Option<usize>, String)` or equivalent per-visual-row logical line number mapping) so wrapped continuation rows render without a line number while preserving `safe_preview_line` escaping and full vertical scrolling inside `ScrollView`. `PasteController` and OSC 52 confirmation coordination in `src/dialog.rs`, `src/clipboard.rs`, and `src/shell.rs` transition from managing an auxiliary `ConfirmationWindow` to opening, revalidating, and closing the `PopupSlot` confirmation overlay while enforcing the in-window confirmation input gate.
 
@@ -114,7 +115,7 @@ Preview lines are prepared with explicit logical-line metadata (`(Option<usize>,
 ### E8 — Constrained Viewport, Multi-DPI Scaling, and Live Glass Rendering
 - **Given:** Constrained window sizes (e.g., narrow/short viewports) and multiple DPI scales (1.0, 1.5, 2.0) over quiet and busy/high-contrast terminal content.
 - **When:** Mounted layout checks and `HARBOR_TEST_GPU=dx12-warp` offscreen GPU rendering run on both paste and OSC 52 overlays.
-- **Then:** Header, footer, warning icon, inset preview border, alternating row tint, scrollbar, and focus rings render sharply without overlapping controls, clipped text starts, or full-window dark scrims.
+- **Then:** Header, footer, warning icon, inset preview border, alternating row tint, scrollbar, native liquid-glass pill buttons (`Secondary` clear neutral glass on Cancel/Deny and `Primary` tinted glacier-blue glass on Paste/Allow, with specular `BackdropRim` and no flat 1px outlines), and softened focus rings render sharply without overlapping controls, clipped text starts, or full-window dark scrims.
 
 ### E9 — Widget Crate Boundary Verification
 - **Given:** `crates/harbor-widget` with the new warning `LucideIcon` variant.
@@ -128,10 +129,11 @@ Preview lines are prepared with explicit logical-line metadata (`(Option<usize>,
 - **Shared UI for Paste and OSC 52 confirmation:** Confirmed by owner (2026-11-24); both flows share the unified overlay and preview component while preserving independent copy and security contracts.
 - **Logical line numbers without dangerous-command regex highlighting:** Confirmed by owner (2026-11-24); wrapped continuation rows do not increment line numbers, and heuristic command highlighting is excluded.
 - **Full shortcut preservation + Cancel/Deny default focus:** Confirmed by owner (2026-11-24); retains `Esc`/`n`/`N`/`y`/`Y`/arrows/`PageUp`/`PageDown` while defaulting focus to Cancel/Deny.
+- **Unified liquid-glass pill buttons across `design_system`:** Confirmed by owner (2026-11-26, `A + A1 + pill`, shared across confirmation overlays and Quick Save); `Secondary` uses clear neutral liquid glass in idle/hover/pressed, `Primary` uses tinted glacier-blue liquid glass, both use capsule/pill geometry and shader `BackdropRim` without flat 1px borders, with softened keyboard focus rings.
 
 ### Explicit Reversible Tuning Assumptions (Design-System Defaults)
-- **Glass and theme recipes:** Reuse `GlassAppearance::command_palette()` and `design_system::theme` (`ThemeProvider`), with `Quiet` or `Secondary` styling on Cancel/Deny and `Primary` glacier-blue styling on Paste/Allow, and `design_system::WARNING` tint on the new vector warning icon (`LucideIcon::TriangleAlert` or equivalent).
-- **Visual tuning:** Exact preview border alpha, alternating row-tint alpha, gutter spacing, panel max width/height bounds, and padding follow `docs/app/design-system.md` foundations and remain reversible tuning values rather than fixed acceptance thresholds.
+- **Glass and theme recipes:** Reuse `GlassAppearance::command_palette()` and `design_system::theme` (`ThemeProvider`), with `Secondary` clear neutral liquid-glass pill styling on Cancel/Deny, `Primary` tinted glacier-blue liquid-glass pill styling on Paste/Allow, and `design_system::WARNING` tint on the vector warning icon (`LucideIcon::TriangleAlert`).
+- **Visual tuning:** Exact pill button height (`~32–34` logical px), capsule corner radius (`min_height / 2`), horizontal padding (`~16–18` logical px), tint/frost/focus-ring alphas, footer separator subtlety/presence, preview border alpha, alternating row-tint alpha, gutter spacing, panel max width/height bounds, and padding follow `docs/app/design-system.md` foundations and remain reversible tuning values rather than fixed acceptance thresholds.
 
 ## Test Plan
 
@@ -153,7 +155,13 @@ Preview lines are prepared with explicit logical-line metadata (`(Option<usize>,
 
 ## Verification Evidence
 
-- **Branch & commits:** `feat/in-window-confirmation-overlay` (`a2b0638` production implementation across `T0001`–`T0003`, `3cd3a72` ConPTY fixture update; non-test production code unchanged between `a2b0638` and `3cd3a72`)
+### Liquid-Glass Pill Button Refinement (`Automated & Offscreen GPU PASS; Native Visual NOT RUN`)
+
+- **Scope:** 2026-11-26 implementation of opt-in `ControlStyle::normal_backdrop` (`harbor-widget`), shared `design_system` liquid-glass pill `Primary` / `Secondary` button roles, softened focus rings, and confirmation footer spacing (`confirmation.rs`), synchronized with `docs/app/design-system.md` and `Spec 0053`/`0054`.
+- **PASS:** `harbor-widget` and `harbor-app` unit/integration suites (`0` failed), `dx12-warp` offscreen GPU `palette_render::gpu` suite (`7/7` passed, including `confirmation_overlay_pixels_render_glass_warning_icon_inset_preview_and_focus_at_multiple_dpi` verifying both Cancel/Deny and Paste/Allow pill `BackdropMaterial` primitives across 1.0/1.5/2.0x DPI), `cargo clippy --locked -p harbor-widget -p harbor-app --all-targets --all-features -- -D warnings`, `cargo fmt --all -- --check`, `python scripts/docs/check_docs.py`, and `git diff --check`.
+- **NOT RUN:** Interactive Windows native desktop visual acceptance over live terminal backdrops (tracked below alongside prior native sign-off items).
+
+- **Branch & commits (pre-button-refinement baseline):** `feat/in-window-confirmation-overlay` (`a2b0638` production implementation across `T0001`–`T0003`, `3cd3a72` ConPTY fixture update; non-test production code unchanged between `a2b0638` and `3cd3a72`)
 - **Environment:** Windows `10.0.26300.0`, `rustc 1.99.1 (58cf8f9c3 2026-10-13)`
 
 ### Automated Verification (`PASS`)
