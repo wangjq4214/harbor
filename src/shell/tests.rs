@@ -89,22 +89,34 @@ fn shared_gpu_exit_cancels_pending_actions_before_exit() {
     }
 }
 
+/// Keep the synthetic reader live until the test releases it; EOF retires the session.
+struct HeldReader(std::sync::mpsc::Receiver<()>);
+impl std::io::Read for HeldReader {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        let _ = self.0.recv();
+        Ok(0)
+    }
+}
+
 #[allow(clippy::arc_with_non_send_sync)]
 fn test_workspace() -> (
     TabManager,
     WorkspaceUiController,
     Arc<AtomicBool>,
     tempfile::NamedTempFile,
+    std::sync::mpsc::Sender<()>,
 ) {
     use harbor_app::{tab_manager::TerminalTabResources, terminal_view::TerminalWidgetBridge};
     let pty = tempfile::NamedTempFile::new().unwrap();
     let gate = Arc::new(AtomicBool::new(false));
+    let (reader_lifetime, reader) = std::sync::mpsc::channel();
+    let mut reader = Some(reader);
     let mut tabs = TabManager::new();
     tabs.create_tab(|_, draw| {
         let terminal = Arc::new(std::sync::Mutex::new(Terminal::new_headless_with_io(
             8,
             40,
-            std::io::empty(),
+            HeldReader(reader.take().expect("single test tab")),
             pty.reopen().unwrap(),
             || true,
         )));
@@ -114,7 +126,7 @@ fn test_workspace() -> (
     .unwrap();
     let ui = WorkspaceUiController::new(tabs.snapshots(), tabs.active_bridge().unwrap(), 1000.0);
     ui.publish_panes(&tabs);
-    (tabs, ui, gate, pty)
+    (tabs, ui, gate, pty, reader_lifetime)
 }
 
 #[test]
@@ -123,7 +135,7 @@ fn osc52_confirmation_opens_in_window_displaces_search_gates_pty_and_resolves_on
     use harbor_app::confirmation::ConfirmationKind;
     use std::sync::atomic::Ordering;
 
-    let (tabs, ui, gate, pty) = test_workspace();
+    let (tabs, ui, gate, pty, _reader_lifetime) = test_workspace();
     let binding = tabs.active_binding().unwrap();
     let terminal = tabs.active_terminal().unwrap();
     let paste = PasteController::new(Arc::clone(&gate));
@@ -210,7 +222,7 @@ fn osc52_confirmation_opens_in_window_displaces_search_gates_pty_and_resolves_on
 fn osc52_confirmation_cancels_on_focus_loss_or_ineligibility_with_zero_writes() {
     use std::sync::atomic::Ordering;
 
-    let (tabs, ui, gate, _pty) = test_workspace();
+    let (tabs, ui, gate, _pty, _reader_lifetime) = test_workspace();
     let binding = tabs.active_binding().unwrap();
     let paste = PasteController::new(Arc::clone(&gate));
     let mut clipboard =
@@ -293,7 +305,7 @@ fn osc52_confirmation_cancels_on_focus_loss_or_ineligibility_with_zero_writes() 
 fn paste_and_osc52_confirmations_are_mutually_exclusive() {
     use harbor_app::confirmation::ConfirmationKind;
 
-    let (tabs, ui, gate, _pty) = test_workspace();
+    let (tabs, ui, gate, _pty, _reader_lifetime) = test_workspace();
     let binding = tabs.active_binding().unwrap();
     let terminal = tabs.active_terminal().unwrap();
     let mut paste = PasteController::new(Arc::clone(&gate));
