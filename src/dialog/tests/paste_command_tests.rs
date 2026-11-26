@@ -88,11 +88,14 @@ fn clipboard_paste_direct_bracketed_and_confirmation_use_existing_policy_once() 
         );
         if let PasteDisposition::Confirm { raw_text } = disposition {
             assert_eq!(raw_text, text);
-            let outcome = DialogOutcome::Confirmed(raw_text);
             // Confirmation uses the production completion path and current modes.
             terminal.lock().unwrap().process_output(b"\x1b[?2004h");
             assert_eq!(
-                complete_paste_confirmation(&outcome, Some(&target), Some((binding(1), &terminal))),
+                complete_paste_confirmation(
+                    Some(&raw_text),
+                    Some(&target),
+                    Some((binding(1), &terminal))
+                ),
                 Ok(CommandCompletion::Applied)
             );
             assert_eq!(
@@ -134,7 +137,7 @@ fn clipboard_paste_propagates_actual_write_failure_and_missing_terminal() {
     assert!(bytes.lock().unwrap().is_empty());
     assert_eq!(
         complete_paste_confirmation(
-            &DialogOutcome::Cancelled,
+            None,
             Some(&PasteTarget::new(binding(1), &terminal)),
             Some((binding(1), &terminal))
         ),
@@ -143,7 +146,7 @@ fn clipboard_paste_propagates_actual_write_failure_and_missing_terminal() {
     assert_eq!(calls.load(Ordering::Relaxed), 1);
     assert_eq!(
         complete_paste_confirmation(
-            &DialogOutcome::Confirmed("plain".into()),
+            Some("plain"),
             Some(&PasteTarget::new(binding(1), &terminal)),
             Some((binding(1), &terminal))
         ),
@@ -156,7 +159,8 @@ fn clipboard_paste_propagates_actual_write_failure_and_missing_terminal() {
 #[allow(clippy::arc_with_non_send_sync)]
 fn confirmation_never_redirects_to_a_survivor_or_replacement_and_is_one_shot() {
     let gate = Arc::new(AtomicBool::new(false));
-    let mut paste = PasteController::new(gate.clone());
+    let mut confirmations =
+        ConfirmationCoordinator::new(gate.clone(), harbor_config::Osc52WritePolicy::Confirm);
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
     let (_reader_lifetime, reader) = std::sync::mpsc::channel();
@@ -181,58 +185,58 @@ fn confirmation_never_redirects_to_a_survivor_or_replacement_and_is_one_shot() {
         800.0,
     );
     let target = PasteTarget::new(binding(1), &terminal);
-    let outcome = DialogOutcome::Confirmed("first\nsecond".into());
     for current in [None, Some((binding(2), &terminal))] {
-        assert!(complete_paste_confirmation(&outcome, Some(&target), current).is_err());
+        assert!(
+            complete_paste_confirmation(Some("first\nsecond"), Some(&target), current).is_err()
+        );
     }
     // Even a malformed same-binding replacement cannot substitute another engine.
     let replacement = Arc::new(Mutex::new(Terminal::new_headless(4, 20)));
     assert!(
-        complete_paste_confirmation(&outcome, Some(&target), Some((binding(1), &replacement)))
-            .is_err()
+        complete_paste_confirmation(
+            Some("first\nsecond"),
+            Some(&target),
+            Some((binding(1), &replacement))
+        )
+        .is_err()
     );
     assert!(bytes.lock().unwrap().is_empty());
     assert_eq!(calls.load(Ordering::Relaxed), 0);
 
-    let (focus, completion) = paste
+    let (focus, completion) = confirmations
         .paste_text(
             &ui,
             Some(&terminal),
             Some(binding(1)),
             "first\nsecond".into(),
             true,
-            false,
         )
         .unwrap();
     assert!(focus.is_some());
     assert_eq!(completion, CommandCompletion::PendingConfirmation);
-    assert_eq!(paste.source(), Some(binding(1)));
+    assert_eq!(confirmations.paste_source(), Some(binding(1)));
     assert!(gate.load(Ordering::Acquire));
     assert!(ui.confirmation_is_open());
     // Cancellation revokes pending state, popup, and shared gate before any later confirmation.
-    let generation = paste.generation().unwrap();
-    assert!(paste.cancel(&ui, false));
-    assert_eq!(paste.source(), None);
+    let generation = confirmations.paste_generation().unwrap();
+    assert!(confirmations.cancel_paste(&ui));
+    assert_eq!(confirmations.paste_source(), None);
     assert!(!gate.load(Ordering::Acquire));
     assert!(!ui.confirmation_is_open());
     assert!(matches!(
-        paste.resolve_confirmation(
-            generation,
-            true,
-            &ui,
-            Some(&terminal),
-            Some(binding(1)),
-            None,
-            false,
-        ),
+        confirmations.resolve_paste(generation, true, &ui, Some(&terminal), Some(binding(1))),
         PasteResolution::Ignored
     ));
 
     let target = PasteTarget::new(binding(1), &terminal);
     terminal.lock().unwrap().retire_session();
     assert!(
-        complete_paste_confirmation(&outcome, Some(&target), Some((binding(1), &terminal)))
-            .is_err()
+        complete_paste_confirmation(
+            Some("first\nsecond"),
+            Some(&target),
+            Some((binding(1), &terminal))
+        )
+        .is_err()
     );
     assert!(prepare_paste(Some(&terminal), "plain").is_err());
     assert!(bytes.lock().unwrap().is_empty());
@@ -241,7 +245,7 @@ fn confirmation_never_redirects_to_a_survivor_or_replacement_and_is_one_shot() {
 
 #[test]
 #[allow(clippy::arc_with_non_send_sync)]
-fn in_window_paste_flow_gates_pty_displaces_search_revalidates_and_guards_gpu_fault() {
+fn in_window_paste_flow_gates_pty_displaces_search_revalidates_and_guards_shutdown() {
     use harbor_app::tab_manager::{TabManager, TerminalTabResources};
     use harbor_app::terminal_view::TerminalWidgetBridge;
     use harbor_app::workspace::{WorkspaceUiController, tab_workspace};
@@ -249,7 +253,6 @@ fn in_window_paste_flow_gates_pty_displaces_search_revalidates_and_guards_gpu_fa
         input::event::{Key as WidgetKey, KeyboardEvent, Modifiers, UiEvent},
         renderer::Viewport,
         runtime::Runtime,
-        winit::{GpuFault, GpuFaultKind},
     };
     use std::time::Instant;
 
@@ -290,15 +293,15 @@ fn in_window_paste_flow_gates_pty_displaces_search_revalidates_and_guards_gpu_fa
 
     let binding = tabs.active_binding().unwrap();
     let terminal = tabs.active_terminal().unwrap();
-    let mut paste = PasteController::new(gate.clone());
-    let (focus, completion) = paste
+    let mut confirmations =
+        ConfirmationCoordinator::new(gate.clone(), harbor_config::Osc52WritePolicy::Confirm);
+    let (focus, completion) = confirmations
         .paste_text(
             &ui,
             Some(&terminal),
             Some(binding),
             "line1\nline2".into(),
             true,
-            false,
         )
         .unwrap();
     assert_eq!(completion, CommandCompletion::PendingConfirmation);
@@ -311,13 +314,12 @@ fn in_window_paste_flow_gates_pty_displaces_search_revalidates_and_guards_gpu_fa
 
     // Second paste while confirmation is active must be rejected without altering preview.
     assert_eq!(
-        paste
+        confirmations
             .paste_text(
                 &ui,
                 Some(&terminal),
                 Some(binding),
                 "other\ntext".into(),
-                false,
                 false,
             )
             .unwrap_err(),
@@ -359,46 +361,36 @@ fn in_window_paste_flow_gates_pty_displaces_search_revalidates_and_guards_gpu_fa
         actions[0].command,
         harbor_app::command::AppCommand::ConfirmConfirmation
     );
+    assert_eq!(confirmations.paste_generation(), Some(generation));
 
-    // Shared GPU fault at approval prevents PTY write and clears gate/popup.
-    let fault = GpuFault {
-        kind: GpuFaultKind::DeviceLost,
-        message: "fault".into(),
-    };
-    assert!(matches!(
-        paste.resolve_confirmation(
-            generation,
-            true,
-            &ui,
-            Some(&terminal),
-            Some(binding),
-            Some(fault),
-            false,
-        ),
-        PasteResolution::Fatal { .. }
-    ));
+    // Shutdown cancellation prevents PTY write and clears gate/popup.
+    ui.close_active_confirmation();
+    confirmations.cancel_for_shutdown();
     assert!(!gate.load(Ordering::Acquire));
     assert!(!ui.confirmation_is_open());
     assert!(bytes.lock().unwrap().is_empty());
+    assert!(matches!(
+        confirmations.resolve_paste(generation, true, &ui, Some(&terminal), Some(binding)),
+        PasteResolution::Ignored
+    ));
 
     // Reopen with bracketed paste off, then turn bracketed paste back on before confirming
     // to prove approval reads InputModes at confirmation time.
     terminal.lock().unwrap().process_output(b"\x1b[?2004l");
-    let (focus2, _) = paste
+    let (focus2, _) = confirmations
         .paste_text(
             &ui,
             Some(&terminal),
             Some(binding),
             "line1\nline2".into(),
             true,
-            false,
         )
         .unwrap();
     runtime.request_focus(&focus2.unwrap());
     runtime.update(Instant::now());
     terminal.lock().unwrap().process_output(b"\x1b[?2004h");
-    let gen2 = paste.generation().unwrap();
-    match paste.resolve_confirmation(gen2, true, &ui, Some(&terminal), Some(binding), None, false) {
+    let gen2 = confirmations.paste_generation().unwrap();
+    match confirmations.resolve_paste(gen2, true, &ui, Some(&terminal), Some(binding)) {
         PasteResolution::Resolved { palette_completion } => {
             assert_eq!(palette_completion, Some(Ok(CommandCompletion::Applied)));
         }
@@ -441,7 +433,8 @@ mod pty {
         #[allow(clippy::arc_with_non_send_sync)]
         let terminal = Arc::new(Mutex::new(terminal));
         let gate = Arc::new(AtomicBool::new(false));
-        let mut paste = PasteController::new(gate.clone());
+        let mut confirmations =
+            ConfirmationCoordinator::new(gate.clone(), harbor_config::Osc52WritePolicy::Confirm);
         let ui = harbor_app::workspace::WorkspaceUiController::new(
             Vec::new(),
             harbor_app::terminal_view::TerminalWidgetBridge::new(
@@ -451,14 +444,13 @@ mod pty {
             ),
             800.0,
         );
-        let (_, completion) = paste
+        let (_, completion) = confirmations
             .paste_text(
                 &ui,
                 Some(&terminal),
                 Some(binding(1)),
                 "must not be delivered\nline two".into(),
                 true,
-                false,
             )
             .unwrap();
         assert_eq!(completion, CommandCompletion::PendingConfirmation);
@@ -466,17 +458,24 @@ mod pty {
         assert!(gate.load(Ordering::Acquire));
 
         let target = PasteTarget::new(binding(1), &terminal);
-        let outcome = DialogOutcome::Confirmed("must not be delivered\nline two".into());
         terminal.lock().unwrap().write_pty(b"exit\r").unwrap();
         exit.recv_timeout(Duration::from_secs(15)).unwrap();
         assert!(terminal.lock().unwrap().shell_process_exited());
         assert_eq!(
-            complete_paste_confirmation(&outcome, Some(&target), Some((binding(1), &terminal))),
+            complete_paste_confirmation(
+                Some("must not be delivered\nline two"),
+                Some(&target),
+                Some((binding(1), &terminal))
+            ),
             Err("Rejected: paste target retired")
         );
         terminal.lock().unwrap().retire_session();
         assert_eq!(
-            complete_paste_confirmation(&outcome, Some(&target), Some((binding(1), &terminal))),
+            complete_paste_confirmation(
+                Some("must not be delivered\nline two"),
+                Some(&target),
+                Some((binding(1), &terminal))
+            ),
             Err("Rejected: paste target retired")
         );
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -488,26 +487,25 @@ mod pty {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(
-            paste.retire_target(&ui, false),
+            confirmations.retire_paste_target(&ui),
             Some(Err("Rejected: paste target retired"))
         );
         assert_eq!(
-            paste.retire_target(&ui, false),
+            confirmations.retire_paste_target(&ui),
             None,
             "retirement completion is reported once"
         );
         assert!(!gate.load(Ordering::Acquire));
         assert!(!ui.confirmation_is_open());
-        assert_eq!(paste.source(), None);
+        assert_eq!(confirmations.paste_source(), None);
         assert_eq!(
-            paste
+            confirmations
                 .paste_text(
                     &ui,
                     Some(&terminal),
                     Some(binding(1)),
                     "must not be delivered\n".into(),
                     true,
-                    false,
                 )
                 .unwrap_err(),
             "Rejected: paste target retired"

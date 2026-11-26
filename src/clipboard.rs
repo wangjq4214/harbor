@@ -35,18 +35,11 @@ pub(crate) fn foreground(window: &Window) -> bool {
     }
     #[cfg(windows)]
     {
-        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let Ok(handle) = window.window_handle() else {
-            return false;
-        };
-        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        let Some(hwnd) = crate::chrome::win32_hwnd(window) else {
             return false;
         };
         // Read-only native foreground observation; no activation or clipboard access.
-        unsafe {
-            windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize
-                == handle.hwnd.get()
-        }
+        unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize == hwnd }
     }
     #[cfg(not(windows))]
     {
