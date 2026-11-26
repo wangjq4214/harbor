@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0002
 **Source:** [Spec 0058](../../spec/0058-standardized-repository-file-layout.md), [ADR 0112](../../adr/0112-standardized-repository-file-layout.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -28,10 +28,10 @@ Convert every `mod.rs` file in the workspace to Rust 2018+ `<module>.rs` + `<mod
 
 ## Acceptance
 
-- [ ] Zero `mod.rs` files exist anywhere in `src/` or `crates/*/src/`.
-- [ ] Zero `*_tests.rs` files exist directly under `crates/harbor-widget/src/`.
-- [ ] `cargo test --locked -p harbor-widget -p harbor-widget-macros -p harbor-terminal` passes.
-- [ ] `cargo clippy --locked -p harbor-widget -p harbor-terminal --all-targets --all-features -- -D warnings` passes.
+- [x] Zero `mod.rs` files exist anywhere in `src/` or `crates/*/src/`.
+- [x] Zero `*_tests.rs` files exist directly under `crates/harbor-widget/src/`.
+- [x] `cargo test --locked -p harbor-widget -p harbor-widget-macros -p harbor-terminal` passes.
+- [x] `cargo clippy --locked -p harbor-widget -p harbor-terminal --all-targets --all-features -- -D warnings` passes.
 
 ## Out of Scope
 

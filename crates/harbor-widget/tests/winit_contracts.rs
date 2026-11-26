@@ -114,7 +114,7 @@ fn attach_hmr_config<P, F>(
 }
 #[test]
 fn native_host_public_api_encapsulates_frame_target_and_surface() {
-    let winit_mod = include_str!("../src/winit/mod.rs");
+    let winit_mod = include_str!("../src/winit.rs");
     for internal_only in ["WinitFrameTarget", "WindowSurface"] {
         assert!(
             !winit_mod

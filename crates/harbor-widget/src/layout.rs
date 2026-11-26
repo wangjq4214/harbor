@@ -12,3 +12,6 @@ pub use constraints::BoxConstraints;
 pub use cross_axis_alignment::CrossAxisAlignment;
 pub use geometry::{Point, Rect, Size};
 pub use parent_data::{FlexFit, FlexParentData, ParentData};
+
+#[cfg(test)]
+mod tests;

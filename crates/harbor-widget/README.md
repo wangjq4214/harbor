@@ -145,7 +145,7 @@ Prefer root imports for common widgets (including `Stack` and `TextLabel`), `Com
 
 ## Runtime without `winit`
 
-Use [`runtime::Runtime`](src/runtime/mod.rs) directly when another host already owns the window or event loop. The embedding host is responsible for:
+Use [`runtime::Runtime`](src/runtime.rs) directly when another host already owns the window or event loop. The embedding host is responsible for:
 
 - setting the root component and viewport;
 - dispatching normalized `UiEvent` values;

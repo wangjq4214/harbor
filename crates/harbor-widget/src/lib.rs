@@ -73,11 +73,5 @@ pub use widgets::{
 pub use widgets::{Checkbox, EditableText, SegmentedControl, TextField, VerticalDirection};
 pub use widgets::{align::Align, padding::Padding, sized_box::SizedBox};
 
-#[cfg(test)]
-mod layout_component_tests;
-
-#[cfg(test)]
-mod macro_tests;
-
 #[cfg(feature = "winit")]
 pub mod winit;

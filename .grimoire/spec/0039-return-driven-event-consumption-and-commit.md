@@ -80,7 +80,7 @@ This inventory records the review-time surfaces and defects, not current defect 
 | --- | --- |
 | [`input/event_ctx.rs`](../../crates/harbor-widget/src/input/event_ctx.rs), [`view.rs`](../../crates/harbor-widget/src/view.rs) | EventHandled and EventCtx public contract; PrimitiveLeaf input extension |
 | [`runtime/event_router.rs`](../../crates/harbor-widget/src/runtime/event_router.rs) | Routed phases, direct hover/focus notifications, ownership, command submission; at review time discarded handler returns and contained F12's short circuit |
-| [`runtime/mod.rs`](../../crates/harbor-widget/src/runtime/mod.rs) | Public dispatch, RuntimeEffects publication and external-input drain |
+| [`runtime.rs`](../../crates/harbor-widget/src/runtime.rs) | Public dispatch, RuntimeEffects publication and external-input drain |
 | [`widgets/interactive_region.rs`](../../crates/harbor-widget/src/widgets/interactive_region.rs), [`widgets/scroll_view.rs`](../../crates/harbor-widget/src/widgets/scroll_view.rs) | Nested activation priority versus intentional scrollbar capture interception |
 | [`widgets/editable_text.rs`](../../crates/harbor-widget/src/widgets/editable_text.rs), [`widgets/focus_scope.rs`](../../crates/harbor-widget/src/widgets/focus_scope.rs) | Editing, input lifecycle and focus navigation |
 | [`widgets/custom_paint.rs`](../../crates/harbor-widget/src/widgets/external_surface.rs), [`widgets/mouse_region.rs`](../../crates/harbor-widget/src/widgets/mouse_region.rs), [`widgets/notification.rs`](../../crates/harbor-widget/src/widgets/notification_card.rs) | External input adapters, boundary observations and notification-card input isolation |
