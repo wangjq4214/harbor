@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0003
 **Source:** [Spec 0058](../../spec/0058-standardized-repository-file-layout.md), [ADR 0112](../../adr/0112-standardized-repository-file-layout.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -36,10 +36,10 @@ Remove all flat `*_tests.rs` files directly under root `src/` by placing module-
 
 ## Acceptance
 
-- [ ] Zero `*_tests.rs` files remain directly under root `src/`.
-- [ ] `cargo test --locked -p harbor` passes.
-- [ ] `just test-architecture` discovers and runs all root binary architecture tests.
-- [ ] `cargo clippy --locked -p harbor --all-targets --all-features -- -D warnings` passes.
+- [x] Zero `*_tests.rs` files remain directly under root `src/`.
+- [x] `cargo test --locked -p harbor` passes.
+- [x] `just test-architecture` discovers and runs all root binary architecture tests.
+- [x] `cargo clippy --locked -p harbor --all-targets --all-features -- -D warnings` passes.
 
 ## Out of Scope
 

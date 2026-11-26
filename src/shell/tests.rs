@@ -1,5 +1,6 @@
 #[path = "tests/architecture.rs"]
 mod architecture;
+mod configuration_notice_tests;
 
 use super::*;
 

@@ -1,6 +1,6 @@
 //! Exercises the admission step used by Shell::drain_app_commands with the real UI inbox.
 //! Native window/clipboard effects deliberately remain outside this headless seam.
-use super::*;
+use super::super::*;
 use harbor_app::command::{AppCommand, AppCommandRequest, CommandSource};
 use harbor_widget::{
     input::event::{Key, KeyboardEvent, Modifiers, UiEvent},
