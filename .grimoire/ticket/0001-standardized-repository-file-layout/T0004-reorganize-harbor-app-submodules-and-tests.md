@@ -2,7 +2,7 @@
 
 **Ticket ID:** T0004
 **Source:** [Spec 0058](../../spec/0058-standardized-repository-file-layout.md), [ADR 0112](../../adr/0112-standardized-repository-file-layout.md)
-**Status:** Todo
+**Status:** Done
 
 ## Goal
 
@@ -39,10 +39,10 @@ Clear all flat `*_tests.rs` files from `crates/harbor-app/src/` and group tightl
 
 ## Acceptance
 
-- [ ] Zero `*_tests.rs` files remain directly under `crates/harbor-app/src/`.
-- [ ] `palette`, `quick_save`, and `quick_save_project` live under `crates/harbor-app/src/workspace/`, and `tab_view_ui` lives under `crates/harbor-app/src/tab_view/`.
-- [ ] All public `harbor_app` API paths remain compatible for `harbor` and `harbor-app-ui`.
-- [ ] `cargo test --locked -p harbor-app -p harbor-app-ui` and `cargo clippy --locked -p harbor-app -p harbor-app-ui --all-targets --all-features -- -D warnings` pass.
+- [x] Zero `*_tests.rs` files remain directly under `crates/harbor-app/src/`.
+- [x] `palette`, `quick_save`, and `quick_save_project` live under `crates/harbor-app/src/workspace/`, and `tab_view_ui` lives under `crates/harbor-app/src/tab_view/`.
+- [x] All public `harbor_app` API paths remain compatible for `harbor` and `harbor-app-ui`.
+- [x] `cargo test --locked -p harbor-app -p harbor-app-ui` and `cargo clippy --locked -p harbor-app -p harbor-app-ui --all-targets --all-features -- -D warnings` pass.
 
 ## Out of Scope
 

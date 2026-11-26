@@ -52,7 +52,7 @@ Use the established vector icon mechanism and existing generic layout, interacti
 | User intent | Tab/action controls → existing `AppCommandRequest` dispatcher | Activate the selected stable tab; ordinary New; profile chooser; Save current session | The same existing Host command path and authorization/focus behavior, once per activation |
 | Hover help | Control/title meaning → visible hint | Function or current tab title and actual hover target | Readable help without command execution or layout displacement |
 
-Relevant current surfaces are [`tab_view_ui.rs`](../../crates/harbor-app/src/tab_view_ui.rs) for composition and controls and [`tab_view.rs`](../../crates/harbor-app/src/tab_view.rs) for presentation and tab focus/scroll coordination. These paths locate existing responsibilities, not a mandated implementation plan.
+Relevant current surfaces are [`tab_view/ui.rs`](../../crates/harbor-app/src/tab_view/ui.rs) for composition and controls and [`tab_view.rs`](../../crates/harbor-app/src/tab_view.rs) for presentation and tab focus/scroll coordination. These paths locate existing responsibilities, not a mandated implementation plan.
 
 ## End-to-End Tests
 

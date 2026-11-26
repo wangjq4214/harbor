@@ -1,5 +1,5 @@
 //! Mounted production workspace routing; not native desktop/IME acceptance.
-use crate::{
+use harbor_app::{
     command::{AppCommand, AppCommandRequest, PaneCommand},
     tab_manager::{PaneBinding, TabManager, TerminalTabResources},
     terminal_view::TerminalWidgetBridge,
@@ -246,14 +246,14 @@ fn mixed_panes_focus_markers_commands_overrides_and_consumption() {
             ..Default::default()
         };
         f.ui.publish_keybindings(
-            crate::command::validate_keybindings(&settings.keybindings).unwrap(),
+            harbor_app::command::validate_keybindings(&settings.keybindings).unwrap(),
         );
         f.rt.update(Instant::now());
         f.chord('w', false);
         assert_eq!(
             f.ui.drain_actions(),
             [AppCommandRequest::shortcut(AppCommand::Tab(
-                crate::tab_view::TabCommand::CloseActive
+                harbor_app::tab_view::TabCommand::CloseActive
             ))]
         );
         assert!(f.bytes.iter().all(|bytes| bytes.lock().unwrap().is_empty()));
@@ -298,7 +298,8 @@ fn pointer_reporting_capture_and_wheel_are_pane_local_not_focus_local() {
         }
         // A committed allocation can move before the next render/Host resize
         // submission. The first hit must still use the new local origin.
-        let crate::pane_layout::PaneLayout::Split { ratio, .. } = f.tabs.active_layout().unwrap()
+        let harbor_app::pane_layout::PaneLayout::Split { ratio, .. } =
+            f.tabs.active_layout().unwrap()
         else {
             panic!()
         };
@@ -381,7 +382,7 @@ fn pane_close_survivor_and_whole_tab_final_window_semantics() {
     let requests = f.ui.drain_actions();
     assert_eq!(
         requests[0].command,
-        AppCommand::Tab(crate::tab_view::TabCommand::CloseActive)
+        AppCommand::Tab(harbor_app::tab_view::TabCommand::CloseActive)
     );
     assert!(f.tabs.close_active().close_window);
     assert!(f.tabs.snapshots().is_empty());
@@ -535,7 +536,7 @@ fn native_shifted_pane_cycle_is_consumed_once() {
         .into(),
         valid: true,
     };
-    f.ui.publish_keybindings(crate::command::validate_keybindings(&settings).unwrap());
+    f.ui.publish_keybindings(harbor_app::command::validate_keybindings(&settings).unwrap());
     f.rt.update(Instant::now());
     for logical in ["}", "]"] {
         for state in [ElementState::Pressed, ElementState::Released] {

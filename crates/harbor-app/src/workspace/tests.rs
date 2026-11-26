@@ -1,11 +1,7 @@
 //! Integrated application workspace regressions.
-#[path = "workspace_tests/input.rs"]
 mod input;
-#[path = "workspace_tests/notifications.rs"]
 mod notifications;
-#[path = "workspace_tests/search.rs"]
 mod search;
-#[path = "workspace_tests/tabs.rs"]
 mod tabs;
 
 #[cfg(test)]
@@ -203,25 +199,15 @@ fn search_button_surfaces(runtime: &Runtime) -> Vec<(Rect, f32)> {
         .collect()
 }
 
-#[path = "profile_chooser_tests.rs"]
 mod profile_chooser;
-#[path = "quick_save_tests.rs"]
 mod quick_save;
 
-#[path = "palette_tests.rs"]
 mod palette_support;
 
-#[path = "workspace_tests/palette_commands.rs"]
 mod palette_commands;
-#[path = "workspace_tests/palette_input.rs"]
 mod palette_input;
-#[path = "workspace_tests/palette_layout.rs"]
 mod palette_layout;
-#[path = "palette_render_tests.rs"]
 mod palette_render;
-#[path = "workspace_tests/palette_scroll.rs"]
 mod palette_scroll;
-#[path = "popup_tests.rs"]
 mod popups;
-#[path = "palette_terminal_tests.rs"]
 mod terminal_actions;

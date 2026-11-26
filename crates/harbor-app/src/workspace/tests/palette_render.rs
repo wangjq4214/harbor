@@ -1,5 +1,4 @@
 //! GPU coverage of real glass overlay composition, not just scene descriptors.
-#[path = "palette_render_tests/gpu.rs"]
 mod gpu;
 
 use super::palette_support::*;
