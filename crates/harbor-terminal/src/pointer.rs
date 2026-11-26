@@ -61,16 +61,127 @@ fn visible_selection_bounds(selection: &SelectionModel) -> Option<SelectionBound
     }
 }
 
+#[derive(Default)]
+struct PointerCaptureState {
+    active: Option<ActivePointer>,
+    vt_capture: Option<u64>,
+    pending_release: Option<u64>,
+    mouse_buttons: u8,
+}
+
+impl PointerCaptureState {
+    fn has_active(&self) -> bool {
+        self.active.is_some() || self.vt_capture.is_some() || self.pending_release.is_some()
+    }
+
+    fn begin_vt_capture(&mut self, pointer_id: u64) {
+        self.vt_capture = Some(pointer_id);
+    }
+
+    fn end_vt_capture(&mut self, pointer_id: u64) -> bool {
+        if self.vt_capture == Some(pointer_id) {
+            self.vt_capture = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn release_vt_or_pending(&mut self, pointer_id: u64) -> bool {
+        let captured = self.end_vt_capture(pointer_id);
+        if self.pending_release == Some(pointer_id) {
+            self.pending_release = None;
+            true
+        } else {
+            captured
+        }
+    }
+
+    fn queue_local_release(&mut self) {
+        self.pending_release = self
+            .active
+            .take()
+            .map(|active| active.pointer_id())
+            .or(self.pending_release);
+    }
+
+    fn queue_selection_release(&mut self) {
+        if matches!(self.active, Some(ActivePointer::Selection { .. })) {
+            self.queue_local_release();
+            if self.vt_capture.is_none() {
+                self.mouse_buttons = 0;
+            }
+        }
+    }
+
+    fn consume_release_sources(&mut self) -> Option<u64> {
+        self.active
+            .take()
+            .map(|active| active.pointer_id())
+            .or_else(|| self.vt_capture.take())
+            .or_else(|| self.pending_release.take())
+    }
+
+    fn local_interruption(&mut self, redraw: bool) -> TerminalEventOutcome {
+        let release_pointer = self.active.take().map(|active| active.pointer_id());
+        TerminalEventOutcome {
+            redraw,
+            release_pointer,
+            ..TerminalEventOutcome::default()
+        }
+    }
+
+    fn interrupt_outcome(&mut self, redraw: bool) -> TerminalEventOutcome {
+        let release_pointer = self
+            .active
+            .take()
+            .map(|active| active.pointer_id())
+            .or_else(|| self.pending_release.take());
+        if self.vt_capture.is_none() {
+            self.mouse_buttons = 0;
+        }
+        TerminalEventOutcome {
+            redraw,
+            release_pointer,
+            ..TerminalEventOutcome::default()
+        }
+    }
+
+    fn prepare_mouse_event(&mut self, mut event: TerminalPointerEvent) -> TerminalPointerEvent {
+        let bit = match event.button {
+            TerminalPointerButton::Left => 1,
+            TerminalPointerButton::Middle => 2,
+            TerminalPointerButton::Right => 4,
+            TerminalPointerButton::None => 0,
+        };
+        match event.phase {
+            TerminalPointerPhase::Down => self.mouse_buttons |= bit,
+            TerminalPointerPhase::Move => {
+                event.button = if self.mouse_buttons & 1 != 0 {
+                    TerminalPointerButton::Left
+                } else if self.mouse_buttons & 2 != 0 {
+                    TerminalPointerButton::Middle
+                } else if self.mouse_buttons & 4 != 0 {
+                    TerminalPointerButton::Right
+                } else {
+                    TerminalPointerButton::None
+                };
+            }
+            TerminalPointerPhase::Up => self.mouse_buttons &= !bit,
+            TerminalPointerPhase::Cancel => self.mouse_buttons = 0,
+            _ => {}
+        }
+        event
+    }
+}
+
 pub struct PointerInteraction {
     selection: crate::revision::Revisioned<SelectionModel>,
     saved_primary_selection: Option<SelectionModel>,
     parked_alt_selection: Option<SelectionModel>,
-    active: Option<ActivePointer>,
     viewport: Option<RenderViewport>,
     input_scale: f32,
-    mouse_buttons: u8,
-    vt_capture: Option<u64>,
-    pending_release: Option<u64>,
+    capture: PointerCaptureState,
 }
 
 impl Default for PointerInteraction {
@@ -89,12 +200,9 @@ impl PointerInteraction {
             selection: SelectionModel::new().into(),
             saved_primary_selection: None,
             parked_alt_selection: None,
-            active: None,
             viewport: None,
             input_scale: 1.0,
-            mouse_buttons: 0,
-            vt_capture: None,
-            pending_release: None,
+            capture: PointerCaptureState::default(),
         }
     }
 
@@ -129,7 +237,7 @@ impl PointerInteraction {
         self.saved_primary_selection = prepared.saved_primary_selection;
         self.parked_alt_selection = prepared.parked_alt_selection;
         if prepared.active_invalidated {
-            self.queue_selection_release();
+            self.capture.queue_selection_release();
         }
     }
 
@@ -165,8 +273,8 @@ impl PointerInteraction {
     }
     fn cancel_active_for_buffer_transition(&mut self) {
         let _ = self.selection.cancel();
-        self.queue_local_release();
-        self.mouse_buttons = 0;
+        self.capture.queue_local_release();
+        self.capture.mouse_buttons = 0;
     }
 
     pub fn set_viewport(&mut self, viewport: RenderViewport) {
@@ -186,31 +294,20 @@ impl PointerInteraction {
     }
 
     pub fn has_active_pointer(&self) -> bool {
-        self.active.is_some() || self.vt_capture.is_some() || self.pending_release.is_some()
+        self.capture.has_active()
     }
 
     pub fn begin_vt_capture(&mut self, pointer_id: u64) {
-        self.vt_capture = Some(pointer_id);
+        self.capture.begin_vt_capture(pointer_id);
     }
 
     pub fn end_vt_capture(&mut self, pointer_id: u64) -> bool {
-        if self.vt_capture == Some(pointer_id) {
-            self.vt_capture = None;
-            true
-        } else {
-            false
-        }
+        self.capture.end_vt_capture(pointer_id)
     }
 
     /// A local capture may have been queued for release before VT reporting turned on.
     pub(crate) fn release_vt_or_pending(&mut self, pointer_id: u64) -> bool {
-        let captured = self.end_vt_capture(pointer_id);
-        if self.pending_release == Some(pointer_id) {
-            self.pending_release = None;
-            true
-        } else {
-            captured
-        }
+        self.capture.release_vt_or_pending(pointer_id)
     }
 
     /// Projects using the snapshot's encoding units, retaining pixel precision.
@@ -236,38 +333,15 @@ impl PointerInteraction {
     }
 
     pub fn clear(&mut self) {
-        self.queue_local_release();
+        self.capture.queue_local_release();
         self.selection.clear();
         self.saved_primary_selection = None;
         self.parked_alt_selection = None;
-        self.mouse_buttons = 0;
+        self.capture.mouse_buttons = 0;
     }
 
-    pub fn prepare_mouse_event(&mut self, mut event: TerminalPointerEvent) -> TerminalPointerEvent {
-        let bit = match event.button {
-            TerminalPointerButton::Left => 1,
-            TerminalPointerButton::Middle => 2,
-            TerminalPointerButton::Right => 4,
-            TerminalPointerButton::None => 0,
-        };
-        match event.phase {
-            TerminalPointerPhase::Down => self.mouse_buttons |= bit,
-            TerminalPointerPhase::Move => {
-                event.button = if self.mouse_buttons & 1 != 0 {
-                    TerminalPointerButton::Left
-                } else if self.mouse_buttons & 2 != 0 {
-                    TerminalPointerButton::Middle
-                } else if self.mouse_buttons & 4 != 0 {
-                    TerminalPointerButton::Right
-                } else {
-                    TerminalPointerButton::None
-                };
-            }
-            TerminalPointerPhase::Up => self.mouse_buttons &= !bit,
-            TerminalPointerPhase::Cancel => self.mouse_buttons = 0,
-            _ => {}
-        }
-        event
+    pub fn prepare_mouse_event(&mut self, event: TerminalPointerEvent) -> TerminalPointerEvent {
+        self.capture.prepare_mouse_event(event)
     }
 
     pub fn auto_scroll_deadline(&self) -> Option<Instant> {
@@ -275,8 +349,8 @@ impl PointerInteraction {
     }
 
     pub fn cancel(&mut self) -> TerminalEventOutcome {
-        let release_pointer = self.consume_release_sources();
-        self.mouse_buttons = 0;
+        let release_pointer = self.capture.consume_release_sources();
+        self.capture.mouse_buttons = 0;
         let redraw = self.selection.cancel() != SelectionOutcome::None;
         TerminalEventOutcome {
             redraw,
@@ -299,69 +373,18 @@ impl PointerInteraction {
     pub fn clear_selection_outcome(&mut self) -> TerminalEventOutcome {
         let redraw = self.selection.has_selection() || self.selection.is_dragging();
         self.selection.clear();
-        self.interrupt_outcome(redraw)
+        self.capture.interrupt_outcome(redraw)
     }
 
     pub fn on_key_press_outcome(&mut self) -> TerminalEventOutcome {
         let redraw = self.selection.on_key_press();
-        self.interrupt_outcome(redraw)
+        self.capture.interrupt_outcome(redraw)
     }
 
     /// Interrupts only local selection/scrollbar capture when VT mouse reporting takes over.
     pub fn cancel_local_pointer(&mut self) -> TerminalEventOutcome {
-        self.local_interruption()
-    }
-
-    fn queue_local_release(&mut self) {
-        self.pending_release = self
-            .active
-            .take()
-            .map(|active| active.pointer_id())
-            .or(self.pending_release);
-    }
-
-    fn queue_selection_release(&mut self) {
-        if matches!(self.active, Some(ActivePointer::Selection { .. })) {
-            self.queue_local_release();
-            if self.vt_capture.is_none() {
-                self.mouse_buttons = 0;
-            }
-        }
-    }
-
-    fn consume_release_sources(&mut self) -> Option<u64> {
-        self.active
-            .take()
-            .map(|active| active.pointer_id())
-            .or_else(|| self.vt_capture.take())
-            .or_else(|| self.pending_release.take())
-    }
-
-    fn local_interruption(&mut self) -> TerminalEventOutcome {
-        let release_pointer = self.active.take().map(|active| active.pointer_id());
         let redraw = self.selection.cancel() != SelectionOutcome::None;
-        TerminalEventOutcome {
-            redraw,
-            release_pointer,
-            ..TerminalEventOutcome::default()
-        }
-    }
-
-    /// Releases the active pointer and clears button state after a selection interrupt.
-    fn interrupt_outcome(&mut self, redraw: bool) -> TerminalEventOutcome {
-        let release_pointer = self
-            .active
-            .take()
-            .map(|active| active.pointer_id())
-            .or_else(|| self.pending_release.take());
-        if self.vt_capture.is_none() {
-            self.mouse_buttons = 0;
-        }
-        TerminalEventOutcome {
-            redraw,
-            release_pointer,
-            ..TerminalEventOutcome::default()
-        }
+        self.capture.local_interruption(redraw)
     }
 
     pub fn handle_pointer(
@@ -377,9 +400,9 @@ impl PointerInteraction {
         if matches!(
             event.phase,
             TerminalPointerPhase::Up | TerminalPointerPhase::Cancel
-        ) && self.pending_release == Some(event.pointer_id)
+        ) && self.capture.pending_release == Some(event.pointer_id)
         {
-            self.pending_release = None;
+            self.capture.pending_release = None;
             return TerminalEventOutcome {
                 release_pointer: Some(event.pointer_id),
                 ..TerminalEventOutcome::default()
@@ -400,7 +423,8 @@ impl PointerInteraction {
         if let TerminalPointerPhase::WheelLine { dy, .. }
         | TerminalPointerPhase::WheelPixel { dy, .. } = event.phase
         {
-            let interrupted = self.local_interruption();
+            let redraw = self.selection.cancel() != SelectionOutcome::None;
+            let interrupted = self.capture.local_interruption(redraw);
             let is_pixel = matches!(event.phase, TerminalPointerPhase::WheelPixel { .. });
             let lines = screen.scroll_wheel(dy, is_pixel);
             return TerminalEventOutcome {
@@ -415,7 +439,7 @@ impl PointerInteraction {
             TerminalPointerPhase::Down if event.button == TerminalPointerButton::Left => {
                 match hit_test(&snapshot, &viewport, physical_position) {
                     ScrollbarHit::Thumb { grab_offset } => {
-                        self.active = Some(ActivePointer::Scrollbar {
+                        self.capture.active = Some(ActivePointer::Scrollbar {
                             pointer_id: event.pointer_id,
                             grab_offset,
                         });
@@ -457,7 +481,7 @@ impl PointerInteraction {
                 let outcome = self.selection.press(cell, now, &snapshot);
                 let _ = self.commit_selection(screen);
                 let is_visible = !self.selection.is_range_empty();
-                self.active = Some(ActivePointer::Selection {
+                self.capture.active = Some(ActivePointer::Selection {
                     pointer_id: event.pointer_id,
                     hyperlink: (!is_visible).then_some(hyperlink).flatten(),
                 });
@@ -471,7 +495,7 @@ impl PointerInteraction {
                 }
             }
             TerminalPointerPhase::Move => {
-                let Some(active) = self.active.as_ref() else {
+                let Some(active) = self.capture.active.as_ref() else {
                     return TerminalEventOutcome::default();
                 };
                 match active {
@@ -485,7 +509,7 @@ impl PointerInteraction {
                         let auto_scrolling = self.selection.auto_scroll_direction().is_some();
                         if (changed || auto_scrolled || auto_scrolling)
                             && let Some(ActivePointer::Selection { hyperlink, .. }) =
-                                self.active.as_mut()
+                                self.capture.active.as_mut()
                         {
                             *hyperlink = None;
                         }
@@ -521,11 +545,11 @@ impl PointerInteraction {
                 }
             }
             TerminalPointerPhase::Up | TerminalPointerPhase::Cancel => {
-                let Some(active) = self.active.take() else {
+                let Some(active) = self.capture.active.take() else {
                     return TerminalEventOutcome::default();
                 };
                 if active.pointer_id() != event.pointer_id {
-                    self.active = Some(active);
+                    self.capture.active = Some(active);
                     return TerminalEventOutcome::default();
                 }
                 let (redraw, hyperlink_activation) = match active {
@@ -596,7 +620,7 @@ impl PointerInteraction {
         let had_selection = self.selection.has_selection();
         let changed = self.selection.reconcile_anchors(mutations, projection);
         if had_selection && !self.selection.has_selection() {
-            self.queue_selection_release();
+            self.capture.queue_selection_release();
         }
         changed
     }
@@ -776,7 +800,7 @@ mod tests {
         assert!(screen.is_alt());
         assert_eq!(pointer.bounds(), None);
         assert!(pointer.parked_alt_selection.is_none());
-        assert_eq!(pointer.mouse_buttons, 0);
+        assert_eq!(pointer.capture.mouse_buttons, 0);
         assert!(pointer.end_vt_capture(99));
         let released = pointer.handle_pointer(
             &mut screen,
@@ -812,7 +836,7 @@ mod tests {
             assert_eq!(outcome.release_pointer, None);
             assert_eq!(outcome.hyperlink_activation, None);
             assert!(matches!(
-                pointer.active.as_ref(),
+                pointer.capture.active.as_ref(),
                 Some(ActivePointer::Selection {
                     pointer_id: 7,
                     hyperlink: Some(_),
@@ -850,7 +874,7 @@ mod tests {
         let mut viewport = viewport();
         viewport.allocation_size = (100, 100);
         pointer.set_viewport(viewport);
-        pointer.active = Some(ActivePointer::Scrollbar {
+        pointer.capture.active = Some(ActivePointer::Scrollbar {
             pointer_id: 7,
             grab_offset: 3.0,
         });
@@ -863,7 +887,7 @@ mod tests {
         assert!(moved.redraw);
         assert_eq!(screen.view_offset(), screen.scroll_count());
         assert_eq!(
-            pointer.active,
+            pointer.capture.active,
             Some(ActivePointer::Scrollbar {
                 pointer_id: 7,
                 grab_offset: 3.0,
@@ -1104,16 +1128,16 @@ mod tests {
     #[test]
     fn cancel_consumes_local_vt_and_pending_releases_in_precedence_order() {
         let mut pointer = PointerInteraction::new();
-        pointer.active = Some(ActivePointer::Scrollbar {
+        pointer.capture.active = Some(ActivePointer::Scrollbar {
             pointer_id: 1,
             grab_offset: 0.0,
         });
-        pointer.vt_capture = Some(2);
-        pointer.pending_release = Some(3);
-        pointer.mouse_buttons = 7;
+        pointer.capture.vt_capture = Some(2);
+        pointer.capture.pending_release = Some(3);
+        pointer.capture.mouse_buttons = 7;
 
         assert_eq!(pointer.cancel().release_pointer, Some(1));
-        assert_eq!(pointer.mouse_buttons, 0);
+        assert_eq!(pointer.capture.mouse_buttons, 0);
         assert_eq!(pointer.cancel().release_pointer, Some(2));
         assert_eq!(pointer.cancel().release_pointer, Some(3));
         assert!(!pointer.has_active_pointer());
@@ -1124,7 +1148,7 @@ mod tests {
         let mut screen = Screen::new(2, 10);
         let mut pointer = PointerInteraction::new();
         pointer.set_viewport(viewport());
-        pointer.pending_release = Some(7);
+        pointer.capture.pending_release = Some(7);
         pointer.begin_vt_capture(7);
         let now = Instant::now();
 
@@ -1188,7 +1212,7 @@ mod tests {
         pointer.selection.press((0, 0), now, &snap);
         pointer.selection.drag_to((0, 3), &snap);
         pointer.selection.release();
-        pointer.active = Some(ActivePointer::Scrollbar {
+        pointer.capture.active = Some(ActivePointer::Scrollbar {
             pointer_id: 42,
             grab_offset: 1.0,
         });
@@ -1197,7 +1221,7 @@ mod tests {
         pointer.commit_resize(prepared);
 
         assert!(matches!(
-            pointer.active,
+            pointer.capture.active,
             Some(ActivePointer::Scrollbar { pointer_id: 42, .. })
         ));
     }

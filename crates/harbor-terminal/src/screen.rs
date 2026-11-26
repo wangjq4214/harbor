@@ -5,6 +5,7 @@
 //! Switching buffers never swaps session properties; pointer selections consume
 //! the same authoritative BufferTransition without becoming Screen-owned state.
 
+mod anchors;
 mod cursor;
 mod default_colors;
 mod edit;
@@ -14,21 +15,22 @@ mod history_tests;
 mod hyperlink;
 #[cfg(test)]
 mod palette_tests;
+mod resize;
 mod synchronized_output;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod text_admission_tests;
 
+use std::collections::HashSet;
+
 use self::default_colors::DefaultColors;
-use crate::content_anchor::{
-    Affinity, AnchorMutation, AnchorMutationBatch, ContentAnchor, ContentProjection,
-};
-use crate::logical_content::{DecodeError, LogicalAtomOffset};
-use crate::normal_buf::{CellsIter, LogicalLineId};
-use crate::primary_reflow::{
-    CursorRetention, PreparationError, PreparedPrimaryResize, PreparedProjection, ReflowViewport,
-};
+#[cfg(test)]
+use crate::content_anchor::Affinity;
+use crate::content_anchor::{AnchorMutation, AnchorMutationBatch, ContentAnchor};
+use crate::logical_content::LogicalAtomOffset;
+#[cfg(test)]
+use crate::primary_reflow::{PreparationError, PreparedPrimaryResize, ReflowViewport};
 use crate::revision::{Revision, Revisioned};
 use crate::selection_model::GenPos;
 use crate::{DirtyRange, InputModes, NormalBuf};
@@ -37,13 +39,14 @@ use harbor_parser::Params;
 use self::cursor::CursorEngine;
 use self::edit::{CellOps, CellWriter, PenState};
 use self::focus_reporting::FocusReporting;
+use self::resize::PreparedBufferResize;
 use self::synchronized_output::SynchronizedOutput;
 use harbor_config::{Palette, Rgba};
 use hyperlink::HyperlinkRegistry;
-use std::collections::HashSet;
 use unicode_width::UnicodeWidthChar;
 
 pub(crate) use self::default_colors::DefaultColorSlot;
+pub(crate) use self::resize::PreparedScreenResize;
 
 // ── re-exports ────────────────────────────────────────────────────────
 
@@ -89,20 +92,20 @@ impl From<bool> for ModeStatus {
 #[derive(Debug)]
 pub struct Screen {
     /// Accepted primary policy, retained even while alternate backing has zero history.
-    history_limits: harbor_config::HistoryLimits,
+    pub(in crate::screen) history_limits: harbor_config::HistoryLimits,
     /// Active buffer state; session properties never participate in a buffer swap.
-    active: BufferState,
+    pub(in crate::screen) active: BufferState,
     /// Pending alt-screen request set by the parser, consumed by I/O.
     alt_request: Option<AltScreenAction>,
     /// Primary screen saved while the alternate screen is active.
     /// Invariant: `Some` iff in alt screen (`is_alt()` is true).
-    saved_primary: Option<Box<BufferState>>,
+    pub(in crate::screen) saved_primary: Option<Box<BufferState>>,
     /// Latest prepared primary geometry while ConPTY defers resize in alt mode.
     /// The original saved primary remains the source for every intervening resize.
-    deferred_primary_resize: Vec<PreparedBufferResize>,
+    pub(in crate::screen) deferred_primary_resize: Vec<PreparedBufferResize>,
     /// Alternate screen parked across `?47` exit/re-enter.
     /// A parked buffer is a leaf and cannot carry another saved primary.
-    parked_alt: Option<Box<BufferState>>,
+    pub(in crate::screen) parked_alt: Option<Box<BufferState>>,
     /// Outgoing VT replies buffer.
     pub(crate) replies: Vec<u8>,
     /// Session-owned `?1004` mode and latest observed native-window focus.
@@ -111,147 +114,6 @@ pub struct Screen {
     synchronized_output: Revisioned<SynchronizedOutput>,
     /// Startup and active OSC default and indexed colors, owned by the terminal session.
     default_colors: Revisioned<DefaultColors>,
-}
-#[derive(Debug)]
-struct EditAnchorCapture {
-    anchor: ContentAnchor,
-    atom_count: usize,
-    affected_atoms: usize,
-    shifted_atoms: usize,
-    dropped_atoms: Option<(usize, usize)>,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BufferRole {
-    Primary,
-    Alternate,
-}
-
-#[derive(Debug)]
-struct RectangularSelectionProjection {
-    source: ContentProjection,
-    source_live_top: u64,
-    target_live_top: u64,
-    rows: usize,
-    cols: usize,
-    retained_cells: Vec<bool>,
-}
-
-/// Buffer-level result of preparing one resize role, before shared session state.
-#[derive(Debug)]
-struct RoleBuffers {
-    normal: NormalBuf,
-    projection: ContentProjection,
-    cursor: CursorEngine,
-    review_anchor: Option<ContentAnchor>,
-    rectangular_selection: Option<RectangularSelectionProjection>,
-}
-
-#[derive(Debug)]
-struct PreparedBufferResize {
-    normal: NormalBuf,
-    review_anchor: Option<ContentAnchor>,
-    cursor: CursorEngine,
-    pen_state: PenState,
-    hyperlinks: HyperlinkRegistry,
-    projection: ContentProjection,
-    rectangular_selection: Option<RectangularSelectionProjection>,
-}
-
-#[derive(Debug)]
-pub(crate) struct PreparedScreenResize {
-    history_limits: harbor_config::HistoryLimits,
-    active: PreparedBufferResize,
-    immediate_saved_primary: Vec<PreparedBufferResize>,
-    saved_primary: Vec<PreparedBufferResize>,
-    deferred_primary_source: Option<ContentProjection>,
-    parked_alt: Vec<PreparedBufferResize>,
-}
-
-impl PreparedBufferResize {
-    pub(crate) fn snapshot(&self, source: &Screen) -> crate::model::TerminalSnapshot {
-        let rows = self.normal.rows();
-        let cols = self.normal.cols();
-        let mut snapshot = source.terminal_snapshot();
-        snapshot.rows = rows;
-        snapshot.cols = cols;
-        snapshot.cells = self.normal.snapshot_cells();
-        snapshot.cursor_x = self.cursor.cursor_x();
-        snapshot.cursor_y = self.cursor.cursor_y(&self.normal);
-        snapshot.scroll_count = self.normal.scroll_count();
-        snapshot.view_offset = self.normal.view_offset();
-        snapshot.history_start = self.normal.history_start();
-        snapshot.wrapped = (0..rows).map(|r| self.normal.is_wrapped(r)).collect();
-        snapshot.dirty_ranges = self.normal.dirty_ranges();
-        snapshot
-    }
-    fn project_selection(&self, anchor: ContentAnchor) -> Option<(GenPos, ContentAnchor)> {
-        let position = if let Some(rectangular) = &self.rectangular_selection {
-            let source = rectangular.source.resolve_selection(anchor)?;
-            let row = usize::try_from(source.generation.checked_sub(rectangular.source_live_top)?)
-                .ok()?;
-            if row >= rectangular.rows || source.col >= rectangular.cols {
-                return None;
-            }
-            let index = row.checked_mul(rectangular.cols)?.checked_add(source.col)?;
-            if !rectangular
-                .retained_cells
-                .get(index)
-                .copied()
-                .unwrap_or(false)
-            {
-                return None;
-            }
-            GenPos::new(
-                rectangular
-                    .target_live_top
-                    .checked_add(u64::try_from(row).ok()?)?,
-                source.col,
-            )
-        } else {
-            self.projection.resolve_selection(anchor)?
-        };
-        let refreshed = self.projection.to_anchor(position, anchor.affinity)?;
-        Some((position, refreshed))
-    }
-}
-
-impl PreparedScreenResize {
-    pub(crate) fn snapshot(&self, source: &Screen) -> crate::model::TerminalSnapshot {
-        self.active.snapshot(source)
-    }
-
-    pub(crate) fn project_active_selection(
-        &self,
-        anchor: ContentAnchor,
-    ) -> Option<(GenPos, ContentAnchor)> {
-        self.active.project_selection(anchor)
-    }
-
-    pub(crate) fn project_saved_primary_selection(
-        &self,
-        anchor: ContentAnchor,
-    ) -> Option<(GenPos, ContentAnchor)> {
-        if let Some(source) = &self.deferred_primary_source {
-            let position = source.resolve_selection(anchor)?;
-            return Some((position, source.to_anchor(position, anchor.affinity)?));
-        }
-        self.saved_primary.first()?.project_selection(anchor)
-    }
-
-    pub(crate) fn project_parked_alt_selection(
-        &self,
-        anchor: ContentAnchor,
-    ) -> Option<(GenPos, ContentAnchor)> {
-        self.parked_alt.first()?.project_selection(anchor)
-    }
-
-    pub(crate) fn has_saved_primary(&self) -> bool {
-        !self.saved_primary.is_empty()
-    }
-
-    pub(crate) fn has_parked_alt(&self) -> bool {
-        !self.parked_alt.is_empty()
-    }
 }
 
 impl Screen {
@@ -498,7 +360,7 @@ impl Screen {
 
     // ── cell access ────────────────────────────────────────────────────
 
-    pub fn cells(&self) -> CellsIter<'_> {
+    pub fn cells(&self) -> crate::normal_buf::CellsIter<'_> {
         self.active.normal.cells()
     }
 
@@ -573,10 +435,6 @@ impl Screen {
         self.active.normal.cell_mut(row, col)
     }
 
-    pub(crate) fn content_projection(&self) -> Result<ContentProjection, DecodeError> {
-        ContentProjection::build(&self.active.normal)
-    }
-
     #[cfg(test)]
     pub(crate) fn prepare_primary_resize(
         &self,
@@ -592,300 +450,8 @@ impl Screen {
         )
     }
 
-    fn live_cursor_position(&self) -> GenPos {
+    pub(super) fn live_cursor_position(&self) -> GenPos {
         self.active.live_cursor_position()
-    }
-
-    fn capture_edit_anchor(
-        &self,
-        affected_cells: usize,
-        dropped_cells: Option<(usize, usize)>,
-    ) -> Option<EditAnchorCapture> {
-        if !self.tracks_content_anchors() {
-            return None;
-        }
-        let projection = self.content_projection().ok()?;
-        let position = self.live_cursor_position();
-        let anchor = projection.to_anchor(position, Affinity::Before)?;
-        let atom_count = projection.line_atom_count(anchor.line_id)?;
-        let affected_atoms = projection.atom_count_in_cell_range(
-            anchor.line_id,
-            position.generation,
-            position.col,
-            position.col.saturating_add(affected_cells),
-        )?;
-        let dropped_atoms = if let Some((start, end)) = dropped_cells {
-            projection.atom_range_in_cell_range(anchor.line_id, position.generation, start, end)?
-        } else {
-            None
-        };
-        let shifted_atoms = dropped_cells.map_or(0, |(start, _)| {
-            projection
-                .atom_count_in_cell_range(anchor.line_id, position.generation, position.col, start)
-                .unwrap_or(0)
-        });
-        Some(EditAnchorCapture {
-            anchor,
-            atom_count,
-            affected_atoms,
-            shifted_atoms,
-            dropped_atoms,
-        })
-    }
-
-    fn capture_insertion_anchor(&self, requested: usize) -> (usize, Option<EditAnchorCapture>) {
-        let requested_col = self.active.cursor.cursor.x;
-        let (left, right) = self
-            .active
-            .cursor
-            .margins
-            .active_bounds(self.active.normal.cols());
-        let base = CellOps::wide_range(
-            &self.active.normal,
-            self.active.cursor.cursor.y,
-            requested_col,
-        )
-        .map_or(requested_col, |(base, _)| base);
-        let actual = if requested_col >= left && requested_col <= right {
-            requested.min(right - base + 1)
-        } else {
-            0
-        };
-        let dropped = (actual > 0).then_some((right + 1 - actual, right.saturating_add(1)));
-        (actual, self.capture_edit_anchor(actual, dropped))
-    }
-
-    fn record_insertion_delta(
-        &mut self,
-        before: Option<EditAnchorCapture>,
-        inserted_atom_capacity: usize,
-        inserted_is_meaningful: bool,
-    ) {
-        let Some(EditAnchorCapture {
-            anchor,
-            shifted_atoms,
-            dropped_atoms,
-            ..
-        }) = before
-        else {
-            return;
-        };
-        let inserted_atoms = if inserted_is_meaningful || shifted_atoms > 0 {
-            inserted_atom_capacity
-        } else {
-            0
-        };
-        if inserted_atoms > 0 {
-            self.active.anchor_mutations.push(AnchorMutation::Insert {
-                line_id: anchor.line_id,
-                at: anchor.offset,
-                count: inserted_atoms,
-            });
-        }
-        if let Some((dropped_start, dropped_count)) = dropped_atoms {
-            self.active.anchor_mutations.push(AnchorMutation::Delete {
-                line_id: anchor.line_id,
-                start: LogicalAtomOffset(dropped_start + inserted_atoms),
-                end: LogicalAtomOffset(dropped_start + inserted_atoms + dropped_count),
-            });
-        }
-        self.active
-            .anchor_mutations
-            .push(AnchorMutation::ReprojectLine(anchor.line_id));
-    }
-
-    fn record_deletion_delta(&mut self, before: Option<EditAnchorCapture>) {
-        let Some(EditAnchorCapture {
-            anchor,
-            atom_count: before_count,
-            affected_atoms,
-            ..
-        }) = before
-        else {
-            return;
-        };
-        let Ok(after) = self.content_projection() else {
-            self.active
-                .anchor_mutations
-                .push(AnchorMutation::InvalidateLine(anchor.line_id));
-            return;
-        };
-        let Some(after_count) = after.line_atom_count(anchor.line_id) else {
-            self.active
-                .anchor_mutations
-                .push(AnchorMutation::InvalidateLine(anchor.line_id));
-            return;
-        };
-        let removed = affected_atoms.min(before_count.saturating_sub(anchor.offset.0));
-        if removed > 0 {
-            self.active.anchor_mutations.push(AnchorMutation::Delete {
-                line_id: anchor.line_id,
-                start: anchor.offset,
-                end: LogicalAtomOffset(anchor.offset.0 + removed),
-            });
-        }
-        let retained_after_delete = before_count.saturating_sub(removed);
-        let inserted_tail = after_count.saturating_sub(retained_after_delete);
-        if inserted_tail > 0 {
-            self.active.anchor_mutations.push(AnchorMutation::Insert {
-                line_id: anchor.line_id,
-                at: LogicalAtomOffset(retained_after_delete),
-                count: inserted_tail,
-            });
-        }
-        self.active
-            .anchor_mutations
-            .push(AnchorMutation::ReprojectLine(anchor.line_id));
-    }
-
-    fn record_structural_atom_delta(
-        &mut self,
-        line_id: LogicalLineId,
-        before: &[(u64, usize, usize)],
-        after: &[(u64, usize, usize)],
-    ) {
-        if before.len() == after.len() {
-            if before
-                .iter()
-                .zip(after)
-                .any(|(old, new)| (old.1, old.2) != (new.1, new.2))
-            {
-                self.active
-                    .anchor_mutations
-                    .push(AnchorMutation::ReprojectLine(line_id));
-            }
-            return;
-        }
-        let prefix = before
-            .iter()
-            .zip(after.iter())
-            .take_while(|(old, new)| old == new)
-            .count();
-        let mut suffix = 0;
-        while suffix < before.len().saturating_sub(prefix)
-            && suffix < after.len().saturating_sub(prefix)
-            && before[before.len() - 1 - suffix] == after[after.len() - 1 - suffix]
-        {
-            suffix += 1;
-        }
-        let old_count = before.len() - prefix - suffix;
-        let new_count = after.len() - prefix - suffix;
-        self.active.anchor_mutations.push(AnchorMutation::Replace {
-            line_id,
-            start: LogicalAtomOffset(prefix),
-            old_count,
-            new_count,
-        });
-    }
-
-    fn sync_review_anchor(&mut self) {
-        if self.active.normal.view_offset() == 0 {
-            self.active.review_anchor = None;
-            return;
-        }
-        let generation = self.active.normal.history_start()
-            + self
-                .active
-                .normal
-                .scroll_count()
-                .saturating_sub(self.active.normal.view_offset()) as u64;
-        self.active.review_anchor = self.content_projection().ok().and_then(|projection| {
-            projection.to_anchor(GenPos::new(generation, 0), Affinity::Before)
-        });
-    }
-
-    pub(crate) fn finish_anchor_mutations(
-        &mut self,
-        before: Option<&ContentProjection>,
-    ) -> Result<(AnchorMutationBatch, ContentProjection), DecodeError> {
-        let projection = self.content_projection()?;
-        if let Some(before) = before {
-            for line_id in before.line_ids() {
-                if !projection.contains_line(line_id) {
-                    self.active
-                        .anchor_mutations
-                        .push(AnchorMutation::InvalidateLine(line_id));
-                } else if let Some(first_retained_generation) = projection.first_generation(line_id)
-                    && before.first_generation(line_id) != Some(first_retained_generation)
-                    && projection.history_start() > before.history_start()
-                    && let (Some(before_start), Some(after_start)) =
-                        (before.atom_start(line_id), projection.atom_start(line_id))
-                    && after_start.0 > before_start.0
-                {
-                    self.active
-                        .anchor_mutations
-                        .push(AnchorMutation::EvictPrefix {
-                            line_id,
-                            end: after_start,
-                        });
-                } else if !self.active.anchor_mutations.affects_line(line_id)
-                    && let (Some(old_spans), Some(new_spans)) =
-                        (before.atom_spans(line_id), projection.atom_spans(line_id))
-                {
-                    self.record_structural_atom_delta(line_id, &old_spans, &new_spans);
-                }
-            }
-        }
-
-        let mutations = std::mem::take(&mut self.active.anchor_mutations);
-        let globally_invalidated = mutations
-            .iter()
-            .any(|mutation| matches!(mutation, AnchorMutation::InvalidateAll));
-        let mut invalidate_saved = false;
-        if !globally_invalidated
-            && let Some(saved) = self.active.cursor.cursor.saved.as_mut()
-            && let Some(anchor) = saved.anchor
-        {
-            let adjusted = mutations.apply(anchor);
-            saved.anchor = adjusted;
-            match adjusted {
-                None => invalidate_saved = true,
-                Some(adjusted) => {
-                    let live_top = self.active.normal.live_top_generation();
-                    let old_generation = live_top.saturating_add(saved.cursor_y as u64);
-                    let needs_projection = adjusted != anchor
-                        || mutations.affects_line(adjusted.line_id)
-                        || !projection.contains_generation(adjusted.line_id, old_generation);
-                    if needs_projection {
-                        if let Some(projected) = projection.resolve_cursor(adjusted)
-                            && let Ok(row) =
-                                usize::try_from(projected.pos.generation.saturating_sub(live_top))
-                            && row < self.active.normal.rows()
-                        {
-                            saved.cursor_y = row;
-                            if adjusted != anchor || mutations.affects_line(adjusted.line_id) {
-                                saved.cursor_x = projected.pos.col;
-                                saved.pending_wrap = projected.pending_wrap;
-                            }
-                        } else {
-                            invalidate_saved = true;
-                        }
-                    }
-                }
-            }
-        }
-        if invalidate_saved {
-            self.active.cursor.cursor.saved = None;
-        }
-
-        if let Some(anchor) = self.active.review_anchor {
-            self.active.review_anchor =
-                if globally_invalidated && projection.contains_line(anchor.line_id) {
-                    Some(anchor)
-                } else {
-                    mutations.apply(anchor)
-                }
-                .or_else(|| projection.oldest_anchor());
-            if let Some(offset) = self
-                .active
-                .review_anchor
-                .and_then(|value| projection.view_offset_for(value))
-            {
-                self.active.normal.set_view_offset(offset);
-            }
-        }
-
-        Ok((mutations, projection))
     }
 
     // ── read-only queries ──────────────────────────────────────────────
@@ -1097,167 +663,6 @@ impl Screen {
                 Some(BufferTransition::Exited)
             }
             _ => None,
-        }
-    }
-
-    fn finish_transition_anchors(&mut self) {
-        if self.finish_anchor_mutations(None).is_err() {
-            self.active.cursor.cursor.saved = None;
-            self.active.review_anchor = None;
-            self.active.anchor_mutations = AnchorMutationBatch::default();
-        }
-    }
-
-    // ── resize ─────────────────────────────────────────────────────────
-
-    pub(crate) fn prepare_resize(
-        &self,
-        rows: usize,
-        cols: usize,
-    ) -> Result<PreparedScreenResize, PreparationError> {
-        self.prepare_resize_with_viewport(rows, cols, ReflowViewport::PullHistory)
-    }
-
-    pub(crate) fn prepare_resize_with_viewport(
-        &self,
-        rows: usize,
-        cols: usize,
-        viewport: ReflowViewport,
-    ) -> Result<PreparedScreenResize, PreparationError> {
-        self.prepare_resize_with_history(rows, cols, viewport, self.history_limits)
-    }
-
-    pub(crate) fn prepare_resize_with_history(
-        &self,
-        rows: usize,
-        cols: usize,
-        viewport: ReflowViewport,
-        limits: harbor_config::HistoryLimits,
-    ) -> Result<PreparedScreenResize, PreparationError> {
-        let rows = rows.max(1);
-        let cols = cols.max(2);
-        let role = if self.is_alt() {
-            BufferRole::Alternate
-        } else {
-            BufferRole::Primary
-        };
-        let active = self
-            .active
-            .prepare_resize_for_role(rows, cols, role, viewport, limits, None)?;
-        let mut immediate_saved_primary = Vec::new();
-        let mut saved_primary = Vec::new();
-        let mut deferred_primary_source = None;
-        if let Some(saved) = self.saved_primary.as_deref() {
-            saved_primary
-                .try_reserve_exact(1)
-                .map_err(|_| PreparationError::AllocationFailed)?;
-            if viewport == ReflowViewport::PreserveLiveTop {
-                if limits != saved.normal.history_limits() {
-                    immediate_saved_primary
-                        .try_reserve_exact(1)
-                        .map_err(|_| PreparationError::AllocationFailed)?;
-                    immediate_saved_primary.push(saved.prepare_resize_for_role(
-                        saved.rows(),
-                        saved.cols(),
-                        BufferRole::Primary,
-                        viewport,
-                        limits,
-                        None,
-                    )?);
-                }
-                let source = immediate_saved_primary
-                    .first()
-                    .map_or(&*saved.normal, |p| &p.normal);
-                deferred_primary_source = Some(ContentProjection::build(source)?);
-                // Deferred geometry must use the already-trimmed source, never resurrect
-                // content evicted by the immediate accepted shrink.
-                saved_primary.push(saved.prepare_resize_for_role(
-                    rows,
-                    cols,
-                    BufferRole::Primary,
-                    viewport,
-                    limits,
-                    Some(source),
-                )?);
-            } else {
-                saved_primary.push(saved.prepare_resize_for_role(
-                    rows,
-                    cols,
-                    BufferRole::Primary,
-                    viewport,
-                    limits,
-                    None,
-                )?);
-            }
-        }
-        let mut parked_alt = Vec::new();
-        if let Some(alt) = self.parked_alt.as_deref() {
-            parked_alt
-                .try_reserve_exact(1)
-                .map_err(|_| PreparationError::AllocationFailed)?;
-            parked_alt.push(alt.prepare_resize_for_role(
-                rows,
-                cols,
-                BufferRole::Alternate,
-                viewport,
-                limits,
-                None,
-            )?);
-        }
-
-        Ok(PreparedScreenResize {
-            history_limits: limits,
-            active,
-            immediate_saved_primary,
-            saved_primary,
-            deferred_primary_source,
-            parked_alt,
-        })
-    }
-
-    pub(crate) fn commit_resize(&mut self, prepared: PreparedScreenResize) {
-        let PreparedScreenResize {
-            history_limits,
-            active,
-            mut immediate_saved_primary,
-            mut saved_primary,
-            deferred_primary_source,
-            mut parked_alt,
-        } = prepared;
-        self.active.commit_resize(active);
-        self.history_limits = history_limits;
-        if deferred_primary_source.is_some() {
-            if let (Some(primary), Some(prepared)) = (
-                self.saved_primary.as_deref_mut(),
-                immediate_saved_primary.pop(),
-            ) {
-                primary.commit_resize(prepared);
-            }
-            self.deferred_primary_resize = saved_primary;
-        } else {
-            self.deferred_primary_resize.clear();
-            match (self.saved_primary.as_deref_mut(), saved_primary.pop()) {
-                (Some(buffer), Some(prepared)) => buffer.commit_resize(prepared),
-                (None, None) => {}
-                _ => debug_assert!(false, "saved primary changed during resize preparation"),
-            }
-        }
-        match (self.parked_alt.as_deref_mut(), parked_alt.pop()) {
-            (Some(buffer), Some(prepared)) => buffer.commit_resize(prepared),
-            (None, None) => {}
-            _ => debug_assert!(false, "parked alternate changed during resize preparation"),
-        }
-    }
-
-    /// Resizes this standalone model through the same detached preparation path as `Terminal`.
-    ///
-    /// Callers that also own a PTY should use `Terminal` so PTY and model commit transactionally.
-    pub fn resize(&mut self, rows: usize, cols: usize) {
-        match self.prepare_resize(rows, cols) {
-            Ok(prepared) => self.commit_resize(prepared),
-            Err(error) => {
-                tracing::error!(?error, "failed to prepare standalone screen resize");
-            }
         }
     }
 
@@ -1937,41 +1342,6 @@ impl Screen {
                 .begin_hard_line(self.active.cursor.cursor.y);
         }
     }
-    pub(crate) fn requires_anchor_baseline(&self) -> bool {
-        self.active.review_anchor.is_some()
-            || self
-                .active
-                .cursor
-                .cursor
-                .saved
-                .as_ref()
-                .is_some_and(|saved| saved.anchor.is_some())
-    }
-
-    /// Registers or clears an external consumer of content-anchor mutations.
-    ///
-    /// The I/O owner sets this before parsing a feed: selection state lives with
-    /// the pointer, so `Screen` never queries the pointer directly.
-    pub(crate) fn set_external_anchor_interest(&mut self, active: bool) {
-        self.active.external_anchor_interest = active;
-    }
-
-    /// Whether anything currently needs content-anchor bookkeeping.
-    ///
-    /// Anchor mutations, and the projection that resolves them, exist only for a
-    /// selection, a saved cursor anchor and a review anchor. Projecting the whole
-    /// retained buffer without one costs a full rebuild per accepted feed and two
-    /// per width promotion, so both recording paths check this first.
-    pub(crate) fn tracks_content_anchors(&self) -> bool {
-        self.active.external_anchor_interest || self.requires_anchor_baseline()
-    }
-
-    /// Drops mutations no consumer will read, matching one reconciliation pass
-    /// without building a projection for it.
-    pub(crate) fn discard_anchor_mutations(&mut self) {
-        let _ = std::mem::take(&mut self.active.anchor_mutations);
-    }
-
     // ── scroll_region_up_one (coordinator) ─────────────────────────────
 
     fn scroll_region_up_one(&mut self) {
@@ -2047,14 +1417,14 @@ impl Screen {
 }
 /// Buffer-local storage, cursor/pen, hyperlinks and anchor evidence only.
 #[derive(Debug)]
-struct BufferState {
-    normal: Revisioned<NormalBuf>,
-    anchor_mutations: AnchorMutationBatch,
-    review_anchor: Option<ContentAnchor>,
-    external_anchor_interest: bool,
-    cursor: Revisioned<CursorEngine>,
-    pen_state: PenState,
-    hyperlinks: HyperlinkRegistry,
+pub(in crate::screen) struct BufferState {
+    pub(in crate::screen) normal: Revisioned<NormalBuf>,
+    pub(in crate::screen) anchor_mutations: AnchorMutationBatch,
+    pub(in crate::screen) review_anchor: Option<ContentAnchor>,
+    pub(in crate::screen) external_anchor_interest: bool,
+    pub(in crate::screen) cursor: Revisioned<CursorEngine>,
+    pub(in crate::screen) pen_state: PenState,
+    pub(in crate::screen) hyperlinks: HyperlinkRegistry,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2064,7 +1434,11 @@ pub(crate) enum BufferTransition {
 }
 
 impl BufferState {
-    fn new(rows: usize, cols: usize, limits: harbor_config::HistoryLimits) -> Self {
+    pub(in crate::screen) fn new(
+        rows: usize,
+        cols: usize,
+        limits: harbor_config::HistoryLimits,
+    ) -> Self {
         Self {
             normal: NormalBuf::with_history_limits(rows, cols, limits).into(),
             anchor_mutations: AnchorMutationBatch::default(),
@@ -2076,14 +1450,15 @@ impl BufferState {
         }
     }
 
-    fn rows(&self) -> usize {
+    pub(in crate::screen) fn rows(&self) -> usize {
         self.normal.rows()
     }
-    fn cols(&self) -> usize {
+
+    pub(in crate::screen) fn cols(&self) -> usize {
         self.normal.cols()
     }
 
-    fn commit_resize(&mut self, prepared: PreparedBufferResize) {
+    pub(in crate::screen) fn commit_resize(&mut self, prepared: PreparedBufferResize) {
         self.normal = prepared.normal.into();
         self.cursor = prepared.cursor.into();
         self.pen_state = prepared.pen_state;
@@ -2092,360 +1467,10 @@ impl BufferState {
         self.anchor_mutations = AnchorMutationBatch::default();
     }
 
-    fn prepare_primary_resize_with_viewport(
-        &self,
-        requested_rows: usize,
-        requested_cols: usize,
-        viewport: ReflowViewport,
-        limits: harbor_config::HistoryLimits,
-        normal_source: &NormalBuf,
-    ) -> Result<PreparedPrimaryResize, PreparationError> {
-        let cursor_floor = Some(
-            self.cursor
-                .cursor
-                .y
-                .max(self.cursor.cursor.saved.as_ref().map_or(0, |s| s.cursor_y)),
-        );
-        let mut cursor_retentions = vec![CursorRetention::Position(self.live_cursor_position())];
-        if let Some(saved) = self.cursor.cursor.saved.as_ref() {
-            if let Some(anchor) = saved.anchor {
-                if let Some(anchor) = self.anchor_mutations.apply(anchor) {
-                    cursor_retentions.push(CursorRetention::Anchor(anchor));
-                }
-            } else {
-                let live_top = self.normal.history_start() + self.normal.scroll_count() as u64;
-                cursor_retentions.push(CursorRetention::Position(GenPos::new(
-                    live_top.saturating_add(saved.cursor_y as u64),
-                    saved.cursor_x,
-                )));
-            }
-        }
-        let prepared = PreparedPrimaryResize::prepare_geometry_with_limits(
-            normal_source,
-            requested_rows,
-            requested_cols,
-            cursor_floor,
-            viewport,
-            &cursor_retentions,
-            limits,
-        )?;
-        let live_cursor = prepared
-            .source_cursor_anchor(self.live_cursor_position(), self.cursor.modes.pending_wrap)
-            .ok_or(PreparationError::UnresolvedLiveCursor)?;
-        let target_live_top = checked_live_top(prepared.normal())?;
-        let target_live_end = target_live_top
-            .checked_add(
-                u64::try_from(requested_rows.max(1))
-                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
-            )
-            .ok_or(PreparationError::ArithmeticOverflow)?;
-        let live_is_retained = prepared
-            .project_cursor(live_cursor)
-            .is_some_and(|projection| {
-                projection.position.generation >= target_live_top
-                    && projection.position.generation < target_live_end
-            });
-        let live_cursor = if !live_is_retained
-            && self
-                .normal
-                .live_row_metadata(self.cursor.cursor.y)
-                .meaningful_extent
-                == 0
-        {
-            let source_live_top = checked_live_top(&self.normal)?;
-            let active_visible = self
-                .normal
-                .active_retained_row_count(cursor_floor)
-                .saturating_sub(self.normal.scroll_count());
-            let fallback_row = active_visible.min(self.normal.rows()).saturating_sub(1);
-            let fallback_generation = source_live_top
-                .checked_add(
-                    u64::try_from(fallback_row)
-                        .map_err(|_| PreparationError::ArithmeticOverflow)?,
-                )
-                .ok_or(PreparationError::ArithmeticOverflow)?;
-            prepared
-                .source_cursor_anchor(
-                    GenPos::new(
-                        fallback_generation,
-                        self.cursor
-                            .cursor
-                            .x
-                            .min(self.normal.cols().saturating_sub(1)),
-                    ),
-                    false,
-                )
-                .ok_or(PreparationError::UnresolvedLiveCursor)?
-        } else {
-            live_cursor
-        };
-        let live_top = self.normal.live_top_generation();
-        let saved_cursor = match self.cursor.cursor.saved.as_ref() {
-            None => PreparedProjection::Absent,
-            Some(saved) => {
-                let anchor = if let Some(anchor) = saved.anchor {
-                    self.anchor_mutations.apply(anchor)
-                } else {
-                    prepared.source_cursor_anchor(
-                        GenPos::new(
-                            live_top.saturating_add(saved.cursor_y as u64),
-                            saved.cursor_x,
-                        ),
-                        saved.pending_wrap,
-                    )
-                };
-                anchor.map_or(PreparedProjection::Invalid, PreparedProjection::Projected)
-            }
-        };
-        let review = if self.normal.view_offset() == 0 {
-            PreparedProjection::Absent
-        } else if let Some(anchor) = self.review_anchor {
-            self.anchor_mutations
-                .apply(anchor)
-                .map_or(PreparedProjection::Invalid, PreparedProjection::Projected)
-        } else {
-            let generation = self.normal.history_start()
-                + self
-                    .normal
-                    .scroll_count()
-                    .saturating_sub(self.normal.view_offset()) as u64;
-            prepared
-                .source_anchor(GenPos::new(generation, 0), Affinity::Before)
-                .map_or(PreparedProjection::Invalid, PreparedProjection::Projected)
-        };
-
-        prepared.attach_screen_anchors(live_cursor, saved_cursor, review)
-    }
-
-    fn live_cursor_position(&self) -> GenPos {
+    pub(in crate::screen) fn live_cursor_position(&self) -> GenPos {
         GenPos::new(
             self.normal.live_top_generation() + self.cursor.cursor.y as u64,
             self.cursor.cursor.x,
         )
     }
-
-    #[allow(clippy::too_many_arguments)]
-    fn prepare_resize_for_role(
-        &self,
-        rows: usize,
-        cols: usize,
-        role: BufferRole,
-        viewport: ReflowViewport,
-        limits: harbor_config::HistoryLimits,
-        normal_source: Option<&NormalBuf>,
-    ) -> Result<PreparedBufferResize, PreparationError> {
-        let RoleBuffers {
-            mut normal,
-            projection,
-            cursor,
-            review_anchor,
-            rectangular_selection,
-        } = self.prepare_role_buffers(role, rows, cols, viewport, limits, normal_source)?;
-        normal.mark_all_dirty();
-        let pen_state = self.pen_state.prepare_resize(cols)?;
-        let mut reachable = HashSet::new();
-        let reachable_cells = normal
-            .retained_rows()
-            .flat_map(|row| row.cells.iter())
-            .filter(|cell| cell.hyperlink.is_some())
-            .count();
-        reachable
-            .try_reserve(
-                reachable_cells
-                    .checked_add(2)
-                    .ok_or(PreparationError::ArithmeticOverflow)?,
-            )
-            .map_err(|_| PreparationError::AllocationFailed)?;
-        reachable.extend(
-            normal
-                .retained_rows()
-                .flat_map(|row| row.cells.iter())
-                .filter_map(|cell| cell.hyperlink),
-        );
-        reachable.extend(pen_state.hyperlink_ids());
-        let hyperlinks = self.hyperlinks.prepare_retained(&reachable)?;
-
-        Ok(PreparedBufferResize {
-            normal,
-            review_anchor,
-            cursor,
-            pen_state,
-            hyperlinks,
-            projection,
-            rectangular_selection,
-        })
-    }
-
-    /// Prepares only the role-owned buffer contents; callers share session-level state.
-    fn prepare_role_buffers(
-        &self,
-        role: BufferRole,
-        rows: usize,
-        cols: usize,
-        viewport: ReflowViewport,
-        limits: harbor_config::HistoryLimits,
-        normal_source: Option<&NormalBuf>,
-    ) -> Result<RoleBuffers, PreparationError> {
-        match role {
-            BufferRole::Primary => {
-                self.prepare_primary_buffer(rows, cols, viewport, limits, normal_source)
-            }
-            BufferRole::Alternate => self.prepare_alternate_buffer(rows, cols),
-        }
-    }
-
-    /// Primary resize, or a geometry-preserving retrim of the history budget.
-    fn prepare_primary_buffer(
-        &self,
-        rows: usize,
-        cols: usize,
-        viewport: ReflowViewport,
-        limits: harbor_config::HistoryLimits,
-        normal_source: Option<&NormalBuf>,
-    ) -> Result<RoleBuffers, PreparationError> {
-        if rows == self.rows() && cols == self.cols() && limits != self.normal.history_limits() {
-            let normal = normal_source
-                .unwrap_or(&self.normal)
-                .prepare_history_limits(limits)?;
-            let projection = ContentProjection::build(&normal)?;
-            let review_anchor = if normal.view_offset() == 0 {
-                None
-            } else {
-                self.review_anchor
-                    .filter(|anchor| projection.resolve_selection(*anchor).is_some())
-                    .or_else(|| projection.oldest_anchor())
-            };
-            return Ok(RoleBuffers {
-                normal,
-                projection,
-                cursor: (*self.cursor).clone(),
-                review_anchor,
-                rectangular_selection: None,
-            });
-        }
-
-        let prepared = self.prepare_primary_resize_with_viewport(
-            rows,
-            cols,
-            viewport,
-            limits,
-            normal_source.unwrap_or(&self.normal),
-        )?;
-        let (normal, live_cursor, saved_cursor, review) = prepared.into_screen_parts();
-        let projection = ContentProjection::build(&normal)?;
-        let live_top = checked_live_top(&normal)?;
-        let mut cursor = (*self.cursor).clone();
-        cursor.clamp_to_grid(rows, cols);
-        let PreparedProjection::Projected(live) = live_cursor else {
-            return Err(PreparationError::UnresolvedLiveCursor);
-        };
-        cursor.cursor.y = usize::try_from(live.position.generation - live_top)
-            .map_err(|_| PreparationError::ArithmeticOverflow)?;
-        cursor.cursor.x = live.position.col;
-        cursor.modes.pending_wrap = live.pending_wrap;
-        match saved_cursor {
-            PreparedProjection::Projected(projected) => {
-                if let Some(saved) = cursor.cursor.saved.as_mut() {
-                    saved.cursor_y = usize::try_from(projected.position.generation - live_top)
-                        .map_err(|_| PreparationError::ArithmeticOverflow)?;
-                    saved.cursor_x = projected.position.col;
-                    saved.pending_wrap = projected.pending_wrap;
-                    saved.anchor =
-                        projection.cursor_anchor(projected.position, projected.pending_wrap);
-                }
-            }
-            PreparedProjection::Absent | PreparedProjection::Invalid => {
-                cursor.cursor.saved = None;
-            }
-        }
-        let review_anchor = match review {
-            PreparedProjection::Projected(position) => {
-                projection.to_anchor(position, Affinity::Before)
-            }
-            PreparedProjection::Absent | PreparedProjection::Invalid => None,
-        };
-        Ok(RoleBuffers {
-            normal,
-            projection,
-            cursor,
-            review_anchor,
-            rectangular_selection: None,
-        })
-    }
-
-    /// Alternate resize is rectangular: retained cells keep their position and content.
-    fn prepare_alternate_buffer(
-        &self,
-        rows: usize,
-        cols: usize,
-    ) -> Result<RoleBuffers, PreparationError> {
-        let normal = self.normal.prepare_rectangular_resize(rows, cols)?;
-        let projection = ContentProjection::build(&normal)?;
-        let source_projection = ContentProjection::build(&self.normal)?;
-        let source_live_top = checked_live_top(&self.normal)?;
-        let target_live_top = normal.history_start();
-        let copied_rows = self.normal.rows().min(rows);
-        let copied_cols = self.normal.cols().min(cols);
-        let retained_count = copied_rows
-            .checked_mul(copied_cols)
-            .ok_or(PreparationError::ArithmeticOverflow)?;
-        let mut retained_cells = Vec::new();
-        retained_cells
-            .try_reserve_exact(retained_count)
-            .map_err(|_| PreparationError::AllocationFailed)?;
-        for row in 0..copied_rows {
-            let source_generation = source_live_top
-                .checked_add(u64::try_from(row).map_err(|_| PreparationError::ArithmeticOverflow)?)
-                .ok_or(PreparationError::ArithmeticOverflow)?;
-            let target_generation = target_live_top
-                .checked_add(u64::try_from(row).map_err(|_| PreparationError::ArithmeticOverflow)?)
-                .ok_or(PreparationError::ArithmeticOverflow)?;
-            for col in 0..copied_cols {
-                retained_cells.push(
-                    self.normal.cell_at_generation(source_generation, col)
-                        == normal.cell_at_generation(target_generation, col),
-                );
-            }
-        }
-        let rectangular_selection = Some(RectangularSelectionProjection {
-            source: source_projection,
-            source_live_top,
-            target_live_top,
-            rows: copied_rows,
-            cols: copied_cols,
-            retained_cells,
-        });
-        let mut cursor = (*self.cursor).clone();
-        cursor.clamp_to_grid(rows, cols);
-        let live_top = normal.history_start();
-        if let Some(saved) = cursor.cursor.saved.as_mut() {
-            let saved_position = GenPos::new(
-                live_top
-                    .checked_add(
-                        u64::try_from(saved.cursor_y)
-                            .map_err(|_| PreparationError::ArithmeticOverflow)?,
-                    )
-                    .ok_or(PreparationError::ArithmeticOverflow)?,
-                saved.cursor_x,
-            );
-            saved.anchor = projection.cursor_anchor(saved_position, saved.pending_wrap);
-        }
-        Ok(RoleBuffers {
-            normal,
-            projection,
-            cursor,
-            review_anchor: None,
-            rectangular_selection,
-        })
-    }
-}
-
-fn checked_live_top(normal: &NormalBuf) -> Result<u64, PreparationError> {
-    normal
-        .history_start()
-        .checked_add(
-            u64::try_from(normal.scroll_count())
-                .map_err(|_| PreparationError::ArithmeticOverflow)?,
-        )
-        .ok_or(PreparationError::ArithmeticOverflow)
 }
