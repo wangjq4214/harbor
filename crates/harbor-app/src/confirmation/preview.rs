@@ -3,13 +3,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use harbor_terminal::safe_preview_line;
 use harbor_widget::ScrollController;
 use harbor_widget::layout::{BoxConstraints, Point, Rect, Size};
 use harbor_widget::scene::primitive::{Color, Primitive};
 use harbor_widget::text::TextMetrics;
 use harbor_widget::view::{BuildCx, Component, PrimitiveLeaf, View};
-use unicode_width::UnicodeWidthChar;
 
 /// One visual row inside the in-window confirmation preview.
 ///
@@ -19,43 +17,6 @@ use unicode_width::UnicodeWidthChar;
 pub struct PreviewRow {
     pub line_number: Option<usize>,
     pub text: String,
-}
-
-/// Escapes control characters via `safe_preview_line` and wraps logical lines
-/// at `max_columns` visual columns while preserving 1-based logical line numbers
-/// only on the first visual row of each logical line.
-pub fn wrap_preview_rows(raw_text: &str, max_columns: usize) -> Vec<PreviewRow> {
-    let escaped: Vec<String> = raw_text.lines().map(safe_preview_line).collect();
-    wrap_escaped_lines(&escaped, max_columns)
-}
-
-pub(crate) fn wrap_escaped_lines(escaped_lines: &[String], max_columns: usize) -> Vec<PreviewRow> {
-    let max_columns = max_columns.max(1);
-    let mut rows = Vec::with_capacity(escaped_lines.len());
-    for (index, escaped) in escaped_lines.iter().enumerate() {
-        let logical_line = index + 1;
-        let mut is_first = true;
-        let mut current_line = String::new();
-        let mut current_width = 0usize;
-        for ch in escaped.chars() {
-            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
-            if current_width + ch_width > max_columns && !current_line.is_empty() {
-                rows.push(PreviewRow {
-                    line_number: is_first.then_some(logical_line),
-                    text: std::mem::take(&mut current_line),
-                });
-                is_first = false;
-                current_width = 0;
-            }
-            current_line.push(ch);
-            current_width += ch_width;
-        }
-        rows.push(PreviewRow {
-            line_number: is_first.then_some(logical_line),
-            text: current_line,
-        });
-    }
-    rows
 }
 
 pub(crate) fn wrap_escaped_lines_to_width(
@@ -410,60 +371,8 @@ impl PrimitiveLeaf for PreviewContent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harbor_terminal::safe_preview_line;
     use harbor_widget::runtime::DEFAULT_TEXT_METRICS;
-
-    #[test]
-    fn wrap_preview_rows_escapes_controls_and_keeps_logical_line_numbers() {
-        let rows = wrap_preview_rows("short\n1234567890\na\tb\x01c\n\nend", 5);
-        assert_eq!(
-            rows,
-            vec![
-                PreviewRow {
-                    line_number: Some(1),
-                    text: "short".into()
-                },
-                PreviewRow {
-                    line_number: Some(2),
-                    text: "12345".into()
-                },
-                PreviewRow {
-                    line_number: None,
-                    text: "67890".into()
-                },
-                PreviewRow {
-                    line_number: Some(3),
-                    text: "a\u{2192}b\u{2401}c".into()
-                },
-                PreviewRow {
-                    line_number: Some(4),
-                    text: "".into()
-                },
-                PreviewRow {
-                    line_number: Some(5),
-                    text: "end".into()
-                },
-            ]
-        );
-
-        let cjk = wrap_preview_rows("你好世界\nnext", 4);
-        assert_eq!(
-            cjk,
-            vec![
-                PreviewRow {
-                    line_number: Some(1),
-                    text: "你好".into()
-                },
-                PreviewRow {
-                    line_number: None,
-                    text: "世界".into()
-                },
-                PreviewRow {
-                    line_number: Some(2),
-                    text: "next".into()
-                },
-            ]
-        );
-    }
 
     #[test]
     fn preview_content_paints_gutter_divider_alternating_row_tint_and_line_numbers() {

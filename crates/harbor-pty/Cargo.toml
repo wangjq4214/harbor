@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-parking_lot = { workspace = true }
 tracing = { workspace = true }
 
 [target."cfg(windows)".dependencies]

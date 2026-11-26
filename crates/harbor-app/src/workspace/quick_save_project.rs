@@ -238,6 +238,7 @@ impl ProjectReview {
         ui: &WorkspaceUiController,
         generation: u64,
         pending: bool,
+        recipe_error: Option<&'static str>,
     ) -> View {
         let mut sections = Column::new()
             .cross_axis_alignment(CrossAxisAlignment::Stretch)
@@ -311,7 +312,7 @@ impl ProjectReview {
                 .is_some_and(|project| !Self::location_valid(project))
             || self.target.value().composition.is_some()
             || self.directory.value().composition.is_some();
-        if context_blocked && let Err(error) = self.recipe() {
+        if context_blocked && let Some(error) = recipe_error {
             column = column.push_child(review_message(error, "project-error", true));
         }
         sections = sections.push_child(column.build(cx));
@@ -384,7 +385,7 @@ impl ProjectReview {
                 false,
             ));
         }
-        if !context_blocked && let Err(error) = self.recipe() {
+        if !context_blocked && let Some(error) = recipe_error {
             column = column.push_child(review_message(error, "project-error", true));
         }
         sections.push_child(column.build(cx)).build(cx)

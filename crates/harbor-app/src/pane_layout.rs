@@ -177,20 +177,13 @@ impl PaneAllocations {
             .observed
             .iter()
             .find(|allocation| allocation.binding == binding)?;
-        crate::terminal_view::terminal_size_from_allocation(
+        let (target, _) = crate::terminal_view::terminal_target_and_size(
             allocation.rect,
             scale,
             surface,
             &metrics,
         )?;
-        let context = harbor_widget::scene::primitive::ExternalDrawContext::new(
-            allocation.rect,
-            harbor_widget::renderer::Viewport::new(surface.0, surface.1, scale),
-        );
-        Some((
-            crate::terminal_view::render_target_from_context(&context),
-            metrics,
-        ))
+        Some((target, metrics))
     }
     fn generation(&self) -> u64 {
         self.0.lock().expect("pane allocations").generation
