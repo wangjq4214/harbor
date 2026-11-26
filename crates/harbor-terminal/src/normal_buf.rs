@@ -435,8 +435,7 @@ impl NormalBuf {
     /// Metadata for a displayed row, including the current scrollback offset.
     pub(crate) fn row_metadata(&self, display_row: usize) -> RowMetadata {
         debug_assert!(display_row < self.visible_rows);
-        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
-        self.row_metadata[(top + display_row) % self.total_rows]
+        self.row_metadata[self.viewport_to_ring(display_row)]
     }
 
     /// Metadata for the live writable row, independent of the displayed scrollback offset.
@@ -448,8 +447,7 @@ impl NormalBuf {
     pub(crate) fn cell_state(&self, display_row: usize, col: usize) -> CellState {
         debug_assert!(display_row < self.visible_rows);
         debug_assert!(col < self.cols);
-        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
-        let ring_row = (top + display_row) % self.total_rows;
+        let ring_row = self.viewport_to_ring(display_row);
         self.cell_state[ring_row * self.cols + col]
     }
 
@@ -648,14 +646,34 @@ impl NormalBuf {
     /// Returns the text content of a display row as a string.
     pub fn row_text(&self, row: usize) -> String {
         assert!(row < self.visible_rows, "terminal row out of bounds");
-        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
-        let ring_row = (top + row) % self.total_rows;
+        let ring_row = self.viewport_to_ring(row);
         let start = ring_row * self.cols;
         self.cells[start..start + self.cols]
             .iter()
             .map(|cell| cell.ch)
             .collect()
     }
+
+    #[inline]
+    pub(crate) fn viewport_top(&self) -> usize {
+        (self.visible_start + self.total_rows - self.view_offset) % self.total_rows
+    }
+
+    #[inline]
+    pub(crate) fn viewport_to_ring(&self, display_row: usize) -> usize {
+        (self.viewport_top() + display_row) % self.total_rows
+    }
+
+    #[inline]
+    pub(crate) fn view_start_generation(&self) -> u64 {
+        self.history_start + self.scroll_count.saturating_sub(self.view_offset) as u64
+    }
+
+    #[inline]
+    pub(crate) fn live_top_generation(&self) -> u64 {
+        self.history_start + self.scroll_count as u64
+    }
+
     /// Maps a display row (0-based visible row) to its ring-buffer index.
     ///
     /// Caller must ensure `view_offset == 0` (live view) when calling this
@@ -669,8 +687,7 @@ impl NormalBuf {
     pub fn cell(&self, display_row: usize, col: usize) -> &Cell {
         debug_assert!(display_row < self.visible_rows);
         debug_assert!(col < self.cols);
-        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
-        let actual_row = (top + display_row) % self.total_rows;
+        let actual_row = self.viewport_to_ring(display_row);
         &self.cells[actual_row * self.cols + col]
     }
 
@@ -762,7 +779,7 @@ impl NormalBuf {
 
     /// Returns an iterator over all visible cells as `(display_row, col, ch)`.
     pub fn cells(&self) -> CellsIter<'_> {
-        let top = (self.visible_start + self.total_rows - self.view_offset) % self.total_rows;
+        let top = self.viewport_top();
         CellsIter {
             cells: &self.cells,
             total_rows: self.total_rows,

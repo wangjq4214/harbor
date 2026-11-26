@@ -233,7 +233,7 @@ fn malformed_input_retains_decode_errors_and_does_not_mutate_source() {
 #[test]
 fn malformed_glyphs_cannot_hide_inside_simple_runs() {
     let normal = mixed_source(&[9], 16, 0);
-    for corrupt in 0..4 {
+    for corrupt in 0..3 {
         let mut line = logical_content::decode_lines_active(&normal, 8)
             .unwrap()
             .remove(0);
@@ -241,11 +241,7 @@ fn malformed_glyphs_cannot_hide_inside_simple_runs() {
         match corrupt {
             0 => glyph.atom_offset.0 += 1,
             1 => glyph.glyph.width = 0,
-            2 => glyph.glyph.cell.width = 2,
-            _ => {
-                glyph.glyph.cell.ch = ' ';
-                glyph.glyph.meaningful_blank = false;
-            }
+            _ => glyph.glyph.cell.width = 2,
         }
         let mut expected_rows = Vec::new();
         let expected = reference::pack_line(&line, 7, None, &[], &mut expected_rows);
@@ -274,7 +270,6 @@ fn borrow_line(line: &LogicalLine) -> LogicalLine<&Cell> {
                 glyph: LogicalGlyph {
                     cell: &logical.glyph.cell,
                     width: logical.glyph.width,
-                    meaningful_blank: logical.glyph.meaningful_blank,
                     cell_state: logical.glyph.cell_state,
                     continuation_state: logical.glyph.continuation_state,
                 },

@@ -635,14 +635,11 @@ impl Screen {
 
     fn capture_insertion_anchor(&self, requested: usize) -> (usize, Option<EditAnchorCapture>) {
         let requested_col = self.active.cursor.cursor.x;
-        let (left, right) = if self.active.cursor.margins.enabled {
-            (
-                self.active.cursor.margins.left,
-                self.active.cursor.margins.right,
-            )
-        } else {
-            (0, self.active.normal.cols().saturating_sub(1))
-        };
+        let (left, right) = self
+            .active
+            .cursor
+            .margins
+            .active_bounds(self.active.normal.cols());
         let base = CellOps::wide_range(
             &self.active.normal,
             self.active.cursor.cursor.y,
@@ -844,8 +841,7 @@ impl Screen {
             match adjusted {
                 None => invalidate_saved = true,
                 Some(adjusted) => {
-                    let live_top = self.active.normal.history_start()
-                        + self.active.normal.scroll_count() as u64;
+                    let live_top = self.active.normal.live_top_generation();
                     let old_generation = live_top.saturating_add(saved.cursor_y as u64);
                     let needs_projection = adjusted != anchor
                         || mutations.affects_line(adjusted.line_id)
@@ -1677,24 +1673,20 @@ impl Screen {
         }
         // Width promotion consumes the neighboring physical cell. Capture its
         // content identity before the writer shifts or overwrites it.
+        let (_, right_limit) = self
+            .active
+            .cursor
+            .margins
+            .active_bounds(self.active.normal.cols());
         let promotion = CellWriter::promotion_base(&self.active.normal, &self.active.cursor, ch)
-            .filter(|&(_, col)| {
-                let right = if self.active.cursor.margins.enabled {
-                    self.active.cursor.margins.right
-                } else {
-                    self.active.normal.cols() - 1
-                };
-                col < right
-            });
+            .filter(|&(_, col)| col < right_limit);
         let promoted_before = promotion.and_then(|_| {
-            let dropped = self.active.cursor.modes.insert.then(|| {
-                let right = if self.active.cursor.margins.enabled {
-                    self.active.cursor.margins.right
-                } else {
-                    self.active.normal.cols() - 1
-                };
-                (right, right + 1)
-            });
+            let dropped = self
+                .active
+                .cursor
+                .modes
+                .insert
+                .then_some((right_limit, right_limit + 1));
             self.capture_edit_anchor(1, dropped)
         });
         let cursor_before = (
@@ -1703,14 +1695,9 @@ impl Screen {
             self.active.cursor.modes.pending_wrap,
         );
         let before_generation = self.live_cursor_position().generation;
-        let right_before_write = if self.active.cursor.margins.enabled {
-            self.active.cursor.margins.right
-        } else {
-            self.active.normal.cols().saturating_sub(1)
-        };
         let wide_wraps = width == 2
             && self.active.cursor.modes.autowrap
-            && self.active.cursor.cursor.x == right_before_write;
+            && self.active.cursor.cursor.x == right_limit;
         let before = if self.active.cursor.modes.insert
             && !self.active.cursor.modes.pending_wrap
             && width > 0
@@ -1802,14 +1789,11 @@ impl Screen {
     pub fn forward_tab(&mut self, steps: usize) {
         self.active.cursor.clear_pending_wrap();
         let steps = steps.max(1);
-        let (left_limit, right_limit) = if self.active.cursor.margins.enabled {
-            (
-                self.active.cursor.margins.left,
-                self.active.cursor.margins.right,
-            )
-        } else {
-            (0, self.active.normal.cols().saturating_sub(1))
-        };
+        let (left_limit, right_limit) = self
+            .active
+            .cursor
+            .margins
+            .active_bounds(self.active.normal.cols());
         let start = self
             .active
             .cursor
@@ -1837,14 +1821,11 @@ impl Screen {
     pub fn backward_tab(&mut self, steps: usize) {
         self.active.cursor.clear_pending_wrap();
         let steps = steps.max(1);
-        let (left_limit, right_limit) = if self.active.cursor.margins.enabled {
-            (
-                self.active.cursor.margins.left,
-                self.active.cursor.margins.right,
-            )
-        } else {
-            (0, self.active.normal.cols().saturating_sub(1))
-        };
+        let (left_limit, right_limit) = self
+            .active
+            .cursor
+            .margins
+            .active_bounds(self.active.normal.cols());
         let end = self
             .active
             .cursor
@@ -2151,14 +2132,7 @@ impl BufferState {
         let live_cursor = prepared
             .source_cursor_anchor(self.live_cursor_position(), self.cursor.modes.pending_wrap)
             .ok_or(PreparationError::UnresolvedLiveCursor)?;
-        let target_live_top = prepared
-            .normal()
-            .history_start()
-            .checked_add(
-                u64::try_from(prepared.normal().scroll_count())
-                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
-            )
-            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let target_live_top = checked_live_top(prepared.normal())?;
         let target_live_end = target_live_top
             .checked_add(
                 u64::try_from(requested_rows.max(1))
@@ -2178,14 +2152,7 @@ impl BufferState {
                 .meaningful_extent
                 == 0
         {
-            let source_live_top = self
-                .normal
-                .history_start()
-                .checked_add(
-                    u64::try_from(self.normal.scroll_count())
-                        .map_err(|_| PreparationError::ArithmeticOverflow)?,
-                )
-                .ok_or(PreparationError::ArithmeticOverflow)?;
+            let source_live_top = checked_live_top(&self.normal)?;
             let active_visible = self
                 .normal
                 .active_retained_row_count(cursor_floor)
@@ -2212,7 +2179,7 @@ impl BufferState {
         } else {
             live_cursor
         };
-        let live_top = self.normal.history_start() + self.normal.scroll_count() as u64;
+        let live_top = self.normal.live_top_generation();
         let saved_cursor = match self.cursor.cursor.saved.as_ref() {
             None => PreparedProjection::Absent,
             Some(saved) => {
@@ -2252,9 +2219,7 @@ impl BufferState {
 
     fn live_cursor_position(&self) -> GenPos {
         GenPos::new(
-            self.normal.history_start()
-                + self.normal.scroll_count() as u64
-                + self.cursor.cursor.y as u64,
+            self.normal.live_top_generation() + self.cursor.cursor.y as u64,
             self.cursor.cursor.x,
         )
     }
@@ -2368,13 +2333,7 @@ impl BufferState {
         )?;
         let (normal, live_cursor, saved_cursor, review) = prepared.into_screen_parts();
         let projection = ContentProjection::build(&normal)?;
-        let live_top = normal
-            .history_start()
-            .checked_add(
-                u64::try_from(normal.scroll_count())
-                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
-            )
-            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let live_top = checked_live_top(&normal)?;
         let mut cursor = (*self.cursor).clone();
         cursor.clamp_to_grid(rows, cols);
         let PreparedProjection::Projected(live) = live_cursor else {
@@ -2423,14 +2382,7 @@ impl BufferState {
         let normal = self.normal.prepare_rectangular_resize(rows, cols)?;
         let projection = ContentProjection::build(&normal)?;
         let source_projection = ContentProjection::build(&self.normal)?;
-        let source_live_top = self
-            .normal
-            .history_start()
-            .checked_add(
-                u64::try_from(self.normal.scroll_count())
-                    .map_err(|_| PreparationError::ArithmeticOverflow)?,
-            )
-            .ok_or(PreparationError::ArithmeticOverflow)?;
+        let source_live_top = checked_live_top(&self.normal)?;
         let target_live_top = normal.history_start();
         let copied_rows = self.normal.rows().min(rows);
         let copied_cols = self.normal.cols().min(cols);
@@ -2486,4 +2438,14 @@ impl BufferState {
             rectangular_selection,
         })
     }
+}
+
+fn checked_live_top(normal: &NormalBuf) -> Result<u64, PreparationError> {
+    normal
+        .history_start()
+        .checked_add(
+            u64::try_from(normal.scroll_count())
+                .map_err(|_| PreparationError::ArithmeticOverflow)?,
+        )
+        .ok_or(PreparationError::ArithmeticOverflow)
 }

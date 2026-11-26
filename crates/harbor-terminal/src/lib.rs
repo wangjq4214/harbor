@@ -540,9 +540,7 @@ impl Terminal {
                 } else {
                     self.pointer.on_key_press_outcome()
                 };
-                if outcome.release_pointer.is_some() {
-                    self.io.set_suppress_scroll_snap(false);
-                }
+                self.clear_scroll_snap_on_release(&outcome);
                 // Esc belongs to local cancellation only when it actually canceled state.
                 // Otherwise full-screen applications must receive its terminal encoding.
                 if *key == TerminalKey::Escape
@@ -772,15 +770,16 @@ impl Terminal {
     ) -> Option<(f32, f32)> {
         let preedit = self.preedit.as_ref()?;
         let viewport = RenderViewport::from_target(target, metrics);
-        let snap = self.screen.terminal_snapshot();
+        let rows = self.screen.rows();
+        let cols = self.screen.cols();
         let layout = crate::layout::layout_preedit(
             preedit,
-            (snap.cursor_x, snap.cursor_y),
-            snap.rows,
-            snap.cols,
+            (self.screen.cursor_x(), self.screen.cursor_y()),
+            rows,
+            cols,
         );
         let (row, col) = layout.caret;
-        let (mut x, mut y) = viewport.cell_pos(row, col.min(snap.cols));
+        let (mut x, mut y) = viewport.cell_pos(row, col.min(cols));
         let max_x = viewport.allocation_origin.0 + viewport.allocation_size.0 as f32;
         let max_y = viewport.allocation_origin.1 + viewport.allocation_size.1 as f32;
         x = x.clamp(viewport.allocation_origin.0, max_x);
@@ -830,10 +829,7 @@ impl Terminal {
     /// expensive work through advance_resize; standalone drains also advance it.
     /// Reader acquisition is nonblocking and failures retain their error channel.
     pub fn request_resize(&mut self, new_size: TerminalSize) -> anyhow::Result<ResizeOutcome> {
-        let normalized = TerminalSize {
-            rows: new_size.rows.max(1),
-            cols: new_size.cols.max(2),
-        };
+        let normalized = new_size.normalized();
         if self.io.configuration_barrier_active() {
             return Ok(ResizeOutcome::ConfigurationOwned);
         }
@@ -937,6 +933,37 @@ impl Terminal {
         result
     }
 
+    fn log_resize_transaction(
+        current: TerminalSize,
+        new_size: TerminalSize,
+        active_history_rows: usize,
+        saved_primary_history_rows: usize,
+        prepare_us: Option<u64>,
+        pty_us: Option<u64>,
+        commit_us: Option<u64>,
+        total_us: u64,
+        failed_stage: Option<&str>,
+        error: Option<&dyn std::fmt::Display>,
+        outcome: &str,
+    ) {
+        tracing::debug!(
+            old_rows = current.rows,
+            old_cols = current.cols,
+            new_rows = new_size.rows,
+            new_cols = new_size.cols,
+            active_history_rows,
+            saved_primary_history_rows,
+            prepare_us,
+            pty_us,
+            commit_us,
+            total_us,
+            failed_stage,
+            error = error.map(tracing::field::display),
+            outcome,
+            "terminal resize transaction"
+        );
+    }
+
     fn try_resize_transaction(
         screen: &mut Screen,
         pointer: &mut PointerInteraction,
@@ -945,10 +972,7 @@ impl Terminal {
         resize_pty: impl FnOnce(&mut TerminalIo, TerminalSize) -> anyhow::Result<()>,
     ) -> anyhow::Result<bool> {
         let started = Instant::now();
-        let new_size = TerminalSize {
-            rows: new_size.rows.max(1),
-            cols: new_size.cols.max(2),
-        };
+        let new_size = new_size.normalized();
         let current = TerminalSize {
             rows: screen.rows(),
             cols: screen.cols(),
@@ -956,16 +980,18 @@ impl Terminal {
         let active_history_rows = screen.scroll_count();
         let saved_primary_history_rows = screen.saved_primary_scroll_count();
         if new_size == current {
-            tracing::debug!(
-                old_rows = current.rows,
-                old_cols = current.cols,
-                new_rows = new_size.rows,
-                new_cols = new_size.cols,
+            Self::log_resize_transaction(
+                current,
+                new_size,
                 active_history_rows,
                 saved_primary_history_rows,
-                total_us = started.elapsed().as_micros() as u64,
-                outcome = "unchanged",
-                "terminal resize transaction"
+                None,
+                None,
+                None,
+                started.elapsed().as_micros() as u64,
+                None,
+                None,
+                "unchanged",
             );
             return Ok(false);
         }
@@ -978,19 +1004,18 @@ impl Terminal {
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
-                tracing::debug!(
-                    old_rows = current.rows,
-                    old_cols = current.cols,
-                    new_rows = new_size.rows,
-                    new_cols = new_size.cols,
+                Self::log_resize_transaction(
+                    current,
+                    new_size,
                     active_history_rows,
                     saved_primary_history_rows,
-                    prepare_us = prepare_started.elapsed().as_micros() as u64,
-                    total_us = started.elapsed().as_micros() as u64,
-                    failed_stage = "prepare",
-                    error = %error,
-                    outcome = "error",
-                    "terminal resize transaction"
+                    Some(prepare_started.elapsed().as_micros() as u64),
+                    None,
+                    None,
+                    started.elapsed().as_micros() as u64,
+                    Some("prepare"),
+                    Some(&error),
+                    "error",
                 );
                 return Err(error.into());
             }
@@ -1000,20 +1025,18 @@ impl Terminal {
 
         let pty_started = Instant::now();
         if let Err(error) = resize_pty(io, new_size) {
-            tracing::debug!(
-                old_rows = current.rows,
-                old_cols = current.cols,
-                new_rows = new_size.rows,
-                new_cols = new_size.cols,
+            Self::log_resize_transaction(
+                current,
+                new_size,
                 active_history_rows,
                 saved_primary_history_rows,
-                prepare_us,
-                pty_us = pty_started.elapsed().as_micros() as u64,
-                total_us = started.elapsed().as_micros() as u64,
-                failed_stage = "pty",
-                error = %format_args!("{error:#}"),
-                outcome = "error",
-                "terminal resize transaction"
+                Some(prepare_us),
+                Some(pty_started.elapsed().as_micros() as u64),
+                None,
+                started.elapsed().as_micros() as u64,
+                Some("pty"),
+                Some(&format_args!("{error:#}")),
+                "error",
             );
             return Err(error);
         }
@@ -1024,21 +1047,26 @@ impl Terminal {
         pointer.commit_resize(prepared_pointer);
         io.reset_scroll_snap();
         let commit_us = commit_started.elapsed().as_micros() as u64;
-        tracing::debug!(
-            old_rows = current.rows,
-            old_cols = current.cols,
-            new_rows = new_size.rows,
-            new_cols = new_size.cols,
+        Self::log_resize_transaction(
+            current,
+            new_size,
             active_history_rows,
             saved_primary_history_rows,
-            prepare_us,
-            pty_us,
-            commit_us,
-            total_us = started.elapsed().as_micros() as u64,
-            outcome = "changed",
-            "terminal resize transaction"
+            Some(prepare_us),
+            Some(pty_us),
+            Some(commit_us),
+            started.elapsed().as_micros() as u64,
+            None,
+            None,
+            "changed",
         );
         Ok(true)
+    }
+
+    fn clear_scroll_snap_on_release(&mut self, outcome: &TerminalEventOutcome) {
+        if outcome.release_pointer.is_some() {
+            self.io.set_suppress_scroll_snap(false);
+        }
     }
 
     /// Returns whether copying the current selection would produce non-empty text.
@@ -1060,9 +1088,7 @@ impl Terminal {
     pub fn command_copy_selection(&mut self) -> TerminalEventOutcome {
         let text = self.selection_text();
         let mut outcome = self.pointer.clear_selection_outcome();
-        if outcome.release_pointer.is_some() {
-            self.io.set_suppress_scroll_snap(false);
-        }
+        self.clear_scroll_snap_on_release(&outcome);
         outcome.clipboard_text = Some(text);
         outcome
     }
@@ -1116,9 +1142,7 @@ impl Terminal {
             return TerminalEventOutcome::default();
         }
         let mut outcome = self.pointer.on_key_press_outcome();
-        if outcome.release_pointer.is_some() {
-            self.io.set_suppress_scroll_snap(false);
-        }
+        self.clear_scroll_snap_on_release(&outcome);
         let before = self.screen.view_offset();
         operation(&mut self.screen);
         outcome.redraw |= before != self.screen.view_offset();

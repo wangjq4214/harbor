@@ -118,7 +118,7 @@ impl SnapshotCache {
     }
 
     pub(crate) fn project(&mut self, normal: &NormalBuf) -> SnapshotCells {
-        let start = normal.history_start() + (normal.scroll_count() - normal.view_offset()) as u64;
+        let start = normal.view_start_generation();
         let generation = normal.content_generation();
         if self.generation == generation
             && self.start == start

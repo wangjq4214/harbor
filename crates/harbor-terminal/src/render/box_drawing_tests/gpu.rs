@@ -157,7 +157,7 @@ fn gpu_retained_updates_resize_stride_palette_and_skipped_projection_match_rebui
     terminal.put_str("\x1b[31m┌──┐\x1b[2;1H│╳ │\x1b[3;1H└──┘");
     let initial = terminal.read_update(now);
     let view = viewport();
-    let mut layer = BoxDrawing::new(gpu, Arc::clone(&pipeline), initial.appearance.palette());
+    let mut layer = BoxDrawing::new(Arc::clone(&pipeline), initial.appearance.palette());
     layer.prepare_with_dirty(gpu, &initial.snapshot, &[], &view);
     assert!(terminal.acknowledge_update(&initial));
     for stream in [
@@ -510,7 +510,7 @@ fn gpu_demand_bounded_boxes_reclaim_content_and_resize_without_stale_paint() {
     ));
     let view = viewport();
     let palette = Palette::default();
-    let mut layer = BoxDrawing::new(gpu, pipeline.clone(), palette);
+    let mut layer = BoxDrawing::new(pipeline.clone(), palette);
     let compare_dense = |layer: &BoxDrawing, snap: &TerminalSnapshot| {
         let vertices: Vec<_> = (0..snap.rows)
             .flat_map(|row| {

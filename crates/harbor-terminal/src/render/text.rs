@@ -414,6 +414,10 @@ impl Text {
         self.dirty = true;
     }
 
+    pub(super) fn set_colored_pipeline(&mut self, pipeline: std::sync::Arc<wgpu::RenderPipeline>) {
+        self.sequences.set_colored_pipeline(pipeline);
+    }
+
     /// DPI affects sequence request identity, not the scalar physical font size.
     /// Keep scalar/native resources alive and invalidate only sequence caches;
     /// prepare_with_dirty observes the generation even with no engine damage.
@@ -561,35 +565,19 @@ impl Text {
                 let color = glyph_color_with_palette(&self.palette, cell.fg, cell.bg, cell.attrs);
 
                 // Never paint outside the unit's assigned cells.
-                let clip_left = glyph_left.max(cell_x);
-                let clip_right = glyph_right.min(cell_x + assigned_width);
-                let clip_top = glyph_top.max(cell_y);
-                let clip_bottom = glyph_bottom.min(cell_y + self.metrics.line_height);
-                if clip_left < clip_right && clip_top < clip_bottom {
-                    let span = glyph_right - glyph_left;
-                    let u = |x: f32| {
-                        glyph.uv.left
-                            + (glyph.uv.right - glyph.uv.left) * (x - glyph_left) / span.max(1.0)
-                    };
-                    let v = |y: f32| {
-                        glyph.uv.top
-                            + (glyph.uv.bottom - glyph.uv.top) * (y - glyph_top)
-                                / glyph.height as f32
-                    };
-                    verts.extend_from_slice(&TexturedVertex::from_pixel_rect(
-                        clip_left,
-                        clip_top,
-                        clip_right,
-                        clip_bottom,
-                        u(clip_left),
-                        v(clip_top),
-                        u(clip_right),
-                        v(clip_bottom),
-                        color,
-                        surf_w,
-                        surf_h,
-                    ));
-                } else {
+                if !append_clipped_glyph(
+                    verts,
+                    glyph,
+                    [glyph_left, glyph_top, glyph_right, glyph_bottom],
+                    [
+                        cell_x,
+                        cell_y,
+                        cell_x + assigned_width,
+                        cell_y + self.metrics.line_height,
+                    ],
+                    color,
+                    (surf_w, surf_h),
+                ) {
                     verts.extend(std::iter::repeat_n(TexturedVertex::default(), 6));
                 }
                 continue;
@@ -897,18 +885,46 @@ fn append_overlay_glyph(
         left = cell.x;
         right = cell.x + assigned_width;
     }
-    let clip_left = left.max(cell.x);
-    let clip_right = right.min(cell.x + assigned_width);
-    let clip_top = top.max(cell.baseline - metrics.ascent.ceil());
-    let clip_bottom = bottom.min(cell.baseline - metrics.ascent.ceil() + metrics.line_height);
+    append_clipped_glyph(
+        vertices,
+        glyph,
+        [left, top, right, bottom],
+        [
+            cell.x,
+            cell.baseline - metrics.ascent.ceil(),
+            cell.x + assigned_width,
+            cell.baseline - metrics.ascent.ceil() + metrics.line_height,
+        ],
+        cell.color,
+        cell.surface,
+    );
+}
+
+fn append_clipped_glyph(
+    verts: &mut Vec<TexturedVertex>,
+    glyph: &harbor_text::AtlasGlyph,
+    glyph_rect: [f32; 4],
+    clip_rect: [f32; 4],
+    color: [f32; 4],
+    surface: (f32, f32),
+) -> bool {
+    let [glyph_left, glyph_top, glyph_right, glyph_bottom] = glyph_rect;
+    let [bound_left, bound_top, bound_right, bound_bottom] = clip_rect;
+    let clip_left = glyph_left.max(bound_left);
+    let clip_right = glyph_right.min(bound_right);
+    let clip_top = glyph_top.max(bound_top);
+    let clip_bottom = glyph_bottom.min(bound_bottom);
     if clip_left >= clip_right || clip_top >= clip_bottom {
-        return;
+        return false;
     }
-    let span = right - left;
-    let u = |x: f32| glyph.uv.left + (glyph.uv.right - glyph.uv.left) * (x - left) / span.max(1.0);
-    let v =
-        |y: f32| glyph.uv.top + (glyph.uv.bottom - glyph.uv.top) * (y - top) / glyph.height as f32;
-    vertices.extend_from_slice(&TexturedVertex::from_pixel_rect(
+    let span = glyph_right - glyph_left;
+    let u = |x: f32| {
+        glyph.uv.left + (glyph.uv.right - glyph.uv.left) * (x - glyph_left) / span.max(1.0)
+    };
+    let v = |y: f32| {
+        glyph.uv.top + (glyph.uv.bottom - glyph.uv.top) * (y - glyph_top) / glyph.height as f32
+    };
+    verts.extend_from_slice(&TexturedVertex::from_pixel_rect(
         clip_left,
         clip_top,
         clip_right,
@@ -917,10 +933,11 @@ fn append_overlay_glyph(
         v(clip_top),
         u(clip_right),
         v(clip_bottom),
-        cell.color,
-        cell.surface.0,
-        cell.surface.1,
+        color,
+        surface.0,
+        surface.1,
     ));
+    true
 }
 
 /// GPU atlas upload decision derived from a CPU [`harbor_text::RasterizeResult`].

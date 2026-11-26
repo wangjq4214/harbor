@@ -12,6 +12,7 @@ use harbor_text::{
     SequenceStyle, TileBounds, UnitKind, classify_unit,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 #[cfg(test)]
 mod allocation_tests;
@@ -194,6 +195,13 @@ pub(super) struct SequenceLayer {
     scratch: SequenceScratch,
     gpu: Option<ColorGpu>,
     missing: Option<MissingGpu>,
+    colored_pipeline: Option<Arc<wgpu::RenderPipeline>>,
+}
+
+impl SequenceLayer {
+    pub(super) fn set_colored_pipeline(&mut self, pipeline: Arc<wgpu::RenderPipeline>) {
+        self.colored_pipeline = Some(pipeline);
+    }
 }
 
 fn sequence_request(
@@ -478,10 +486,18 @@ impl SequenceLayer {
                     end_col: snap.cols,
                 });
             }
-            let tile_bytes =
-                update_row_buffer(gpu, &mut retained.quads, &mut retained.vertices, vertices);
-            let cue_bytes =
-                update_row_buffer(gpu, &mut retained.cues, &mut retained.missing, missing);
+            let tile_bytes = gpu::update_row_buffer(
+                gpu,
+                &mut retained.quads,
+                &mut retained.vertices,
+                vertices,
+            );
+            let cue_bytes = gpu::update_row_buffer(
+                gpu,
+                &mut retained.cues,
+                &mut retained.missing,
+                missing,
+            );
             #[cfg(test)]
             if tile_bytes + cue_bytes > 0 {
                 super::observations::record_sequence(|work| {
@@ -530,7 +546,7 @@ impl SequenceLayer {
             }
         }
         if self.rows.iter().any(|r| !r.missing.is_empty()) && self.missing.is_none() {
-            self.missing = Some(MissingGpu::new(gpu));
+            self.missing = Some(MissingGpu::new(gpu, self.colored_pipeline.clone()));
         }
         self.key = Some(key);
         scalar_damage
@@ -552,34 +568,6 @@ impl SequenceLayer {
             }
         }
     }
-}
-
-/// Row-local storage never moves another row's vertices. Empty rows release
-/// capacity so historical maximum sequence density does not accumulate.
-fn update_row_buffer<T: bytemuck::Pod + Default>(
-    gpu: TerminalGpuAccess<'_>,
-    buffer: &mut Option<VertexBuffer<T>>,
-    old: &mut Vec<T>,
-    new: &mut Vec<T>,
-) -> usize {
-    if bytemuck::cast_slice::<T, u8>(old) == bytemuck::cast_slice::<T, u8>(new) {
-        new.clear();
-        return 0;
-    }
-    let bytes = std::mem::size_of_val(new.as_slice());
-    if new.is_empty() {
-        *buffer = None;
-    } else {
-        buffer
-            .get_or_insert_with(|| VertexBuffer::new(gpu.device()))
-            .write(gpu, new);
-    }
-    std::mem::swap(old, new);
-    new.clear();
-    if old.is_empty() {
-        *old = Vec::new();
-    }
-    bytes
 }
 
 fn append_missing_cue(
@@ -726,16 +714,18 @@ impl ColorGpu {
     }
 }
 struct MissingGpu {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Arc<wgpu::RenderPipeline>,
 }
 impl MissingGpu {
-    fn new(gpu: TerminalGpuAccess<'_>) -> Self {
+    fn new(gpu: TerminalGpuAccess<'_>, pipeline: Option<Arc<wgpu::RenderPipeline>>) -> Self {
         Self {
-            pipeline: gpu::create_colored_quad_pipeline(
-                gpu.device(),
-                gpu.format(),
-                "emoji missing cue",
-            ),
+            pipeline: pipeline.unwrap_or_else(|| {
+                Arc::new(gpu::create_colored_quad_pipeline(
+                    gpu.device(),
+                    gpu.format(),
+                    "emoji missing cue",
+                ))
+            }),
         }
     }
 }

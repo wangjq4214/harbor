@@ -41,10 +41,7 @@ impl Terminal {
         limits: harbor_config::HistoryLimits,
     ) -> anyhow::Result<ConfigurationResize<'_>> {
         anyhow::ensure!(limits.is_valid(), "invalid history limits");
-        let new = TerminalSize {
-            rows: size.rows.max(1),
-            cols: size.cols.max(2),
-        };
+        let new = size.normalized();
         let old = TerminalSize {
             rows: self.screen.rows(),
             cols: self.screen.cols(),

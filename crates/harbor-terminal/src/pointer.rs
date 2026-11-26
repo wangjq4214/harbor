@@ -644,9 +644,7 @@ impl PointerInteraction {
         viewport: &RenderViewport,
     ) -> GenPos {
         let (row, col) = self.grid_cell(position, snapshot, viewport);
-        let view_start = snapshot.history_start
-            + snapshot.scroll_count.saturating_sub(snapshot.view_offset) as u64;
-        GenPos::new(view_start + row as u64, col)
+        GenPos::new(snapshot.view_start_generation() + row as u64, col)
     }
 }
 

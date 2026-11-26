@@ -457,17 +457,8 @@ impl ContentProjection {
         start_col: usize,
         end_col: usize,
     ) -> Option<usize> {
-        Some(
-            self.line(line_id)?
-                .atoms
-                .iter()
-                .filter(|atom| {
-                    atom.source_span.generation == generation
-                        && atom.source_span.end_col >= start_col
-                        && atom.source_span.start_col < end_col
-                })
-                .count(),
-        )
+        self.atom_range_in_cell_range(line_id, generation, start_col, end_col)
+            .map(|range| range.map_or(0, |(_, len)| len))
     }
 
     pub(crate) fn atom_range_in_cell_range(

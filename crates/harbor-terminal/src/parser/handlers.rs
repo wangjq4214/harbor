@@ -4,7 +4,7 @@ use super::dcs::DcsCollector;
 use super::device_attributes::{PRIMARY_REPLY, SECONDARY_REPLY, accepts_default_query};
 use super::mode_query;
 use super::osc::{self, Action};
-use super::{osc_color, osc_palette, osc_title, osc7, osc8, osc133};
+use super::{osc_color, osc_title, osc7, osc8, osc133};
 use crate::model::{CharacterProtection, CursorStyleArg};
 use crate::screen::Screen;
 
@@ -112,32 +112,24 @@ impl VtHandler for ScreenHandler<'_> {
         }
 
         if !intermediates.is_empty() {
-            if intermediates == *b" " && action == b'q' {
-                self.screen
-                    .set_cursor_style(CursorStyleArg::from_param(params.get_or(0, 1)));
-            } else if intermediates == *b"!" && action == b'p' {
-                self.screen.soft_reset();
-            } else if intermediates == *b"\"" && action == b'q' {
-                self.screen
-                    .set_character_protection(CharacterProtection::from_param(params.get_or(0, 0)));
-            } else if intermediates == *b"$" {
-                match action {
-                    b'z' => self.screen.decera(params),
-                    b'{' => self.screen.decsera(params),
-                    b'x' => self.screen.decfra(params),
-                    b'v' => self.screen.deccra(params),
-                    b'r' => self.screen.deccara(params),
-                    b't' => self.screen.decrara(params),
-                    _ => tracing::warn!(
-                        "unsupported CSI intermediates {intermediates:?}: params={:?} final=0x{action:02x}",
-                        params.iter_flat().collect::<Vec<_>>(),
-                    ),
-                }
-            } else {
-                tracing::warn!(
+            match (intermediates, action) {
+                (b" ", b'q') => self
+                    .screen
+                    .set_cursor_style(CursorStyleArg::from_param(params.get_or(0, 1))),
+                (b"!", b'p') => self.screen.soft_reset(),
+                (b"\"", b'q') => self
+                    .screen
+                    .set_character_protection(CharacterProtection::from_param(params.get_or(0, 0))),
+                (b"$", b'z') => self.screen.decera(params),
+                (b"$", b'{') => self.screen.decsera(params),
+                (b"$", b'x') => self.screen.decfra(params),
+                (b"$", b'v') => self.screen.deccra(params),
+                (b"$", b'r') => self.screen.deccara(params),
+                (b"$", b't') => self.screen.decrara(params),
+                _ => tracing::warn!(
                     "unsupported CSI intermediates {intermediates:?}: params={:?} final=0x{action:02x}",
                     params.iter_flat().collect::<Vec<_>>(),
-                );
+                ),
             }
             return;
         }
@@ -293,12 +285,6 @@ impl VtHandler for ScreenHandler<'_> {
     }
 
     fn osc_dispatch(&mut self, command: &[u8], payload: &[u8], bell_terminated: bool) {
-        if command == b"777" && payload.starts_with(b"harbor;") {
-            self.output_events.push(TerminalOutputEvent::Project(
-                harbor_config::project::ProjectEvent::parse(payload),
-            ));
-            return;
-        }
         // Denied delivery and an occupied First slot need not allocate decoded candidates.
         if command == b"52"
             && (self.clipboard_delivery == crate::ClipboardDelivery::Discard
@@ -353,13 +339,13 @@ impl VtHandler for ScreenHandler<'_> {
                 self.screen.reset_default_color(slot);
             }
             Action::Palette(action, bell_terminated) => match action {
-                osc_palette::Action::Entries(entries) => {
+                osc_color::PaletteAction::Entries(entries) => {
                     for entry in entries {
                         match entry {
-                            osc_palette::Entry::Set(index, rgb) => {
+                            osc_color::PaletteEntry::Set(index, rgb) => {
                                 self.screen.set_indexed_color_rgb(index, rgb);
                             }
-                            osc_palette::Entry::Query(index) => {
+                            osc_color::PaletteEntry::Query(index) => {
                                 let reply = osc_color::format_palette_query(
                                     index,
                                     self.screen.indexed_color(index),
@@ -367,13 +353,13 @@ impl VtHandler for ScreenHandler<'_> {
                                 );
                                 self.screen.push_reply(reply.as_bytes());
                             }
-                            osc_palette::Entry::Reset(index) => {
+                            osc_color::PaletteEntry::Reset(index) => {
                                 self.screen.reset_indexed_color(index);
                             }
                         }
                     }
                 }
-                osc_palette::Action::ResetAll => {
+                osc_color::PaletteAction::ResetAll => {
                     for index in 0..=255 {
                         self.screen.reset_indexed_color(index);
                     }
@@ -385,6 +371,9 @@ impl VtHandler for ScreenHandler<'_> {
             Action::ShellIntegration(osc133::Action::Reset) => self
                 .output_events
                 .push(TerminalOutputEvent::ShellIntegrationReset),
+            Action::Project(project) => self
+                .output_events
+                .push(TerminalOutputEvent::Project(project)),
         }
     }
 

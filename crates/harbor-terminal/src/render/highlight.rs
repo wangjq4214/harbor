@@ -49,7 +49,6 @@ impl Highlights {
                 sh,
             ));
         }
-        self.quads.reserve(gpu.device(), vertices.len().max(64));
         self.quads.write(gpu, &vertices);
     }
 

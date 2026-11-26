@@ -1,5 +1,12 @@
 //! Mutation provenance for state owners participating in renderer acknowledgement.
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub(crate) fn fresh_identity() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+        .expect("terminal read identity exhausted")
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Revision {
@@ -38,7 +45,7 @@ impl<T> From<T> for Revisioned<T> {
         Self {
             value,
             revision: Revision {
-                identity: crate::read_model::fresh_identity(),
+                identity: fresh_identity(),
                 mutation: 0,
             },
         }

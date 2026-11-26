@@ -358,7 +358,7 @@ fn rebuilt_pixels(
     view: &RenderViewport,
     palette: Palette,
 ) -> Vec<u8> {
-    let mut fresh = BoxDrawing::new(gpu, Arc::clone(pipeline), palette);
+    let mut fresh = BoxDrawing::new(Arc::clone(pipeline), palette);
     fresh.prepare_with_dirty(gpu, snap, &[], view);
     raster(gpu.device(), gpu.queue(), |p| fresh.draw(p))
 }

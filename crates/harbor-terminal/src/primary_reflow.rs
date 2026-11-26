@@ -1071,7 +1071,6 @@ fn is_simple_glyph<C: Borrow<Cell>>(glyph: &LogicalGlyph<C>) -> bool {
         && cell.suffix.is_empty()
         && !cell.protected
         && cell.hyperlink.is_none()
-        && glyph.meaningful_blank == (cell.ch == ' ' && glyph.cell_state.is_meaningful())
 }
 
 fn validate_glyph<C: Borrow<Cell>>(glyph: &LogicalGlyph<C>) -> Result<(), PreparationError> {
@@ -1082,11 +1081,6 @@ fn validate_glyph<C: Borrow<Cell>>(glyph: &LogicalGlyph<C>) -> Result<(), Prepar
     if glyph.width != cell.grid_width() {
         return Err(PreparationError::Invariant(
             "glyph width disagrees with payload",
-        ));
-    }
-    if glyph.meaningful_blank != (cell.ch == ' ' && glyph.cell_state.is_meaningful()) {
-        return Err(PreparationError::Invariant(
-            "blank provenance disagrees with payload",
         ));
     }
     Ok(())

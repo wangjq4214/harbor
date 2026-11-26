@@ -56,7 +56,7 @@ fn valid_host(authority: &[u8]) -> bool {
         if byte == b'%' {
             if authority
                 .get(index + 1..index + 3)
-                .is_none_or(|digits| digits.iter().any(|digit| hex::digit(*digit).is_none()))
+                .is_none_or(|digits| hex::pair(digits[0], digits[1]).is_none())
             {
                 return false;
             }

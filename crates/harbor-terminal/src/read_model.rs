@@ -41,22 +41,16 @@
 //! ```
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::content_anchor::Affinity;
 pub use crate::logical_content::LogicalAtomOffset;
 pub use crate::normal_buf::LogicalLineId;
+pub(crate) use crate::revision::fresh_identity;
 use crate::{CellAttrs, Color, Terminal};
 
 pub const MAX_READ_ROWS: usize = 128;
 pub const MAX_READ_UNITS: usize = 4096;
 pub const MAX_READ_PAYLOAD_BYTES: usize = 256 * 1024;
-
-pub(crate) fn fresh_identity() -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-        .expect("terminal read identity exhausted")
-}
 
 /// Process-local engine/session identity. A replacement engine always differs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -394,7 +388,7 @@ impl Terminal {
                 start_row,
                 row_count,
             } => (
-                normal.history_start() + (normal.scroll_count() - normal.view_offset()) as u64,
+                normal.view_start_generation(),
                 normal.rows(),
                 start_row,
                 row_count,
@@ -500,8 +494,7 @@ impl Terminal {
     /// No source strings are copied or matched; stale ranges contribute nothing.
     pub fn project_content_ranges(&self, ranges: &[ContentRange]) -> Vec<CellSpan> {
         let normal = self.screen.read_buffer();
-        let view_start = normal.history_start()
-            + normal.scroll_count().saturating_sub(normal.view_offset()) as u64;
+        let view_start = normal.view_start_generation();
         let view_end = view_start + normal.rows() as u64;
         let mut spans = Vec::new();
         for range in ranges {

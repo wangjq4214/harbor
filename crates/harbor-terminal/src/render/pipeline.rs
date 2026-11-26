@@ -44,6 +44,23 @@ impl TerminalRenderPipeline {
         update: &TerminalProjection,
         raster_scale: f32,
     ) -> anyhow::Result<Self> {
+        let viewport = RenderViewport::with_surface(
+            metrics.cell_width,
+            metrics.line_height,
+            initial_surface_size,
+            initial_surface_size,
+        );
+        Self::new_with_viewport(gpu, viewport, font_book, metrics, update, raster_scale)
+    }
+
+    fn new_with_viewport(
+        gpu: TerminalGpuAccess<'_>,
+        viewport: RenderViewport,
+        font_book: FontBook,
+        metrics: TextMetrics,
+        update: &TerminalProjection,
+        raster_scale: f32,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             super::decoration::valid_metrics(&metrics),
             "invalid terminal text metrics"
@@ -65,12 +82,6 @@ impl TerminalRenderPipeline {
         let snap = &update.snapshot;
         let palette = update.appearance.palette();
         let tint = update.appearance.clear_rgba(update.backdrop_available);
-        let viewport = RenderViewport::with_surface(
-            metrics.cell_width,
-            metrics.line_height,
-            initial_surface_size,
-            initial_surface_size,
-        );
         anyhow::ensure!(
             valid_projection(&viewport, (snap.rows, snap.cols), &metrics),
             "invalid terminal viewport projection"
@@ -80,17 +91,15 @@ impl TerminalRenderPipeline {
             gpu.format(),
             "terminal colored-quad pipeline",
         ));
-        let background = Background::new(
+        let background = Background::new_with_viewport(
             gpu,
             Arc::clone(&colored_quad_pipeline),
-            initial_surface_size,
+            &viewport,
             snap,
-            metrics.cell_width,
-            metrics.line_height,
             tint,
             palette,
         );
-        let text = Text::new_at_scale(
+        let mut text = Text::new_at_scale(
             gpu,
             font_book,
             metrics,
@@ -99,18 +108,23 @@ impl TerminalRenderPipeline {
             palette,
             raster_scale,
         )?;
-        let decoration = Decoration::new(
+        text.set_colored_pipeline(Arc::clone(&colored_quad_pipeline));
+        let decoration = Decoration::new_with_viewport(
             gpu,
             Arc::clone(&colored_quad_pipeline),
-            initial_surface_size,
+            &viewport,
             snap,
             metrics,
             palette,
         );
-        let mut boxes = BoxDrawing::new(gpu, Arc::clone(&colored_quad_pipeline), palette);
+        let mut boxes = BoxDrawing::new(Arc::clone(&colored_quad_pipeline), palette);
         boxes.prepare_with_dirty(gpu, snap, &[], &viewport);
         let selection = Selection::new(gpu, Arc::clone(&colored_quad_pipeline), palette.selection);
-        let cursor = Cursor::new(gpu, metrics, palette.cursor);
+        let cursor = Cursor::new_with_pipeline(
+            gpu,
+            Arc::clone(&colored_quad_pipeline),
+            palette.cursor,
+        );
         let scrollbar = Scrollbar::new(gpu, snap, &viewport);
 
         Ok(Self {
@@ -155,21 +169,17 @@ impl TerminalRenderPipeline {
         let internal = gpu.device().push_error_scope(wgpu::ErrorFilter::Internal);
         let validation = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         let candidate = (|| {
-            let mut replacement = Self::new_at_scale(
+            let mut viewport = self.viewport;
+            viewport.cell_width = metrics.cell_width;
+            viewport.line_height = metrics.line_height;
+            let mut replacement = Self::new_with_viewport(
                 gpu,
-                self.viewport.surface_size,
+                viewport,
                 fonts,
                 metrics,
                 update,
                 self.raster_scale,
             )?;
-            let mut viewport = self.viewport;
-            viewport.cell_width = metrics.cell_width;
-            viewport.line_height = metrics.line_height;
-            anyhow::ensure!(
-                replacement.sync_viewport(viewport, true),
-                "invalid replacement viewport projection"
-            );
             anyhow::ensure!(
                 replacement.prepare(gpu, update, false),
                 "invalid replacement grid projection"

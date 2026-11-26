@@ -396,6 +396,17 @@ impl Decoration {
             initial_surface_size,
             initial_surface_size,
         );
+        Self::new_with_viewport(gpu, pipeline, &viewport, snap, metrics, palette)
+    }
+
+    pub(super) fn new_with_viewport(
+        gpu: TerminalGpuAccess<'_>,
+        pipeline: Arc<wgpu::RenderPipeline>,
+        viewport: &RenderViewport,
+        snap: &TerminalSnapshot,
+        metrics: TextMetrics,
+        palette: Palette,
+    ) -> Self {
         let mut layer = Self {
             pipeline,
             underline: gpu::ColoredRows::default(),
@@ -408,7 +419,7 @@ impl Decoration {
             dirty: true,
             viewport: None,
         };
-        layer.prepare_with_dirty(gpu, snap, &[], &viewport);
+        layer.prepare_with_dirty(gpu, snap, &[], viewport);
         layer
     }
 

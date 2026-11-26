@@ -15,6 +15,15 @@ pub(super) fn pair(high: u8, low: u8) -> Option<u8> {
     Some((digit(high)? << 4) | digit(low)?)
 }
 
+/// Encodes one nibble (`0..=15`) as a lowercase ASCII hex digit.
+pub(super) const fn lower_digit(value: u8) -> u8 {
+    if value < 10 {
+        b'0' + value
+    } else {
+        b'a' + value - 10
+    }
+}
+
 /// Appends the uppercase hex form of `bytes`, two digits per byte.
 pub(super) fn encode_upper(out: &mut Vec<u8>, bytes: &[u8]) {
     const DIGITS: &[u8; 16] = b"0123456789ABCDEF";

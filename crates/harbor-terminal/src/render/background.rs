@@ -41,6 +41,23 @@ impl Background {
         tint: [f32; 4],
         palette: Palette,
     ) -> Self {
+        let viewport = RenderViewport::with_surface(
+            cell_width,
+            line_height,
+            initial_surface_size,
+            initial_surface_size,
+        );
+        Self::new_with_viewport(gpu, pipeline, &viewport, snap, tint, palette)
+    }
+
+    pub(super) fn new_with_viewport(
+        gpu: TerminalGpuAccess<'_>,
+        pipeline: Arc<wgpu::RenderPipeline>,
+        viewport: &RenderViewport,
+        snap: &TerminalSnapshot,
+        tint: [f32; 4],
+        palette: Palette,
+    ) -> Self {
         let rows = snap.rows;
         let cols = snap.cols;
         let max_vertices = rows * cols * 6;
@@ -63,18 +80,11 @@ impl Background {
             staging: Vec::new(),
         };
 
-        // Build initial vertex data and upload.
-        let viewport = RenderViewport::with_surface(
-            cell_width,
-            line_height,
-            initial_surface_size,
-            initial_surface_size,
-        );
         let mut verts = std::mem::take(&mut layer.staging);
-        layer.append_all_vertices(snap, &viewport, &mut verts);
+        layer.append_all_vertices(snap, viewport, &mut verts);
         gpu.write_buffer(&layer.vertex_buffer, 0, bytemuck::cast_slice(&verts));
         layer.staging = verts;
-        layer.upload_full_rect(gpu, &viewport);
+        layer.upload_full_rect(gpu, viewport);
         layer.dirty = false;
         layer
     }

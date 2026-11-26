@@ -240,8 +240,7 @@ impl SelectionModel {
                 // snapshot contains visible soft-wrap markers, so this stays
                 // bounded to retained rows available to the UI.
                 self.granularity = SelectionGranularity::Line;
-                let view_start = screen.history_start
-                    + screen.scroll_count.saturating_sub(screen.view_offset) as u64;
+                let view_start = screen.view_start_generation();
                 let view_end = view_start + screen.rows.saturating_sub(1) as u64;
                 let mut start = cell.generation.clamp(view_start, view_end);
                 while start > view_start && screen.is_wrapped_at_generation(start) {

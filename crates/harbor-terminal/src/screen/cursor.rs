@@ -105,6 +105,22 @@ impl Margins {
         self.left = self.left.min(rightmost);
         self.right = self.right.min(rightmost);
     }
+
+    /// Active inclusive `(left, right)` bounds (`(0, cols.saturating_sub(1))` when disabled).
+    #[inline]
+    pub(crate) fn active_bounds(&self, cols: usize) -> (usize, usize) {
+        if self.enabled {
+            (self.left, self.right)
+        } else {
+            (0, cols.saturating_sub(1))
+        }
+    }
+
+    /// Whether `col` lies within active horizontal margins (always true when disabled).
+    #[inline]
+    pub(crate) fn contains(&self, col: usize) -> bool {
+        !self.enabled || (col >= self.left && col <= self.right)
+    }
 }
 
 /// Set of binary terminal modes — each maps to a DEC private or standard
@@ -317,10 +333,7 @@ impl CursorEngine {
 
     pub(crate) fn cursor_left(&mut self, n: usize) {
         self.clear_pending_wrap();
-        let limit = if self.margins.enabled
-            && self.cursor.x >= self.margins.left
-            && self.cursor.x <= self.margins.right
-        {
+        let limit = if self.margins.enabled && self.margins.contains(self.cursor.x) {
             self.margins.left
         } else {
             0
@@ -330,13 +343,10 @@ impl CursorEngine {
 
     pub(crate) fn cursor_right(&mut self, normal: &NormalBuf, n: usize) {
         self.clear_pending_wrap();
-        let limit = if self.margins.enabled
-            && self.cursor.x >= self.margins.left
-            && self.cursor.x <= self.margins.right
-        {
+        let limit = if self.margins.enabled && self.margins.contains(self.cursor.x) {
             self.margins.right
         } else {
-            normal.cols() - 1
+            normal.cols().saturating_sub(1)
         };
         self.cursor.x = self.cursor.x.saturating_add(n).min(limit);
     }
@@ -591,6 +601,26 @@ impl CursorEngine {
         self.clear_pending_wrap();
     }
 
+    /// Active `(top, bottom, left, right)` bounds honoring DECOM (`origin`) and DECLRMM.
+    pub(crate) fn origin_bounds(&self, normal: &NormalBuf) -> (usize, usize, usize, usize) {
+        if self.modes.origin {
+            let (left, right) = self.margins.active_bounds(normal.cols());
+            (
+                self.scroll_region.top,
+                self.scroll_region.bottom,
+                left,
+                right,
+            )
+        } else {
+            (
+                0,
+                normal.rows().saturating_sub(1),
+                0,
+                normal.cols().saturating_sub(1),
+            )
+        }
+    }
+
     /// Resolves a DEC rectangle (DECERA, DECSERA, DECFRA, DECCRA, DECCARA, DECRARA).
     /// All four coordinates are 1-based; 0 means "use the boundary value".
     pub(crate) fn resolve_rect(
@@ -601,21 +631,7 @@ impl CursorEngine {
         bottom: usize,
         right: usize,
     ) -> Option<Rect> {
-        let (top_bound, bottom_bound, left_bound, right_bound) = if self.modes.origin {
-            let (left_bound, right_bound) = if self.margins.enabled {
-                (self.margins.left, self.margins.right)
-            } else {
-                (0, normal.cols().saturating_sub(1))
-            };
-            (
-                self.scroll_region.top,
-                self.scroll_region.bottom,
-                left_bound,
-                right_bound,
-            )
-        } else {
-            (0, normal.rows() - 1, 0, normal.cols() - 1)
-        };
+        let (top_bound, bottom_bound, left_bound, right_bound) = self.origin_bounds(normal);
 
         let row_origin = if self.modes.origin { top_bound } else { 0 };
         let col_origin = if self.modes.origin { left_bound } else { 0 };

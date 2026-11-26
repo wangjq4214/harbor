@@ -615,8 +615,36 @@ pub fn create_texture_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGrou
 /// Creates a vertex buffer from a slice of `TexturedVertex`. Uploads one
 /// default vertex when the slice is empty (wgpu requires non-zero buffers);
 /// the caller must set `vertex_count` to 0 to skip drawing.
+#[cfg(test)]
 pub fn create_vertex_buffer(device: &wgpu::Device, vertices: &[TexturedVertex]) -> wgpu::Buffer {
     create_vertex_buffer_from(device, vertices)
+}
+
+/// Row-local GPU buffer updater shared by sparse vertex layers.
+pub(super) fn update_row_buffer<T: bytemuck::Pod + Default>(
+    gpu: TerminalGpuAccess<'_>,
+    buffer: &mut Option<VertexBuffer<T>>,
+    old: &mut Vec<T>,
+    new: &mut Vec<T>,
+) -> usize {
+    if bytemuck::cast_slice::<T, u8>(old) == bytemuck::cast_slice::<T, u8>(new) {
+        new.clear();
+        return 0;
+    }
+    let bytes = std::mem::size_of_val(new.as_slice());
+    if new.is_empty() {
+        *buffer = None;
+    } else {
+        buffer
+            .get_or_insert_with(|| VertexBuffer::new(gpu.device()))
+            .write(gpu, new);
+    }
+    std::mem::swap(old, new);
+    new.clear();
+    if old.is_empty() {
+        *old = Vec::new();
+    }
+    bytes
 }
 /// Creates an uninitialized vertex buffer of at least `vertex_count` vertices.
 ///
