@@ -228,9 +228,12 @@ impl Background {
             snap.cols,
             bytes_per_cell,
             dirty_ranges,
-            resized || self.dirty || tint_changed,
+            resized || self.dirty,
         );
         if plan.mode == UploadMode::None {
+            if rebuild_full_rect {
+                self.upload_full_rect(gpu, viewport);
+            }
             return;
         }
 

@@ -242,6 +242,30 @@ fn on_key_press_clears_selection() {
 }
 
 #[test]
+fn on_key_press_resets_click_chain_and_zero_cols_do_not_underflow() {
+    let screen = test_screen(2, 4);
+    let snapshot = screen.terminal_snapshot();
+    let mut model = SelectionModel::new();
+    let now = Instant::now();
+
+    model.press((0, 1), now, &snapshot);
+    assert!(model.on_key_press());
+    model.press((0, 1), now + Duration::from_millis(50), &snapshot);
+    assert_eq!(model.click_count, 1);
+
+    let mut empty = snapshot;
+    empty.cols = 0;
+    assert_eq!(
+        SelectionModel::find_word_range(&empty, 0, 0),
+        ((0, 0), (0, 0))
+    );
+    assert_eq!(
+        SelectionModel::snap_word_cursor(&empty, 0, 0, (0, 0)),
+        (0, 0)
+    );
+}
+
+#[test]
 fn on_key_press_without_selection_returns_false() {
     let mut model = SelectionModel::new();
     assert!(!model.on_key_press());

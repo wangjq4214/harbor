@@ -107,7 +107,7 @@ fn bounded_drain_rewakes_and_preserves_order_through_synchronized_output_and_eof
     let (wake_tx, wake_rx) = mpsc::channel();
     let wake_pending = Arc::new(AtomicBool::new(true));
     let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
-        output,
+        output: Some(output),
         recycle: ReaderRecycle::default(),
         commands,
         writer: Box::new(std::io::sink()),
@@ -160,7 +160,7 @@ fn exact_budget_empty_queue_rearms_for_later_producer_wake() {
     let (wake_tx, wake_rx) = mpsc::channel();
     let wake_pending = Arc::new(AtomicBool::new(true));
     let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
-        output,
+        output: Some(output),
         recycle: ReaderRecycle::default(),
         commands,
         writer: Box::new(std::io::sink()),
@@ -308,7 +308,7 @@ fn osc52_resize_barrier_streams_refilling_queue_on_success_and_failure() {
         full_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         let replies = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
-            output,
+            output: Some(output),
             recycle: ReaderRecycle::default(),
             commands,
             writer: Box::new(RecordingWriter(Arc::clone(&replies))),
@@ -686,7 +686,7 @@ fn empty_reader_chunk_drains_pending_replies_without_snapping_review() {
     let (commands, _command_rx) = mpsc::channel();
     let replies = Arc::new(Mutex::new(Vec::new()));
     let mut io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
-        output,
+        output: Some(output),
         recycle: ReaderRecycle::default(),
         commands,
         writer: Box::new(RecordingWriter(Arc::clone(&replies))),
@@ -1196,4 +1196,33 @@ fn real_drain_recycles_after_protocol_replies_without_losing_queries() {
         .unwrap();
     assert_eq!(replies.load(Ordering::SeqCst), CHUNKS);
     assert_eq!(reads.load(Ordering::SeqCst), CHUNKS + 1);
+}
+
+#[test]
+fn idle_interrupted_read_retries_instead_of_stopping_reader() {
+    struct SpuriousEintrReader(u8);
+    impl Read for SpuriousEintrReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            match self.0 {
+                0 => {
+                    self.0 = 1;
+                    Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+                }
+                1 => {
+                    self.0 = 2;
+                    buffer[..2].copy_from_slice(b"ok");
+                    Ok(2)
+                }
+                _ => Ok(0),
+            }
+        }
+    }
+
+    let (commands, output, thread) = spawn_test_pump(SpuriousEintrReader(0));
+    assert!(matches!(
+        output.recv_timeout(Duration::from_secs(1)).unwrap(),
+        ReaderEvent::Bytes(bytes) if &*bytes == b"ok"
+    ));
+    drop(commands);
+    thread.join().unwrap();
 }

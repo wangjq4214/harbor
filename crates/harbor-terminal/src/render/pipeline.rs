@@ -242,6 +242,7 @@ impl TerminalRenderPipeline {
             self.text.invalidate_projection();
             self.boxes.invalidate_projection();
             self.decoration.invalidate_projection();
+            self.highlights.invalidate_projection();
             self.selection.invalidate_projection();
             self.cursor.invalidate_projection();
         }
@@ -301,6 +302,7 @@ impl TerminalRenderPipeline {
         let tint = update.appearance.clear_rgba(update.backdrop_available);
         self.background
             .prepare_with_dirty(gpu, snap, &dirty_ranges, &viewport, tint);
+        self.highlights.reproject_if_needed(gpu, viewport);
         self.boxes
             .prepare_with_dirty(gpu, snap, &dirty_ranges, &viewport);
         self.text

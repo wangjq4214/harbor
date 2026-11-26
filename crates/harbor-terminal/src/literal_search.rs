@@ -394,6 +394,9 @@ impl SearchJob {
         mut cancelled: impl FnMut() -> bool,
     ) -> SearchStatus {
         self.work = SearchWork::default();
+        if self.status() != SearchStatus::Running {
+            return self.status();
+        }
         if cancelled() {
             return self.stop(SearchStatus::Cancelled);
         }
@@ -404,9 +407,6 @@ impl SearchJob {
             .same_generation(terminal.content_version())
         {
             return self.stop(SearchStatus::Stale);
-        }
-        if self.status() != SearchStatus::Running {
-            return self.status();
         }
         let scan = self.scan.as_mut().expect("running scan");
         if self.results.observed != terminal.content_version() {

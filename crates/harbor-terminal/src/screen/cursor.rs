@@ -241,6 +241,10 @@ impl CursorEngine {
         }
     }
 
+    pub(crate) fn live_cursor_y(&self) -> usize {
+        self.cursor.y
+    }
+
     pub(crate) fn cursor_shape(&self) -> CursorShape {
         self.cursor.shape
     }

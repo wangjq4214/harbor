@@ -129,8 +129,7 @@ impl PointerInteraction {
         self.saved_primary_selection = prepared.saved_primary_selection;
         self.parked_alt_selection = prepared.parked_alt_selection;
         if prepared.active_invalidated {
-            self.queue_local_release();
-            self.mouse_buttons = 0;
+            self.queue_selection_release();
         }
     }
 
@@ -321,6 +320,15 @@ impl PointerInteraction {
             .or(self.pending_release);
     }
 
+    fn queue_selection_release(&mut self) {
+        if matches!(self.active, Some(ActivePointer::Selection { .. })) {
+            self.queue_local_release();
+            if self.vt_capture.is_none() {
+                self.mouse_buttons = 0;
+            }
+        }
+    }
+
     fn consume_release_sources(&mut self) -> Option<u64> {
         self.active
             .take()
@@ -346,7 +354,9 @@ impl PointerInteraction {
             .take()
             .map(|active| active.pointer_id())
             .or_else(|| self.pending_release.take());
-        self.mouse_buttons = 0;
+        if self.vt_capture.is_none() {
+            self.mouse_buttons = 0;
+        }
         TerminalEventOutcome {
             redraw,
             release_pointer,
@@ -586,8 +596,7 @@ impl PointerInteraction {
         let had_selection = self.selection.has_selection();
         let changed = self.selection.reconcile_anchors(mutations, projection);
         if had_selection && !self.selection.has_selection() {
-            self.queue_local_release();
-            self.mouse_buttons = 0;
+            self.queue_selection_release();
         }
         changed
     }
@@ -1164,6 +1173,35 @@ mod tests {
 
         assert_eq!(wheel.release_pointer, Some(11));
         assert_eq!(pointer.cancel().release_pointer, Some(22));
+    }
+
+    #[test]
+    fn selection_invalidation_does_not_abort_active_scrollbar_drag() {
+        let mut screen = Screen::new(2, 10);
+        for _ in 0..4 {
+            screen.write_char('a');
+            screen.line_feed();
+            screen.carriage_return();
+        }
+        let mut pointer = PointerInteraction::new();
+        pointer.set_viewport(viewport());
+        let now = Instant::now();
+        let snap = screen.terminal_snapshot();
+        pointer.selection.press((0, 0), now, &snap);
+        pointer.selection.drag_to((0, 3), &snap);
+        pointer.selection.release();
+        pointer.active = Some(ActivePointer::Scrollbar {
+            pointer_id: 42,
+            grab_offset: 1.0,
+        });
+
+        let prepared = pointer.prepare_resize(&screen.prepare_resize(2, 5).unwrap());
+        pointer.commit_resize(prepared);
+
+        assert!(matches!(
+            pointer.active,
+            Some(ActivePointer::Scrollbar { pointer_id: 42, .. })
+        ));
     }
 }
 

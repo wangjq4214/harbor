@@ -583,7 +583,7 @@ impl CellOps {
         }
     }
 
-    fn scroll_rows_down(
+    pub(crate) fn scroll_rows_down(
         pen_state: &mut PenState,
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,

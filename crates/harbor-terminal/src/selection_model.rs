@@ -353,6 +353,9 @@ impl SelectionModel {
         self.anchored_range = None;
         self.dragging = false;
         self.stop_auto_scroll();
+        self.click_count = 0;
+        self.last_click_at = None;
+        self.last_click_cell = None;
         had_selection
     }
 
@@ -552,23 +555,11 @@ impl SelectionModel {
             }
         };
 
-        // Re-snap column when in word or line mode.
-        let anchor = self.range?.anchor;
         let cur_col = self.range?.cursor.col;
-        let snapped = match self.granularity {
-            SelectionGranularity::Word => {
-                Self::snap_word_cursor(screen, new_gen, cur_col, anchor.into())
-            }
-            SelectionGranularity::Line => {
-                Self::snap_line_cursor(screen, new_gen, cur_col, anchor.into())
-            }
-            SelectionGranularity::Character => (new_gen, cur_col),
-        };
-
         let deadline = now + Duration::from_millis(AUTO_SCROLL_INTERVAL_MS);
         self.next_auto_scroll_at = Some(deadline);
 
-        Some((direction, snapped))
+        Some((direction, (new_gen, cur_col)))
     }
 
     // ── Word / line boundary helpers ─────────────────────────
@@ -631,7 +622,8 @@ impl SelectionModel {
 
         // Scan right from the effective click column.
         let mut right = effective_col;
-        while right < cols - 1 && in_same_word(right + 1) {
+        let max_col = cols.saturating_sub(1);
+        while right < max_col && in_same_word(right + 1) {
             right += 1;
         }
 
@@ -652,7 +644,7 @@ impl SelectionModel {
         // True CJK char cell (not wide_continuation).
         let is_cjk_cell =
             |c: usize| cell_at(c).is_some_and(|cell| !cell.wide_continuation && is_cjk(cell.ch));
-        let cols = screen.cols;
+        let max_col = screen.cols.saturating_sub(1);
         // True word boundary: separator, CJK char, or wide_continuation cell.
         let is_boundary = |c: usize| {
             cell_at(c).is_none_or(|cell| {
@@ -664,7 +656,7 @@ impl SelectionModel {
             // Expanding forward → snap to right boundary.
             let mut c = col;
             // Skip past true separators.
-            while c < cols - 1 && is_sep(c) {
+            while c < max_col && is_sep(c) {
                 c += 1;
             }
             // If we landed on a CJK wide_continuation, we're already at the
@@ -674,13 +666,13 @@ impl SelectionModel {
             }
             // If CJK: advance past its wide_continuation to include the full char.
             if is_cjk_cell(c)
-                && c < cols - 1
+                && c < max_col
                 && cell_at(c + 1).is_some_and(|cell| cell.wide_continuation)
             {
                 c += 1;
             } else if !is_cjk_cell(c) {
                 // Latin word char: expand through consecutive non-sep non-CJK non-wide_cont chars.
-                while c < cols - 1 {
+                while c < max_col {
                     if is_boundary(c + 1) {
                         break;
                     }

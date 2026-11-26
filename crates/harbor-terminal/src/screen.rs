@@ -466,11 +466,11 @@ impl Screen {
         let row = if self.active.cursor.modes.origin {
             self.active
                 .cursor
-                .cursor_y(&self.active.normal)
+                .live_cursor_y()
                 .saturating_sub(self.active.cursor.scroll_region.top)
                 + 1
         } else {
-            self.active.cursor.cursor_y(&self.active.normal) + 1
+            self.active.cursor.live_cursor_y() + 1
         };
         let col = if self.active.cursor.modes.origin && self.active.cursor.margins.enabled {
             self.active
@@ -1938,43 +1938,15 @@ impl Screen {
             && self.active.cursor.cursor.y <= self.active.cursor.scroll_region.bottom
         {
             transitioned = true;
-            self.mark_rows_dirty(
-                self.active.cursor.scroll_region.top,
-                self.active.cursor.scroll_region.bottom.saturating_add(1),
-            );
-            if self.active.cursor.margins.enabled {
-                let BufferState {
-                    normal,
-                    cursor,
-                    pen_state,
-                    ..
-                } = &mut self.active;
-                CellOps::scroll_margin_rect_down(
-                    pen_state,
-                    normal,
-                    cursor,
-                    cursor.scroll_region.top,
-                    cursor.scroll_region.bottom,
-                    1,
-                );
-            } else {
-                self.active
-                    .normal
-                    .sever_soft_wrap_after(self.active.cursor.scroll_region.bottom);
-                let tr = self.active.normal.total_rows();
-                let vis = self.active.normal.visible_start();
-                let src_start = (vis + self.active.cursor.scroll_region.top) % tr;
-                let src_end = (vis + self.active.cursor.scroll_region.bottom) % tr;
-                let dst = (vis + self.active.cursor.scroll_region.top + 1) % tr;
-                self.active.normal.copy_ring_rows(src_start, src_end, dst);
-                self.active
-                    .normal
-                    .sever_soft_wrap(self.active.cursor.scroll_region.top + 1);
-                self.active.normal.fill_row_with(
-                    self.active.cursor.scroll_region.top,
-                    self.active.pen_state.erase_cell(),
-                );
-            }
+            let BufferState {
+                normal,
+                cursor,
+                pen_state,
+                ..
+            } = &mut self.active;
+            let top = cursor.scroll_region.top;
+            let bottom = cursor.scroll_region.bottom;
+            CellOps::scroll_rows_down(pen_state, normal, cursor, top, bottom, 1);
         } else if self.active.cursor.cursor.y > 0 {
             self.active.cursor.cursor.y -= 1;
         }

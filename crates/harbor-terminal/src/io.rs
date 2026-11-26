@@ -129,7 +129,7 @@ struct PendingBarrier {
 
 /// I/O and shutdown resources sharing the terminal's lifetime.
 struct TerminalPty {
-    output: Receiver<ReaderEvent>,
+    output: Option<Receiver<ReaderEvent>>,
     recycle: ReaderRecycle,
     commands: Sender<ReaderCommand>,
     writer: Box<dyn Write + Send>,
@@ -207,7 +207,7 @@ impl TerminalPty {
             }
         };
         Ok(Self {
-            output,
+            output: Some(output),
             recycle,
             commands,
             writer: Box::new(writer),
@@ -224,8 +224,9 @@ impl TerminalPty {
 
 impl Drop for TerminalPty {
     fn drop(&mut self) {
-        // Disconnect the receiver so the reader thread exits its send loop.
+        // Disconnect the receiver before shutdown so a reader blocked in send unblocks.
         // The writer is dropped automatically.
+        drop(self.output.take());
         let control = self.control.take();
         let reader = self.reader.take();
         match (control, reader) {
@@ -293,9 +294,9 @@ fn pump_reader_with_after_read<R>(
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                 buffers.put_unread(chunk);
                 match service_reader_commands(&commands, &output, &notify) {
-                    Ok(ReaderCommandStatus::Resumed) => continue,
-                    Ok(ReaderCommandStatus::Idle | ReaderCommandStatus::Disconnected) | Err(()) => {
-                        tracing::warn!(error = %error, "terminal pty reader stopped after unexpected interruption");
+                    Ok(ReaderCommandStatus::Idle | ReaderCommandStatus::Resumed) => continue,
+                    Ok(ReaderCommandStatus::Disconnected) | Err(()) => {
+                        tracing::warn!(error = %error, "terminal pty reader stopped after interruption");
                         break;
                     }
                 }
@@ -399,11 +400,14 @@ impl TerminalSession {
         let Some(pty) = self.pty.as_ref() else {
             return Ok(None);
         };
-        match pty.output.try_recv() {
+        let Some(output) = pty.output.as_ref() else {
+            return Ok(None);
+        };
+        match output.try_recv() {
             Ok(event) => Ok(Some(event)),
             Err(TryRecvError::Empty) => {
                 pty.wake_pending.store(false, Ordering::Release);
-                match pty.output.try_recv() {
+                match output.try_recv() {
                     Ok(event) => Ok(Some(event)),
                     Err(TryRecvError::Empty) => Ok(None),
                     Err(error) => Err(error),

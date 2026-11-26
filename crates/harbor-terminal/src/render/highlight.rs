@@ -34,6 +34,9 @@ impl Highlights {
         let (sw, sh) = viewport.surface_dimensions();
         let mut vertices = Vec::with_capacity(spans.len() * 6);
         for span in spans {
+            if span.start_col >= span.end_col {
+                continue;
+            }
             let (left, top, _, bottom) = viewport.cell_bounds(span.row, span.start_col);
             let (_, _, right, _) = viewport.cell_bounds(span.row, span.end_col - 1);
             vertices.extend_from_slice(&ColoredVertex::from_pixel_rect(
@@ -48,6 +51,22 @@ impl Highlights {
         }
         self.quads.reserve(gpu.device(), vertices.len().max(64));
         self.quads.write(gpu, &vertices);
+    }
+
+    pub fn invalidate_projection(&mut self) {
+        self.viewport = None;
+    }
+
+    pub fn reproject_if_needed(&mut self, gpu: TerminalGpuAccess<'_>, viewport: RenderViewport) {
+        if self.viewport == Some(viewport) {
+            return;
+        }
+        if self.spans.is_empty() {
+            self.viewport = Some(viewport);
+            return;
+        }
+        let spans = std::mem::take(&mut self.spans);
+        self.prepare(gpu, &spans, viewport);
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass) {
