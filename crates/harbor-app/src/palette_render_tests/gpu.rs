@@ -698,13 +698,29 @@ fn confirmation_overlay_pixels_render_glass_warning_icon_inset_preview_and_focus
                 let panel = items
                     .iter()
                     .find_map(|item| match item.primitive {
-                        Primitive::BackdropMaterial { rect, material, .. } => {
-                            assert_eq!(Some(material), GlassAppearance::command_palette().material);
+                        Primitive::BackdropMaterial { rect, material, .. }
+                            if Some(material) == GlassAppearance::command_palette().material =>
+                        {
                             Some(rect)
                         }
                         _ => None,
                     })
                     .expect("confirmation glass BackdropMaterial");
+                let pill_button_backdrops = items
+                    .iter()
+                    .filter(|item| {
+                        matches!(
+                            item.primitive,
+                            Primitive::BackdropMaterial { corner_radii, .. }
+                                if corner_radii
+                                    == [crate::appearance::design_system::BUTTON_PILL_RADIUS; 4]
+                        )
+                    })
+                    .count();
+                assert_eq!(
+                    pill_button_backdrops, 2,
+                    "both Cancel/Deny and Paste/Allow buttons must render native liquid-glass pill backdrops"
+                );
                 let icon_rect = items
                     .iter()
                     .find_map(|item| match item.primitive {

@@ -1061,12 +1061,33 @@ fn quick_save_design_roles_separate_checks_actions_and_field_groups() {
             })
             .unwrap_or_else(|| panic!("missing surface {key}"))
     };
-    assert_eq!(fill(&runtime, "quick-save-final").a, 1.0);
-    let theme = crate::appearance::design_system::theme(&harbor_widget::Theme::default());
-    assert_eq!(
-        fill(&runtime, "quick-save-final"),
-        theme.button.normal.background
+    let final_fill = fill(&runtime, "quick-save-final");
+    assert!(
+        final_fill.a > 0.0 && final_fill.a < 1.0,
+        "primary button uses translucent tinted liquid glass"
     );
+    let theme = crate::appearance::design_system::theme(&harbor_widget::Theme::default());
+    assert_eq!(final_fill, theme.button.normal.background);
+    assert!(
+        final_fill.a > fill(&runtime, "pwsh").a,
+        "primary emphasis tint must stay stronger than selection tint"
+    );
+    let final_rect = keyed_rect(&runtime, "quick-save-final");
+    let final_delta = runtime.pending_delta().unwrap();
+    assert!(
+        final_delta
+            .added
+            .iter()
+            .chain(&final_delta.modified)
+            .any(|item| matches!(
+                item.primitive,
+                Primitive::BackdropMaterial { rect, corner_radii, .. }
+                    if rect == final_rect
+                        && corner_radii == [crate::appearance::design_system::BUTTON_PILL_RADIUS; 4]
+            )),
+        "primary button must render native liquid-glass pill backdrop"
+    );
+    assert_borderless(&runtime, "quick-save-final");
     assert_eq!(fill(&runtime, "pwsh"), theme.button.selected.background);
     assert!(fill(&runtime, "pwsh").a < 1.0);
     let selected_rect = keyed_rect(&runtime, "pwsh");
@@ -1106,13 +1127,17 @@ fn quick_save_design_roles_separate_checks_actions_and_field_groups() {
     row_pointer(&mut runtime, Point::new(5.0, 5.0), PointerPhase::Move);
     runtime.update(Instant::now());
     assert_eq!(fill(&runtime, "environment-0").a, 0.0);
-    assert!(
-        fill(&runtime, "quick-save-final").a < 1.0,
+    assert_eq!(
+        fill(&runtime, "quick-save-final"),
+        theme.button.disabled.background,
         "independent acknowledgement still gates Save"
     );
     click_control(&mut runtime, "quick-save-ack");
     runtime.update(Instant::now());
-    assert_eq!(fill(&runtime, "quick-save-final").a, 1.0);
+    assert_eq!(
+        fill(&runtime, "quick-save-final"),
+        theme.button.normal.background
+    );
 
     let label = |text: &str| {
         let delta = runtime.pending_delta().unwrap();
