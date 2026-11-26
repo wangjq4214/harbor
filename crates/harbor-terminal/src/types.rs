@@ -5,6 +5,8 @@
 
 use std::time::Instant;
 
+use harbor_config::{Palette, Rgba};
+
 /// Validated, platform-neutral working-directory metadata reported by OSC 7.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkingDirectoryMetadata {
@@ -98,8 +100,6 @@ pub enum TerminalOutputEvent {
     ShellIntegrationReset,
     Project(harbor_config::project::ProjectEvent),
 }
-
-use harbor_config::{Palette, Rgba};
 
 /// Terminal-owned visual policy for the startup palette and backdrop fallback.
 #[derive(Clone, Copy, Debug, PartialEq)]

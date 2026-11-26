@@ -1,4 +1,4 @@
-//! Terminal keyboard event encoding for the direct PTY input path.
+//! Terminal keyboard, focus, and mouse event encoding for the direct PTY input path.
 
 use crate::InputModes;
 use crate::model::{MouseEncoding, MouseTrackingMode};
@@ -143,13 +143,13 @@ fn append_mouse_report(
             }
         }
         MouseEncoding::Urxvt => {
-            bytes.extend_from_slice(format!("\x1b[{};{};{}M", button + 32, col, row).as_bytes());
+            use std::io::Write as _;
+            let _ = write!(bytes, "\x1b[{};{};{}M", button + 32, col, row);
         }
         MouseEncoding::Sgr | MouseEncoding::SgrPixel => {
+            use std::io::Write as _;
             let suffix = if release { 'm' } else { 'M' };
-            bytes.extend_from_slice(
-                format!("\x1b[<{};{};{}{}", button, col, row, suffix).as_bytes(),
-            );
+            let _ = write!(bytes, "\x1b[<{};{};{}{}", button, col, row, suffix);
         }
     }
 }

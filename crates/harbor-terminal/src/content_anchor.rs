@@ -255,6 +255,16 @@ struct ProjectedLine {
     atoms: Vec<ProjectedAtom>,
 }
 
+impl ProjectedLine {
+    fn atom_at(&self, offset: LogicalAtomOffset) -> Option<&ProjectedAtom> {
+        offset
+            .0
+            .checked_sub(self.atom_start.0)
+            .and_then(|index| self.atoms.get(index))
+            .filter(|atom| atom.offset == offset)
+    }
+}
+
 /// Owned, bounded mapping for the retained rows of one `NormalBuf`.
 #[derive(Clone, Debug)]
 pub(crate) struct ContentProjection {
@@ -314,10 +324,13 @@ impl ContentProjection {
     }
 
     pub(crate) fn to_anchor(&self, pos: GenPos, affinity: Affinity) -> Option<ContentAnchor> {
+        let index = self
+            .lines
+            .partition_point(|line| line.generations.last().is_some_and(|&last| last < pos.generation));
         let line = self
             .lines
-            .iter()
-            .find(|line| line.generations.contains(&pos.generation))?;
+            .get(index)
+            .filter(|line| line.generations.contains(&pos.generation))?;
         derive_anchor(
             line.line_id,
             line.atom_start,
@@ -355,10 +368,7 @@ impl ContentProjection {
         }
         if anchor.prefer_previous_projection {
             if let Some(previous_offset) = anchor.offset.0.checked_sub(1)
-                && let Some(previous) = line
-                    .atoms
-                    .iter()
-                    .find(|atom| atom.offset.0 == previous_offset)
+                && let Some(previous) = line.atom_at(LogicalAtomOffset(previous_offset))
             {
                 return Some(GenPos::new(
                     previous.source_span.generation,
@@ -367,7 +377,7 @@ impl ContentProjection {
             }
             return Some(GenPos::new(*line.generations.first()?, 0));
         }
-        if let Some(atom) = line.atoms.iter().find(|atom| atom.offset == anchor.offset) {
+        if let Some(atom) = line.atom_at(anchor.offset) {
             return Some(GenPos::new(
                 atom.source_span.generation,
                 match anchor.affinity {
@@ -400,10 +410,7 @@ impl ContentProjection {
         }
         if anchor.prefer_previous_projection {
             if let Some(previous_offset) = anchor.offset.0.checked_sub(1)
-                && let Some(previous) = line
-                    .atoms
-                    .iter()
-                    .find(|atom| atom.offset.0 == previous_offset)
+                && let Some(previous) = line.atom_at(LogicalAtomOffset(previous_offset))
             {
                 return Some(ProjectedPosition {
                     pos: GenPos::new(
@@ -422,8 +429,7 @@ impl ContentProjection {
                 pending_wrap: false,
             });
         }
-        let (generation, insertion_col) =
-            if let Some(atom) = line.atoms.iter().find(|atom| atom.offset == anchor.offset) {
+        let (generation, insertion_col) = if let Some(atom) = line.atom_at(anchor.offset) {
                 let col = match anchor.affinity {
                     Affinity::Before => atom.source_span.start_col,
                     Affinity::After => atom.source_span.end_col.saturating_add(1),

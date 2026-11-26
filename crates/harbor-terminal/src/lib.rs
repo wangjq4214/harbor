@@ -589,7 +589,7 @@ impl Terminal {
         }
         self.ingest_screen(|io, screen, pointer| io.drain(screen, pointer));
         if !self.pointer.has_viewport()
-            || self.screen.input_modes().mouse_tracking != crate::model::MouseTrackingMode::Disabled
+            || self.screen.input_modes().mouse_tracking != MouseTrackingMode::Disabled
         {
             let interrupted = self.pointer.cancel_local_pointer();
             outcome.redraw = interrupted.redraw;

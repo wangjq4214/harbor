@@ -30,14 +30,15 @@ impl ScrollbarGeometry {
         let track_top = origin_y + viewport.padding;
         let track_bottom = origin_y + alloc_h - viewport.padding;
         let track_height = track_bottom - track_top;
-        if track_height <= 0.0 {
+        if !track_height.is_finite() || track_height <= 0.0 {
             return None;
         }
         let total_rows = snap.rows + snap.scroll_count;
         let thumb_height = ((snap.rows as f32 / total_rows as f32) * track_height)
             .max(SCROLLBAR_MIN_THUMB_HEIGHT)
             .min(track_height);
-        let scroll_fraction = 1.0 - (snap.view_offset as f32 / snap.scroll_count as f32);
+        let scroll_fraction =
+            (1.0 - (snap.view_offset as f32 / snap.scroll_count as f32)).clamp(0.0, 1.0);
         let thumb_top = track_top + scroll_fraction * (track_height - thumb_height);
         let right = origin_x + alloc_w - SCROLLBAR_MARGIN;
         Some(Self {
@@ -87,6 +88,9 @@ pub fn offset_for_thumb(
     pointer_y: f32,
     grab_offset: f32,
 ) -> Option<usize> {
+    if !pointer_y.is_finite() || !grab_offset.is_finite() {
+        return None;
+    }
     let geometry = ScrollbarGeometry::compute(snap, viewport)?;
     let movable = (geometry.track_bottom - geometry.track_top - geometry.thumb_height).max(0.0);
     if movable == 0.0 {

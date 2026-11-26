@@ -520,16 +520,11 @@ impl SearchJob {
             }
         }
         scan.continuation = page.continuation;
+        let finished = scan.continuation.is_none();
         if cancelled() {
             return self.stop(SearchStatus::Cancelled);
         }
-        if self
-            .scan
-            .as_ref()
-            .expect("running scan")
-            .continuation
-            .is_none()
-        {
+        if finished {
             let status = if self.results.observed == self.results.provenance.content {
                 SearchStatus::Complete
             } else {
