@@ -528,6 +528,10 @@ pub(crate) trait AnyView: 'static {
 /// State and invalidation remain owned by the caller and the routed EventCtx.
 pub trait PrimitiveLeaf: 'static {
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size;
+    /// Prepares local text geometry before layout using the renderer's per-scalar
+    /// logical advances (already scaled for the active display DPI).
+    fn prepare_text_geometry(&self, _metrics: &TextMetrics, _advance: &mut dyn FnMut(char) -> f32) {
+    }
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive>;
     /// Processes routed input. Return [`EventHandled::Handled`] to stop further
     /// propagation after this handler, or `Ignored` to continue. Both results
@@ -544,6 +548,9 @@ impl<T: PrimitiveLeaf> AnyView for PrimitiveLeafView<T> {
     }
     fn intrinsic_size(&self, constraints: BoxConstraints, metrics: &TextMetrics) -> Size {
         self.0.intrinsic_size(constraints, metrics)
+    }
+    fn prepare_text_geometry(&self, metrics: &TextMetrics, advance: &mut dyn FnMut(char) -> f32) {
+        self.0.prepare_text_geometry(metrics, advance);
     }
     fn paint_primitives(&self, rect: Rect, metrics: &TextMetrics) -> Vec<Primitive> {
         self.0.paint_primitives(rect, metrics)

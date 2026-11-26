@@ -17,6 +17,7 @@ fn lucide_icons_render_at_multiple_dpi_with_tint_and_single_coverage() {
             (LucideIcon::ChevronDown, (12.0, 15.0)),
             (LucideIcon::ArrowLeft, (16.0, 12.0)),
             (LucideIcon::Check, (9.0, 17.0)),
+            (LucideIcon::TriangleAlert, (12.0, 11.0)),
         ] {
             let item = make_rounded_item(
                 1,
@@ -49,6 +50,23 @@ fn lucide_icons_render_at_multiple_dpi_with_tint_and_single_coverage() {
                 bgra(&pixels, (5.0 * scale) as u32, (5.0 * scale) as u32),
                 [0; 4]
             );
+            if icon == LucideIcon::TriangleAlert {
+                for stroke in [(12.0, 21.0), (12.0, 17.0)] {
+                    let px = bgra(
+                        &pixels,
+                        ((stroke.0 + 4.0) * scale) as u32,
+                        ((stroke.1 + 4.0) * scale) as u32,
+                    );
+                    assert!(
+                        px[2] > 80 && (90..=130).contains(&px[3]),
+                        "TriangleAlert stroke at {stroke:?} {scale}x: {px:?}"
+                    );
+                }
+                assert_eq!(
+                    bgra(&pixels, (16.0 * scale) as u32, (19.0 * scale) as u32),
+                    [0; 4]
+                );
+            }
         }
     }
 }

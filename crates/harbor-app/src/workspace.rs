@@ -329,6 +329,91 @@ impl WorkspaceUiController {
         self.store.state().read().popups.active().is_some()
     }
 
+    pub(crate) fn dispatcher(&self) -> harbor_widget::Dispatcher<AppCommandRequest> {
+        self.store.dispatcher()
+    }
+
+    pub fn open_confirmation(
+        &self,
+        request: crate::confirmation::ConfirmationRequest,
+    ) -> (u64, FocusHandle) {
+        let mut state = self.store.state().read().clone();
+        let focus = state
+            .popups
+            .open(|_| crate::confirmation::ConfirmationOverlayState::new(request));
+        let generation = state.popups.generation().expect("opened confirmation");
+        self.store.set_state(state);
+        (generation, focus)
+    }
+
+    pub fn confirmation_is_open(&self) -> bool {
+        self.store
+            .state()
+            .read()
+            .popups
+            .get::<crate::confirmation::ConfirmationOverlayState>()
+            .is_some()
+    }
+
+    pub fn confirmation_kind(&self) -> Option<crate::confirmation::ConfirmationKind> {
+        self.store
+            .state()
+            .read()
+            .popups
+            .get::<crate::confirmation::ConfirmationOverlayState>()
+            .map(crate::confirmation::ConfirmationOverlayState::kind)
+    }
+
+    pub fn confirmation_generation(&self) -> Option<u64> {
+        let state = self.store.state().read();
+        state
+            .popups
+            .get::<crate::confirmation::ConfirmationOverlayState>()?;
+        state.popups.generation()
+    }
+
+    pub fn is_confirmation_current(&self, generation: u64) -> bool {
+        let state = self.store.state().read();
+        state.popups.is_current(generation)
+            && state
+                .popups
+                .get::<crate::confirmation::ConfirmationOverlayState>()
+                .is_some()
+    }
+
+    pub fn close_confirmation(&self, generation: u64) -> bool {
+        let mut state = self.store.state().read().clone();
+        if state
+            .popups
+            .get::<crate::confirmation::ConfirmationOverlayState>()
+            .is_none()
+            || !state.popups.close(generation)
+        {
+            return false;
+        }
+        self.store.set_state(state);
+        true
+    }
+
+    pub fn close_active_confirmation(&self) -> bool {
+        let Some(generation) = self.confirmation_generation() else {
+            return false;
+        };
+        self.close_confirmation(generation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn store_confirmation_scroll_for_test(
+        &self,
+    ) -> Option<harbor_widget::ScrollController> {
+        self.store
+            .state()
+            .read()
+            .popups
+            .get::<crate::confirmation::ConfirmationOverlayState>()
+            .map(crate::confirmation::ConfirmationOverlayState::scroll_controller)
+    }
+
     pub fn tabs(&self) -> &TabUiController {
         &self.tabs
     }

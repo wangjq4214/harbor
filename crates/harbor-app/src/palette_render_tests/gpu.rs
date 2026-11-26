@@ -637,6 +637,210 @@ fn segmented_selection_and_hover_pixels_are_local_glass_with_no_separate_press()
     }
 }
 
+#[test]
+#[ignore = "GPU pixel acceptance; run explicitly with --ignored --nocapture"]
+fn confirmation_overlay_pixels_render_glass_warning_icon_inset_preview_and_focus_at_multiple_dpi() {
+    use crate::confirmation::{ConfirmationOverlayState, ConfirmationRequest};
+    let (device, queue) = crate::test_gpu::device();
+    for request in [
+        ConfirmationRequest::paste(
+            24,
+            (1..=24)
+                .map(|i| format!("line {i:02} with enough text to wrap cleanly across columns"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        ConfirmationRequest::clipboard_write(
+            "Tab 1 requests clipboard write (256 bytes)".into(),
+            (1..=24)
+                .map(|i| format!("osc52 payload row {i:02} content"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+    ] {
+        for scale in [1.0, 1.5, 2.0] {
+            for format in [
+                wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+            ] {
+                let (_tabs, controller, mut runtime, _) = fixture();
+                let viewport =
+                    Viewport::new((1000.0 * scale) as u32, (640.0 * scale) as u32, scale);
+                runtime.set_viewport(viewport.clone());
+                runtime.init_renderer(&device, format);
+                runtime.init_text_renderer(&device, &queue, format).unwrap();
+                runtime.set_root(View::leaf(TestBackdrop));
+                runtime.update(Instant::now());
+                let baseline = render(&device, &queue, &mut runtime, viewport.clone(), format);
+
+                let (generation, focus) = controller.open_confirmation(request.clone());
+                let root = controller.clone();
+                runtime.set_root(move |cx: &mut BuildCx| {
+                    let state = root.store.watch(cx).clone();
+                    let overlay = state.popups.get::<ConfirmationOverlayState>().unwrap();
+                    let panel = crate::popups::Popup::build(
+                        overlay,
+                        cx,
+                        &root,
+                        &validate_keybindings(&harbor_config::RawKeybindings::default()).unwrap(),
+                        generation,
+                    );
+                    Stack::new()
+                        .push_child(View::leaf(TestBackdrop))
+                        .push_child(panel)
+                        .build(cx)
+                });
+                runtime.request_focus(&focus);
+                runtime.update(Instant::now());
+
+                let delta = runtime.pending_delta().unwrap();
+                let items: Vec<_> = delta.added.iter().chain(&delta.modified).collect();
+                let panel = items
+                    .iter()
+                    .find_map(|item| match item.primitive {
+                        Primitive::BackdropMaterial { rect, material, .. } => {
+                            assert_eq!(Some(material), GlassAppearance::command_palette().material);
+                            Some(rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("confirmation glass BackdropMaterial");
+                let icon_rect = items
+                    .iter()
+                    .find_map(|item| match item.primitive {
+                        Primitive::Icon {
+                            icon: LucideIcon::TriangleAlert,
+                            rect,
+                            ..
+                        } => Some(rect),
+                        _ => None,
+                    })
+                    .expect("warning TriangleAlert icon");
+                let has_border = items
+                    .iter()
+                    .any(|item| matches!(item.primitive, Primitive::RoundedBorder { .. }));
+                assert!(has_border, "inset preview border or focus ring expected");
+                assert!(
+                    items.iter().any(|item| matches!(
+                        item.primitive,
+                        Primitive::Quad { rect, corner_radius, .. }
+                            if corner_radius == 3.0 && rect.size().height >= 24.0
+                    )),
+                    "overflowing preview must render ScrollView scrollbar thumb"
+                );
+
+                let actual = render(&device, &queue, &mut runtime, viewport.clone(), format);
+                let pixel = |pixels: &[u8], x: f32, y: f32| {
+                    let offset = (((y * scale) as u32 * viewport.physical_size.0
+                        + (x * scale) as u32)
+                        * 4) as usize;
+                    pixels[offset..offset + 4].to_vec()
+                };
+
+                // Outside panel remains completely undimmed (no full-window dark scrim).
+                assert_eq!(
+                    pixel(
+                        &actual,
+                        panel.min.x - 12.0,
+                        (panel.min.y + panel.max.y) / 2.0
+                    ),
+                    pixel(
+                        &baseline,
+                        panel.min.x - 12.0,
+                        (panel.min.y + panel.max.y) / 2.0
+                    ),
+                    "outside confirmation panel must remain undimmed at {scale}x {format:?}"
+                );
+
+                // Warning icon strokes are visible inside icon_rect.
+                let icon_changed =
+                    ((icon_rect.min.y * scale) as u32..(icon_rect.max.y * scale) as u32).any(|y| {
+                        ((icon_rect.min.x * scale) as u32..(icon_rect.max.x * scale) as u32).any(
+                            |x| {
+                                let off = ((y * viewport.physical_size.0 + x) * 4) as usize;
+                                actual[off..off + 4] != baseline[off..off + 4]
+                            },
+                        )
+                    });
+                assert!(icon_changed, "warning icon must render pixels at {scale}x");
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "GPU pixel acceptance; run explicitly with --ignored --nocapture"]
+fn confirmation_overlay_wraps_proportional_english_and_cjk_near_full_preview_width() {
+    use crate::confirmation::{ConfirmationOverlayState, ConfirmationRequest};
+    let (device, queue) = crate::test_gpu::device();
+    let (_tabs, controller, mut runtime, _) = fixture();
+    let format = wgpu::TextureFormat::Bgra8Unorm;
+    let viewport = Viewport::new(1000, 640, 1.0);
+    runtime.set_viewport(viewport.clone());
+    runtime.init_renderer(&device, format);
+    runtime.init_text_renderer(&device, &queue, format).unwrap();
+
+    let request =
+        ConfirmationRequest::paste(2, format!("{}\n{}", "a".repeat(140), "你".repeat(60)));
+    let (generation, focus) = controller.open_confirmation(request);
+    let root = controller.clone();
+    runtime.set_root(move |cx: &mut BuildCx| {
+        let state = root.store.watch(cx).clone();
+        let overlay = state.popups.get::<ConfirmationOverlayState>().unwrap();
+        let panel = crate::popups::Popup::build(
+            overlay,
+            cx,
+            &root,
+            &validate_keybindings(&harbor_config::RawKeybindings::default()).unwrap(),
+            generation,
+        );
+        Stack::new()
+            .push_child(View::leaf(TestBackdrop))
+            .push_child(panel)
+            .build(cx)
+    });
+    runtime.request_focus(&focus);
+    runtime.update(Instant::now());
+
+    let delta = runtime.pending_delta().unwrap();
+    let items: Vec<_> = delta.added.iter().chain(&delta.modified).collect();
+    let english_rows: Vec<&str> = items
+        .iter()
+        .filter_map(|item| match &item.primitive {
+            Primitive::Text { text, .. } if text.chars().all(|c| c == 'a') => Some(text.as_ref()),
+            _ => None,
+        })
+        .collect();
+    let cjk_rows: Vec<&str> = items
+        .iter()
+        .filter_map(|item| match &item.primitive {
+            Primitive::Text { text, .. } if text.chars().all(|c| c == '你') => Some(text.as_ref()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        english_rows.len() >= 2,
+        "140-char English line should wrap in 600px modal: {english_rows:?}"
+    );
+    assert!(
+        english_rows[0].chars().count() > 65,
+        "first English row wrapped prematurely (old cell_width cap was ~44): {:?}",
+        english_rows[0].chars().count()
+    );
+    assert!(
+        cjk_rows.len() >= 2,
+        "60-char CJK line should wrap in 600px modal: {cjk_rows:?}"
+    );
+    assert!(
+        cjk_rows[0].chars().count() > 34,
+        "first CJK row wrapped prematurely (old cell_width cap was ~22): {:?}",
+        cjk_rows[0].chars().count()
+    );
+
+    let _pixels = render(&device, &queue, &mut runtime, viewport, format);
+}
+
 fn capture_quick_save(
     stage: &str,
     scale: f32,

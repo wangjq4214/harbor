@@ -17,7 +17,7 @@ The delivered OSC 52 write subset accepts at most 4 MiB (4,194,304 bytes) of dec
 - Enforce both encoded and decoded limits before unbounded retention or allocation. The encoded bound alone does not prove that decoded data fits.
 - Reject a whole over-limit request without copying a truncated prefix; preserve correct BEL/ST, cancellation/reset, fragmented-input, and subsequent-text behavior.
 - Larger single requests do not authorize unbounded queues or confirmation retention; aggregate pending-work bounds still need to be specified.
-- This supplements [ADR 0047](./0047-foreground-only-host-authorized-osc52-writes.md); foreground permission and live-session checks are not relaxed by the larger capacity.
+- This supplements ADR 0047 (retired; superseded by [ADR 0049](./0049-osc52-confirmation-window-and-foreground-policy.md)); foreground permission and live-session checks are not relaxed by the larger capacity.
 
 ## Sources
 

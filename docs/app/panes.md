@@ -90,5 +90,5 @@ It uses custom single-key bindings and HWND-targeted messages, not physical
 Ctrl chords, manual IME/candidate or clipboard observations. Real controlled
 WSL/direct-SSH inheritance/authentication/failure cases, cross-monitor DPI and
 remaining native interaction/resource acceptance are still pending. See
-[T0005 evidence and E1–E12 dispositions](../../.grimoire/ticket/0002-pane-workspace/T0005-windows-acceptance-and-scope-evidence.md).
+[Spec 0056 delivery and E1–E12 dispositions](../../.grimoire/spec/0056-pane-workspace.md#delivery-and-outstanding-acceptance).
 No complete runtime acceptance or broad remote compatibility is claimed.

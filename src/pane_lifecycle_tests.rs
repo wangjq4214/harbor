@@ -142,7 +142,7 @@ fn exact_shell_exit_collapses_only_its_pane_and_retires_pending_resize_once() {
     assert_eq!(request.source, b.session);
     let mut policy =
         crate::clipboard::ClipboardPolicy::new(harbor_config::Osc52WritePolicy::Confirm);
-    policy.retain(request);
+    policy.retain(1, request);
     let _ = second
         .lock()
         .unwrap()

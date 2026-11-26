@@ -24,7 +24,7 @@ Every Runtime viewport must receive the window's logical size, physical size, an
 
 ## Decisions
 
-Paste safety and the separate-window gate follow [ADR 0007](../adr/0007-retain-separate-paste-confirmation-window.md) and [ADR 0009](../adr/0009-app-cross-window-input-gate.md). Current native-host ownership follows [Spec 0012](./0012-widget-winit-native-host-consolidation.md); the earlier App-owned surface/presentation description above is historical.
+Paste safety and the confirmation input gate originally followed retired ADRs 0007 and 0009 (now superseded by [ADR 0111](../adr/0111-in-window-liquid-glass-confirmation-overlay.md)). Current native-host ownership follows [Spec 0012](./0012-widget-winit-native-host-consolidation.md); the earlier App-owned surface/presentation description above is historical.
 
 ## Test Plan
 

@@ -396,3 +396,31 @@ fn profile_fifo_revalidates_edits_removal_source_gate_and_replacement() {
         assert!(bytes.lock().unwrap().is_empty());
     }
 }
+
+#[test]
+fn in_window_confirmation_admits_current_resolution_while_blocking_other_commands() {
+    let (tabs, ui, _runtime, bytes) = fixture();
+    let (generation, _focus) = ui.open_confirmation(
+        harbor_app::confirmation::ConfirmationRequest::paste(2, "a\nb".into()),
+    );
+    let current_confirm = AppCommandRequest {
+        command: AppCommand::ConfirmConfirmation,
+        focus: TabFocusPolicy::Terminal,
+        source: CommandSource::Popup { generation },
+    };
+    let stale_cancel = AppCommandRequest {
+        command: AppCommand::CancelConfirmation,
+        focus: TabFocusPolicy::Terminal,
+        source: CommandSource::Popup {
+            generation: generation - 1,
+        },
+    };
+    let direct_new_tab = AppCommandRequest::shortcut(AppCommand::Tab(TabCommand::New));
+
+    let mut queue = [direct_new_tab, stale_cancel, current_confirm].into_iter();
+    let (admitted, clear) = execute(next_app_action(&mut queue, &ui, &tabs, true).unwrap());
+    assert_eq!(admitted.command, AppCommand::ConfirmConfirmation);
+    assert!(!clear);
+    assert!(next_app_action(&mut queue, &ui, &tabs, true).is_none());
+    assert!(bytes.lock().unwrap().is_empty());
+}

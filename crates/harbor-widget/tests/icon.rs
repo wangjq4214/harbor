@@ -101,3 +101,32 @@ fn icon_is_a_public_macro_leaf_without_keyboard_activation() {
     assert!(!effects.request_redraw);
     assert!(runtime.input().focused().is_none());
 }
+
+#[test]
+fn triangle_alert_icon_exposes_bundled_svg_and_renders_leaf() {
+    assert!(
+        LucideIcon::TriangleAlert
+            .svg_source()
+            .contains("viewBox=\"0 0 24 24\"")
+    );
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(40, 40, 1.0));
+    runtime.set_root(|_cx: &mut harbor_widget::view::BuildCx| {
+        harbor_widget::view! {
+            Icon::new(LucideIcon::TriangleAlert)
+                .size(20.0)
+                .expect("valid icon size")
+                .foreground(Color::RED)
+                .expect("valid color");
+        }
+    });
+    runtime.update(Instant::now());
+    assert!(matches!(
+        runtime.pending_delta().unwrap().added[0].primitive,
+        Primitive::Icon {
+            icon: LucideIcon::TriangleAlert,
+            rect,
+            color: Color::RED,
+        } if rect.size() == Size::new(20.0, 20.0)
+    ));
+}

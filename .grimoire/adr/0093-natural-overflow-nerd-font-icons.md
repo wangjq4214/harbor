@@ -2,7 +2,7 @@
 
 **Status:** Testing
 **Date:** 2026-10-27
-**Supersedes:** [0092-natural-size-clipped-nerd-font-icons](./0092-natural-size-clipped-nerd-font-icons.md)
+**Supersedes:** ADR 0092 (retired)
 **Sources:** User refinement (translated from Chinese): "The icon still does not look right ... stop clipping it; let it overlap if necessary and overflow naturally."
 
 ## Context

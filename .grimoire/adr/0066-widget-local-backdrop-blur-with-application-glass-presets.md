@@ -3,7 +3,7 @@
 **Status:** Testing
 **Date:** 2026-10-16
 **Sources:** The user's search-bar appearance request and explicit selection of option B (real local backdrop blur rather than a translucent visual approximation). The user also chose to preserve existing search navigation behavior.
-**Related:** [ADR 0064](./0064-widget-and-application-component-ownership.md), [ADR 0065](./0065-layered-widget-text-input.md), [ADR 0023](./0023-windows-acrylic-backdrop-not-mica.md).
+**Related:** [ADR 0064](./0064-widget-and-application-component-ownership.md), [ADR 0065](./0065-layered-widget-text-input.md), [ADR 0026](./0026-unified-window-backdrop-tint-chain.md) (superseding retired ADR 0023).
 
 ## Context
 

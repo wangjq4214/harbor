@@ -25,7 +25,7 @@ harbor-parser (VtHandler + Params + Parser)
 
 ## Decisions
 
-[ADR 0010](../adr/0010-parser-minimal-public-api.md) fixes the three-item parser API; [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md) defines build-time external registration and GPU injection; [ADR 0013](../adr/0013-synchronous-pty-io.md) defines blocking std::io handles. Historically, App drains deferred input while Terminal interprets it, replacing [ADR 0006](../adr/0006-custom-paint-input-provider.md).
+[ADR 0010](../adr/0010-parser-minimal-public-api.md) fixes the three-item parser API; [ADR 0011](../adr/0011-terminal-custompaint-gpu-injection.md) defines build-time external registration and GPU injection; [ADR 0013](../adr/0013-synchronous-pty-io.md) defines blocking std::io handles. Historically, App drains deferred input while Terminal interprets it, replacing ADR 0006 (retired).
 
 The former public harbor-render Component prepare/draw/resize abstraction dissolves into internal render components ([ADR 0012](../adr/0012-consolidate-render-ui-into-terminal.md)). The no-separate-window paste test below conflicts with Spec 0001 and ADRs 0007/0009; that discrepancy is unresolved, not silently removed.
 

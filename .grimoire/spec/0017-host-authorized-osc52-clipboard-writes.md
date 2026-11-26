@@ -62,7 +62,7 @@ An application running in a Harbor terminal session can request a bounded OSC 52
 - Host clipboard failures are failures, not reported success. Preserve the actual effect outcome in tests/runtime evidence without adding a terminal protocol acknowledgment.
 - Do not advertise unsupported reads or broader selections/clipboard protocols through capability replies, protocol checklists, or documentation. Describe only the delivered and evidenced write subset.
 
-Policy authority: [ADR 0048](../adr/0048-bounded-osc52-specific-clipboard-capacity.md) (capacity), [0049](../adr/0049-osc52-confirmation-window-and-foreground-policy.md) (confirmation/focus, superseding 0047), [0050](../adr/0050-osc52-write-subset-and-bounded-request-delivery.md) (subset/delivery), and existing [paste-window](../adr/0007-retain-separate-paste-confirmation-window.md) / [cross-window safety](../adr/0009-app-cross-window-input-gate.md). Reuse the static typed OSC action path from #173; no public extensible router is introduced.
+Policy authority: [ADR 0048](../adr/0048-bounded-osc52-specific-clipboard-capacity.md) (capacity), [0049](../adr/0049-osc52-confirmation-window-and-foreground-policy.md) (confirmation/focus, superseding retired ADR 0047), [0050](../adr/0050-osc52-write-subset-and-bounded-request-delivery.md) (subset/delivery), and confirmation/input-gate safety (originally retired ADRs 0007/0009, superseded by [ADR 0111](../adr/0111-in-window-liquid-glass-confirmation-overlay.md)). Reuse the static typed OSC action path from #173; no public extensible router is introduced.
 
 ## Test Plan and Definition of Done
 

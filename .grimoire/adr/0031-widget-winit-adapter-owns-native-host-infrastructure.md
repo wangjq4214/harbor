@@ -2,7 +2,7 @@
 
 **Status:** Implementing
 **Date:** 2026-09-13
-**Supersedes:** [0015-runtime-owned-frame-presentation.md](./0015-runtime-owned-frame-presentation.md), [0030-application-layer-widget-hot-reload.md](./0030-application-layer-widget-hot-reload.md)
+**Supersedes:** ADR 0015 (retired), ADR 0030 (retired)
 
 ## Context
 

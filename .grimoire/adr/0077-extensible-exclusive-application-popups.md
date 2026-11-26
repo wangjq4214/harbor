@@ -2,6 +2,7 @@
 
 **Status:** Testing
 **Date:** 2026-10-22
+**Superseded by:** [ADR 0111](./0111-in-window-liquid-glass-confirmation-overlay.md) for excluding paste/OSC 52 confirmation from the exclusive popup slot; central non-enumerated single-slot exclusivity, real-close replacement, and notification exclusion remain in force.
 **Sources:** User request to keep at most one command/search popup open, centrally manage future popup types without concrete-kind enumeration; approval on 2026-10-22 of replacement/cleanup/focus behavior, clearing displaced search, notification and confirmation-window exclusions, and the spec-only refinement endpoint.
 **Related:** [ADR 0064](./0064-widget-and-application-component-ownership.md), [ADR 0069](./0069-command-palette-source-aware-availability-and-focus.md).
 

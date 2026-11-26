@@ -30,7 +30,7 @@ These identifiers preserve references used by existing issues/specifications wit
 | N04 | Configuration reload | Manual/watched reload and launch settings implemented; remaining integrated human/runtime acceptance. |
 | N05 | Command palette | Current catalog includes pane and named-profile flows; [historical native acceptance/readability work](../../.grimoire/spec/0030-command-palette.md#delivery-and-outstanding-acceptance) remains scoped. Appearance switching is deferred. |
 | N06 | Named session profiles | Implemented with scoped native verification; retain new-session-only launch policy and fail-visible named launches. |
-| N07 | Pane workspace | Implemented through T0004; [T0005 evidence](../../.grimoire/ticket/0002-pane-workspace/T0005-windows-acceptance-and-scope-evidence.md) distinguishes local automated observations from pending native/remote acceptance. |
+| N07 | Pane workspace | Implemented in PR #227; [Spec 0056 acceptance summary](../../.grimoire/spec/0056-pane-workspace.md#delivery-and-outstanding-acceptance) distinguishes local automated observations from pending native/remote acceptance. |
 | N08 | Scrollback search | Bounded current-session literal search delivered; retained acceptance/cost work and broader search scope remain separate. |
 | N09 | Shell-integration workflows | Opt-in context supports split-time environment/cwd inheritance with default-shell fallback; no zero-configuration/nested discovery or complete command-navigation workflow is claimed. |
 | N10 | Kitty keyboard | Not implemented; verify application-visible negotiation/input through ConPTY first. |

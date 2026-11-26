@@ -281,3 +281,74 @@ fn text_metric_height_cap_rejects_invalid_values_without_committing_them() {
         );
     }
 }
+
+#[derive(Clone)]
+struct GeometryPreparedLeaf(Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+impl PrimitiveLeaf for GeometryPreparedLeaf {
+    fn intrinsic_size(&self, constraints: BoxConstraints, _: &TextMetrics) -> Size {
+        self.0.lock().unwrap().push("intrinsic");
+        constraints.constrain(Size::new(60.0, 20.0))
+    }
+
+    fn prepare_text_geometry(&self, _metrics: &TextMetrics, advance: &mut dyn FnMut(char) -> f32) {
+        let _ = advance('a');
+        self.0.lock().unwrap().push("prepare");
+    }
+
+    fn paint_primitives(&self, rect: Rect, _: &TextMetrics) -> Vec<Primitive> {
+        self.0.lock().unwrap().push("paint");
+        vec![Primitive::Quad {
+            rect,
+            color: Color::RED,
+            corner_radius: 0.0,
+        }]
+    }
+}
+
+impl Component for GeometryPreparedLeaf {
+    fn build(&self, _: &mut BuildCx) -> View {
+        View::leaf(self.clone())
+    }
+}
+
+#[test]
+fn primitive_leaf_receives_prepare_text_geometry_before_layout_and_on_metric_or_scale_changes() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut runtime = Runtime::new();
+    runtime.set_viewport(Viewport::new(200, 100, 1.0));
+    runtime.set_root(GeometryPreparedLeaf(calls.clone()));
+    runtime.update(Instant::now());
+
+    {
+        let log = calls.lock().unwrap();
+        let prepare_idx = log.iter().position(|&entry| entry == "prepare").unwrap();
+        let intrinsic_idx = log.iter().position(|&entry| entry == "intrinsic").unwrap();
+        let paint_idx = log.iter().position(|&entry| entry == "paint").unwrap();
+        assert!(prepare_idx < intrinsic_idx);
+        assert!(intrinsic_idx < paint_idx);
+    }
+
+    calls.lock().unwrap().clear();
+    runtime.set_text_metrics(TextMetrics {
+        line_height: 24.0,
+        ..*runtime.text_metrics()
+    });
+    runtime.update(Instant::now());
+    {
+        let log = calls.lock().unwrap();
+        assert_eq!(log.first().copied(), Some("prepare"));
+        assert!(log.contains(&"intrinsic"));
+        assert!(log.contains(&"paint"));
+    }
+
+    calls.lock().unwrap().clear();
+    runtime.set_viewport(Viewport::new(200, 100, 2.0));
+    runtime.update(Instant::now());
+    {
+        let log = calls.lock().unwrap();
+        assert_eq!(log.first().copied(), Some("prepare"));
+        assert!(log.contains(&"intrinsic"));
+        assert!(log.contains(&"paint"));
+    }
+}

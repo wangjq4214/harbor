@@ -74,14 +74,32 @@ fn next_app_action(
         if !ui.popup_request_is_current(request) {
             continue;
         }
+        let confirmation_open = ui.confirmation_is_open();
+        let blocked = input_blocked || confirmation_open;
         let palette = matches!(request.source, CommandSource::Palette { .. });
         let profile = ui.palette_profile_intent(request);
-        if palette && let Err(reason) = ui.take_palette_request(request, tabs, input_blocked) {
+        if palette && let Err(reason) = ui.take_palette_request(request, tabs, blocked) {
             return Some(AppActionAdmission::Rejected {
                 request,
                 reason,
-                restore_terminal_focus: !ui.popup_is_open() && !input_blocked,
+                restore_terminal_focus: !ui.popup_is_open() && !blocked,
             });
+        }
+        let is_confirmation_command = matches!(request.source, CommandSource::Popup { .. })
+            && matches!(
+                request.command,
+                harbor_app::command::AppCommand::ConfirmConfirmation
+                    | harbor_app::command::AppCommand::CancelConfirmation
+            );
+        if is_confirmation_command {
+            return Some(AppActionAdmission::Execute {
+                request,
+                clear_palette_focus: false,
+                profile: None,
+            });
+        }
+        if confirmation_open {
+            continue;
         }
         if ui.quick_save_is_open()
             && !matches!(

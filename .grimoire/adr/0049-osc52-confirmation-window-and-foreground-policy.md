@@ -2,7 +2,8 @@
 
 **Status:** Implementing
 **Date:** 2026-09-30
-**Supersedes:** [ADR 0047](./0047-foreground-only-host-authorized-osc52-writes.md)
+**Supersedes:** ADR 0047 (retired)
+**Superseded by:** [ADR 0111](./0111-in-window-liquid-glass-confirmation-overlay.md) for the independent confirmation window and its secondary-window focus continuation exception; default allow, configurable allow/deny/confirm, host-owned effects, bounded preview, per-request authorization, and cancellation rules remain in force.
 
 ## Context
 
@@ -26,7 +27,7 @@ Retain default allow for writes from the active live session while the Harbor ma
 ## Sources
 
 - User refinement discussion (2026-09-30): acceptance of foreground-allow/background-deny/read-deny, fixed 4M without capacity configuration, and the subsequent independent confirmation window recommendation including its lifetime and focus rules.
-- [ADR 0007](./0007-retain-separate-paste-confirmation-window.md): existing independent paste confirmation window.
-- [ADR 0009](./0009-app-cross-window-input-gate.md): existing application-owned cross-window paste input gate.
-- [ADR 0047](./0047-foreground-only-host-authorized-osc52-writes.md): original strict main-window focus policy, superseded to make the confirmation exception explicit.
+- ADR 0007 (retired; superseded by [ADR 0111](./0111-in-window-liquid-glass-confirmation-overlay.md)): existing independent paste confirmation window.
+- ADR 0009 (retired; superseded by [ADR 0111](./0111-in-window-liquid-glass-confirmation-overlay.md)): existing application-owned cross-window paste input gate.
+- ADR 0047 (retired): original strict main-window focus policy, superseded to make the confirmation exception explicit.
 - [ADR 0048](./0048-bounded-osc52-specific-clipboard-capacity.md): unchanged payload capacity contract.

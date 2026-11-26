@@ -147,3 +147,25 @@ Inspected integration surfaces include `crates/harbor-app/src/tab_manager.rs`, `
 ## Out of Scope
 
 Cross-window movement, persistence/restoration, dynamic plugin/renderer hosting, production Kitty graphics, shared-session mirrored views, arbitrary process/command-history cloning, automatic agent relaunch on split, credential persistence, and unsolicited integration installation. This feature does not add global cross-session search, replace terminal text/reflow storage, or change unrelated preset-save and explicit named-launch contracts.
+
+## Delivery and Outstanding Acceptance
+
+Implementation was merged in PR #227 (`504644b`), incorporating the workspace/pane/session identity migration, environment-aware split launch with default-shell fallback, mixed-direction split layout/resize/scheduling, pane commands/input/exit lifecycle, and independent-QA corrective repairs (former tickets `0002/T0001`–`T0005`, now retired).
+
+### Corrective Repairs Preserved in Delivered Behavior
+
+- **Shifted native pane-cycle defaults (`R6`, `E7`/`E10`):** Built-in pane-cycle defaults register shifted logical symbols (`Ctrl+Shift+{` / `Ctrl+Shift+}`) without altering explicit user bindings.
+- **Unfocused-exit survivor focus (`R1`/`R6`/`R7`, `E7`/`E9`):** Runtime reconciliation snapshots and restores the nearest stable focus handle when an unfocused sibling closes, preserving rail/editor focus without stealing focus or weakening allocation generations.
+- **Bounded pending-authentication resize (`R3`/`R4`/`R6`):** The 240-logical-pixel pending-authentication overlay follows its mounted allocation/DPI/accepted metrics via at most one bounded Host resize admission per turn (never during draw callbacks).
+- **Buffered startup OSC 52 gating (`R3`/`R6`, `E4`/`E8`):** Publication waits for bounded parser progress past the raw readiness marker offset while discarding startup clipboard side effects, without changing normal post-publication clipboard authorization or delivery.
+- **Post-READY exit lifecycle (`R3`/`R7`):** Attempt-qualified `READY` irreversibly ends fallback eligibility; if the child exits before polling or parser catch-up crosses the startup deadline, the operation fails cleanly after native cleanup instead of launching a default-shell replacement.
+
+### E1–E12 Acceptance Dispositions
+
+Model, mounted-input, offscreen `dx12-warp`, real local ConPTY, and isolated custom-key HWND native-window probe observations exist for the delivered implementation. They do **not** establish full desktop or remote acceptance.
+
+| Scenario | Disposition | Boundary and remaining observation |
+| --- | --- | --- |
+| `E4`, `E10`, `E11` | **PASS (scoped)** | Covered by unit, mounted, `dx12-warp`, and native ConPTY/configuration-reload suites (both-stage failure cleanup, binding overrides/conflicts/consumption, unequal visible/hidden reload and compensation). Does not certify remote pending-auth UX or manual desktop font/DPI runs. |
+| `E2`, `E3` | **BLOCKED** | Controlled WSL and direct-SSH targets with normal authentication and pre-existing opt-in bash integration were not supplied; no remote connection was attempted. Local pwsh fallback and local Git Bash quoting surrogates are not remote transport evidence. |
+| `E1`, `E5`, `E6`, `E7`, `E8`, `E9`, `E12` | **NOT RUN** (complete desktop scenarios) | Bounded local ConPTY, mounted, offscreen WARP, and isolated HWND probe subcases pass, but manual native desktop observations remain pending: original native content visual retention (`E1`), simultaneous native output/drag/cross-monitor DPI (`E5`), native hidden render/blink/inactive-tab restoration (`E6`), physical keyboard/IME/candidate/mouse/clipboard routing (`E7`), native confirmation/search exit races (`E8`), physical default close chords and rail close (`E9`), and combined sustained native output/resize/fallback resource behavior (`E12`). |

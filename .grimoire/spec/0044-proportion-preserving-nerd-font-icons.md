@@ -3,7 +3,7 @@
 **Spec ID:** 0044
 **Status:** Implemented — focused automated/native verification recorded below; broader application/font acceptance not established
 **Date:** 2026-10-27
-**Sources:** User request to stop clipping, accept overlap and let icons overflow naturally, followed by approval to revise this spec; [ADR 0093](../adr/0093-natural-overflow-nerd-font-icons.md), superseding [ADR 0092](../adr/0092-natural-size-clipped-nerd-font-icons.md) and the earlier fit policy in [ADR 0091](../adr/0091-proportion-preserving-nerd-font-icons.md).
+**Sources:** User request to stop clipping, accept overlap and let icons overflow naturally, followed by approval to revise this spec; [ADR 0093](../adr/0093-natural-overflow-nerd-font-icons.md), superseding retired ADRs 0092 and 0091.
 **Endpoint:** Initially spec-only refinement; subsequently authorized by explicit grimoire-loop invocation for direct implementation and targeted verification, without a ticket set or separate implementation plan.
 
 ## Requirements

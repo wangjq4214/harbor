@@ -17,6 +17,7 @@ pub enum LucideIcon {
     ChevronDown,
     ArrowLeft,
     Check,
+    TriangleAlert,
 }
 
 impl LucideIcon {
@@ -31,6 +32,7 @@ impl LucideIcon {
             Self::ChevronDown => include_str!("../assets/lucide/chevron-down.svg"),
             Self::ArrowLeft => include_str!("../assets/lucide/arrow-left.svg"),
             Self::Check => include_str!("../assets/lucide/check.svg"),
+            Self::TriangleAlert => include_str!("../assets/lucide/triangle-alert.svg"),
         }
     }
 
@@ -45,6 +47,7 @@ impl LucideIcon {
             Self::ChevronDown => 8,
             Self::ArrowLeft => 9,
             Self::Check => 10,
+            Self::TriangleAlert => 11,
         }
     }
 }

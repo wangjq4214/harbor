@@ -16,7 +16,7 @@ use winit::{
 use crate::backdrop::{
     MainWindowPlatformHooks, MainWindowPlatformState, os_build, select_backend, wasdk_available,
 };
-use crate::dialog::{PasteController, PasteEventOutcome};
+use crate::dialog::{PasteController, PasteResolution};
 use crate::effects::{apply_control_flow, merge_wait};
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_coordinator::{
@@ -187,8 +187,8 @@ struct PendingReload {
 pub(crate) struct ActiveSession {
     // Business state drops before the host-owned Runtime/surface/platform/window/GPU stack.
     paste: PasteController,
+    input_gate: Arc<AtomicBool>,
     clipboard: crate::clipboard::ClipboardPolicy,
-    clipboard_window: Option<crate::dialog::ConfirmationWindow>,
     foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor,
     clipboard_epoch: u64,
     pending_reload: Option<PendingReload>,
@@ -314,33 +314,123 @@ fn apply_gpu_fatal_policy(
     fault: &harbor_widget::winit::GpuFault,
     paste: &mut PasteController,
     clipboard: &mut crate::clipboard::ClipboardPolicy,
-    clipboard_window: &mut Option<crate::dialog::ConfirmationWindow>,
     exit: impl FnOnce(),
 ) {
-    paste.cancel();
+    paste.cancel_for_shutdown();
     clipboard.cancel();
-    *clipboard_window = None;
     tracing::error!(%fault, "fatal shared GPU error");
     exit();
+}
+
+fn sync_confirmation_input_gate(
+    input_gate: &AtomicBool,
+    paste: &PasteController,
+    clipboard: &crate::clipboard::ClipboardPolicy,
+) {
+    input_gate.store(
+        paste.is_active() || clipboard.is_active(),
+        std::sync::atomic::Ordering::Release,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn open_clipboard_confirmation(
+    workspace_ui: &WorkspaceUiController,
+    clipboard: &mut crate::clipboard::ClipboardPolicy,
+    paste: &PasteController,
+    input_gate: &AtomicBool,
+    foreground_available: bool,
+    current_epoch: u64,
+    clipboard_epoch: &mut u64,
+    request: harbor_app::tab_manager::SessionClipboardWrite,
+) -> Option<harbor_widget::FocusHandle> {
+    if !foreground_available {
+        tracing::warn!("OSC 52 confirmation denied: foreground monitor unavailable");
+        return None;
+    }
+    *clipboard_epoch = current_epoch;
+    let (header, shown) = crate::clipboard::confirmation_presentation(&request);
+    let (generation, focus) = workspace_ui.open_confirmation(
+        harbor_app::confirmation::ConfirmationRequest::clipboard_write(header, shown),
+    );
+    clipboard.retain(generation, request);
+    sync_confirmation_input_gate(input_gate, paste, clipboard);
+    Some(focus)
+}
+
+fn cancel_clipboard_confirmation_state(
+    workspace_ui: &WorkspaceUiController,
+    clipboard: &mut crate::clipboard::ClipboardPolicy,
+    paste: &PasteController,
+    input_gate: &AtomicBool,
+) -> bool {
+    let Some(generation) = clipboard.generation() else {
+        return false;
+    };
+    clipboard.cancel();
+    workspace_ui.close_confirmation(generation);
+    sync_confirmation_input_gate(input_gate, paste, clipboard);
+    tracing::debug!("OSC 52 confirmation cancelled");
+    true
+}
+
+fn resolve_clipboard_confirmation_state(
+    generation: u64,
+    approved: bool,
+    eligible: bool,
+    workspace_ui: &WorkspaceUiController,
+    clipboard: &mut crate::clipboard::ClipboardPolicy,
+    paste: &PasteController,
+    input_gate: &AtomicBool,
+) -> Option<harbor_app::tab_manager::SessionClipboardWrite> {
+    if clipboard.generation() != Some(generation) {
+        return None;
+    }
+    workspace_ui.close_confirmation(generation);
+    let request = clipboard.resolve(approved, eligible);
+    sync_confirmation_input_gate(input_gate, paste, clipboard);
+    request
 }
 
 // ── ActiveSession (active window lifecycle) ───────────────────────────────
 #[path = "pane_commands.rs"]
 mod pane_commands;
 impl ActiveSession {
+    fn confirmation_active(&self) -> bool {
+        self.paste.is_active() || self.clipboard.is_active()
+    }
+
+    fn cancel_clipboard_confirmation(&mut self, wait: &mut Option<ControlFlowEffect>) -> bool {
+        if !cancel_clipboard_confirmation_state(
+            &self.workspace_ui,
+            &mut self.clipboard,
+            &self.paste,
+            &self.input_gate,
+        ) {
+            return false;
+        }
+        if !self.workspace_ui.popup_is_open() {
+            merge_wait(
+                wait,
+                self.main_host
+                    .request_focus(&self.workspace_ui.terminal_focus())
+                    .wait,
+            );
+        }
+        merge_wait(wait, self.main_host.request_frame().wait);
+        true
+    }
+
     fn exit_gpu_fault(
         &mut self,
         event_loop: &ActiveEventLoop,
         fault: harbor_widget::winit::GpuFault,
     ) {
+        self.workspace_ui.close_active_confirmation();
         // Cancel before exit: later queued input must never commit a pending approval.
-        apply_gpu_fatal_policy(
-            &fault,
-            &mut self.paste,
-            &mut self.clipboard,
-            &mut self.clipboard_window,
-            || event_loop.exit(),
-        );
+        apply_gpu_fatal_policy(&fault, &mut self.paste, &mut self.clipboard, || {
+            event_loop.exit()
+        });
     }
 
     fn stop_for_gpu_fault(&mut self, event_loop: &ActiveEventLoop) -> bool {
@@ -354,12 +444,12 @@ impl ActiveSession {
     fn clipboard_eligible(
         &self,
         source: harbor_app::tab_manager::SessionId,
-        continuation: bool,
+        check_epoch: bool,
     ) -> bool {
         if self.pending_split.is_some() {
             return false;
         }
-        if continuation
+        if check_epoch
             && !crate::clipboard::foreground_monitor::uninterrupted(
                 self.foreground_monitor.available(),
                 self.clipboard_epoch,
@@ -372,67 +462,88 @@ impl ActiveSession {
             active_live: self.tabs.active_live(source),
             minimized: self.main_host.window().is_minimized() == Some(true),
             main_foreground: crate::clipboard::foreground(self.main_host.window()),
-            confirmation_foreground: self
-                .clipboard_window
-                .as_ref()
-                .is_some_and(|window| crate::clipboard::foreground(window.window())),
         }
-        .permits(continuation)
+        .permits()
     }
 
-    fn reconcile_clipboard(&mut self) {
-        if let Some(source) = self.paste.source()
-            && (self.tabs.active_binding() != Some(source)
-                || !self.tabs.active_live(source.session))
-            && let Some(completion) = self.paste.retire_target()
-        {
-            self.workspace_ui
-                .report_palette_completion(AppCommand::Paste, completion);
+    fn reconcile_clipboard(&mut self) -> Option<ControlFlowEffect> {
+        let mut wait = None;
+        let paste_displaced = self
+            .paste
+            .generation()
+            .is_some_and(|generation| !self.workspace_ui.is_confirmation_current(generation));
+        let paste_target_lost = self.paste.source().is_some_and(|source| {
+            self.tabs.active_binding() != Some(source) || !self.tabs.active_live(source.session)
+        });
+        if paste_displaced || paste_target_lost {
+            if let Some(completion) = self
+                .paste
+                .retire_target(&self.workspace_ui, self.clipboard.is_active())
+            {
+                self.workspace_ui
+                    .report_palette_completion(AppCommand::Paste, completion);
+            }
+            if !self.workspace_ui.popup_is_open() {
+                merge_wait(
+                    &mut wait,
+                    self.main_host
+                        .request_focus(&self.workspace_ui.terminal_focus())
+                        .wait,
+                );
+            }
+            merge_wait(&mut wait, self.main_host.request_frame().wait);
         }
-        if let Some(source) = self.clipboard.source()
-            && !self.clipboard_eligible(source, true)
-        {
-            self.clipboard.cancel();
-            self.clipboard_window = None;
-            tracing::debug!("OSC 52 confirmation cancelled");
+        let clipboard_displaced = self
+            .clipboard
+            .generation()
+            .is_some_and(|generation| !self.workspace_ui.is_confirmation_current(generation));
+        let clipboard_ineligible = self
+            .clipboard
+            .source()
+            .is_some_and(|source| !self.clipboard_eligible(source, true));
+        if clipboard_displaced || clipboard_ineligible {
+            self.cancel_clipboard_confirmation(&mut wait);
         }
+        wait
     }
 
     fn handle_clipboard_request(
         &mut self,
-        event_loop: &ActiveEventLoop,
         request: harbor_app::tab_manager::SessionClipboardWrite,
-    ) {
+    ) -> Option<ControlFlowEffect> {
         use crate::clipboard::Admission;
-        let eligible = self.clipboard_eligible(request.source, false) && !self.paste.is_active();
+        let eligible =
+            self.clipboard_eligible(request.source, false) && !self.confirmation_active();
         match self.clipboard.admission(eligible) {
-            Admission::Denied => tracing::debug!("OSC 52 write denied"),
+            Admission::Denied => {
+                tracing::debug!("OSC 52 write denied");
+                None
+            }
             Admission::Write => {
                 // Revalidate immediately at the existing native effect boundary.
                 if self.clipboard_eligible(request.source, false) {
                     self.apply_clipboard_write(request, false);
                 }
+                None
             }
             Admission::Confirm => {
-                if !self.foreground_monitor.available() {
-                    tracing::warn!("OSC 52 confirmation denied: foreground monitor unavailable");
-                    return;
-                }
-                self.clipboard_epoch = self.foreground_monitor.epoch();
-                let (header, shown) = crate::clipboard::confirmation_presentation(&request);
-                self.clipboard.retain(request);
-                match crate::dialog::ConfirmationWindow::clipboard(
-                    shown,
-                    header,
-                    event_loop,
-                    &self.main_host,
-                ) {
-                    Ok(window) => self.clipboard_window = Some(window),
-                    Err(_) => {
-                        self.clipboard.cancel();
-                        tracing::warn!("failed to create OSC 52 confirmation window");
-                    }
-                }
+                let foreground_available = self.foreground_monitor.available();
+                let current_epoch = self.foreground_monitor.epoch();
+                let focus = open_clipboard_confirmation(
+                    &self.workspace_ui,
+                    &mut self.clipboard,
+                    &self.paste,
+                    &self.input_gate,
+                    foreground_available,
+                    current_epoch,
+                    &mut self.clipboard_epoch,
+                    request,
+                )?;
+                self.quick_save_transaction = None;
+                let mut wait = self.main_host.cancel_active_input_ownership().wait;
+                merge_wait(&mut wait, self.main_host.request_focus(&focus).wait);
+                merge_wait(&mut wait, self.main_host.request_frame().wait);
+                wait
             }
         }
     }
@@ -440,10 +551,10 @@ impl ActiveSession {
     fn apply_clipboard_write(
         &mut self,
         request: harbor_app::tab_manager::SessionClipboardWrite,
-        continuation: bool,
+        check_epoch: bool,
     ) {
         let eligible = self.main_host.gpu_fault().is_none()
-            && self.clipboard_eligible(request.source, continuation);
+            && self.clipboard_eligible(request.source, check_epoch);
         if crate::clipboard::execute(request, eligible, |text| {
             self.main_host.write_clipboard_checked(text).map(|_| ())
         })
@@ -758,7 +869,7 @@ impl ActiveSession {
         let mut actions = self.workspace_ui.drain_actions().into_iter();
         while let Some(admission) = self
             .tabs
-            .next_app_action(&mut actions, self.paste.is_active())
+            .next_app_action(&mut actions, self.confirmation_active())
         {
             let (request, from_palette, profile) = match admission {
                 AppActionAdmission::Rejected {
@@ -838,7 +949,7 @@ impl ActiveSession {
                     } else {
                         let outcome = self.tabs.execute_pane_command(&mut self.main_host, command);
                         merge_wait(&mut result.wait, outcome.wait);
-                        self.reconcile_clipboard();
+                        merge_wait(&mut result.wait, self.reconcile_clipboard());
                         if from_palette {
                             self.workspace_ui
                                 .report_palette_result(request.command, Ok(()));
@@ -910,6 +1021,76 @@ impl ActiveSession {
                 AppCommand::CancelQuickSave => {
                     if self.workspace_ui.cancel_quick_save(request) {
                         self.quick_save_transaction = None;
+                        merge_wait(
+                            &mut result.wait,
+                            self.main_host
+                                .request_focus(&self.workspace_ui.terminal_focus())
+                                .wait,
+                        );
+                        merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                    }
+                }
+                AppCommand::ConfirmConfirmation | AppCommand::CancelConfirmation => {
+                    let harbor_app::command::CommandSource::Popup { generation } = request.source
+                    else {
+                        continue;
+                    };
+                    let confirmed = matches!(request.command, AppCommand::ConfirmConfirmation);
+                    if self.paste.generation() == Some(generation) {
+                        match self.paste.resolve_confirmation(
+                            generation,
+                            confirmed,
+                            &self.workspace_ui,
+                            self.tabs.active_terminal().as_ref(),
+                            self.tabs.active_binding(),
+                            self.main_host.gpu_fault(),
+                            self.clipboard.is_active(),
+                        ) {
+                            PasteResolution::Ignored => {}
+                            PasteResolution::Resolved { palette_completion } => {
+                                if let Some(completion) = palette_completion {
+                                    self.workspace_ui
+                                        .report_palette_completion(AppCommand::Paste, completion);
+                                }
+                                merge_wait(
+                                    &mut result.wait,
+                                    self.main_host
+                                        .request_focus(&self.workspace_ui.terminal_focus())
+                                        .wait,
+                                );
+                                merge_wait(&mut result.wait, self.main_host.request_frame().wait);
+                            }
+                            PasteResolution::Fatal { error } => {
+                                if let harbor_widget::winit::FrameError::SharedGpu(fault) = error {
+                                    self.exit_gpu_fault(event_loop, fault);
+                                    result.close_window = true;
+                                    break;
+                                }
+                            }
+                        }
+                    } else if self.clipboard.generation() == Some(generation) {
+                        if let Some(fault) = self.main_host.gpu_fault() {
+                            self.exit_gpu_fault(event_loop, fault);
+                            result.close_window = true;
+                            break;
+                        }
+                        let eligible = self
+                            .clipboard
+                            .source()
+                            .is_some_and(|source| self.clipboard_eligible(source, true));
+                        if let Some(write_request) = resolve_clipboard_confirmation_state(
+                            generation,
+                            confirmed,
+                            eligible,
+                            &self.workspace_ui,
+                            &mut self.clipboard,
+                            &self.paste,
+                            &self.input_gate,
+                        ) {
+                            self.apply_clipboard_write(write_request, true);
+                        } else if !confirmed || !eligible {
+                            tracing::debug!("OSC 52 confirmation denied or invalidated");
+                        }
                         merge_wait(
                             &mut result.wait,
                             self.main_host
@@ -1033,7 +1214,7 @@ impl ActiveSession {
                         }
                     }
                     merge_wait(&mut result.wait, outcome.wait);
-                    self.reconcile_clipboard();
+                    merge_wait(&mut result.wait, self.reconcile_clipboard());
                     if outcome.close_window {
                         result.close_window = true;
                         break;
@@ -1092,28 +1273,20 @@ impl ActiveSession {
                     }
                 }
                 AppCommand::Paste => {
+                    use harbor_app::command::CommandCompletion;
                     let active_terminal = self.tabs.active_terminal();
-                    if from_palette {
-                        // Establish the main-window fallback before opening a secondary window.
-                        // Never refocus the main window over a pending confirmation.
-                        merge_wait(
-                            &mut result.wait,
-                            self.main_host
-                                .request_focus(&self.workspace_ui.terminal_focus())
-                                .wait,
-                        );
-                    }
                     let completion = self
                         .paste
                         .paste_from_clipboard(
-                            event_loop,
+                            &self.workspace_ui,
                             &mut self.main_host,
                             active_terminal.as_ref(),
                             self.tabs.active_binding(),
                             from_palette,
+                            self.clipboard.is_active(),
                         )
-                        .map(|(outcome, completion)| {
-                            merge_wait(&mut result.wait, outcome.wait);
+                        .map(|(wait, completion)| {
+                            merge_wait(&mut result.wait, wait);
                             completion
                         });
                     if let Err(reason) = completion {
@@ -1122,6 +1295,16 @@ impl ActiveSession {
                     if from_palette {
                         self.workspace_ui
                             .report_palette_completion(request.command, completion);
+                        if !matches!(completion, Ok(CommandCompletion::PendingConfirmation))
+                            && !self.workspace_ui.popup_is_open()
+                        {
+                            merge_wait(
+                                &mut result.wait,
+                                self.main_host
+                                    .request_focus(&self.workspace_ui.terminal_focus())
+                                    .wait,
+                            );
+                        }
                         merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                     }
                 }
@@ -1138,8 +1321,7 @@ impl ActiveSession {
         if self.stop_for_gpu_fault(event_loop) {
             return;
         }
-        let mut wait = None;
-        self.reconcile_clipboard();
+        let mut wait = self.reconcile_clipboard();
         match event {
             AppEvent::GpuWake => {} // Persistent Host observation above; no redraw needed.
             AppEvent::TerminalOutputReady(tab_id) => {
@@ -1199,7 +1381,7 @@ impl ActiveSession {
         let mut wait = None;
         let outcome = self.tabs.process_output(tab_id);
         if let Some(request) = outcome.clipboard_write {
-            self.handle_clipboard_request(event_loop, request);
+            merge_wait(&mut wait, self.handle_clipboard_request(request));
         }
         if outcome.unread_changed || outcome.title_changed {
             if outcome.active_title_changed {
@@ -1237,7 +1419,7 @@ impl ActiveSession {
                 },
             );
             merge_wait(&mut wait, outcome.wait);
-            self.reconcile_clipboard();
+            merge_wait(&mut wait, self.reconcile_clipboard());
             if outcome.close_window {
                 event_loop.exit();
             }
@@ -1249,9 +1431,8 @@ impl ActiveSession {
         if self.stop_for_gpu_fault(event_loop) {
             return;
         }
-        self.reconcile_clipboard();
+        let mut resize_wait = self.reconcile_clipboard();
         let now = Instant::now();
-        let mut resize_wait = None;
         for id in self.tabs.pending_resize_sessions() {
             merge_wait(
                 &mut resize_wait,
@@ -1319,20 +1500,6 @@ impl ActiveSession {
             combined_flow = combined_flow.arbitrate(ControlFlowEffect::WaitUntil(deadline));
         }
 
-        let paste_idle = self.paste.about_to_wait(now);
-        let clipboard_idle = self
-            .clipboard_window
-            .as_mut()
-            .map(|window| window.about_to_wait(now))
-            .unwrap_or_default();
-        if let Some(fault) = paste_idle.fatal.or(clipboard_idle.fatal) {
-            self.exit_gpu_fault(event_loop, fault);
-            return;
-        }
-        for wait in [paste_idle.wait, clipboard_idle.wait].into_iter().flatten() {
-            combined_flow = combined_flow.arbitrate(wait);
-        }
-
         if let Some(deadline) = self.startup_retry_deadline {
             if now >= deadline {
                 self.startup_retry_deadline = None;
@@ -1357,109 +1524,9 @@ impl ActiveSession {
         if self.stop_for_gpu_fault(event_loop) {
             return;
         }
-        self.reconcile_clipboard();
-        if self
-            .clipboard_window
-            .as_ref()
-            .is_some_and(|window| window.window_id() == window_id)
-        {
-            let source = self.clipboard.source();
-            let eligible = source.is_some_and(|source| self.clipboard_eligible(source, true));
-            let outcome = self
-                .clipboard_window
-                .as_mut()
-                .expect("matched confirmation")
-                .handle_event(&event);
-            if self.stop_for_gpu_fault(event_loop) {
-                return;
-            }
-            let mut wait = outcome.wait;
-            match outcome.result {
-                crate::dialog::ConfirmationResult::None => {}
-                crate::dialog::ConfirmationResult::Fatal(
-                    harbor_widget::winit::FrameError::SharedGpu(fault),
-                ) => {
-                    self.exit_gpu_fault(event_loop, fault);
-                    return;
-                }
-                crate::dialog::ConfirmationResult::Fatal(_) => {
-                    self.clipboard.cancel();
-                    self.clipboard_window = None;
-                    tracing::warn!("OSC 52 confirmation frame failed");
-                }
-                result => {
-                    let approved = matches!(result, crate::dialog::ConfirmationResult::Confirmed);
-                    // Native foreground may change while rendering/dispatching the decision.
-                    let eligible = eligible
-                        && source.is_some_and(|source| self.clipboard_eligible(source, true));
-                    if let Some(request) = self.clipboard.resolve(approved, eligible) {
-                        self.apply_clipboard_write(request, true);
-                    }
-                    self.clipboard_window = None;
-                    merge_wait(&mut wait, self.main_host.request_frame().wait);
-                }
-            }
-            if let Some(wait) = wait {
-                apply_control_flow(event_loop, wait);
-            }
-            return;
-        }
-        if self.paste.window_id() == Some(window_id) {
-            match self.paste.handle_dialog_event(
-                &event,
-                self.tabs.active_terminal().as_ref(),
-                self.tabs.active_binding(),
-            ) {
-                PasteEventOutcome::Handled {
-                    request_redraw,
-                    wait,
-                    palette_completion,
-                } => {
-                    let mut wait = wait;
-                    if let Some(completion) = palette_completion {
-                        self.workspace_ui
-                            .report_palette_completion(AppCommand::Paste, completion);
-                    }
-                    if request_redraw {
-                        merge_wait(&mut wait, self.main_host.request_frame().wait);
-                    }
-                    if let Some(wait) = wait {
-                        apply_control_flow(event_loop, wait);
-                    }
-                }
-                PasteEventOutcome::Fatal { error, wait } => {
-                    if let harbor_widget::winit::FrameError::SharedGpu(fault) = error {
-                        self.exit_gpu_fault(event_loop, fault);
-                        return;
-                    }
-                    if let Some(wait) = wait {
-                        apply_control_flow(event_loop, wait);
-                    }
-                    tracing::error!(?error, "fatal confirmation-window frame error");
-                    event_loop.exit();
-                }
-            }
-            return;
-        }
-
-        let gate_active = self.paste.is_active();
+        let mut wait = self.reconcile_clipboard();
         if self.main_host.window_id() != window_id {
             return;
-        }
-
-        // Reject activations before Runtime can move focus or capture a pointer. Wheel events
-        // still reach the terminal bridge, whose paste gate intentionally permits scrolling.
-        if gate_active {
-            if matches!(&event, WindowEvent::KeyboardInput { .. }) {
-                return;
-            }
-            if matches!(
-                &event,
-                WindowEvent::MouseInput { .. } | WindowEvent::Touch(_)
-            ) {
-                self.main_host.quarantine_blocked_pointer_event(&event);
-                return;
-            }
         }
 
         if matches!(&event, WindowEvent::CloseRequested) {
@@ -1468,7 +1535,6 @@ impl ActiveSession {
             return;
         }
 
-        let mut wait = None;
         if self.tabs.update_presentation(self.main_host.window()) {
             merge_wait(
                 &mut wait,
@@ -1497,6 +1563,12 @@ impl ActiveSession {
                     .request_focus(&self.workspace_ui.terminal_focus())
                     .wait,
             );
+        }
+        if matches!(
+            &event,
+            WindowEvent::Focused(false) | WindowEvent::Occluded(true)
+        ) {
+            self.cancel_clipboard_confirmation(&mut wait);
         }
         merge_wait(&mut wait, outcome.wait);
         if !outcome.external_input.is_empty() {
@@ -1715,8 +1787,8 @@ impl Shell {
                 let root = build_application_root(root_inputs)
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 let tabs = TabCoordinator::new(tabs, workspace_ui.clone(), factory);
-                let paste = PasteController::new(input_gate);
-                Ok((root, (tabs, paste, workspace_ui)))
+                let paste = PasteController::new(Arc::clone(&input_gate));
+                Ok((root, (tabs, paste, workspace_ui, input_gate)))
             },
         )
         .with_gpu_wake(harbor_widget::winit::GpuWake::new(self.event_proxy.clone()))
@@ -1724,12 +1796,12 @@ impl Shell {
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let builder = builder.with_hmr(hmr);
 
-        let (main_host, (tabs, paste, workspace_ui)) =
+        let (main_host, (tabs, paste, workspace_ui, input_gate)) =
             pollster::block_on(builder.build_with_output(event_loop))?;
         let mut session = ActiveSession {
             paste,
+            input_gate,
             clipboard: crate::clipboard::ClipboardPolicy::new(clipboard_policy),
-            clipboard_window: None,
             foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor::new(),
             clipboard_epoch: 0,
             pending_reload: None,

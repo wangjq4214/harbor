@@ -145,6 +145,34 @@ fn segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
     return length(p - a - ab * t) - 1.0;
 }
 
+fn triangle_outline_distance(
+    p: vec2<f32>,
+    p0: vec2<f32>,
+    p1: vec2<f32>,
+    p2: vec2<f32>,
+    corner_radius: f32,
+) -> f32 {
+    let e0 = p1 - p0;
+    let e1 = p2 - p1;
+    let e2 = p0 - p2;
+    let v0 = p - p0;
+    let v1 = p - p1;
+    let v2 = p - p2;
+    let pq0 = v0 - e0 * clamp(dot(v0, e0) / dot(e0, e0), 0.0, 1.0);
+    let pq1 = v1 - e1 * clamp(dot(v1, e1) / dot(e1, e1), 0.0, 1.0);
+    let pq2 = v2 - e2 * clamp(dot(v2, e2) / dot(e2, e2), 0.0, 1.0);
+    let s = sign(e0.x * e2.y - e0.y * e2.x);
+    let d = min(
+        min(
+            vec2<f32>(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+            vec2<f32>(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x)),
+        ),
+        vec2<f32>(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x)),
+    );
+    let sd_tri = -sqrt(d.x) * sign(d.y);
+    return abs(sd_tri - corner_radius) - 1.0;
+}
+
 fn lucide_distance(p: vec2<f32>, mode: u32) -> f32 {
     if mode == 3u {
         return min(
@@ -179,6 +207,21 @@ fn lucide_distance(p: vec2<f32>, mode: u32) -> f32 {
     if mode == 10u {
         return min(segment_distance(p, vec2<f32>(20.0, 6.0), vec2<f32>(9.0, 17.0)),
                    segment_distance(p, vec2<f32>(9.0, 17.0), vec2<f32>(4.0, 12.0)));
+    }
+    if mode == 11u {
+        return min(
+            triangle_outline_distance(
+                p,
+                vec2<f32>(12.0, 5.0),
+                vec2<f32>(4.0, 19.0),
+                vec2<f32>(20.0, 19.0),
+                2.0,
+            ),
+            min(
+                segment_distance(p, vec2<f32>(12.0, 9.0), vec2<f32>(12.0, 13.0)),
+                length(p - vec2<f32>(12.0, 17.0)) - 1.0,
+            ),
+        );
     }
     // Lucide dot's r=1, stroke-width=2 circle, filled at its zero-radius center.
     return length(p - vec2<f32>(12.0)) - 2.0;

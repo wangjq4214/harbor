@@ -2,7 +2,7 @@
 
 [Developer guide](README.md) · [Roadmap](roadmap.md)
 
-The general inventory retains the `e6d140c` documentation baseline. Pane entries now describe integrated revision `2af7639` and [T0005's bounded evidence](../../.grimoire/ticket/0002-pane-workspace/T0005-windows-acceptance-and-scope-evidence.md); they do not revalidate unrelated historical runtime, performance or release claims.
+The general inventory retains the `e6d140c` documentation baseline. Pane entries now describe the PR #227 integration (`504644b`) and [Spec 0056's bounded acceptance summary](../../.grimoire/spec/0056-pane-workspace.md#delivery-and-outstanding-acceptance); they do not revalidate unrelated historical runtime, performance or release claims.
 
 ## Implemented scope
 
