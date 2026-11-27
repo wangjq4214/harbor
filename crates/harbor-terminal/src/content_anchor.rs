@@ -324,9 +324,11 @@ impl ContentProjection {
     }
 
     pub(crate) fn to_anchor(&self, pos: GenPos, affinity: Affinity) -> Option<ContentAnchor> {
-        let index = self
-            .lines
-            .partition_point(|line| line.generations.last().is_some_and(|&last| last < pos.generation));
+        let index = self.lines.partition_point(|line| {
+            line.generations
+                .last()
+                .is_some_and(|&last| last < pos.generation)
+        });
         let line = self
             .lines
             .get(index)
@@ -430,21 +432,21 @@ impl ContentProjection {
             });
         }
         let (generation, insertion_col) = if let Some(atom) = line.atom_at(anchor.offset) {
-                let col = match anchor.affinity {
-                    Affinity::Before => atom.source_span.start_col,
-                    Affinity::After => atom.source_span.end_col.saturating_add(1),
-                };
-                (atom.source_span.generation, col)
-            } else if anchor.offset.0 == line.atom_start.0.checked_add(line.atoms.len())? {
-                let generation = *line.generations.last()?;
-                let col = line
-                    .atoms
-                    .last()
-                    .map_or(0, |atom| atom.source_span.end_col.saturating_add(1));
-                (generation, col)
-            } else {
-                return None;
+            let col = match anchor.affinity {
+                Affinity::Before => atom.source_span.start_col,
+                Affinity::After => atom.source_span.end_col.saturating_add(1),
             };
+            (atom.source_span.generation, col)
+        } else if anchor.offset.0 == line.atom_start.0.checked_add(line.atoms.len())? {
+            let generation = *line.generations.last()?;
+            let col = line
+                .atoms
+                .last()
+                .map_or(0, |atom| atom.source_span.end_col.saturating_add(1));
+            (generation, col)
+        } else {
+            return None;
+        };
         let pending_wrap = insertion_col >= self.cols;
         Some(ProjectedPosition {
             pos: GenPos::new(generation, insertion_col.min(self.cols.saturating_sub(1))),

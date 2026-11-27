@@ -1,16 +1,16 @@
 //! PTY I/O and ANSI parsing — extracted from `Terminal` to separate
 //! I/O lifecycle from screen state and GPU rendering.
 
+#[cfg(test)]
+use std::sync::{
+    atomic::AtomicBool,
+    mpsc::{self, Receiver, Sender},
+};
 use std::{
     io::{Read, Write},
     sync::{Arc, Mutex, atomic::Ordering, mpsc::TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
-};
-#[cfg(test)]
-use std::sync::{
-    atomic::AtomicBool,
-    mpsc::{self, Receiver, Sender},
 };
 
 use crate::model::TerminalSize;
@@ -32,9 +32,9 @@ use chunk::ReaderChunk;
 #[cfg(test)]
 use chunk::{ReaderBuffers, ReaderRecycle};
 pub(crate) use pty::PTY_QUEUE_CAPACITY;
-use pty::{ReaderCommand, ReaderEvent, TerminalPty};
 #[cfg(test)]
 use pty::{RESIZE_BARRIER_TIMEOUT, pump_reader, pump_reader_with_after_read};
+use pty::{ReaderCommand, ReaderEvent, TerminalPty};
 
 // Each reader chunk is at most 4096 bytes. Bound work even if the queue refills.
 const PTY_DRAIN_EVENT_BUDGET: usize = 16;

@@ -25,9 +25,9 @@ pub(super) fn parse(command: &[u8], payload: &[u8], bell_terminated: bool) -> Op
             osc_color::parse(command, payload).map(|action| Action::Color(action, bell_terminated))
         }
         b"133" => osc133::action(payload).map(Action::ShellIntegration),
-        b"777" if payload.starts_with(b"harbor;") => {
-            Some(Action::Project(harbor_config::project::ProjectEvent::parse(payload)))
-        }
+        b"777" if payload.starts_with(b"harbor;") => Some(Action::Project(
+            harbor_config::project::ProjectEvent::parse(payload),
+        )),
         _ => None,
     }
 }

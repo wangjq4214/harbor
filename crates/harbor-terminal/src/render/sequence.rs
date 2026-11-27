@@ -486,18 +486,10 @@ impl SequenceLayer {
                     end_col: snap.cols,
                 });
             }
-            let tile_bytes = gpu::update_row_buffer(
-                gpu,
-                &mut retained.quads,
-                &mut retained.vertices,
-                vertices,
-            );
-            let cue_bytes = gpu::update_row_buffer(
-                gpu,
-                &mut retained.cues,
-                &mut retained.missing,
-                missing,
-            );
+            let tile_bytes =
+                gpu::update_row_buffer(gpu, &mut retained.quads, &mut retained.vertices, vertices);
+            let cue_bytes =
+                gpu::update_row_buffer(gpu, &mut retained.cues, &mut retained.missing, missing);
             #[cfg(test)]
             if tile_bytes + cue_bytes > 0 {
                 super::observations::record_sequence(|work| {

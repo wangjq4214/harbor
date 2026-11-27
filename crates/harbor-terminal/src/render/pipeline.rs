@@ -120,11 +120,8 @@ impl TerminalRenderPipeline {
         let mut boxes = BoxDrawing::new(Arc::clone(&colored_quad_pipeline), palette);
         boxes.prepare_with_dirty(gpu, snap, &[], &viewport);
         let selection = Selection::new(gpu, Arc::clone(&colored_quad_pipeline), palette.selection);
-        let cursor = Cursor::new_with_pipeline(
-            gpu,
-            Arc::clone(&colored_quad_pipeline),
-            palette.cursor,
-        );
+        let cursor =
+            Cursor::new_with_pipeline(gpu, Arc::clone(&colored_quad_pipeline), palette.cursor);
         let scrollbar = Scrollbar::new(gpu, snap, &viewport);
 
         Ok(Self {
@@ -172,14 +169,8 @@ impl TerminalRenderPipeline {
             let mut viewport = self.viewport;
             viewport.cell_width = metrics.cell_width;
             viewport.line_height = metrics.line_height;
-            let mut replacement = Self::new_with_viewport(
-                gpu,
-                viewport,
-                fonts,
-                metrics,
-                update,
-                self.raster_scale,
-            )?;
+            let mut replacement =
+                Self::new_with_viewport(gpu, viewport, fonts, metrics, update, self.raster_scale)?;
             anyhow::ensure!(
                 replacement.prepare(gpu, update, false),
                 "invalid replacement grid projection"
