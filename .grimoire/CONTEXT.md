@@ -758,3 +758,34 @@ Project domain concepts and terminology. Linked ADRs/specs retain detailed polic
 - **Synonyms:** Day mode, Night mode, Light mode, Dark mode
 - **Relationships:**
   - belongs to Application Business Host
+
+### Bounded Application Logging
+- **Definition:** Size-bounded rolling `harbor.log` and count-bounded `crash-*.log` retention stored in the launch working directory (debug) or `~/.harbor/` (release), unaffected by `harbor.portable`, with graceful degradation when the log path is unwritable. See [ADR 0113](./adr/0113-diagnostics-crash-reporting-and-release-readiness.md).
+- **Relationships:**
+  - belongs to Application Business Host
+  - references Portable Distribution Mode
+
+### Fatal Failure Feedback
+- **Definition:** Panic-hook and fatal startup/GPU fault persistence paired with a native Windows message box when no usable Harbor UI window exists in an interactive session, reporting the failure summary and log path while suppressible in tests and non-interactive runs. See [ADR 0113](./adr/0113-diagnostics-crash-reporting-and-release-readiness.md).
+- **Relationships:**
+  - depends on Bounded Application Logging
+  - belongs to Application Business Host
+
+### Diagnostic Capture
+- **Definition:** Shared host-owned collector producing a timestamped redacted directory (`summary.json` plus bounded log/crash tails) via `harbor --diagnostics` or the Command Palette, excluding terminal contents, clipboard data, environment values, and raw `config.toml` by default. See [ADR 0113](./adr/0113-diagnostics-crash-reporting-and-release-readiness.md).
+- **Relationships:**
+  - depends on Bounded Application Logging
+  - communicates with Command Palette
+  - belongs to Application Business Host
+
+### Non-Mutating Configuration Migration
+- **Definition:** Configuration upgrade policy that never automatically rewrites user `config.toml`, relying on backward-compatible parsing, startup recovery with unknown-key warnings, and documented migration steps. See [ADR 0113](./adr/0113-diagnostics-crash-reporting-and-release-readiness.md).
+- **Relationships:**
+  - references TOML User Settings
+  - references Portable Distribution Mode
+
+### Windows Release Tier
+- **Definition:** Two-stage Windows release classification separating Preview (core terminal, diagnostics, and MSI/ZIP packaging with explicit exclusions) from Daily-use (Preview plus executed ordinary-user/UAC installer and portable lifecycle checks, live tag/download smoke, parser fuzz evidence, and dogfood records). See [ADR 0113](./adr/0113-diagnostics-crash-reporting-and-release-readiness.md).
+- **Relationships:**
+  - references Diagnostic Capture
+  - references Non-Mutating Configuration Migration
