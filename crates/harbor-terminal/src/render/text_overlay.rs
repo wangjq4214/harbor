@@ -81,24 +81,7 @@ impl Batch {
     /// Keep CPU and GPU storage when unchanged. Scratch is reused between builds;
     /// no concatenation moves or uploads unrelated rows.
     fn update(&mut self, gpu: TerminalGpuAccess<'_>, scratch: &mut Vec<TexturedVertex>) -> usize {
-        if bytemuck::cast_slice::<_, u8>(&self.vertices) == bytemuck::cast_slice::<_, u8>(scratch) {
-            return 0;
-        }
-        let bytes = std::mem::size_of_val(scratch.as_slice());
-        if scratch.is_empty() {
-            self.buffer = None;
-        } else {
-            self.buffer
-                .get_or_insert_with(|| VertexBuffer::new(gpu.device()))
-                .write(gpu, scratch);
-        }
-        std::mem::swap(&mut self.vertices, scratch);
-        // Removed rows release their historical high-water capacity. The shared
-        // scratch still amortizes the next touched row's construction.
-        if self.vertices.is_empty() {
-            self.vertices = Vec::new();
-        }
-        bytes
+        super::gpu::update_row_buffer(gpu, &mut self.buffer, &mut self.vertices, scratch)
     }
 
     fn draw(

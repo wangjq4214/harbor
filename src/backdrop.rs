@@ -27,7 +27,7 @@ use winit::{
 
 use crate::chrome::harbor_window_icon;
 #[cfg(target_os = "windows")]
-use crate::chrome::{paint_gdi_background, suppress_caption_title_and_icon};
+use crate::chrome::{paint_gdi_background, suppress_caption_title_and_icon, win32_hwnd};
 
 /// Which tier of the Windows backdrop fallback chain is active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,8 +381,6 @@ fn accent_policy_status(window: &Window, style: &WindowBackdropStyle) -> Backdro
 /// DirectComposition pixels reveal the configured system backdrop.
 #[cfg(target_os = "windows")]
 fn extend_dwm_frame_into_client_area(window: &Window) -> bool {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
     #[repr(C)]
     struct Margins {
         left: i32,
@@ -396,12 +394,8 @@ fn extend_dwm_frame_into_client_area(window: &Window) -> bool {
         fn DwmExtendFrameIntoClientArea(hwnd: isize, margins: *const Margins) -> i32;
     }
 
-    let Ok(handle) = window.window_handle() else {
-        tracing::warn!("DWM frame extension skipped: window handle unavailable");
-        return false;
-    };
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        tracing::warn!("DWM frame extension skipped: non-Win32 window handle");
+    let Some(hwnd) = win32_hwnd(window) else {
+        tracing::warn!("DWM frame extension skipped: Win32 window handle unavailable");
         return false;
     };
     let margins = Margins {
@@ -410,7 +404,7 @@ fn extend_dwm_frame_into_client_area(window: &Window) -> bool {
         top: -1,
         bottom: -1,
     };
-    let result = unsafe { DwmExtendFrameIntoClientArea(handle.hwnd.get(), &margins) };
+    let result = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) };
     if result != 0 {
         tracing::warn!(result, "DwmExtendFrameIntoClientArea failed");
         false
@@ -435,8 +429,6 @@ fn dwm_composition_enabled() -> bool {
 /// Verifies that DWM accepted the requested TransientWindow acrylic backdrop.
 #[cfg(target_os = "windows")]
 fn transient_window_backdrop_applied(window: &Window) -> bool {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
     const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
     const DWMSBT_TRANSIENTWINDOW: u32 = 3;
 
@@ -454,19 +446,15 @@ fn transient_window_backdrop_applied(window: &Window) -> bool {
         tracing::warn!("transient acrylic skipped: DWM composition is disabled");
         return false;
     }
-    let Ok(handle) = window.window_handle() else {
-        tracing::warn!("transient acrylic verification skipped: window handle unavailable");
-        return false;
-    };
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        tracing::warn!("transient acrylic verification skipped: non-Win32 window handle");
+    let Some(hwnd) = win32_hwnd(window) else {
+        tracing::warn!("transient acrylic verification skipped: Win32 window handle unavailable");
         return false;
     };
 
     let mut backdrop_type = 0_u32;
     let result = unsafe {
         DwmGetWindowAttribute(
-            handle.hwnd.get(),
+            hwnd,
             DWMWA_SYSTEMBACKDROP_TYPE,
             (&mut backdrop_type as *mut u32).cast(),
             std::mem::size_of::<u32>() as u32,
@@ -491,8 +479,6 @@ const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 /// Missing HWND, an absent export, or API failure is logged and ignored.
 #[cfg(target_os = "windows")]
 fn apply_acrylic_accent_backdrop(window: &Window, gradient_abgr: u32) -> bool {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
     #[repr(C)]
     struct AccentPolicy {
         accent_state: u32,
@@ -517,16 +503,10 @@ fn apply_acrylic_accent_backdrop(window: &Window, gradient_abgr: u32) -> bool {
         fn GetProcAddress(module: isize, proc_name: *const std::ffi::c_char) -> *const ();
     }
 
-    let Ok(handle) = window.window_handle() else {
-        tracing::warn!("accent acrylic skipped: window handle unavailable");
+    let Some(hwnd) = win32_hwnd(window) else {
+        tracing::warn!("accent acrylic skipped: Win32 window handle unavailable");
         return false;
     };
-    let RawWindowHandle::Win32(h) = handle.as_raw() else {
-        tracing::warn!("accent acrylic skipped: non-Win32 window handle");
-        return false;
-    };
-
-    let hwnd = h.hwnd.get();
     let user32 = unsafe { GetModuleHandleW(w!("user32.dll").as_ptr()) };
     if user32 == 0 {
         tracing::warn!("accent acrylic skipped: user32.dll unavailable");

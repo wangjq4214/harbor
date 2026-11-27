@@ -149,11 +149,7 @@ impl CellWriter {
                 return false;
             }
             // An unattached mark or format member retains its source in one cell.
-            let (left, right) = if cursor.margins.enabled {
-                (cursor.margins.left, cursor.margins.right)
-            } else {
-                (0, normal.cols() - 1)
-            };
+            let (left, right) = cursor.margins.active_bounds(normal.cols());
             if cursor.cursor.x < left || cursor.cursor.x > right {
                 return false;
             }
@@ -169,11 +165,7 @@ impl CellWriter {
             Self::advance_cursor(cursor, 1, right);
             return true;
         }
-        let (left_limit, right_limit) = if cursor.margins.enabled {
-            (cursor.margins.left, cursor.margins.right)
-        } else {
-            (0, normal.cols().saturating_sub(1))
-        };
+        let (left_limit, right_limit) = cursor.margins.active_bounds(normal.cols());
 
         // 2. Prepare: handle pending wrap, clamp, and insert-mode shift.
         if !Self::prepare_position(normal, cursor, pen_state, width, (left_limit, right_limit)) {
@@ -204,11 +196,7 @@ impl CellWriter {
         row: usize,
         col: usize,
     ) -> bool {
-        let (left, right) = if cursor.margins.enabled {
-            (cursor.margins.left, cursor.margins.right)
-        } else {
-            (0, normal.cols() - 1)
-        };
+        let (left, right) = cursor.margins.active_bounds(normal.cols());
         if col == right {
             if right - left < 1 {
                 return false;

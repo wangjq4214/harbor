@@ -20,7 +20,6 @@ pub(crate) struct SourceSpan {
 pub(crate) struct LogicalGlyph<C = Cell> {
     pub(crate) cell: C,
     pub(crate) width: u8,
-    pub(crate) meaningful_blank: bool,
     pub(crate) cell_state: CellState,
     pub(crate) continuation_state: Option<CellState>,
 }
@@ -195,8 +194,6 @@ fn decode_row<'a, C>(
     while col < extent {
         let width = row_glyph_width(row, col)?;
         let cell = &row.cells[col];
-        let meaningful_blank =
-            cell.ch == ' ' && cell.suffix.is_empty() && row.cell_state[col].is_meaningful();
         emit(LogicalAtom::Glyph {
             line_id: row.metadata.logical_line_id,
             atom_offset: LogicalAtomOffset(*atom_offset),
@@ -208,7 +205,6 @@ fn decode_row<'a, C>(
             glyph: LogicalGlyph {
                 cell: map_cell(cell),
                 width,
-                meaningful_blank,
                 cell_state: row.cell_state[col],
                 continuation_state: (width == 2).then(|| row.cell_state[col + 1]),
             },
@@ -553,7 +549,6 @@ mod tests {
         );
         assert_eq!(glyph.cell, styled);
         assert_eq!(glyph.width, 1);
-        assert!(!glyph.meaningful_blank);
 
         let LogicalAtom::Glyph {
             atom_offset, glyph, ..
@@ -563,7 +558,7 @@ mod tests {
         };
         assert_eq!(atom_offset, LogicalAtomOffset(1));
         assert_eq!(glyph.cell.ch, ' ');
-        assert!(glyph.meaningful_blank);
+        assert!(glyph.cell_state.is_meaningful());
 
         let LogicalAtom::Glyph {
             line_id,

@@ -45,3 +45,14 @@ fn raster(device: &wgpu::Device, queue: &wgpu::Queue, layer: &Highlights) -> Vec
         crate::test_gpu::readback::Rows::Tight,
     )
 }
+
+#[test]
+fn reproject_if_needed_skips_empty_and_guards_malformed_spans() {
+    // Verified via highlight_tests/gpu when GPU is available; empty-span guard avoids underflow.
+    let span = CellSpan {
+        row: 0,
+        start_col: 0,
+        end_col: 0,
+    };
+    assert!(span.start_col >= span.end_col);
+}

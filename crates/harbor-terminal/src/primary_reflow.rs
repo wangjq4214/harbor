@@ -141,6 +141,14 @@ impl ReflowedLine {
     fn retained_first_row(&self) -> Option<usize> {
         (self.row_count != 0).then_some(self.first_row)
     }
+
+    fn atom_at(&self, offset: LogicalAtomOffset) -> Option<&ReflowedAtom> {
+        offset
+            .0
+            .checked_sub(self.atom_start.0)
+            .and_then(|index| self.atoms.get(index))
+            .filter(|atom| atom.atom_offset == offset)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -494,11 +502,7 @@ impl PreparedPrimaryResize {
         }
         if anchor.prefers_previous_projection() {
             let previous_offset = anchor.offset.0.checked_sub(1)?;
-            if let Some(atom) = line
-                .atoms
-                .iter()
-                .find(|atom| atom.atom_offset.0 == previous_offset)
-            {
+            if let Some(atom) = line.atom_at(LogicalAtomOffset(previous_offset)) {
                 let position = self.retained_atom_position(atom)?;
                 return self.final_gen_pos(ReflowPosition {
                     row: position.row,
@@ -509,11 +513,7 @@ impl PreparedPrimaryResize {
                 .retained_first_row()
                 .and_then(|row| self.final_gen_pos(ReflowPosition { row, col: 0 }));
         }
-        if let Some(atom) = line
-            .atoms
-            .iter()
-            .find(|atom| atom.atom_offset == anchor.offset)
-        {
+        if let Some(atom) = line.atom_at(anchor.offset) {
             let position = self.retained_atom_position(atom)?;
             return self.final_gen_pos(match anchor.affinity {
                 Affinity::Before => position,
@@ -562,11 +562,7 @@ impl PreparedPrimaryResize {
         }
         if anchor.prefers_previous_projection() {
             let previous_offset = anchor.offset.0.checked_sub(1)?;
-            if let Some(atom) = line
-                .atoms
-                .iter()
-                .find(|atom| atom.atom_offset.0 == previous_offset)
-            {
+            if let Some(atom) = line.atom_at(LogicalAtomOffset(previous_offset)) {
                 return self.insertion_after(atom);
             }
             let position = self.final_gen_pos(ReflowPosition {
@@ -578,11 +574,7 @@ impl PreparedPrimaryResize {
                 pending_wrap: false,
             });
         }
-        if let Some(atom) = line
-            .atoms
-            .iter()
-            .find(|atom| atom.atom_offset == anchor.offset)
-        {
+        if let Some(atom) = line.atom_at(anchor.offset) {
             return match anchor.affinity {
                 Affinity::Before => Some(ProjectedInsertion {
                     position: self.final_gen_pos(self.retained_atom_position(atom)?)?,
@@ -901,11 +893,12 @@ fn pack_line<'a>(
     )?;
     let mut atoms = Vec::new();
     // Only explicit, undecorated spaces at the *logical* end are disposable.
+    let default_cell = Cell::default();
     let visible_end = line
         .glyphs
         .iter()
         .rposition(|logical| {
-            logical.glyph.cell != &Cell::default() || !logical.glyph.cell_state.is_explicit()
+            logical.glyph.cell != &default_cell || !logical.glyph.cell_state.is_explicit()
         })
         .map_or(0, |index| index + 1);
     let cursor_floor = cursor_retained_glyph_count(line, retained_cursors);
@@ -1071,7 +1064,6 @@ fn is_simple_glyph<C: Borrow<Cell>>(glyph: &LogicalGlyph<C>) -> bool {
         && cell.suffix.is_empty()
         && !cell.protected
         && cell.hyperlink.is_none()
-        && glyph.meaningful_blank == (cell.ch == ' ' && glyph.cell_state.is_meaningful())
 }
 
 fn validate_glyph<C: Borrow<Cell>>(glyph: &LogicalGlyph<C>) -> Result<(), PreparationError> {
@@ -1082,11 +1074,6 @@ fn validate_glyph<C: Borrow<Cell>>(glyph: &LogicalGlyph<C>) -> Result<(), Prepar
     if glyph.width != cell.grid_width() {
         return Err(PreparationError::Invariant(
             "glyph width disagrees with payload",
-        ));
-    }
-    if glyph.meaningful_blank != (cell.ch == ' ' && glyph.cell_state.is_meaningful()) {
-        return Err(PreparationError::Invariant(
-            "blank provenance disagrees with payload",
         ));
     }
     Ok(())

@@ -91,15 +91,15 @@ pub use io::ConfigurationBarrier;
 /// GPU-independent terminal state, input, and PTY session.
 pub struct Terminal {
     /// Screen (primary buffer; alt screen handled via `saved_primary`).
-    screen: Screen,
+    pub(crate) screen: Screen,
     /// Stable for this engine/session instance, never a current-tab index.
     read_session: read_model::SessionId,
     /// PTY I/O and ANSI/VT parsing. None until initialized with PTY endpoints.
-    io: TerminalIo,
+    pub(crate) io: TerminalIo,
     launch_provenance: Option<harbor_pty::LaunchProvenance>,
     project_recognition: harbor_config::project::ProjectRecognition,
     /// Terminal-owned pointer and selection state.
-    pointer: PointerInteraction,
+    pub(crate) pointer: PointerInteraction,
     /// Terminal-owned default-background tint and fallback policy.
     appearance: TerminalAppearance,
     /// Host compositor fact: true when an acrylic backdrop is available.
@@ -112,7 +112,7 @@ pub struct Terminal {
     /// GPU-independent cursor blink and redraw timing.
     blink: Revisioned<CursorBlinkState>,
     /// Set when ingest returns synchronized output to eligible; cleared on acknowledgement.
-    pending_ordinary_present: bool,
+    pub(crate) pending_ordinary_present: bool,
     /// Redraw for transient preedit changes, retained until preparation or acknowledgement.
     pending_preedit_redraw: bool,
     /// True until a renderer explicitly acknowledges a coherent update.
@@ -121,9 +121,9 @@ pub struct Terminal {
     projection_epoch: u64,
     presentation_revision: u64,
     cached_snapshot: std::cell::RefCell<update::SnapshotCache>,
-    pending_resize: Option<TerminalSize>,
+    pub(crate) pending_resize: Option<TerminalSize>,
     /// Application-owned admission prevents drains/draws from doing an unbounded tab sweep.
-    host_driven_resize: bool,
+    pub(crate) host_driven_resize: bool,
 }
 
 impl Terminal {
@@ -540,9 +540,7 @@ impl Terminal {
                 } else {
                     self.pointer.on_key_press_outcome()
                 };
-                if outcome.release_pointer.is_some() {
-                    self.io.set_suppress_scroll_snap(false);
-                }
+                self.clear_scroll_snap_on_release(&outcome);
                 // Esc belongs to local cancellation only when it actually canceled state.
                 // Otherwise full-screen applications must receive its terminal encoding.
                 if *key == TerminalKey::Escape
@@ -591,7 +589,7 @@ impl Terminal {
         }
         self.ingest_screen(|io, screen, pointer| io.drain(screen, pointer));
         if !self.pointer.has_viewport()
-            || self.screen.input_modes().mouse_tracking != crate::model::MouseTrackingMode::Disabled
+            || self.screen.input_modes().mouse_tracking != MouseTrackingMode::Disabled
         {
             let interrupted = self.pointer.cancel_local_pointer();
             outcome.redraw = interrupted.redraw;
@@ -772,15 +770,16 @@ impl Terminal {
     ) -> Option<(f32, f32)> {
         let preedit = self.preedit.as_ref()?;
         let viewport = RenderViewport::from_target(target, metrics);
-        let snap = self.screen.terminal_snapshot();
+        let rows = self.screen.rows();
+        let cols = self.screen.cols();
         let layout = crate::layout::layout_preedit(
             preedit,
-            (snap.cursor_x, snap.cursor_y),
-            snap.rows,
-            snap.cols,
+            (self.screen.cursor_x(), self.screen.cursor_y()),
+            rows,
+            cols,
         );
         let (row, col) = layout.caret;
-        let (mut x, mut y) = viewport.cell_pos(row, col.min(snap.cols));
+        let (mut x, mut y) = viewport.cell_pos(row, col.min(cols));
         let max_x = viewport.allocation_origin.0 + viewport.allocation_size.0 as f32;
         let max_y = viewport.allocation_origin.1 + viewport.allocation_size.1 as f32;
         x = x.clamp(viewport.allocation_origin.0, max_x);
@@ -804,241 +803,10 @@ impl Terminal {
         self.screen.row_text(row)
     }
 
-    /// Resizes the terminal grid without GPU resources. Returns true if size changed.
-    ///
-    /// PTY failures are logged and leave the screen unchanged so a later caller can retry.
-    pub fn resize_if_changed(&mut self, new_size: TerminalSize) -> bool {
-        match self.try_resize_if_changed(new_size) {
-            Ok(changed) => changed,
-            Err(error) => {
-                tracing::error!(error = %format_args!("{error:#}"), "failed to resize terminal pty");
-                false
-            }
+    fn clear_scroll_snap_on_release(&mut self, outcome: &TerminalEventOutcome) {
+        if outcome.release_pointer.is_some() {
+            self.io.set_suppress_scroll_snap(false);
         }
-    }
-
-    /// Compatibility convenience: true only on commit. Prefer request_resize plus
-    /// advance_resize to distinguish waiting, configuration ownership, and errors.
-    pub fn try_resize_if_changed(&mut self, new_size: TerminalSize) -> anyhow::Result<bool> {
-        match self.request_resize(new_size)? {
-            ResizeOutcome::Pending(_) if !self.host_driven_resize => self.finish_pending_resize(),
-            _ => Ok(false),
-        }
-    }
-
-    /// Publish latest intent without running a geometry transaction. Hosts admit
-    /// expensive work through advance_resize; standalone drains also advance it.
-    /// Reader acquisition is nonblocking and failures retain their error channel.
-    pub fn request_resize(&mut self, new_size: TerminalSize) -> anyhow::Result<ResizeOutcome> {
-        let normalized = TerminalSize {
-            rows: new_size.rows.max(1),
-            cols: new_size.cols.max(2),
-        };
-        if self.io.configuration_barrier_active() {
-            return Ok(ResizeOutcome::ConfigurationOwned);
-        }
-        if normalized
-            == (TerminalSize {
-                rows: self.screen.rows(),
-                cols: self.screen.cols(),
-            })
-        {
-            self.pending_resize = None;
-            self.io.cancel_resize_barrier();
-            return Ok(ResizeOutcome::Unchanged);
-        }
-        if self.pending_resize.is_none()
-            && let Err(error) = self.io.request_resize_barrier(Instant::now())
-        {
-            self.io.cancel_resize_barrier();
-            return Err(error);
-        }
-        self.pending_resize = Some(normalized);
-        Ok(ResizeOutcome::Pending(self.resize_status()))
-    }
-
-    /// Transfer ordinary resize admission to the host. Requests and all automatic
-    /// drain/render paths then leave expensive transactions to advance_resize().
-    /// Standalone engines retain automatic completion by default.
-    pub fn use_host_resize_scheduling(&mut self) {
-        self.host_driven_resize = true;
-    }
-
-    /// Abandon ordinary queued work without taking over a configuration-owned barrier.
-    pub fn cancel_resize(&mut self) {
-        if self.pending_resize.take().is_some() && !self.io.configuration_barrier_active() {
-            self.io.cancel_resize_barrier();
-        }
-    }
-
-    /// Non-consuming state; failed acquisition is explicitly distinct from readiness.
-    pub fn resize_status(&self) -> ResizeStatus {
-        if self.io.configuration_barrier_active() {
-            return ResizeStatus::ConfigurationOwned;
-        }
-        let Some(target) = self.pending_resize else {
-            return ResizeStatus::Idle;
-        };
-        match self.io.resize_barrier_ready() {
-            Ok(false) => ResizeStatus::WaitingForReader { target },
-            Ok(true) => ResizeStatus::ReadyToCommit { target },
-            Err(_) => ResizeStatus::Failed { target },
-        }
-    }
-
-    /// Admit at most one transaction. A multi-terminal host must bound calls across
-    /// all sessions. Failed acquisition/transactions release the reader and return Err.
-    pub fn advance_resize(&mut self) -> anyhow::Result<ResizeOutcome> {
-        if self.io.configuration_barrier_active() {
-            return Ok(ResizeOutcome::ConfigurationOwned);
-        }
-        let Some(size) = self.pending_resize else {
-            return Ok(ResizeOutcome::Unchanged);
-        };
-        if self.finish_pending_resize()? {
-            Ok(ResizeOutcome::Committed(size))
-        } else if self.pending_resize.is_none() {
-            Ok(ResizeOutcome::Unchanged)
-        } else {
-            Ok(ResizeOutcome::Pending(self.resize_status()))
-        }
-    }
-
-    fn finish_pending_resize(&mut self) -> anyhow::Result<bool> {
-        if self.io.configuration_barrier_active() {
-            return Ok(false);
-        }
-        let Some(size) = self.pending_resize else {
-            return Ok(false);
-        };
-        match self.io.resize_barrier_ready() {
-            Ok(false) => return Ok(false),
-            Err(error) => {
-                self.pending_resize = None;
-                self.io.cancel_resize_barrier();
-                return Err(error);
-            }
-            Ok(true) => {}
-        }
-        let barrier = self.io.take_resize_barrier()?;
-        self.pending_resize = None;
-        let result = Self::try_resize_transaction(
-            &mut self.screen,
-            &mut self.pointer,
-            &mut self.io,
-            size,
-            |io, size| io.resize_pty(size),
-        );
-        drop(barrier);
-        if matches!(result, Ok(true)) {
-            // Geometry requires presentation, but is not child output/unread text.
-            self.pending_ordinary_present = true;
-        }
-        result
-    }
-
-    fn try_resize_transaction(
-        screen: &mut Screen,
-        pointer: &mut PointerInteraction,
-        io: &mut TerminalIo,
-        new_size: TerminalSize,
-        resize_pty: impl FnOnce(&mut TerminalIo, TerminalSize) -> anyhow::Result<()>,
-    ) -> anyhow::Result<bool> {
-        let started = Instant::now();
-        let new_size = TerminalSize {
-            rows: new_size.rows.max(1),
-            cols: new_size.cols.max(2),
-        };
-        let current = TerminalSize {
-            rows: screen.rows(),
-            cols: screen.cols(),
-        };
-        let active_history_rows = screen.scroll_count();
-        let saved_primary_history_rows = screen.saved_primary_scroll_count();
-        if new_size == current {
-            tracing::debug!(
-                old_rows = current.rows,
-                old_cols = current.cols,
-                new_rows = new_size.rows,
-                new_cols = new_size.cols,
-                active_history_rows,
-                saved_primary_history_rows,
-                total_us = started.elapsed().as_micros() as u64,
-                outcome = "unchanged",
-                "terminal resize transaction"
-            );
-            return Ok(false);
-        }
-
-        let prepare_started = Instant::now();
-        let prepared_screen = match screen.prepare_resize_with_viewport(
-            new_size.rows,
-            new_size.cols,
-            io.reflow_viewport(),
-        ) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                tracing::debug!(
-                    old_rows = current.rows,
-                    old_cols = current.cols,
-                    new_rows = new_size.rows,
-                    new_cols = new_size.cols,
-                    active_history_rows,
-                    saved_primary_history_rows,
-                    prepare_us = prepare_started.elapsed().as_micros() as u64,
-                    total_us = started.elapsed().as_micros() as u64,
-                    failed_stage = "prepare",
-                    error = %error,
-                    outcome = "error",
-                    "terminal resize transaction"
-                );
-                return Err(error.into());
-            }
-        };
-        let prepared_pointer = pointer.prepare_resize(&prepared_screen);
-        let prepare_us = prepare_started.elapsed().as_micros() as u64;
-
-        let pty_started = Instant::now();
-        if let Err(error) = resize_pty(io, new_size) {
-            tracing::debug!(
-                old_rows = current.rows,
-                old_cols = current.cols,
-                new_rows = new_size.rows,
-                new_cols = new_size.cols,
-                active_history_rows,
-                saved_primary_history_rows,
-                prepare_us,
-                pty_us = pty_started.elapsed().as_micros() as u64,
-                total_us = started.elapsed().as_micros() as u64,
-                failed_stage = "pty",
-                error = %format_args!("{error:#}"),
-                outcome = "error",
-                "terminal resize transaction"
-            );
-            return Err(error);
-        }
-        let pty_us = pty_started.elapsed().as_micros() as u64;
-
-        let commit_started = Instant::now();
-        screen.commit_resize(prepared_screen);
-        pointer.commit_resize(prepared_pointer);
-        io.reset_scroll_snap();
-        let commit_us = commit_started.elapsed().as_micros() as u64;
-        tracing::debug!(
-            old_rows = current.rows,
-            old_cols = current.cols,
-            new_rows = new_size.rows,
-            new_cols = new_size.cols,
-            active_history_rows,
-            saved_primary_history_rows,
-            prepare_us,
-            pty_us,
-            commit_us,
-            total_us = started.elapsed().as_micros() as u64,
-            outcome = "changed",
-            "terminal resize transaction"
-        );
-        Ok(true)
     }
 
     /// Returns whether copying the current selection would produce non-empty text.
@@ -1060,9 +828,7 @@ impl Terminal {
     pub fn command_copy_selection(&mut self) -> TerminalEventOutcome {
         let text = self.selection_text();
         let mut outcome = self.pointer.clear_selection_outcome();
-        if outcome.release_pointer.is_some() {
-            self.io.set_suppress_scroll_snap(false);
-        }
+        self.clear_scroll_snap_on_release(&outcome);
         outcome.clipboard_text = Some(text);
         outcome
     }
@@ -1116,9 +882,7 @@ impl Terminal {
             return TerminalEventOutcome::default();
         }
         let mut outcome = self.pointer.on_key_press_outcome();
-        if outcome.release_pointer.is_some() {
-            self.io.set_suppress_scroll_snap(false);
-        }
+        self.clear_scroll_snap_on_release(&outcome);
         let before = self.screen.view_offset();
         operation(&mut self.screen);
         outcome.redraw |= before != self.screen.view_offset();

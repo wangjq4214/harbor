@@ -1,32 +1,24 @@
-//! In-window paste confirmation controller, input gating, and target binding validation.
+//! In-window confirmation coordinator (paste and OSC 52), input gating, and target validation.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::effects::merge_wait;
 use harbor_app::command::CommandCompletion;
-use harbor_app::tab_manager::PaneBinding;
+use harbor_app::tab_manager::{PaneBinding, SessionClipboardWrite, SessionId};
 use harbor_terminal::{InputModes, PasteDisposition, Terminal};
+use harbor_widget::FocusHandle;
 use harbor_widget::effects::ControlFlowEffect;
-use harbor_widget::winit::{FrameError, WinitWindowHost};
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(crate) enum DialogOutcome {
-    None,
-    Cancelled,
-    Confirmed(String),
-    Fatal(FrameError),
-}
+use harbor_widget::winit::WinitWindowHost;
 
 /// Encodes the unchanged confirmation text with the modes current at the
 /// moment of confirmation, then performs exactly one Host-owned PTY write.
 pub(crate) fn write_confirmation_outcome<E>(
-    outcome: &DialogOutcome,
+    confirmed_text: Option<&str>,
     input_modes: InputModes,
     write: impl FnOnce(&[u8]) -> Result<(), E>,
 ) -> Result<bool, E> {
-    let DialogOutcome::Confirmed(raw_text) = outcome else {
+    let Some(raw_text) = confirmed_text else {
         return Ok(false);
     };
     let bytes = input_modes.paste(raw_text.as_bytes());
@@ -41,9 +33,6 @@ pub(crate) enum PasteResolution {
     Resolved {
         palette_completion: Option<Result<CommandCompletion, &'static str>>,
     },
-    Fatal {
-        error: FrameError,
-    },
 }
 
 struct PendingPaste {
@@ -53,63 +42,165 @@ struct PendingPaste {
     palette_invocation: bool,
 }
 
-/// Controller encapsulating modal paste confirmation and clipboard interaction.
-pub(crate) struct PasteController {
+#[derive(Default)]
+struct PasteController {
     pending: Option<PendingPaste>,
+}
+
+/// Single-writer coordinator for mutually exclusive in-window paste and OSC 52
+/// confirmations, owning the shared PTY input gate.
+pub(crate) struct ConfirmationCoordinator {
+    paste: PasteController,
+    clipboard: crate::clipboard::ClipboardPolicy,
+    clipboard_epoch: u64,
     input_gate: Arc<AtomicBool>,
 }
 
-impl PasteController {
-    pub(crate) fn new(input_gate: Arc<AtomicBool>) -> Self {
+impl ConfirmationCoordinator {
+    pub(crate) fn new(
+        input_gate: Arc<AtomicBool>,
+        clipboard_policy: harbor_config::Osc52WritePolicy,
+    ) -> Self {
         Self {
-            pending: None,
+            paste: PasteController::default(),
+            clipboard: crate::clipboard::ClipboardPolicy::new(clipboard_policy),
+            clipboard_epoch: 0,
             input_gate,
         }
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.pending.is_some()
+        self.paste.pending.is_some() || self.clipboard.is_active()
     }
 
-    pub(crate) fn generation(&self) -> Option<u64> {
-        self.pending.as_ref().map(|pending| pending.generation)
+    fn sync_input_gate(&self) {
+        self.input_gate.store(self.is_active(), Ordering::Release);
     }
 
-    pub(crate) fn source(&self) -> Option<PaneBinding> {
-        self.pending.as_ref().map(|pending| pending.target.binding)
+    pub(crate) fn paste_generation(&self) -> Option<u64> {
+        self.paste
+            .pending
+            .as_ref()
+            .map(|pending| pending.generation)
     }
 
-    pub(crate) fn retire_target(
+    pub(crate) fn paste_source(&self) -> Option<PaneBinding> {
+        self.paste
+            .pending
+            .as_ref()
+            .map(|pending| pending.target.binding)
+    }
+
+    pub(crate) fn clipboard_generation(&self) -> Option<u64> {
+        self.clipboard.generation()
+    }
+
+    pub(crate) fn clipboard_source(&self) -> Option<SessionId> {
+        self.clipboard.source()
+    }
+
+    pub(crate) fn clipboard_epoch(&self) -> u64 {
+        self.clipboard_epoch
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retain_clipboard_for_test(
+        &mut self,
+        generation: u64,
+        request: SessionClipboardWrite,
+    ) {
+        self.clipboard.retain(generation, request);
+        self.sync_input_gate();
+    }
+
+    pub(crate) fn clipboard_admission(&self, eligible: bool) -> crate::clipboard::Admission {
+        self.clipboard.admission(eligible && !self.is_active())
+    }
+
+    pub(crate) fn open_clipboard_confirmation(
         &mut self,
         workspace_ui: &harbor_app::workspace::WorkspaceUiController,
-        other_confirmation_active: bool,
+        foreground_available: bool,
+        current_epoch: u64,
+        request: SessionClipboardWrite,
+    ) -> Option<FocusHandle> {
+        if self.is_active() {
+            return None;
+        }
+        if !foreground_available {
+            tracing::warn!("OSC 52 confirmation denied: foreground monitor unavailable");
+            return None;
+        }
+        self.clipboard_epoch = current_epoch;
+        let (header, shown) = crate::clipboard::confirmation_presentation(&request);
+        let (generation, focus) = workspace_ui.open_confirmation(
+            harbor_app::confirmation::ConfirmationRequest::clipboard_write(header, shown),
+        );
+        self.clipboard.retain(generation, request);
+        self.sync_input_gate();
+        Some(focus)
+    }
+
+    pub(crate) fn cancel_clipboard(
+        &mut self,
+        workspace_ui: &harbor_app::workspace::WorkspaceUiController,
+    ) -> bool {
+        let Some(generation) = self.clipboard.generation() else {
+            return false;
+        };
+        self.clipboard.cancel();
+        workspace_ui.close_confirmation(generation);
+        self.sync_input_gate();
+        tracing::debug!("OSC 52 confirmation cancelled");
+        true
+    }
+
+    pub(crate) fn resolve_clipboard(
+        &mut self,
+        generation: u64,
+        approved: bool,
+        eligible: bool,
+        workspace_ui: &harbor_app::workspace::WorkspaceUiController,
+    ) -> Option<SessionClipboardWrite> {
+        if self.clipboard.generation() != Some(generation) {
+            return None;
+        }
+        workspace_ui.close_confirmation(generation);
+        let request = self.clipboard.resolve(approved, eligible);
+        self.sync_input_gate();
+        request
+    }
+
+    pub(crate) fn retire_paste_target(
+        &mut self,
+        workspace_ui: &harbor_app::workspace::WorkspaceUiController,
     ) -> Option<Result<CommandCompletion, &'static str>> {
         let report = self
+            .paste
             .pending
             .as_ref()
             .is_some_and(|pending| pending.palette_invocation);
-        self.cancel(workspace_ui, other_confirmation_active);
+        self.cancel_paste(workspace_ui);
         report.then_some(Err("Rejected: paste target retired"))
     }
 
-    pub(crate) fn cancel(
+    pub(crate) fn cancel_paste(
         &mut self,
         workspace_ui: &harbor_app::workspace::WorkspaceUiController,
-        other_confirmation_active: bool,
     ) -> bool {
-        let closed = if let Some(pending) = self.pending.take() {
+        let closed = if let Some(pending) = self.paste.pending.take() {
             workspace_ui.close_confirmation(pending.generation);
             true
         } else {
             false
         };
-        self.input_gate
-            .store(other_confirmation_active, Ordering::Release);
+        self.sync_input_gate();
         closed
     }
 
     pub(crate) fn cancel_for_shutdown(&mut self) {
-        self.pending = None;
+        self.paste.pending = None;
+        self.clipboard.cancel();
         self.input_gate.store(false, Ordering::Release);
     }
 
@@ -120,9 +211,8 @@ impl PasteController {
         active_binding: Option<PaneBinding>,
         raw_text: String,
         palette_invocation: bool,
-        other_confirmation_active: bool,
-    ) -> Result<(Option<harbor_widget::FocusHandle>, CommandCompletion), &'static str> {
-        if self.is_active() || other_confirmation_active {
+    ) -> Result<(Option<FocusHandle>, CommandCompletion), &'static str> {
+        if self.is_active() {
             return Err("Rejected: paste confirmation is active");
         }
         let binding = active_binding.ok_or("Rejected: no live pane for paste")?;
@@ -145,53 +235,40 @@ impl PasteController {
                         raw_text.clone(),
                     ),
                 );
-                self.pending = Some(PendingPaste {
+                self.paste.pending = Some(PendingPaste {
                     generation,
                     raw_text,
                     target,
                     palette_invocation,
                 });
-                self.input_gate.store(true, Ordering::Release);
+                self.sync_input_gate();
                 Ok((Some(focus), CommandCompletion::PendingConfirmation))
             }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn resolve_confirmation(
+    pub(crate) fn resolve_paste(
         &mut self,
         generation: u64,
         confirmed: bool,
         workspace_ui: &harbor_app::workspace::WorkspaceUiController,
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
         active_binding: Option<PaneBinding>,
-        gpu_fault: Option<harbor_widget::winit::GpuFault>,
-        other_confirmation_active: bool,
     ) -> PasteResolution {
         if self
+            .paste
             .pending
             .as_ref()
             .is_none_or(|pending| pending.generation != generation)
         {
             return PasteResolution::Ignored;
         }
-        if let Some(fault) = gpu_fault {
-            self.cancel(workspace_ui, other_confirmation_active);
-            return PasteResolution::Fatal {
-                error: FrameError::SharedGpu(fault),
-            };
-        }
-        let pending = self.pending.take().expect("matched pending paste");
+        let pending = self.paste.pending.take().expect("matched pending paste");
         workspace_ui.close_confirmation(generation);
-        self.input_gate
-            .store(other_confirmation_active, Ordering::Release);
-        let outcome = if confirmed {
-            DialogOutcome::Confirmed(pending.raw_text)
-        } else {
-            DialogOutcome::Cancelled
-        };
+        self.sync_input_gate();
+        let confirmed_text = confirmed.then_some(pending.raw_text.as_str());
         let completion = complete_paste_confirmation(
-            &outcome,
+            confirmed_text,
             Some(&pending.target),
             active_binding.zip(active_terminal),
         );
@@ -207,9 +284,8 @@ impl PasteController {
         active_terminal: Option<&Arc<Mutex<Terminal>>>,
         active_binding: Option<PaneBinding>,
         palette_invocation: bool,
-        other_confirmation_active: bool,
     ) -> Result<(Option<ControlFlowEffect>, CommandCompletion), &'static str> {
-        if self.is_active() || other_confirmation_active {
+        if self.is_active() {
             return Err("Rejected: paste confirmation is active");
         }
         if active_binding.is_none() {
@@ -230,7 +306,6 @@ impl PasteController {
             active_binding,
             raw_text,
             palette_invocation,
-            other_confirmation_active,
         )?;
         let wait = if let Some(focus) = focus {
             let mut wait = main_host.cancel_active_input_ownership().wait;
@@ -283,11 +358,11 @@ impl PasteTarget {
 
 /// Revalidate the original live target; use its modes at approval, never at capture.
 fn complete_paste_confirmation(
-    outcome: &DialogOutcome,
+    confirmed_text: Option<&str>,
     target: Option<&PasteTarget>,
     current: Option<(PaneBinding, &Arc<Mutex<Terminal>>)>,
 ) -> Result<CommandCompletion, &'static str> {
-    let DialogOutcome::Confirmed(raw_text) = outcome else {
+    let Some(raw_text) = confirmed_text else {
         return Err("Cancelled: paste was not confirmed");
     };
     let target = target.ok_or("Rejected: paste target retired")?;
@@ -302,7 +377,7 @@ fn complete_paste_confirmation(
     if terminal.is_session_closed() || terminal.shell_process_exited() {
         return Err("Rejected: paste target retired");
     }
-    write_confirmation_outcome(outcome, modes, |bytes| terminal.write_pty(bytes)).map_err(
+    write_confirmation_outcome(Some(raw_text), modes, |bytes| terminal.write_pty(bytes)).map_err(
         |error| {
             tracing::warn!(error = %format_args!("{error:#}"), "failed to write confirmed paste");
             "Failed: could not write confirmed paste"

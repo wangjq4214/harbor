@@ -143,10 +143,6 @@ impl Selection {
         self.dirty = false;
 
         if let Some(bounds) = self.bounds {
-            let rows = snap.rows;
-            let cols = snap.cols;
-            self.quads.reserve(gpu.device(), (rows * cols * 6).max(64));
-
             let verts = self.build_vertices(snap, viewport, bounds);
             self.quads.write(gpu, &verts);
         } else {

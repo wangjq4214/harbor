@@ -261,16 +261,10 @@ impl CellOps {
         selective: bool,
     ) {
         cursor.clear_pending_wrap();
-        if cursor.margins.enabled
-            && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
-        {
+        if !cursor.margins.contains(cursor.cursor.x) {
             return;
         }
-        let (left, right) = if cursor.margins.enabled {
-            (cursor.margins.left, cursor.margins.right)
-        } else {
-            (0, normal.cols() - 1)
-        };
+        let (left, right) = cursor.margins.active_bounds(normal.cols());
         match mode {
             0 => {
                 Self::erase_row_range(
@@ -348,16 +342,10 @@ impl CellOps {
         selective: bool,
     ) {
         cursor.clear_pending_wrap();
-        if cursor.margins.enabled
-            && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
-        {
+        if !cursor.margins.contains(cursor.cursor.x) {
             return;
         }
-        let (left, right) = if cursor.margins.enabled {
-            (cursor.margins.left, cursor.margins.right)
-        } else {
-            (0, normal.cols() - 1)
-        };
+        let (left, right) = cursor.margins.active_bounds(normal.cols());
         match mode {
             0 => Self::erase_row_range(
                 pen_state,
@@ -401,21 +389,10 @@ impl CellOps {
         n: usize,
     ) {
         cursor.clear_pending_wrap();
-        if cursor.margins.enabled
-            && (cursor.cursor.x < cursor.margins.left || cursor.cursor.x > cursor.margins.right)
-        {
+        if !cursor.margins.contains(cursor.cursor.x) {
             return;
         }
-        let right = if cursor.margins.enabled {
-            cursor.margins.right
-        } else {
-            normal.cols() - 1
-        };
-        let left = if cursor.margins.enabled {
-            cursor.margins.left
-        } else {
-            0
-        };
+        let (left, right) = cursor.margins.active_bounds(normal.cols());
         let end = (cursor.cursor.x + n.max(1)).min(right + 1);
         Self::erase_row_range(
             pen_state,
@@ -463,11 +440,7 @@ impl CellOps {
         cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         let requested_col = cursor.cursor.x;
-        let (left, right) = if cursor.margins.enabled {
-            (cursor.margins.left, cursor.margins.right)
-        } else {
-            (0, normal.cols() - 1)
-        };
+        let (left, right) = cursor.margins.active_bounds(normal.cols());
         normal.mark_range_dirty(cursor.cursor.y, requested_col.saturating_sub(1), right + 1);
         if requested_col < left || requested_col > right {
             return false;
@@ -506,11 +479,7 @@ impl CellOps {
         cursor.clear_pending_wrap();
         let n = if n == 0 { 1 } else { n };
         let col = cursor.cursor.x;
-        let (left, right) = if cursor.margins.enabled {
-            (cursor.margins.left, cursor.margins.right)
-        } else {
-            (0, normal.cols() - 1)
-        };
+        let (left, right) = cursor.margins.active_bounds(normal.cols());
         normal.mark_range_dirty(cursor.cursor.y, col.saturating_sub(1), right + 1);
         if col < left || col > right {
             return false;
@@ -583,7 +552,7 @@ impl CellOps {
         }
     }
 
-    fn scroll_rows_down(
+    pub(crate) fn scroll_rows_down(
         pen_state: &mut PenState,
         normal: &mut NormalBuf,
         cursor: &mut CursorEngine,
@@ -886,21 +855,7 @@ impl CellOps {
             }
         }
 
-        let (dest_top, dest_bottom, dest_left, dest_right) = if cursor.modes.origin {
-            let (left, right) = if cursor.margins.enabled {
-                (cursor.margins.left, cursor.margins.right)
-            } else {
-                (0, normal.cols().saturating_sub(1))
-            };
-            (
-                cursor.scroll_region.top,
-                cursor.scroll_region.bottom,
-                left,
-                right,
-            )
-        } else {
-            (0, normal.rows() - 1, 0, normal.cols() - 1)
-        };
+        let (dest_top, dest_bottom, dest_left, dest_right) = cursor.origin_bounds(normal);
         let Some(dest_row_end) = dt_start.checked_add(height) else {
             return;
         };

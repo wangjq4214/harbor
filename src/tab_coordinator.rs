@@ -174,45 +174,78 @@ impl TerminalConfiguration {
     ) -> anyhow::Result<Vec<String>> {
         let font_changed = settings.font != self.font_settings;
         let history_changed = settings.history != self.history;
-        let colors_changed = settings.colors != self.appearance.palette();
         if !font_changed && !history_changed && !self.geometry_recovery_pending {
-            if colors_changed {
-                let targets = tabs.configuration_targets();
-                anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
-                // Acquire every model before publishing a palette. No renderer, allocation,
-                // reader barrier or PTY operation is involved in a color-only change.
-                let mut terminals = targets
-                    .iter()
-                    .map(|(id, terminal, _)| {
-                        terminal
-                            .lock()
-                            .map_err(|_| anyhow::anyhow!("session {id}: terminal lock unavailable"))
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-                let mut palettes = Vec::new();
-                for (index, terminal) in terminals.iter_mut().enumerate() {
-                    preflight(index, ReloadStage::Palette).with_context(|| {
-                        format!("session {}: palette preparation", targets[index].0)
-                    })?;
-                    let size = TerminalSize {
-                        rows: terminal.screen().rows(),
-                        cols: terminal.screen().cols(),
-                    };
-                    // Same-size preparation owns exclusive model access without a resize/barrier.
-                    palettes
-                        .push(terminal.prepare_configuration_with_history(size, settings.history)?);
-                }
-                for palette in palettes {
-                    palette.commit(settings.colors, None, scale);
-                }
-                self.appearance = TerminalAppearance::from_palette(settings.colors);
-            }
-            self.shell_command = configured_shell(&settings.shell);
-            self.profiles = settings.profiles.clone();
-            workspace_ui.publish_profiles(self.profiles.clone());
-            // Bindings and launch/restart-only changes do not depend on session resources.
-            return Ok(self.font_warnings.clone());
+            return self.apply_color_only(tabs, workspace_ui, settings, scale, &mut preflight);
         }
+        self.apply_full_reload(
+            tabs,
+            workspace_ui,
+            gpu,
+            settings,
+            scale,
+            surface,
+            font_changed,
+            &mut preflight,
+        )
+    }
+
+    fn apply_color_only(
+        &mut self,
+        tabs: &mut TabManager,
+        workspace_ui: &WorkspaceUiController,
+        settings: &harbor_config::Settings,
+        scale: f32,
+        preflight: &mut impl FnMut(usize, ReloadStage) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<String>> {
+        if settings.colors != self.appearance.palette() {
+            let targets = tabs.configuration_targets();
+            anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
+            // Acquire every model before publishing a palette. No renderer, allocation,
+            // reader barrier or PTY operation is involved in a color-only change.
+            let mut terminals = targets
+                .iter()
+                .map(|(id, terminal, _)| {
+                    terminal
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("session {id}: terminal lock unavailable"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let mut palettes = Vec::new();
+            for (index, terminal) in terminals.iter_mut().enumerate() {
+                preflight(index, ReloadStage::Palette).with_context(|| {
+                    format!("session {}: palette preparation", targets[index].0)
+                })?;
+                let size = TerminalSize {
+                    rows: terminal.screen().rows(),
+                    cols: terminal.screen().cols(),
+                };
+                // Same-size preparation owns exclusive model access without a resize/barrier.
+                palettes.push(terminal.prepare_configuration_with_history(size, settings.history)?);
+            }
+            for palette in palettes {
+                palette.commit(settings.colors, None, scale);
+            }
+            self.appearance = TerminalAppearance::from_palette(settings.colors);
+        }
+        self.shell_command = configured_shell(&settings.shell);
+        self.profiles = settings.profiles.clone();
+        workspace_ui.publish_profiles(self.profiles.clone());
+        // Bindings and launch/restart-only changes do not depend on session resources.
+        Ok(self.font_warnings.clone())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_full_reload(
+        &mut self,
+        tabs: &mut TabManager,
+        workspace_ui: &WorkspaceUiController,
+        gpu: TerminalGpuAccess<'_>,
+        settings: &harbor_config::Settings,
+        scale: f32,
+        surface: (u32, u32),
+        font_changed: bool,
+        preflight: &mut impl FnMut(usize, ReloadStage) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Vec<String>> {
         let targets = tabs.configuration_targets();
         anyhow::ensure!(!targets.is_empty(), "no applicable terminal sessions");
         let mut warnings = if font_changed {
@@ -484,7 +517,6 @@ impl TerminalTabFactory {
     }
 
     /// T0002 factory seam: preserve cleanup proof across every post-spawn error.
-    #[allow(dead_code)]
     pub(crate) fn create_split_attempt(
         &self,
         session_id: SessionId,
@@ -677,16 +709,6 @@ impl TabCoordinator {
             self.factory
                 .create_split_attempt(target.session, draw, size, surface, command, probe)
         })
-    }
-
-    /// Claim immediately before layout attachment in this Host turn.
-    #[allow(dead_code)]
-    pub(crate) fn claim_split(
-        &self,
-        ready: crate::split_launch::SplitReady,
-        operation: crate::split_launch::OperationId,
-    ) -> anyhow::Result<crate::split_launch::PreparedSplit> {
-        ready.claim(&self.tabs, operation)
     }
 
     /// Claim and attach atomically in this Host turn; caller owns UI admission/focus policy.
@@ -918,7 +940,7 @@ impl TabCoordinator {
         &mut self,
         scale_factor: f32,
         physical_size: (u32, u32),
-    ) -> bool {
+    ) {
         self.workspace_ui.publish_pane_input_metrics(
             scale_factor,
             physical_size,
@@ -930,7 +952,6 @@ impl TabCoordinator {
             physical_size,
             &self.factory.metrics(),
         );
-        false
     }
 
     pub(crate) fn apply_tab_outcome(

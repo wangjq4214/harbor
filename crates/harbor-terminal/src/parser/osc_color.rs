@@ -116,10 +116,10 @@ fn format_rgb_query(
         }
         let high = component >> 4;
         let low = component & 0x0f;
-        reply.push(hex_digit(high));
-        reply.push(hex_digit(low));
-        reply.push(hex_digit(high));
-        reply.push(hex_digit(low));
+        reply.push(hex::lower_digit(high));
+        reply.push(hex::lower_digit(low));
+        reply.push(hex::lower_digit(high));
+        reply.push(hex::lower_digit(low));
     }
     if bell_terminated {
         reply.push(0x07);
@@ -146,12 +146,56 @@ fn quantize(component: f32) -> u8 {
     (component.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-const fn hex_digit(value: u8) -> u8 {
-    if value < 10 {
-        b'0' + value
-    } else {
-        b'a' + value - 10
+#[derive(Debug, PartialEq)]
+pub(super) enum PaletteEntry {
+    Set(u8, [u8; 3]),
+    Query(u8),
+    Reset(u8),
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum PaletteAction {
+    Entries(Vec<PaletteEntry>),
+    ResetAll,
+}
+
+pub(super) fn parse_palette(command: &[u8], payload: &[u8]) -> Option<PaletteAction> {
+    // Defense in depth for handler-owned allocations. The ordinary OSC framing
+    // bound already includes the command; no other OSC (notably 52) is widened.
+    if payload.len() > 4096 {
+        return None;
     }
+    if command == b"104" && payload.is_empty() {
+        return Some(PaletteAction::ResetAll);
+    }
+    let mut parts = payload.split(|byte| *byte == b';');
+    let mut entries = Vec::new();
+    // Each entry consumes at least one payload byte (4 needs an index and color).
+    // Thus even a malformed tail cannot cause unbounded temporary storage.
+    while let Some(part) = parts.next() {
+        let index = parse_palette_index(part)?;
+        entries.push(match command {
+            b"4" => match parts.next()? {
+                b"?" => PaletteEntry::Query(index),
+                color => PaletteEntry::Set(index, parse_color(color)?),
+            },
+            b"104" => PaletteEntry::Reset(index),
+            _ => return None,
+        });
+    }
+    Some(PaletteAction::Entries(entries))
+}
+
+fn parse_palette_index(bytes: &[u8]) -> Option<u8> {
+    if bytes.is_empty() {
+        return None;
+    }
+    bytes.iter().try_fold(0_u8, |value, &byte| {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value.checked_mul(10)?.checked_add(byte - b'0')
+    })
 }
 
 #[cfg(test)]
@@ -229,5 +273,37 @@ mod tests {
             format_query(DefaultColorSlot::Cursor, color, false).as_bytes(),
             b"\x1b]12;rgb:1212/abab/ffff\x1b\\"
         );
+    }
+
+    #[test]
+    fn palette_actions_are_bounded_and_validate_before_delivery() {
+        assert_eq!(
+            parse_palette(b"4", b"42;#123456;42;?;255;rgb:f/80/8000"),
+            Some(PaletteAction::Entries(vec![
+                PaletteEntry::Set(42, [0x12, 0x34, 0x56]),
+                PaletteEntry::Query(42),
+                PaletteEntry::Set(255, [255, 128, 128]),
+            ]))
+        );
+        assert_eq!(parse_palette(b"104", b""), Some(PaletteAction::ResetAll));
+        assert_eq!(
+            parse_palette(b"104", b"1;42;42"),
+            Some(PaletteAction::Entries(vec![
+                PaletteEntry::Reset(1),
+                PaletteEntry::Reset(42),
+                PaletteEntry::Reset(42),
+            ]))
+        );
+        for command in [b"4".as_slice(), b"104"] {
+            assert_eq!(parse_palette(command, &vec![b'0'; 4097]), None);
+        }
+        let mut maximal = b"0;".repeat(2047);
+        maximal.push(b'0');
+        let Some(PaletteAction::Entries(entries)) = parse_palette(b"104", &maximal) else {
+            panic!("bounded maximal reset list");
+        };
+        assert_eq!(entries.len(), 2048);
+        assert!(parse_palette(b"4", b"42;#123456;42;?;256;#abcdef").is_none());
+        assert!(parse_palette(b"104", b"1;256").is_none());
     }
 }

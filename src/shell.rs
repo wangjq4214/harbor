@@ -16,7 +16,7 @@ use winit::{
 use crate::backdrop::{
     MainWindowPlatformHooks, MainWindowPlatformState, os_build, select_backend, wasdk_available,
 };
-use crate::dialog::{PasteController, PasteResolution};
+use crate::dialog::{ConfirmationCoordinator, PasteResolution};
 use crate::effects::{apply_control_flow, merge_wait};
 use crate::event::{AppEvent, external_invalidation_for_app_event};
 use crate::tab_coordinator::{
@@ -36,172 +36,24 @@ use harbor_widget::winit::{
     HostFrameOutcome, HostInitContext, HostStartupError, WinitWindowHost, WinitWindowHostBuilder,
 };
 
-/// Separate diagnostics from the subset that needs explicit user attention.
-pub(crate) struct ConfigurationAcceptance {
-    pub summary: String,
-    pub notice: Option<String>,
-}
+mod configuration;
+mod pane_commands;
 
-/// Typed application-effect failure, distinct from a rejected document. A missing
-/// file is not resource recovery and must not erase compensation/error feedback.
-#[derive(Debug)]
-struct ConfigurationOperationFailure;
-
-impl std::fmt::Display for ConfigurationOperationFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("configuration application failed")
-    }
-}
-/// Strict live I/O seam shared by manual and watched reload. Absence is a
-/// non-acceptance outcome; the application transaction is not called at all.
 #[cfg(test)]
-pub(crate) fn reload_configuration_from_path(
-    path: Option<&std::path::Path>,
-    accepted: &mut harbor_config::Settings,
-    effective_clipboard: &harbor_config::ClipboardSettings,
-    apply: impl FnOnce(
-        &harbor_config::Settings,
-        harbor_app::command::ResolvedKeybindings,
-    ) -> anyhow::Result<Vec<String>>,
-) -> anyhow::Result<Option<ConfigurationAcceptance>> {
-    let path = path.ok_or_else(|| anyhow::anyhow!("could not resolve configuration path"))?;
-    let loaded = match harbor_config::load_candidate_from_path(path) {
-        Ok(loaded) => loaded,
-        Err(error) if error.io_kind == Some(std::io::ErrorKind::NotFound) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    apply_loaded_configuration(path, accepted, effective_clipboard, loaded, apply).map(Some)
-}
-
-fn apply_loaded_configuration(
-    path: &std::path::Path,
-    accepted: &mut harbor_config::Settings,
-    effective_clipboard: &harbor_config::ClipboardSettings,
-    loaded: harbor_config::SettingsLoad,
-    apply: impl FnOnce(
-        &harbor_config::Settings,
-        harbor_app::command::ResolvedKeybindings,
-    ) -> anyhow::Result<Vec<String>>,
-) -> anyhow::Result<ConfigurationAcceptance> {
-    let mut result = accept_configuration(
-        accepted,
-        effective_clipboard,
-        loaded.settings,
-        |candidate, bindings| {
-            apply(candidate, bindings).map_err(|error| error.context(ConfigurationOperationFailure))
-        },
-    )?;
-    let mut notices = result.notice.into_iter().collect::<Vec<_>>();
-    for diagnostic in loaded.diagnostics {
-        tracing::warn!(path = %path.display(), message = %diagnostic.message, "configuration warning");
-        notices.push(diagnostic.message);
-    }
-    result.notice = (!notices.is_empty()).then(|| notices.join("; "));
-    Ok(result)
-}
-
-/// Validates and publishes one requested generation on the application thread.
-/// `apply` owns the real session/factory transaction and infallible binding move.
-/// Keeping this independent of a Window makes acceptance ordering testable.
-pub(crate) fn accept_configuration(
-    accepted: &mut harbor_config::Settings,
-    effective_clipboard: &harbor_config::ClipboardSettings,
-    candidate: harbor_config::Settings,
-    apply: impl FnOnce(
-        &harbor_config::Settings,
-        harbor_app::command::ResolvedKeybindings,
-    ) -> anyhow::Result<Vec<String>>,
-) -> anyhow::Result<ConfigurationAcceptance> {
-    let bindings = harbor_app::command::validate_keybindings(&candidate.keybindings)
-        .map_err(|errors| anyhow::anyhow!("{}", errors.join("; ")))?;
-    let font_changed = candidate.font != accepted.font;
-    let warnings = apply(&candidate, bindings)?;
-    let mut live = Vec::new();
-    if candidate.colors != accepted.colors {
-        live.push("colors");
-    }
-    if candidate.keybindings != accepted.keybindings {
-        live.push("keybindings");
-    }
-    if font_changed {
-        live.push("terminal fonts");
-    }
-    if candidate.history != accepted.history {
-        live.push("history");
-    }
-    let mut parts = Vec::new();
-    if !live.is_empty() {
-        parts.push(format!("applied live: {}", live.join(", ")));
-    }
-    let mut launch = Vec::new();
-    if candidate.shell.program != accepted.shell.program
-        || candidate.shell.args != accepted.shell.args
-    {
-        launch.push("shell program/arguments");
-    }
-    if candidate.shell.environment != accepted.shell.environment {
-        launch.push("environment");
-    }
-    if candidate.shell.directory != accepted.shell.directory {
-        launch.push("initial directory");
-    }
-    if candidate.profiles != accepted.profiles {
-        launch.push("named profiles");
-    }
-    if !launch.is_empty() {
-        parts.push(format!("new sessions only: {}", launch.join(", ")));
-    }
-    let mut actionable = warnings.clone();
-    if candidate.clipboard != *effective_clipboard {
-        actionable.push(
-            "restart required: clipboard.osc52_write (unchanged for existing and new sessions)"
-                .to_owned(),
-        );
-        parts.push(
-            "restart required: clipboard.osc52_write (unchanged for existing and new sessions)"
-                .to_owned(),
-        );
-    }
-    if parts.is_empty() {
-        parts.push("no effective settings changed".to_owned());
-    }
-    parts.extend(warnings);
-    *accepted = candidate;
-    Ok(ConfigurationAcceptance {
-        summary: parts.join("; "),
-        notice: (!actionable.is_empty()).then(|| actionable.join("; ")),
-    })
-}
-
-/// A parsed but unaccepted candidate with non-borrowing reader acquisitions.
-struct PendingReload {
-    loaded: harbor_config::SettingsLoad,
-    acquisition: Option<crate::tab_coordinator::ConfigurationAcquisition>,
-    automatic: bool,
-    path: std::path::PathBuf,
-    report_palette: bool,
-    quick_save: Option<(u64, Vec<u8>)>,
-}
+pub(crate) use configuration::{
+    ConfigurationOperationFailure, accept_configuration, reload_configuration_from_path,
+};
 
 /// Active session resources that exist while the window and renderer are alive.
 pub(crate) struct ActiveSession {
     // Business state drops before the host-owned Runtime/surface/platform/window/GPU stack.
-    paste: PasteController,
-    input_gate: Arc<AtomicBool>,
-    clipboard: crate::clipboard::ClipboardPolicy,
+    confirmations: ConfirmationCoordinator,
     foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor,
-    clipboard_epoch: u64,
-    pending_reload: Option<PendingReload>,
+    config: configuration::ConfigurationCoordinator,
     quick_save_transaction: Option<crate::profile_save::SaveTransaction>,
     tabs: TabCoordinator,
     pending_split: Option<pane_commands::PendingSplit>,
-    reload_after_split: bool,
     workspace_ui: WorkspaceUiController,
-    configuration_path: Option<std::path::PathBuf>,
-    configuration_watch: Option<crate::configuration_watch::ConfigurationWatch>,
-    reload_feedback: crate::configuration_watch::ReloadFeedback,
-    accepted_settings: harbor_config::Settings,
-    effective_clipboard: harbor_config::ClipboardSettings,
     show_pending: bool,
     startup_retry_deadline: Option<Instant>,
     main_host: WinitWindowHost,
@@ -312,101 +164,18 @@ impl ApplicationHandler<AppEvent> for Shell {
 /// The exit hook keeps policy testable without constructing an EventLoop or PTY.
 fn apply_gpu_fatal_policy(
     fault: &harbor_widget::winit::GpuFault,
-    paste: &mut PasteController,
-    clipboard: &mut crate::clipboard::ClipboardPolicy,
+    confirmations: &mut ConfirmationCoordinator,
     exit: impl FnOnce(),
 ) {
-    paste.cancel_for_shutdown();
-    clipboard.cancel();
+    confirmations.cancel_for_shutdown();
     tracing::error!(%fault, "fatal shared GPU error");
     exit();
 }
 
-fn sync_confirmation_input_gate(
-    input_gate: &AtomicBool,
-    paste: &PasteController,
-    clipboard: &crate::clipboard::ClipboardPolicy,
-) {
-    input_gate.store(
-        paste.is_active() || clipboard.is_active(),
-        std::sync::atomic::Ordering::Release,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn open_clipboard_confirmation(
-    workspace_ui: &WorkspaceUiController,
-    clipboard: &mut crate::clipboard::ClipboardPolicy,
-    paste: &PasteController,
-    input_gate: &AtomicBool,
-    foreground_available: bool,
-    current_epoch: u64,
-    clipboard_epoch: &mut u64,
-    request: harbor_app::tab_manager::SessionClipboardWrite,
-) -> Option<harbor_widget::FocusHandle> {
-    if !foreground_available {
-        tracing::warn!("OSC 52 confirmation denied: foreground monitor unavailable");
-        return None;
-    }
-    *clipboard_epoch = current_epoch;
-    let (header, shown) = crate::clipboard::confirmation_presentation(&request);
-    let (generation, focus) = workspace_ui.open_confirmation(
-        harbor_app::confirmation::ConfirmationRequest::clipboard_write(header, shown),
-    );
-    clipboard.retain(generation, request);
-    sync_confirmation_input_gate(input_gate, paste, clipboard);
-    Some(focus)
-}
-
-fn cancel_clipboard_confirmation_state(
-    workspace_ui: &WorkspaceUiController,
-    clipboard: &mut crate::clipboard::ClipboardPolicy,
-    paste: &PasteController,
-    input_gate: &AtomicBool,
-) -> bool {
-    let Some(generation) = clipboard.generation() else {
-        return false;
-    };
-    clipboard.cancel();
-    workspace_ui.close_confirmation(generation);
-    sync_confirmation_input_gate(input_gate, paste, clipboard);
-    tracing::debug!("OSC 52 confirmation cancelled");
-    true
-}
-
-fn resolve_clipboard_confirmation_state(
-    generation: u64,
-    approved: bool,
-    eligible: bool,
-    workspace_ui: &WorkspaceUiController,
-    clipboard: &mut crate::clipboard::ClipboardPolicy,
-    paste: &PasteController,
-    input_gate: &AtomicBool,
-) -> Option<harbor_app::tab_manager::SessionClipboardWrite> {
-    if clipboard.generation() != Some(generation) {
-        return None;
-    }
-    workspace_ui.close_confirmation(generation);
-    let request = clipboard.resolve(approved, eligible);
-    sync_confirmation_input_gate(input_gate, paste, clipboard);
-    request
-}
-
 // ── ActiveSession (active window lifecycle) ───────────────────────────────
-#[path = "pane_commands.rs"]
-mod pane_commands;
 impl ActiveSession {
-    fn confirmation_active(&self) -> bool {
-        self.paste.is_active() || self.clipboard.is_active()
-    }
-
     fn cancel_clipboard_confirmation(&mut self, wait: &mut Option<ControlFlowEffect>) -> bool {
-        if !cancel_clipboard_confirmation_state(
-            &self.workspace_ui,
-            &mut self.clipboard,
-            &self.paste,
-            &self.input_gate,
-        ) {
+        if !self.confirmations.cancel_clipboard(&self.workspace_ui) {
             return false;
         }
         if !self.workspace_ui.popup_is_open() {
@@ -428,9 +197,7 @@ impl ActiveSession {
     ) {
         self.workspace_ui.close_active_confirmation();
         // Cancel before exit: later queued input must never commit a pending approval.
-        apply_gpu_fatal_policy(&fault, &mut self.paste, &mut self.clipboard, || {
-            event_loop.exit()
-        });
+        apply_gpu_fatal_policy(&fault, &mut self.confirmations, || event_loop.exit());
     }
 
     fn stop_for_gpu_fault(&mut self, event_loop: &ActiveEventLoop) -> bool {
@@ -452,7 +219,7 @@ impl ActiveSession {
         if check_epoch
             && !crate::clipboard::foreground_monitor::uninterrupted(
                 self.foreground_monitor.available(),
-                self.clipboard_epoch,
+                self.confirmations.clipboard_epoch(),
                 self.foreground_monitor.epoch(),
             )
         {
@@ -466,20 +233,18 @@ impl ActiveSession {
         .permits()
     }
 
+    #[must_use]
     fn reconcile_clipboard(&mut self) -> Option<ControlFlowEffect> {
         let mut wait = None;
         let paste_displaced = self
-            .paste
-            .generation()
+            .confirmations
+            .paste_generation()
             .is_some_and(|generation| !self.workspace_ui.is_confirmation_current(generation));
-        let paste_target_lost = self.paste.source().is_some_and(|source| {
+        let paste_target_lost = self.confirmations.paste_source().is_some_and(|source| {
             self.tabs.active_binding() != Some(source) || !self.tabs.active_live(source.session)
         });
         if paste_displaced || paste_target_lost {
-            if let Some(completion) = self
-                .paste
-                .retire_target(&self.workspace_ui, self.clipboard.is_active())
-            {
+            if let Some(completion) = self.confirmations.retire_paste_target(&self.workspace_ui) {
                 self.workspace_ui
                     .report_palette_completion(AppCommand::Paste, completion);
             }
@@ -494,12 +259,12 @@ impl ActiveSession {
             merge_wait(&mut wait, self.main_host.request_frame().wait);
         }
         let clipboard_displaced = self
-            .clipboard
-            .generation()
+            .confirmations
+            .clipboard_generation()
             .is_some_and(|generation| !self.workspace_ui.is_confirmation_current(generation));
         let clipboard_ineligible = self
-            .clipboard
-            .source()
+            .confirmations
+            .clipboard_source()
             .is_some_and(|source| !self.clipboard_eligible(source, true));
         if clipboard_displaced || clipboard_ineligible {
             self.cancel_clipboard_confirmation(&mut wait);
@@ -512,9 +277,8 @@ impl ActiveSession {
         request: harbor_app::tab_manager::SessionClipboardWrite,
     ) -> Option<ControlFlowEffect> {
         use crate::clipboard::Admission;
-        let eligible =
-            self.clipboard_eligible(request.source, false) && !self.confirmation_active();
-        match self.clipboard.admission(eligible) {
+        let eligible = self.clipboard_eligible(request.source, false);
+        match self.confirmations.clipboard_admission(eligible) {
             Admission::Denied => {
                 tracing::debug!("OSC 52 write denied");
                 None
@@ -529,14 +293,10 @@ impl ActiveSession {
             Admission::Confirm => {
                 let foreground_available = self.foreground_monitor.available();
                 let current_epoch = self.foreground_monitor.epoch();
-                let focus = open_clipboard_confirmation(
+                let focus = self.confirmations.open_clipboard_confirmation(
                     &self.workspace_ui,
-                    &mut self.clipboard,
-                    &self.paste,
-                    &self.input_gate,
                     foreground_available,
                     current_epoch,
-                    &mut self.clipboard_epoch,
                     request,
                 )?;
                 self.quick_save_transaction = None;
@@ -564,48 +324,35 @@ impl ActiveSession {
         }
     }
 
-    fn sync_terminal_allocation(&mut self) -> Option<ControlFlowEffect> {
+    fn sync_terminal_allocation(&mut self) {
         let viewport = self.main_host.viewport().clone();
-        if self
-            .tabs
-            .apply_pending_allocation(viewport.scale_factor, viewport.physical_size)
-        {
-            self.main_host.request_frame().wait
-        } else {
-            None
-        }
+        self.tabs
+            .apply_pending_allocation(viewport.scale_factor, viewport.physical_size);
     }
 
-    fn report_watch_failure(&mut self, reason: &str, retrying: bool) {
-        // A watcher fault is a different visible failure. Once I/O recovers,
-        // resurface any still-invalid candidate rather than leave a stale
-        // "watching unavailable" message behind duplicate suppression.
-        self.reload_feedback.clear();
-        let path = self
-            .configuration_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "configuration path unavailable".to_owned());
-        let recovery = if retrying {
-            "Observation will retry automatically."
-        } else {
-            "Restart Harbor to retry observation."
-        };
-        let message = format!(
-            "Configuration watching unavailable ({path}): {reason}. {recovery} Previously accepted configuration remains effective. Manual reload (app.reload-configuration) remains available."
-        );
-        tracing::error!(%message, "configuration watcher failure");
-        self.workspace_ui.publish_configuration_notice(
-            harbor_app::notifications::ConfigurationNoticeSource::Observation,
-            Some(message),
-        );
+    fn service_and_verify_active_source(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        wait: &mut Option<ControlFlowEffect>,
+    ) -> bool {
+        let source = self.tabs.active_binding();
+        if let Some(source) = source {
+            merge_wait(
+                wait,
+                self.process_terminal_output(event_loop, source.session),
+            );
+        }
+        source.is_some_and(|source| {
+            self.tabs.active_binding() == Some(source) && self.tabs.active_live(source.session)
+        })
     }
 
     fn begin_quick_save(&mut self) -> Result<harbor_widget::FocusHandle, String> {
         let draft = self.tabs.capture_quick_save().map_err(str::to_owned)?;
         let path = self
-            .configuration_path
-            .clone()
+            .config
+            .path()
+            .cloned()
             .ok_or("Selected configuration path unavailable")?;
         let transaction = crate::profile_save::SaveTransaction::begin(path)?;
         self.quick_save_transaction = Some(transaction);
@@ -615,18 +362,13 @@ impl ActiveSession {
     fn commit_quick_save(
         &mut self,
         request: harbor_app::command::AppCommandRequest,
+        wait: &mut Option<ControlFlowEffect>,
     ) -> Option<harbor_widget::FocusHandle> {
         let submission = self.workspace_ui.take_quick_save_submission(request)?;
         // A previous unaccepted reload must never publish over the save generation.
-        if let Some(previous) = self.pending_reload.take()
-            && previous.report_palette
-        {
-            self.workspace_ui.report_palette_result(
-                AppCommand::ReloadConfiguration,
-                Err("Rejected: reload superseded by save"),
-            );
-        }
-        let result = (|| -> Result<PendingReload, String> {
+        self.config
+            .supersede_pending(&self.workspace_ui, "Rejected: reload superseded by save");
+        let result = (|| -> Result<_, String> {
             let transaction = self
                 .quick_save_transaction
                 .as_mut()
@@ -635,231 +377,31 @@ impl ActiveSession {
             let bytes = transaction
                 .committed_bytes()
                 .ok_or("Save durability was not established")?;
-            let acquisition = self.tabs.acquire_configuration(&loaded.settings)
-                .map_err(|_| "Preset saved on disk, but configuration preparation failed; retry Save to publish")?;
-            Ok(PendingReload {
-                loaded,
-                acquisition,
-                automatic: false,
-                path: transaction.path().to_owned(),
-                report_palette: false,
-                quick_save: Some((submission.generation, bytes)),
-            })
+            Ok((loaded, transaction.path().to_owned(), bytes))
         })();
         match result {
-            Ok(pending) => {
-                self.pending_reload = Some(pending);
-                self.advance_configuration_reload();
-                None
-            }
+            Ok((loaded, path, bytes)) => match self.config.begin_quick_save_publish(
+                &mut self.tabs,
+                &self.workspace_ui,
+                &mut self.main_host,
+                loaded,
+                path,
+                (submission.generation, bytes),
+            ) {
+                Ok(reload_wait) => {
+                    merge_wait(wait, reload_wait);
+                    None
+                }
+                Err(error) => self
+                    .workspace_ui
+                    .finish_quick_save(submission.generation, Err(error)),
+            },
             Err(error) => self
                 .workspace_ui
                 .finish_quick_save(submission.generation, Err(error)),
         }
     }
-    fn reload_configuration(&mut self, automatic: bool) -> Option<bool> {
-        if self.pending_split.is_some() {
-            self.reload_after_split = true;
-            return None;
-        }
-        // Publication for an explicit save retains its acquisitions and exact disk generation.
-        if self
-            .pending_reload
-            .as_ref()
-            .is_some_and(|pending| pending.quick_save.is_some())
-        {
-            return None;
-        }
-        // A new document supersedes an unaccepted candidate, not an accepted generation.
-        if let Some(previous) = self.pending_reload.take()
-            && previous.report_palette
-        {
-            self.workspace_ui.report_palette_result(
-                AppCommand::ReloadConfiguration,
-                Err("Rejected: reload superseded"),
-            );
-        }
-        let path = self.configuration_path.clone();
-        let path_label = path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "configuration path unavailable".to_owned());
-        let staged = (|| -> anyhow::Result<Option<PendingReload>> {
-            let path =
-                path.ok_or_else(|| anyhow::anyhow!("could not resolve configuration path"))?;
-            let loaded = match harbor_config::load_candidate_from_path(&path) {
-                Ok(loaded) => loaded,
-                Err(error) if error.io_kind == Some(std::io::ErrorKind::NotFound) => {
-                    return Ok(None);
-                }
-                Err(error) => return Err(error.into()),
-            };
-            harbor_app::command::validate_keybindings(&loaded.settings.keybindings)
-                .map_err(|errors| anyhow::anyhow!("{}", errors.join("; ")))?;
-            let acquisition = self
-                .tabs
-                .acquire_configuration(&loaded.settings)
-                .map_err(|error| error.context(ConfigurationOperationFailure))?;
-            Ok(Some(PendingReload {
-                loaded,
-                acquisition,
-                automatic,
-                path,
-                report_palette: false,
-                quick_save: None,
-            }))
-        })();
-        match staged {
-            Ok(Some(pending)) => {
-                self.pending_reload = Some(pending);
-                self.advance_configuration_reload()
-            }
-            Ok(None) => self.report_reload_result(Ok(None), automatic, &path_label),
-            Err(error) => self.report_reload_result(Err(error), automatic, &path_label),
-        }
-    }
 
-    fn advance_configuration_reload(&mut self) -> Option<bool> {
-        let pending = self.pending_reload.take()?;
-        let ready = pending
-            .acquisition
-            .as_ref()
-            .map_or(Ok(true), |acquisition| {
-                self.tabs.configuration_ready(acquisition)
-            });
-        if matches!(ready, Ok(false)) {
-            self.pending_reload = Some(pending);
-            return None;
-        }
-        let PendingReload {
-            loaded,
-            acquisition,
-            automatic,
-            path,
-            report_palette,
-            quick_save,
-        } = pending;
-        let save_guard = quick_save
-            .as_ref()
-            .map(|(_, expected)| crate::profile_save::pin_generation(&path, expected));
-        if let Some(Err(error)) = save_guard.as_ref() {
-            drop(acquisition);
-            let generation = quick_save.as_ref().unwrap().0;
-            if let Some(focus) = self.workspace_ui.finish_quick_save(
-                generation,
-                Err(format!(
-                    "Preset was written, but not published: {error}. Inspect/reload the file"
-                )),
-            ) {
-                self.main_host.request_focus(&focus);
-                self.main_host.request_frame();
-            }
-            return Some(false);
-        }
-        let path_label = path.display().to_string();
-        let viewport = self.main_host.viewport().clone();
-        let result = ready
-            .map_err(|error| error.context(ConfigurationOperationFailure))
-            .and_then(|_| {
-                apply_loaded_configuration(
-                    &path,
-                    &mut self.accepted_settings,
-                    &self.effective_clipboard,
-                    loaded,
-                    |candidate, bindings| {
-                        let warnings = self.tabs.apply_configuration(
-                            candidate,
-                            viewport.scale_factor,
-                            viewport.physical_size,
-                        )?;
-                        self.workspace_ui.publish_keybindings(bindings);
-                        Ok(warnings)
-                    },
-                )
-                .map(Some)
-            });
-        // Release every acquisition even on preparation/PTY/compensation failure.
-        drop(acquisition);
-        drop(save_guard);
-        let completion = self.report_reload_result(result, automatic, &path_label);
-        if let Some((generation, _)) = quick_save {
-            let outcome = if completion == Some(true) {
-                Ok(())
-            } else {
-                Err("Preset saved on disk, but configuration publication failed; retry Save to publish or cancel and reload".into())
-            };
-            if let Some(focus) = self.workspace_ui.finish_quick_save(generation, outcome) {
-                self.main_host.request_focus(&focus);
-                self.main_host.request_frame();
-            }
-        }
-        if report_palette {
-            self.workspace_ui.report_palette_result(
-                AppCommand::ReloadConfiguration,
-                if completion == Some(true) {
-                    Ok(())
-                } else {
-                    Err("Failed: see configuration reload error")
-                },
-            );
-        }
-        completion
-    }
-
-    fn report_reload_result(
-        &mut self,
-        result: anyhow::Result<Option<ConfigurationAcceptance>>,
-        automatic: bool,
-        path_label: &str,
-    ) -> Option<bool> {
-        use harbor_app::notifications::ConfigurationNoticeSource as Source;
-        match result {
-            Ok(acceptance) => {
-                self.reload_feedback.clear();
-                let applied = acceptance.is_some();
-                if applied {
-                    self.workspace_ui
-                        .publish_configuration_notice(Source::Resource, None);
-                }
-                self.workspace_ui
-                    .publish_configuration_notice(Source::Startup, None);
-                let notice = acceptance.and_then(|accepted| {
-                    tracing::info!(path = %path_label, summary = %accepted.summary, "configuration reload accepted");
-                    accepted.notice.map(|notice| format!("Configuration ({path_label}): {notice}"))
-                });
-                self.workspace_ui
-                    .publish_configuration_notice(Source::Reload, notice);
-                applied.then_some(true)
-            }
-            Err(error) => {
-                self.workspace_ui
-                    .publish_configuration_notice(Source::Startup, None);
-                let source = if error.is::<ConfigurationOperationFailure>() {
-                    Source::Resource
-                } else {
-                    Source::Reload
-                };
-                if source == Source::Resource {
-                    self.workspace_ui
-                        .publish_configuration_notice(Source::Reload, None);
-                }
-                let message = format!(
-                    "Configuration reload failed ({path_label}): {error:#}. Previously accepted configuration remains effective; any recovery failure is identified above."
-                );
-                if self.reload_feedback.failure(&message, automatic) {
-                    tracing::error!(%message, "configuration reload rejected");
-                    // An explicit retry still reports its result; only repeated
-                    // automatic events must stay dismissed in the same episode.
-                    if !automatic {
-                        self.workspace_ui.publish_configuration_notice(source, None);
-                    }
-                    self.workspace_ui
-                        .publish_configuration_notice(source, Some(message));
-                }
-                Some(false)
-            }
-        }
-    }
     fn drain_app_commands(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -869,7 +411,7 @@ impl ActiveSession {
         let mut actions = self.workspace_ui.drain_actions().into_iter();
         while let Some(admission) = self
             .tabs
-            .next_app_action(&mut actions, self.confirmation_active())
+            .next_app_action(&mut actions, self.confirmations.is_active())
         {
             let (request, from_palette, profile) = match admission {
                 AppActionAdmission::Rejected {
@@ -924,19 +466,11 @@ impl ActiveSession {
                         command,
                         PaneCommand::SplitHorizontal | PaneCommand::SplitVertical
                     ) {
-                        let source = self.tabs.active_binding();
-                        if let Some(source) = source {
-                            merge_wait(
-                                &mut result.wait,
-                                self.process_terminal_output(event_loop, source.session),
-                            );
-                        }
                         // Servicing queued metadata may also reduce exact shell exit.
                         // Never turn that reduction into a split of the survivor.
-                        let completion = if source.is_some_and(|source| {
-                            self.tabs.active_binding() == Some(source)
-                                && self.tabs.active_live(source.session)
-                        }) {
+                        let completion = if self
+                            .service_and_verify_active_source(event_loop, &mut result.wait)
+                        {
                             self.begin_pane_split(command, from_palette)
                         } else {
                             Err("Rejected: original split source retired")
@@ -973,21 +507,12 @@ impl ActiveSession {
                     merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
                 }
                 AppCommand::SaveCurrentSession => {
-                    let source = self.tabs.active_binding();
-                    if let Some(source) = source {
-                        merge_wait(
-                            &mut result.wait,
-                            self.process_terminal_output(event_loop, source.session),
-                        );
-                    }
-                    let capture = if source.is_some_and(|source| {
-                        self.tabs.active_binding() == Some(source)
-                            && self.tabs.active_live(source.session)
-                    }) {
-                        self.begin_quick_save()
-                    } else {
-                        Err("Rejected: original capture source retired".into())
-                    };
+                    let capture =
+                        if self.service_and_verify_active_source(event_loop, &mut result.wait) {
+                            self.begin_quick_save()
+                        } else {
+                            Err("Rejected: original capture source retired".into())
+                        };
                     match capture {
                         Ok(focus) => {
                             merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait)
@@ -1013,7 +538,7 @@ impl ActiveSession {
                     merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                 }
                 AppCommand::CommitQuickSave => {
-                    if let Some(focus) = self.commit_quick_save(request) {
+                    if let Some(focus) = self.commit_quick_save(request, &mut result.wait) {
                         merge_wait(&mut result.wait, self.main_host.request_focus(&focus).wait);
                     }
                     merge_wait(&mut result.wait, self.main_host.request_frame().wait);
@@ -1035,16 +560,19 @@ impl ActiveSession {
                     else {
                         continue;
                     };
+                    if let Some(fault) = self.main_host.gpu_fault() {
+                        self.exit_gpu_fault(event_loop, fault);
+                        result.close_window = true;
+                        break;
+                    }
                     let confirmed = matches!(request.command, AppCommand::ConfirmConfirmation);
-                    if self.paste.generation() == Some(generation) {
-                        match self.paste.resolve_confirmation(
+                    if self.confirmations.paste_generation() == Some(generation) {
+                        match self.confirmations.resolve_paste(
                             generation,
                             confirmed,
                             &self.workspace_ui,
                             self.tabs.active_terminal().as_ref(),
                             self.tabs.active_binding(),
-                            self.main_host.gpu_fault(),
-                            self.clipboard.is_active(),
                         ) {
                             PasteResolution::Ignored => {}
                             PasteResolution::Resolved { palette_completion } => {
@@ -1060,32 +588,17 @@ impl ActiveSession {
                                 );
                                 merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                             }
-                            PasteResolution::Fatal { error } => {
-                                if let harbor_widget::winit::FrameError::SharedGpu(fault) = error {
-                                    self.exit_gpu_fault(event_loop, fault);
-                                    result.close_window = true;
-                                    break;
-                                }
-                            }
                         }
-                    } else if self.clipboard.generation() == Some(generation) {
-                        if let Some(fault) = self.main_host.gpu_fault() {
-                            self.exit_gpu_fault(event_loop, fault);
-                            result.close_window = true;
-                            break;
-                        }
+                    } else if self.confirmations.clipboard_generation() == Some(generation) {
                         let eligible = self
-                            .clipboard
-                            .source()
+                            .confirmations
+                            .clipboard_source()
                             .is_some_and(|source| self.clipboard_eligible(source, true));
-                        if let Some(write_request) = resolve_clipboard_confirmation_state(
+                        if let Some(write_request) = self.confirmations.resolve_clipboard(
                             generation,
                             confirmed,
                             eligible,
                             &self.workspace_ui,
-                            &mut self.clipboard,
-                            &self.paste,
-                            &self.input_gate,
                         ) {
                             self.apply_clipboard_write(write_request, true);
                         } else if !confirmed || !eligible {
@@ -1132,7 +645,7 @@ impl ActiveSession {
                         );
                     }
                     merge_wait(&mut result.wait, outcome.wait);
-                    self.reconcile_clipboard();
+                    merge_wait(&mut result.wait, self.reconcile_clipboard());
                 }
                 AppCommand::CloseCommandPalette(generation) => {
                     if self.workspace_ui.close_palette(generation) {
@@ -1165,11 +678,16 @@ impl ActiveSession {
                     merge_wait(&mut result.wait, self.main_host.request_frame().wait);
                 }
                 AppCommand::ReloadConfiguration => {
-                    let completion = self.reload_configuration(false);
+                    let (completion, reload_wait) = self.config.reload(
+                        &mut self.tabs,
+                        &self.workspace_ui,
+                        &mut self.main_host,
+                        false,
+                        self.pending_split.is_some(),
+                    );
+                    merge_wait(&mut result.wait, reload_wait);
                     if from_palette {
-                        if let Some(pending) = self.pending_reload.as_mut() {
-                            pending.report_palette = true;
-                        } else {
+                        if !self.config.set_report_palette() {
                             self.workspace_ui.report_palette_result(
                                 request.command,
                                 match completion {
@@ -1276,14 +794,13 @@ impl ActiveSession {
                     use harbor_app::command::CommandCompletion;
                     let active_terminal = self.tabs.active_terminal();
                     let completion = self
-                        .paste
+                        .confirmations
                         .paste_from_clipboard(
                             &self.workspace_ui,
                             &mut self.main_host,
                             active_terminal.as_ref(),
                             self.tabs.active_binding(),
                             from_palette,
-                            self.clipboard.is_active(),
                         )
                         .map(|(wait, completion)| {
                             merge_wait(&mut result.wait, wait);
@@ -1328,30 +845,18 @@ impl ActiveSession {
                 merge_wait(&mut wait, self.process_terminal_output(event_loop, tab_id));
             }
             AppEvent::ConfigurationWatch => {
-                match self
-                    .configuration_watch
-                    .as_ref()
-                    .and_then(|watch| watch.take_pending())
-                {
-                    Some(crate::configuration_watch::WatchEvent::Reload) => {
-                        self.workspace_ui.publish_configuration_notice(
-                            harbor_app::notifications::ConfigurationNoticeSource::Observation,
-                            None,
-                        );
-                        let _ = self.reload_configuration(true);
-                    }
-                    Some(crate::configuration_watch::WatchEvent::Unavailable(kind)) => {
-                        self.report_watch_failure(&format!("observation I/O: {kind:?}"), true);
-                    }
-                    None => {}
-                }
-                merge_wait(&mut wait, self.main_host.request_frame().wait);
+                let watch_wait = self.config.handle_watch_event(
+                    &mut self.tabs,
+                    &self.workspace_ui,
+                    &mut self.main_host,
+                    self.pending_split.is_some(),
+                );
+                merge_wait(&mut wait, watch_wait);
             }
             AppEvent::OpenHyperlink(source, uri) => {
-                if !self.tabs.active_live(source) {
-                    return;
-                }
-                if let Err(error) = crate::hyperlink::open(&uri) {
+                if self.tabs.active_live(source)
+                    && let Err(error) = crate::hyperlink::open(&uri)
+                {
                     tracing::warn!(
                         uri,
                         error = %format_args!("{error:#}"),
@@ -1364,8 +869,7 @@ impl ActiveSession {
                 merge_wait(&mut wait, self.main_host.handle_hmr_work(work).wait);
                 let focus = self.workspace_ui.terminal_focus();
                 merge_wait(&mut wait, self.main_host.request_focus(&focus).wait);
-                let allocation_wait = self.sync_terminal_allocation();
-                merge_wait(&mut wait, allocation_wait);
+                self.sync_terminal_allocation();
             }
         }
         if let Some(wait) = wait {
@@ -1395,8 +899,7 @@ impl ActiveSession {
                     .invalidate_external(harbor_widget::effects::ExternalInvalidation::new())
                     .wait,
             );
-            let allocation_wait = self.sync_terminal_allocation();
-            merge_wait(&mut wait, allocation_wait);
+            self.sync_terminal_allocation();
         }
         if outcome.request_active_invalidation
             && let Some(invalidation) =
@@ -1443,12 +946,15 @@ impl ActiveSession {
             return;
         }
         merge_wait(&mut resize_wait, self.advance_pane_split());
-        let reload_pending = self.pending_reload.is_some();
+        let reload_pending = self.config.has_pending();
         if self.pending_split.is_none() {
-            let _ = self.advance_configuration_reload();
+            let (_, reload_wait) =
+                self.config
+                    .advance(&mut self.tabs, &self.workspace_ui, &mut self.main_host);
+            merge_wait(&mut resize_wait, reload_wait);
         }
-        if reload_pending && self.pending_reload.is_none() {
-            self.main_host.request_frame();
+        if reload_pending && !self.config.has_pending() {
+            merge_wait(&mut resize_wait, self.main_host.request_frame().wait);
         }
         let idle = self.main_host.about_to_wait(now, host_deadline);
         if let Some(fault) = idle.fatal {
@@ -1459,14 +965,14 @@ impl ActiveSession {
         if let Some(wait) = resize_wait {
             combined_flow = combined_flow.arbitrate(wait);
         }
-        if let Some(wait) = self.sync_terminal_allocation() {
-            combined_flow = combined_flow.arbitrate(wait);
-        }
+        self.sync_terminal_allocation();
         // Output, scheduling and allocation above only dispatch/submit managed work.
         // Admit one shared batch here, never a separate batch per callback or tab.
         let resized = self.tabs.advance_resizes();
-        if resized.active_changed {
-            self.main_host.request_frame();
+        if resized.active_changed
+            && let Some(wait) = self.main_host.request_frame().wait
+        {
+            combined_flow = combined_flow.arbitrate(wait);
         }
         if resized.ready_remaining {
             combined_flow = combined_flow.arbitrate(ControlFlowEffect::Poll);
@@ -1521,13 +1027,10 @@ impl ActiveSession {
         event: WindowEvent,
         frame: &mut FrameState,
     ) {
-        if self.stop_for_gpu_fault(event_loop) {
+        if self.stop_for_gpu_fault(event_loop) || self.main_host.window_id() != window_id {
             return;
         }
         let mut wait = self.reconcile_clipboard();
-        if self.main_host.window_id() != window_id {
-            return;
-        }
 
         if matches!(&event, WindowEvent::CloseRequested) {
             tracing::info!("close requested");
@@ -1578,8 +1081,7 @@ impl ActiveSession {
                 "unexpected deferred main-window external input"
             );
         }
-        let allocation_wait = self.sync_terminal_allocation();
-        merge_wait(&mut wait, allocation_wait);
+        self.sync_terminal_allocation();
         let command_outcome = self.drain_app_commands(event_loop);
         merge_wait(&mut wait, command_outcome.wait);
         if command_outcome.close_window {
@@ -1787,8 +1289,7 @@ impl Shell {
                 let root = build_application_root(root_inputs)
                     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
                 let tabs = TabCoordinator::new(tabs, workspace_ui.clone(), factory);
-                let paste = PasteController::new(Arc::clone(&input_gate));
-                Ok((root, (tabs, paste, workspace_ui, input_gate)))
+                Ok((root, (tabs, workspace_ui, input_gate)))
             },
         )
         .with_gpu_wake(harbor_widget::winit::GpuWake::new(self.event_proxy.clone()))
@@ -1796,48 +1297,30 @@ impl Shell {
         #[cfg(all(feature = "widget-hot-reload", target_os = "windows", debug_assertions))]
         let builder = builder.with_hmr(hmr);
 
-        let (main_host, (tabs, paste, workspace_ui, input_gate)) =
+        let (main_host, (tabs, workspace_ui, input_gate)) =
             pollster::block_on(builder.build_with_output(event_loop))?;
         let mut session = ActiveSession {
-            paste,
-            input_gate,
-            clipboard: crate::clipboard::ClipboardPolicy::new(clipboard_policy),
+            confirmations: ConfirmationCoordinator::new(input_gate, clipboard_policy),
             foreground_monitor: crate::clipboard::foreground_monitor::ForegroundMonitor::new(),
-            clipboard_epoch: 0,
-            pending_reload: None,
+            config: configuration::ConfigurationCoordinator::new(configuration_path, settings),
             quick_save_transaction: None,
             tabs,
             pending_split: None,
-            reload_after_split: false,
             workspace_ui,
-            effective_clipboard: settings.clipboard.clone(),
-            configuration_path,
-            configuration_watch: None,
-            reload_feedback: Default::default(),
-            accepted_settings: settings,
             show_pending: true,
             startup_retry_deadline: None,
             main_host,
         };
 
-        let watch_proxy = self.event_proxy.clone();
-        match crate::configuration_watch::ConfigurationWatch::start(
-            session.configuration_path.clone(),
-            move || watch_proxy.send_event(AppEvent::ConfigurationWatch).is_ok(),
-        ) {
-            Ok(watch) => session.configuration_watch = Some(watch),
-            // Do not include arbitrary OS messages or any configuration contents.
-            Err(error) => {
-                session.report_watch_failure(&format!("setup: {:?}", error.kind()), false)
-            }
-        }
+        session
+            .config
+            .start_watch(self.event_proxy.clone(), &session.workspace_ui);
 
         let mut wait = None;
         // The HWND may already be active without a Focused(true) event.
         let focus = session.workspace_ui.terminal_focus();
         merge_wait(&mut wait, session.main_host.request_focus(&focus).wait);
-        let allocation_wait = session.sync_terminal_allocation();
-        merge_wait(&mut wait, allocation_wait);
+        session.sync_terminal_allocation();
         let frame_outcome = session.main_host.present_now();
         merge_wait(&mut wait, frame_outcome.wait());
         session.handle_frame_outcome(event_loop, &mut self.frame, &frame_outcome);

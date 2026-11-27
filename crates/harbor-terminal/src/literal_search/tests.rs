@@ -749,6 +749,22 @@ fn newly_read_revision_is_explicit_and_failed_reads_remain_partial() {
     assert_eq!(job.last_work().scanned_bytes, 0);
 }
 
+#[test]
+fn stepping_completed_job_after_mutation_preserves_results() {
+    let mut t = Terminal::new_headless(2, 8);
+    t.put_str("match");
+    let mut gate = LiteralSearch::default();
+    let mut job = gate.start(&t, "match", retained(2), tiny()).unwrap();
+    while job.step(&t) == SearchStatus::Running {}
+    assert_eq!(job.status(), SearchStatus::Complete);
+    let count = job.results.ranges.len();
+    assert_eq!(count, 1);
+
+    t.put_str(" next");
+    assert_eq!(job.step(&t), SearchStatus::Complete);
+    assert_eq!(job.results.ranges.len(), count);
+}
+
 proptest::proptest! {
     #[test]
     fn paged_ascii_matches_agree_with_overlapping_literal_oracle(

@@ -175,10 +175,6 @@ fn shape(ch: char) -> Option<Shape> {
     is_box_drawing(ch).then(|| SHAPES[ch as usize - 0x2500])
 }
 
-fn drawable(view: &RenderViewport) -> bool {
-    view.is_drawable()
-}
-
 type Point = [f64; 2];
 
 struct Mesh {
@@ -289,7 +285,7 @@ pub(super) fn cell_vertices(
     col: usize,
 ) -> [ColoredVertex; BOX_VERTICES_PER_CELL] {
     let empty = [ColoredVertex::default(); BOX_VERTICES_PER_CELL];
-    if !drawable(view) || cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
+    if !view.is_drawable() || cell.wide_continuation || cell.attrs.contains(CellAttrs::CONCEAL) {
         return empty;
     }
     let Some(shape) = shape(cell.ch) else {
@@ -483,11 +479,7 @@ pub(super) struct BoxDrawing {
 }
 
 impl BoxDrawing {
-    pub(super) fn new(
-        _gpu: TerminalGpuAccess<'_>,
-        pipeline: Arc<wgpu::RenderPipeline>,
-        palette: Palette,
-    ) -> Self {
+    pub(super) fn new(pipeline: Arc<wgpu::RenderPipeline>, palette: Palette) -> Self {
         Self {
             pipeline,
             geometry: gpu::ColoredRows::default(),
@@ -516,7 +508,8 @@ impl BoxDrawing {
         ranges: &[DirtyRange],
         view: &RenderViewport,
     ) {
-        if !drawable(view) || slot_count(snap, gpu.device().limits().max_buffer_size).is_none() {
+        if !view.is_drawable() || slot_count(snap, gpu.device().limits().max_buffer_size).is_none()
+        {
             self.viewport = None;
             self.dirty = true;
             return;

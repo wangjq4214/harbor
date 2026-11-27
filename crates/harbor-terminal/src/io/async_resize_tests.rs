@@ -253,7 +253,7 @@ impl Fixture {
         let replies = Arc::new(Mutex::new(Vec::new()));
         let mut terminal = Terminal::new_headless(3, 20);
         terminal.io = TerminalIo::with_session(TerminalSession::with_pty(TerminalPty {
-            output,
+            output: Some(output),
             recycle: ReaderRecycle::default(),
             commands,
             writer: Box::new(RecordingWriter(Arc::clone(&replies))),

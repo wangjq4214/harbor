@@ -2,6 +2,8 @@ use crate::model::TerminalSnapshot;
 use harbor_config::Rgba;
 use harbor_text::TextMetrics;
 
+use std::sync::Arc;
+
 use super::gpu::{self, ColoredVertex, TerminalGpuAccess};
 use crate::CursorShape;
 use crate::render::RenderViewport;
@@ -27,7 +29,7 @@ fn should_render_cursor(
 /// Concrete GPU cursor projection; blink timing belongs to the engine.
 pub struct Cursor {
     /// wgpu render pipeline for the solid-color cursor quad.
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Arc<wgpu::RenderPipeline>,
     /// Pre-allocated 6-vertex quad buffer (rewritten when cursor position or
     /// visibility changes).
     vertex_buffer: wgpu::Buffer,
@@ -45,8 +47,19 @@ impl Cursor {
     }
 
     pub fn new(gpu: TerminalGpuAccess<'_>, _metrics: TextMetrics, color: Rgba) -> Self {
-        let pipeline =
-            gpu::create_colored_quad_pipeline(gpu.device(), gpu.format(), "cursor pipeline");
+        let pipeline = Arc::new(gpu::create_colored_quad_pipeline(
+            gpu.device(),
+            gpu.format(),
+            "cursor pipeline",
+        ));
+        Self::new_with_pipeline(gpu, pipeline, color)
+    }
+
+    pub(super) fn new_with_pipeline(
+        gpu: TerminalGpuAccess<'_>,
+        pipeline: Arc<wgpu::RenderPipeline>,
+        color: Rgba,
+    ) -> Self {
         let vertex_buffer =
             gpu::create_colored_vertex_buffer(gpu.device(), &[ColoredVertex::default(); 6]);
         Self {

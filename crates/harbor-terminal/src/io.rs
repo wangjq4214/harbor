@@ -1,13 +1,14 @@
 //! PTY I/O and ANSI parsing — extracted from `Terminal` to separate
 //! I/O lifecycle from screen state and GPU rendering.
 
+#[cfg(test)]
+use std::sync::{
+    atomic::AtomicBool,
+    mpsc::{self, Receiver, Sender},
+};
 use std::{
     io::{Read, Write},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender, TryRecvError},
-    },
+    sync::{Arc, Mutex, atomic::Ordering, mpsc::TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -21,15 +22,22 @@ use crate::pointer::PointerInteraction;
 use crate::screen::Screen;
 use crate::types::{TerminalEvent, TerminalPointerPhase};
 
+mod barrier;
 mod chunk;
-use chunk::{ReaderBuffers, ReaderChunk, ReaderRecycle};
-/// The maximum number of parser events buffered between the blocking PTY reader
-/// and the UI thread. Backpressure here bounds memory without blocking UI.
-pub(crate) const PTY_QUEUE_CAPACITY: usize = 32;
+mod pty;
+pub use barrier::ConfigurationBarrier;
+pub(crate) use barrier::ResizeBarrier;
+use barrier::{BarrierStatus, PendingBarrier};
+use chunk::ReaderChunk;
+#[cfg(test)]
+use chunk::{ReaderBuffers, ReaderRecycle};
+pub(crate) use pty::PTY_QUEUE_CAPACITY;
+#[cfg(test)]
+use pty::{RESIZE_BARRIER_TIMEOUT, pump_reader, pump_reader_with_after_read};
+use pty::{ReaderCommand, ReaderEvent, TerminalPty};
+
 // Each reader chunk is at most 4096 bytes. Bound work even if the queue refills.
 const PTY_DRAIN_EVENT_BUDGET: usize = 16;
-
-const RESIZE_BARRIER_TIMEOUT: Duration = Duration::from_secs(2);
 const BARRIER_INTERRUPT_RETRY: Duration = Duration::from_millis(10);
 
 #[cfg(test)]
@@ -38,322 +46,6 @@ mod allocation_tests;
 mod async_resize_tests;
 #[cfg(test)]
 mod clipboard_attachment_tests;
-
-type ReaderInterrupt = Arc<dyn Fn(&JoinHandle<()>) -> anyhow::Result<()> + Send + Sync + 'static>;
-type Wake = Arc<Mutex<dyn Fn() -> bool + Send>>;
-#[derive(Debug)]
-enum ReaderEvent {
-    Bytes(ReaderChunk),
-    BarrierAck(u64),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReaderCommand {
-    Barrier(u64),
-    Resume(u64),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReaderCommandStatus {
-    Idle,
-    Resumed,
-    Disconnected,
-}
-
-#[derive(Debug)]
-enum BarrierStatus {
-    Waiting,
-    Ready,
-    Failed(String),
-    Released,
-}
-
-/// An owned, non-borrowing cancellation lease for application-coordinated acquisition.
-/// Dropping it releases the reader even without reacquiring the Terminal lock.
-pub struct ConfigurationBarrier {
-    release: Option<ResizeBarrier>,
-}
-
-impl ConfigurationBarrier {
-    /// ACK readiness is not configuration acceptance. The host must continue
-    /// draining/ticking the terminal and coordinate every member before commit.
-    pub fn is_ready(&self) -> anyhow::Result<bool> {
-        self.release
-            .as_ref()
-            .map_or(Ok(true), ResizeBarrier::is_ready)
-    }
-}
-
-pub(crate) struct ResizeBarrier {
-    commands: Sender<ReaderCommand>,
-    epoch: u64,
-    status: Arc<Mutex<BarrierStatus>>,
-}
-
-impl ResizeBarrier {
-    fn is_ready(&self) -> anyhow::Result<bool> {
-        match &*self.status.lock().unwrap_or_else(|e| e.into_inner()) {
-            BarrierStatus::Waiting => Ok(false),
-            BarrierStatus::Ready => Ok(true),
-            BarrierStatus::Failed(error) => Err(anyhow::anyhow!("{error}")),
-            BarrierStatus::Released => anyhow::bail!("PTY resize barrier was cancelled"),
-        }
-    }
-
-    fn lease(&self) -> Self {
-        Self {
-            commands: self.commands.clone(),
-            epoch: self.epoch,
-            status: Arc::clone(&self.status),
-        }
-    }
-}
-
-impl Drop for ResizeBarrier {
-    fn drop(&mut self) {
-        let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
-        if !matches!(*status, BarrierStatus::Failed(_)) {
-            *status = BarrierStatus::Released;
-        }
-        let _ = self.commands.send(ReaderCommand::Resume(self.epoch));
-    }
-}
-
-struct PendingBarrier {
-    barrier: ResizeBarrier,
-    deadline: Instant,
-    retry: Instant,
-    configuration: bool,
-}
-// ── TerminalPty ───────────────────────────────────────────────────────
-
-/// I/O and shutdown resources sharing the terminal's lifetime.
-struct TerminalPty {
-    output: Receiver<ReaderEvent>,
-    recycle: ReaderRecycle,
-    commands: Sender<ReaderCommand>,
-    writer: Box<dyn Write + Send>,
-    reader: Option<JoinHandle<()>>,
-    control: Option<PtyControl>,
-    wake_pending: Arc<AtomicBool>,
-    wake: Wake,
-    next_barrier_epoch: u64,
-    test_interrupt: Option<ReaderInterrupt>,
-    barrier_timeout: Duration,
-}
-
-impl TerminalPty {
-    fn try_new<R, W>(
-        reader: R,
-        writer: W,
-        control: Option<PtyControl>,
-        wake: impl Fn() -> bool + Send + 'static,
-    ) -> anyhow::Result<Self>
-    where
-        R: Read + Send + 'static,
-        W: Write + Send + 'static,
-    {
-        // SAFETY: std::thread::Builder::spawn returns Err only when it did not
-        // launch a thread; it drops the closure and captured reader on failure.
-        unsafe {
-            Self::try_new_with_spawn(reader, writer, control, wake, |pump| {
-                std::thread::Builder::new()
-                    .name("harbor-terminal-reader".into())
-                    .spawn(pump)
-            })
-        }
-    }
-
-    /// # Safety
-    /// If `spawn` returns an error, it must not have started the pump and
-    /// must have dropped the pump closure (including its reader endpoint).
-    unsafe fn try_new_with_spawn<R, W>(
-        reader: R,
-        writer: W,
-        control: Option<PtyControl>,
-        wake: impl Fn() -> bool + Send + 'static,
-        spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<JoinHandle<()>>,
-    ) -> anyhow::Result<Self>
-    where
-        R: Read + Send + 'static,
-        W: Write + Send + 'static,
-    {
-        let (output_tx, output) = mpsc::sync_channel(PTY_QUEUE_CAPACITY);
-        let (commands, reader_commands) = mpsc::channel();
-        let (reader_buffers, recycle) = ReaderBuffers::pair();
-        let wake_pending = Arc::new(AtomicBool::new(false));
-        let reader_wake_pending = Arc::clone(&wake_pending);
-        let wake: Wake = Arc::new(Mutex::new(wake));
-        let reader_wake = Arc::clone(&wake);
-        let reader = spawn(Box::new(move || {
-            pump_reader(
-                reader,
-                output_tx,
-                reader_commands,
-                reader_wake_pending,
-                move || (reader_wake.lock().unwrap_or_else(|e| e.into_inner()))(),
-                reader_buffers,
-            )
-        }));
-        let reader = match reader {
-            Ok(reader) => reader,
-            Err(error) => {
-                // SAFETY: a failed spawn drops its closure and captured reader
-                // before returning; no reader thread was started for this PTY.
-                if let Some(control) = control {
-                    unsafe { control.shutdown_unstarted() };
-                }
-                return Err(error.into());
-            }
-        };
-        Ok(Self {
-            output,
-            recycle,
-            commands,
-            writer: Box::new(writer),
-            reader: Some(reader),
-            control,
-            wake_pending,
-            wake,
-            next_barrier_epoch: 1,
-            test_interrupt: None,
-            barrier_timeout: RESIZE_BARRIER_TIMEOUT,
-        })
-    }
-}
-
-impl Drop for TerminalPty {
-    fn drop(&mut self) {
-        // Disconnect the receiver so the reader thread exits its send loop.
-        // The writer is dropped automatically.
-        let control = self.control.take();
-        let reader = self.reader.take();
-        match (control, reader) {
-            (Some(control), Some(reader)) => control.shutdown(reader),
-            (None, Some(reader)) => {
-                // Keep-alive test readers park after their last chunk; unpark so
-                // they observe EOF and exit instead of leaking the thread.
-                reader.thread().unpark();
-            }
-            _ => {}
-        }
-    }
-}
-
-#[cfg(all(test, feature = "renderer"))]
-impl TerminalPty {
-    fn set_test_barrier(
-        &mut self,
-        interrupt: impl Fn(&JoinHandle<()>) -> anyhow::Result<()> + Send + Sync + 'static,
-        timeout: Duration,
-    ) {
-        self.test_interrupt = Some(Arc::new(interrupt));
-        self.barrier_timeout = timeout;
-    }
-}
-
-fn pump_reader<R>(
-    reader: R,
-    output: mpsc::SyncSender<ReaderEvent>,
-    commands: Receiver<ReaderCommand>,
-    wake_pending: Arc<AtomicBool>,
-    wake: impl Fn() -> bool,
-    buffers: ReaderBuffers,
-) where
-    R: Read,
-{
-    pump_reader_with_after_read(reader, output, commands, wake_pending, wake, || {}, buffers);
-}
-
-fn pump_reader_with_after_read<R>(
-    mut reader: R,
-    output: mpsc::SyncSender<ReaderEvent>,
-    commands: Receiver<ReaderCommand>,
-    wake_pending: Arc<AtomicBool>,
-    wake: impl Fn() -> bool,
-    mut after_read: impl FnMut(),
-    mut buffers: ReaderBuffers,
-) where
-    R: Read,
-{
-    let notify = || {
-        if !wake_pending.swap(true, Ordering::AcqRel) {
-            wake()
-        } else {
-            true
-        }
-    };
-    while let Ok(ReaderCommandStatus::Idle | ReaderCommandStatus::Resumed) =
-        service_reader_commands(&commands, &output, &notify)
-    {
-        let mut chunk = buffers.take();
-        let length = match reader.read(chunk.read_buffer()) {
-            Ok(0) => break,
-            Ok(length) => length,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-                buffers.put_unread(chunk);
-                match service_reader_commands(&commands, &output, &notify) {
-                    Ok(ReaderCommandStatus::Resumed) => continue,
-                    Ok(ReaderCommandStatus::Idle | ReaderCommandStatus::Disconnected) | Err(()) => {
-                        tracing::warn!(error = %error, "terminal pty reader stopped after unexpected interruption");
-                        break;
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::warn!(error = %error, "terminal pty reader stopped after read error");
-                break;
-            }
-        };
-        after_read();
-        chunk.finish(length);
-        if output.send(ReaderEvent::Bytes(chunk)).is_err() {
-            break;
-        }
-        if !notify() {
-            break;
-        }
-    }
-    // One close-observation wake so a surviving view can drain disconnect
-    // and release synchronized-output suppression without waiting for recovery.
-    if !wake_pending.swap(true, Ordering::AcqRel) {
-        let _ = wake();
-    }
-}
-
-/// Services at most one pending barrier and returns whether the reader may continue.
-fn service_reader_commands(
-    commands: &Receiver<ReaderCommand>,
-    output: &mpsc::SyncSender<ReaderEvent>,
-    notify: &impl Fn() -> bool,
-) -> Result<ReaderCommandStatus, ()> {
-    loop {
-        let command = match commands.try_recv() {
-            Ok(command) => command,
-            Err(TryRecvError::Empty) => return Ok(ReaderCommandStatus::Idle),
-            Err(TryRecvError::Disconnected) => {
-                return Ok(ReaderCommandStatus::Disconnected);
-            }
-        };
-        let ReaderCommand::Barrier(epoch) = command else {
-            continue;
-        };
-        output
-            .send(ReaderEvent::BarrierAck(epoch))
-            .map_err(|_| ())?;
-        if !notify() {
-            return Err(());
-        }
-        loop {
-            match commands.recv() {
-                Ok(ReaderCommand::Resume(resume_epoch)) if resume_epoch == epoch => break,
-                Ok(_) => {}
-                Err(_) => return Ok(ReaderCommandStatus::Disconnected),
-            }
-        }
-        return Ok(ReaderCommandStatus::Resumed);
-    }
-}
 
 // ── TerminalSession ───────────────────────────────────────────────────
 
@@ -399,11 +91,14 @@ impl TerminalSession {
         let Some(pty) = self.pty.as_ref() else {
             return Ok(None);
         };
-        match pty.output.try_recv() {
+        let Some(output) = pty.output.as_ref() else {
+            return Ok(None);
+        };
+        match output.try_recv() {
             Ok(event) => Ok(Some(event)),
             Err(TryRecvError::Empty) => {
                 pty.wake_pending.store(false, Ordering::Release);
-                match pty.output.try_recv() {
+                match output.try_recv() {
                     Ok(event) => Ok(Some(event)),
                     Err(TryRecvError::Empty) => Ok(None),
                     Err(error) => Err(error),
@@ -428,16 +123,11 @@ impl TerminalSession {
         }
     }
     fn request_resize_barrier(&mut self, configuration: bool, now: Instant) -> anyhow::Result<()> {
-        if self.barrier.as_ref().is_some_and(|pending| {
-            matches!(
-                *pending
-                    .barrier
-                    .status
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()),
-                BarrierStatus::Released | BarrierStatus::Failed(_)
-            )
-        }) {
+        if self
+            .barrier
+            .as_ref()
+            .is_some_and(|pending| pending.barrier.is_inactive())
+        {
             self.barrier = None;
         }
         if self.barrier.is_some() {
@@ -478,15 +168,7 @@ impl TerminalSession {
 
     fn fail_resize_barrier(&mut self, error: String) {
         if let Some(pending) = self.barrier.as_ref() {
-            *pending
-                .barrier
-                .status
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = BarrierStatus::Failed(error);
-            let _ = pending
-                .barrier
-                .commands
-                .send(ReaderCommand::Resume(pending.barrier.epoch));
+            pending.barrier.set_failed(error);
         }
     }
 
@@ -494,14 +176,7 @@ impl TerminalSession {
         let Some(pending) = self.barrier.as_ref() else {
             return;
         };
-        if !matches!(
-            *pending
-                .barrier
-                .status
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-            BarrierStatus::Waiting
-        ) {
+        if !pending.barrier.is_waiting() {
             return;
         }
         if now >= pending.deadline {
@@ -522,14 +197,7 @@ impl TerminalSession {
         if let Some(pending) = self.barrier.as_ref()
             && pending.barrier.epoch == epoch
         {
-            let mut status = pending
-                .barrier
-                .status
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if matches!(*status, BarrierStatus::Waiting) {
-                *status = BarrierStatus::Ready;
-            }
+            pending.barrier.mark_ready();
         }
     }
 
@@ -541,15 +209,10 @@ impl TerminalSession {
 
     fn resize_deadline(&self) -> Option<Instant> {
         self.barrier.as_ref().and_then(|pending| {
-            matches!(
-                *pending
-                    .barrier
-                    .status
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()),
-                BarrierStatus::Waiting
-            )
-            .then_some(pending.retry.min(pending.deadline))
+            pending
+                .barrier
+                .is_waiting()
+                .then_some(pending.retry.min(pending.deadline))
         })
     }
 
@@ -837,17 +500,10 @@ impl TerminalIo {
     }
 
     pub(crate) fn configuration_barrier_active(&self) -> bool {
-        self.session.barrier.as_ref().is_some_and(|pending| {
-            pending.configuration
-                && !matches!(
-                    *pending
-                        .barrier
-                        .status
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()),
-                    BarrierStatus::Released | BarrierStatus::Failed(_)
-                )
-        })
+        self.session
+            .barrier
+            .as_ref()
+            .is_some_and(|pending| pending.configuration && !pending.barrier.is_inactive())
     }
 
     pub(crate) fn resize_barrier_ready(&self) -> anyhow::Result<bool> {

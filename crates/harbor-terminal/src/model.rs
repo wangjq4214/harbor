@@ -436,6 +436,16 @@ pub struct TerminalSize {
     pub cols: usize,
 }
 
+impl TerminalSize {
+    /// Clamps dimensions to the minimum supported terminal grid (`>= 1` row, `>= 2` cols).
+    pub const fn normalized(self) -> Self {
+        Self {
+            rows: if self.rows == 0 { 1 } else { self.rows },
+            cols: if self.cols < 2 { 2 } else { self.cols },
+        }
+    }
+}
+
 // ── InputModes ────────────────────────────────────────────────────────────────
 
 /// VT mouse-reporting mode selected by DEC private modes.
@@ -612,11 +622,16 @@ impl TerminalSnapshot {
         self.cells[row * self.cols + col].ch
     }
 
+    /// Returns the oldest visible generation in the current scrollback offset.
+    #[inline]
+    pub const fn view_start_generation(&self) -> u64 {
+        self.history_start + self.scroll_count.saturating_sub(self.view_offset) as u64
+    }
+
     /// Returns the cell at the given scrollback generation and column.
     #[inline]
     pub fn cell_at_generation(&self, generation: u64, col: usize) -> Option<&Cell> {
-        let visible_start =
-            self.history_start + self.scroll_count.saturating_sub(self.view_offset) as u64;
+        let visible_start = self.view_start_generation();
         let row = generation.checked_sub(visible_start)? as usize;
         if row >= self.rows || col >= self.cols {
             return None;
@@ -626,8 +641,7 @@ impl TerminalSnapshot {
 
     /// Returns whether a visible generation continues the logical line above.
     pub fn is_wrapped_at_generation(&self, generation: u64) -> bool {
-        let visible_start =
-            self.history_start + self.scroll_count.saturating_sub(self.view_offset) as u64;
+        let visible_start = self.view_start_generation();
         let row = generation
             .checked_sub(visible_start)
             .map(|row| row as usize);

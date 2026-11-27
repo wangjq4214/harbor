@@ -45,14 +45,23 @@ fn caption_nodraw_flags() -> (u32, u32) {
     (flags, flags)
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn win32_hwnd(window: &Window) -> Option<isize> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return None;
+    };
+    Some(handle.hwnd.get())
+}
+
 /// Suppresses caption text and the visible caption icon on `window`.
 ///
 /// System min/max/close buttons stay DWM-drawn. Missing HWND or a uxtheme API
 /// failure is logged and ignored so startup still proceeds.
 #[cfg(target_os = "windows")]
 pub(crate) fn suppress_caption_title_and_icon(window: &Window) {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
     #[repr(C)]
     struct WtaOptions {
         dw_flags: u32,
@@ -69,12 +78,8 @@ pub(crate) fn suppress_caption_title_and_icon(window: &Window) {
         ) -> i32;
     }
 
-    let Ok(handle) = window.window_handle() else {
-        tracing::warn!("caption theme skipped: window handle unavailable");
-        return;
-    };
-    let RawWindowHandle::Win32(h) = handle.as_raw() else {
-        tracing::warn!("caption theme skipped: non-Win32 window handle");
+    let Some(hwnd) = win32_hwnd(window) else {
+        tracing::warn!("caption theme skipped: Win32 window handle unavailable");
         return;
     };
 
@@ -83,7 +88,6 @@ pub(crate) fn suppress_caption_title_and_icon(window: &Window) {
         dw_flags: flags,
         dw_mask: mask,
     };
-    let hwnd = h.hwnd.get();
     let hr = unsafe {
         SetWindowThemeAttribute(
             hwnd,
@@ -101,8 +105,6 @@ pub(crate) fn suppress_caption_title_and_icon(window: &Window) {
 /// wgpu surface is ready.
 #[cfg(target_os = "windows")]
 pub(crate) fn paint_gdi_background(window: &Window, fallback: [f32; 3]) {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
     #[repr(C)]
     struct Rect {
         left: i32,
@@ -119,14 +121,9 @@ pub(crate) fn paint_gdi_background(window: &Window, fallback: [f32; 3]) {
         fn DeleteObject(obj: isize) -> i32;
     }
 
-    let Ok(handle) = window.window_handle() else {
+    let Some(hwnd) = win32_hwnd(window) else {
         return;
     };
-    let RawWindowHandle::Win32(h) = handle.as_raw() else {
-        return;
-    };
-
-    let hwnd = h.hwnd.get();
     let size = window.inner_size();
     let to_byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u32;
     let color: u32 =

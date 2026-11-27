@@ -1508,3 +1508,19 @@ fn saved_cursor_preserves_unwritten_column_when_blank_row_moves() {
     assert_eq!(screen.cursor_y(), 2);
     assert_eq!(screen.cursor_x(), 4);
 }
+
+#[test]
+fn cpr_coordinates_report_live_cursor_row_while_scrolled_up() {
+    let mut screen = Screen::new(3, 10);
+    for row in 0..5 {
+        for ch in format!("r{row}").chars() {
+            screen.write_char(ch);
+        }
+        screen.line_feed();
+        screen.carriage_return();
+    }
+    screen.set_cursor_position(2, 4);
+    screen.scroll_up(2);
+    assert!(screen.view_offset() > 0);
+    assert_eq!(screen.cpr_coordinates(), (2, 4));
+}

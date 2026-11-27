@@ -7,10 +7,9 @@ use super::*;
 #[test]
 fn confirmed_paste_writes_unchanged_raw_text_with_current_modes() {
     for text in ["first\r\nsecond\t\x1b[A", "hello\nworld\r\n"] {
-        let outcome = DialogOutcome::Confirmed(text.to_owned());
         let mut writes = Vec::new();
 
-        let wrote = write_confirmation_outcome(&outcome, InputModes::default(), |bytes| {
+        let wrote = write_confirmation_outcome(Some(text), InputModes::default(), |bytes| {
             writes.push(bytes.to_vec());
             Ok::<_, ()>(())
         })
@@ -23,14 +22,13 @@ fn confirmed_paste_writes_unchanged_raw_text_with_current_modes() {
 
 #[test]
 fn confirmed_paste_uses_bracketed_mode_current_at_confirmation_time() {
-    let outcome = DialogOutcome::Confirmed("first\nsecond".to_owned());
     let mut writes = Vec::new();
     let modes = InputModes {
         bracketed_paste: true,
         ..InputModes::default()
     };
 
-    let wrote = write_confirmation_outcome(&outcome, modes, |bytes| {
+    let wrote = write_confirmation_outcome(Some("first\nsecond"), modes, |bytes| {
         writes.push(bytes.to_vec());
         Ok::<_, ()>(())
     })
@@ -41,38 +39,19 @@ fn confirmed_paste_uses_bracketed_mode_current_at_confirmation_time() {
 }
 
 #[test]
-fn cancelled_or_closed_confirmation_never_calls_the_writer() {
-    for outcome in [DialogOutcome::Cancelled, DialogOutcome::None] {
-        let wrote =
-            write_confirmation_outcome(&outcome, InputModes::default(), |_| -> Result<(), ()> {
-                panic!("cancelled and closed outcomes must not write to the PTY")
-            })
-            .expect("no-write outcome cannot fail");
-        assert!(!wrote);
-    }
-}
-
-#[test]
-fn should_not_write_to_pty_when_confirmation_frame_is_fatal() {
-    let outcome = DialogOutcome::Fatal(FrameError::out_of_memory());
-    let write_attempts = std::cell::Cell::new(0);
-
-    let wrote = write_confirmation_outcome(&outcome, InputModes::default(), |_| {
-        write_attempts.set(write_attempts.get() + 1);
-        Ok::<_, ()>(())
+fn cancelled_confirmation_never_calls_the_writer() {
+    let wrote = write_confirmation_outcome(None, InputModes::default(), |_| -> Result<(), ()> {
+        panic!("cancelled outcomes must not write to the PTY")
     })
-    .expect("fatal outcome cannot invoke the writer");
-
+    .expect("no-write outcome cannot fail");
     assert!(!wrote);
-    assert_eq!(write_attempts.get(), 0);
 }
 
 #[test]
 fn should_return_the_writer_error_after_one_confirmed_paste_attempt() {
-    let outcome = DialogOutcome::Confirmed("paste".to_owned());
     let write_attempts = std::cell::Cell::new(0);
 
-    let result = write_confirmation_outcome(&outcome, InputModes::default(), |_| {
+    let result = write_confirmation_outcome(Some("paste"), InputModes::default(), |_| {
         write_attempts.set(write_attempts.get() + 1);
         Err::<(), _>("PTY disconnected")
     });

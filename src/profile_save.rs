@@ -147,17 +147,20 @@ impl SaveTransaction {
 #[cfg(windows)]
 pub(crate) fn pin_generation(path: &Path, expected: &[u8]) -> Result<fs::File, String> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    };
     let mut file = fs::OpenOptions::new()
         .read(true)
-        .share_mode(1)
-        .custom_flags(0x0020_0000)
+        .share_mode(FILE_SHARE_READ.0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
         .open(path)
         .map_err(|_| "Saved configuration is busy or unavailable")?;
     if file
         .metadata()
         .map_err(|_| "Could not inspect saved configuration")?
         .file_attributes()
-        & 0x400
+        & FILE_ATTRIBUTE_REPARSE_POINT.0
         != 0
     {
         return Err("Saved configuration was replaced with a link".into());
@@ -179,7 +182,8 @@ fn reject_link(path: &Path) -> Result<(), String> {
         #[cfg(windows)]
         let linked = {
             use std::os::windows::fs::MetadataExt;
-            metadata.file_attributes() & 0x400 != 0
+            use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
         };
         #[cfg(not(windows))]
         let linked = metadata.file_type().is_symlink();
@@ -282,7 +286,11 @@ fn replace_selected_with(
     install: impl FnOnce(tempfile::NamedTempFile, &Path) -> Result<fs::File, ()>,
 ) -> Result<(), String> {
     use std::os::windows::fs::OpenOptionsExt;
-    use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_SHARE_READ};
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+        FILE_SHARE_READ,
+    };
+    const DELETE_ACCESS: u32 = 0x0001_0000;
     let Some(original) = original else {
         staged.persist_noclobber(path).map_err(
             |_| "Configuration appeared or installation failed; existing file was not overwritten",
@@ -291,8 +299,8 @@ fn replace_selected_with(
     };
     reject_link(path)?;
     let mut guard = fs::OpenOptions::new()
-        .access_mode(FILE_GENERIC_READ.0 | 0x0001_0000 /* DELETE */)
-        .custom_flags(0x0020_0000 /* FILE_FLAG_OPEN_REPARSE_POINT */)
+        .access_mode(FILE_GENERIC_READ.0 | DELETE_ACCESS)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
         .share_mode(FILE_SHARE_READ.0)
         .open(path)
         .map_err(|_| "Configuration is busy or unavailable; nothing saved")?;
@@ -301,7 +309,7 @@ fn replace_selected_with(
         .metadata()
         .map_err(|_| "Could not inspect configuration")?
         .file_attributes()
-        & 0x400
+        & FILE_ATTRIBUTE_REPARSE_POINT.0
         != 0
     {
         return Err("Linked configuration files cannot be replaced by quick save".into());

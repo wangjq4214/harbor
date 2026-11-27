@@ -394,6 +394,9 @@ impl SearchJob {
         mut cancelled: impl FnMut() -> bool,
     ) -> SearchStatus {
         self.work = SearchWork::default();
+        if self.status() != SearchStatus::Running {
+            return self.status();
+        }
         if cancelled() {
             return self.stop(SearchStatus::Cancelled);
         }
@@ -404,9 +407,6 @@ impl SearchJob {
             .same_generation(terminal.content_version())
         {
             return self.stop(SearchStatus::Stale);
-        }
-        if self.status() != SearchStatus::Running {
-            return self.status();
         }
         let scan = self.scan.as_mut().expect("running scan");
         if self.results.observed != terminal.content_version() {
@@ -520,16 +520,11 @@ impl SearchJob {
             }
         }
         scan.continuation = page.continuation;
+        let finished = scan.continuation.is_none();
         if cancelled() {
             return self.stop(SearchStatus::Cancelled);
         }
-        if self
-            .scan
-            .as_ref()
-            .expect("running scan")
-            .continuation
-            .is_none()
-        {
+        if finished {
             let status = if self.results.observed == self.results.provenance.content {
                 SearchStatus::Complete
             } else {

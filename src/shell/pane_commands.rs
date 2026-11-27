@@ -17,7 +17,7 @@ impl ActiveSession {
         command: PaneCommand,
         palette: bool,
     ) -> Result<(), &'static str> {
-        if self.pending_split.is_some() || self.pending_reload.is_some() {
+        if self.pending_split.is_some() || self.config.has_pending() {
             return Err("Rejected: session configuration or startup is pending");
         }
         let size = self
@@ -151,9 +151,16 @@ impl ActiveSession {
                 .wait,
         );
         merge_wait(&mut wait, self.main_host.request_frame().wait);
-        self.reconcile_clipboard();
-        if std::mem::take(&mut self.reload_after_split) {
-            let _ = self.reload_configuration(true);
+        merge_wait(&mut wait, self.reconcile_clipboard());
+        if self.config.take_reload_after_split() {
+            let (_, reload_wait) = self.config.reload(
+                &mut self.tabs,
+                &self.workspace_ui,
+                &mut self.main_host,
+                true,
+                false,
+            );
+            merge_wait(&mut wait, reload_wait);
         }
         wait
     }
